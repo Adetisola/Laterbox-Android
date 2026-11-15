@@ -806,5 +806,102 @@ class WarmYtDlpServerTest {
             server.shutdown()
         }
     }
+
+    @Test
+    fun executeDetailed_progressStallTimeoutAbortsEarlyWhenHeartbeatsRepeatWithoutAdvancing() = runTest {
+        val userPrefs = UserPreferencesRepository(context)
+        userPrefs.setFastEngineEnabled(true)
+
+        val server = WarmYtDlpServer(
+            appContext = context,
+            userPreferencesRepository = userPrefs,
+            handshakeTimeoutMs = 1000L,
+            inactivityTimeoutMs = 5000L,
+            progressStallTimeoutMs = 450L,
+            runtimeEnvProvider = { testRuntimeEnv() },
+            processLauncher = { _, _ ->
+                FakeDaemonProcess { req, _, writer ->
+                    val id = req.optString("id")
+                    repeat(20) { idx ->
+                        Thread.sleep(150L)
+                        writer.println(
+                            JSONObject()
+                                .put("id", id)
+                                .put("type", "heartbeat")
+                                .put("elapsed_ms", (idx + 1) * 150)
+                                .put("stage", "player_api")
+                                .put("last_event", "Downloading tv player API JSON")
+                                .put("last_event_age_ms", (idx + 1) * 150)
+                                .toString()
+                        )
+                    }
+                }
+            }
+        )
+
+        try {
+            val outcome = server.executeDetailed(
+                url = "https://youtu.be/stalled",
+                options = listOf("--dump-single-json"),
+                processId = "req_stall",
+                timeoutMs = 5000L
+            )
+            assertTrue("Expected PROGRESS_STALL_TIMEOUT failure, got $outcome", outcome is WarmExecuteOutcome.MechanismFailure)
+            val fail = outcome as WarmExecuteOutcome.MechanismFailure
+            assertEquals(WarmFailureReason.PROGRESS_STALL_TIMEOUT, fail.reason)
+            assertTrue("Expected progressStalled=true", fail.progressStalled)
+            assertTrue("Expected heartbeatCount > 0", fail.heartbeatCount > 0)
+            assertEquals("player_api", fail.lastStage)
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun executeDetailed_resultParsesHttpStatusRetryAfterAndExceptionChain() = runTest {
+        val userPrefs = UserPreferencesRepository(context)
+        userPrefs.setFastEngineEnabled(true)
+
+        val server = WarmYtDlpServer(
+            appContext = context,
+            userPreferencesRepository = userPrefs,
+            handshakeTimeoutMs = 1000L,
+            runtimeEnvProvider = { testRuntimeEnv() },
+            processLauncher = { _, _ ->
+                FakeDaemonProcess { req, _, writer ->
+                    val id = req.optString("id")
+                    writer.println(
+                        JSONObject()
+                            .put("id", id)
+                            .put("type", "result")
+                            .put("success", false)
+                            .put("elapsed_ms", 850L)
+                            .put("http_status", 429)
+                            .put("retry_after_seconds", 18L)
+                            .put("exception_chain", "HTTPError -> ExtractorError -> DownloadError")
+                            .put("last_stage", "webpage")
+                            .put("error", "ERROR: [youtube] test: HTTP Error 429: Too Many Requests")
+                            .toString()
+                    )
+                }
+            }
+        )
+
+        try {
+            val outcome = server.executeDetailed(
+                url = "https://youtu.be/429",
+                options = listOf("--dump-single-json"),
+                processId = "req_429",
+                timeoutMs = 3000L
+            )
+            assertTrue("Expected ExtractorError, got $outcome", outcome is WarmExecuteOutcome.ExtractorError)
+            val err = outcome as WarmExecuteOutcome.ExtractorError
+            assertEquals(429, err.httpStatusCode)
+            assertEquals(18L, err.retryAfterSeconds)
+            assertEquals("HTTPError -> ExtractorError -> DownloadError", err.exceptionChain)
+        } finally {
+            server.shutdown()
+        }
+    }
 }
 

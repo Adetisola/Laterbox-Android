@@ -405,6 +405,13 @@ class YouTubeTranscriptUiTest {
                         retryCount = 1,
                         retryReasons = listOf("Attempt 1 failed: DAEMON_TRANSPORT_FAILURE"),
                         elapsedMs = 70200L,
+                        startedAtMillis = 1794700700000L,
+                        endedAtMillis = 1794700770200L,
+                        progressStalled = true,
+                        httpStatusCode = 429,
+                        retryAfterSeconds = 12L,
+                        exceptionType = "SocketTimeoutException",
+                        exceptionChain = "SocketTimeoutException -> YtDlpExecutionException",
                         lastKnownStage = "js_challenge",
                         lastMeaningfulEvent = "Solving n challenge",
                         lastMeaningfulActivityAgeMs = 180L,
@@ -448,6 +455,18 @@ class YouTubeTranscriptUiTest {
 
         composeTestRule.onNodeWithText("2. Failed Lesson").performScrollTo().performClick()
         composeTestRule.onNodeWithText("Technical details").performScrollTo().performClick()
+        composeTestRule.onNodeWithText("Progress stalled: true", substring = true)
+            .performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule.onNodeWithText("Retry-After: 12s", substring = true)
+            .performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule.onNodeWithText("Exception chain: SocketTimeoutException -> YtDlpExecutionException", substring = true)
+            .performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule.onNodeWithText("Timing window: 1794700700000..1794700770200", substring = true)
+            .performScrollTo()
+            .assertIsDisplayed()
         composeTestRule.onNodeWithText("Classification: ${com.laterbox.app.transcript.domain.TranscriptFailureClassification.DAEMON_TRANSPORT_FAILURE}", substring = true)
             .performScrollTo()
             .assertIsDisplayed()

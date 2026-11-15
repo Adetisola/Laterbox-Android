@@ -49,6 +49,7 @@ enum class WarmFailureReason {
     HANDSHAKE_TIMEOUT,
     SOCKET_CONNECT_FAILED,
     DAEMON_INACTIVITY_TIMEOUT,
+    PROGRESS_STALL_TIMEOUT,
     SOCKET_TIMEOUT,
     OVERALL_DEADLINE_TIMEOUT,
     PREMATURE_EOF,
@@ -74,6 +75,10 @@ sealed interface WarmExecuteOutcome {
     val lastWarning: String?
     val warningsCount: Int
     val deadlineExtendedMs: Long
+    val httpStatusCode: Int?
+    val retryAfterSeconds: Long?
+    val exceptionChain: String?
+    val progressStalled: Boolean
 
     data class Success(
         val output: String,
@@ -93,7 +98,11 @@ sealed interface WarmExecuteOutcome {
         override val lastEventAgeMs: Long? = null,
         override val lastWarning: String? = null,
         override val warningsCount: Int = 0,
-        override val deadlineExtendedMs: Long = 0L
+        override val deadlineExtendedMs: Long = 0L,
+        override val httpStatusCode: Int? = null,
+        override val retryAfterSeconds: Long? = null,
+        override val exceptionChain: String? = null,
+        override val progressStalled: Boolean = false
     ) : WarmExecuteOutcome
 
     data class ExtractorError(
@@ -114,7 +123,11 @@ sealed interface WarmExecuteOutcome {
         override val lastEventAgeMs: Long? = null,
         override val lastWarning: String? = null,
         override val warningsCount: Int = 0,
-        override val deadlineExtendedMs: Long = 0L
+        override val deadlineExtendedMs: Long = 0L,
+        override val httpStatusCode: Int? = null,
+        override val retryAfterSeconds: Long? = null,
+        override val exceptionChain: String? = null,
+        override val progressStalled: Boolean = false
     ) : WarmExecuteOutcome
 
     data class MechanismFailure(
@@ -136,7 +149,11 @@ sealed interface WarmExecuteOutcome {
         override val lastEventAgeMs: Long? = null,
         override val lastWarning: String? = null,
         override val warningsCount: Int = 0,
-        override val deadlineExtendedMs: Long = 0L
+        override val deadlineExtendedMs: Long = 0L,
+        override val httpStatusCode: Int? = null,
+        override val retryAfterSeconds: Long? = null,
+        override val exceptionChain: String? = null,
+        override val progressStalled: Boolean = false
     ) : WarmExecuteOutcome
 }
 
@@ -161,7 +178,8 @@ class WarmYtDlpServer internal constructor(
     private val processLauncher: (DaemonRuntimeEnv, File) -> Process = { env, script ->
         launchDefaultProcess(env, script)
     },
-    private val inactivityTimeoutMs: Long = DEFAULT_INACTIVITY_TIMEOUT_MS
+    private val inactivityTimeoutMs: Long = DEFAULT_INACTIVITY_TIMEOUT_MS,
+    private val progressStallTimeoutMs: Long = DEFAULT_PROGRESS_STALL_TIMEOUT_MS
 ) {
     constructor(
         appContext: Context,
@@ -170,7 +188,8 @@ class WarmYtDlpServer internal constructor(
         appContext = appContext,
         userPreferencesRepository = userPreferencesRepository,
         handshakeTimeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_MS,
-        inactivityTimeoutMs = DEFAULT_INACTIVITY_TIMEOUT_MS
+        inactivityTimeoutMs = DEFAULT_INACTIVITY_TIMEOUT_MS,
+        progressStallTimeoutMs = DEFAULT_PROGRESS_STALL_TIMEOUT_MS
     )
 
     private data class DaemonSession(
@@ -336,7 +355,7 @@ class YtDlpCustomLogger:
                 if cli and cli not in self.clients:
                     self.clients.append(cli)
 
-            if clean:
+            if clean and (clean != self.last_event or self.stage != prev_stage):
                 self.last_event = clean
                 self.last_event_mono = time.monotonic()
                 if self.stage != prev_stage or any(
@@ -349,30 +368,36 @@ class YtDlpCustomLogger:
         clean = _sanitize_log(msg, 260)
         with self._lock:
             if clean:
-                self.last_event = f"WARN: {clean}"[:220]
-                self.last_event_mono = time.monotonic()
+                ev = f"WARN: {clean}"[:220]
+                if ev != self.last_event:
+                    self.last_event = ev
+                    self.last_event_mono = time.monotonic()
                 if len(self.warnings) >= 40:
                     self.warnings.pop(0)
                 self.warnings.append(clean)
-                self._push_debug(self.last_event)
+                self._push_debug(ev)
 
     def error(self, msg):
         clean = _sanitize_log(msg, 260)
         with self._lock:
             if clean:
-                self.last_event = f"ERR: {clean}"[:220]
-                self.last_event_mono = time.monotonic()
+                ev = f"ERR: {clean}"[:220]
+                if ev != self.last_event:
+                    self.last_event = ev
+                    self.last_event_mono = time.monotonic()
                 if len(self.errors) >= 40:
                     self.errors.pop(0)
                 self.errors.append(clean)
-                self._push_debug(self.last_event)
+                self._push_debug(ev)
 
     def set_stage(self, stage_name, event_msg=None):
         with self._lock:
+            new_ev = _sanitize_log(event_msg, 220) if event_msg else self.last_event
+            if stage_name != self.stage or (new_ev and new_ev != self.last_event):
+                self.last_event_mono = time.monotonic()
             self.stage = stage_name
-            if event_msg:
-                self.last_event = _sanitize_log(event_msg, 220)
-            self.last_event_mono = time.monotonic()
+            if new_ev:
+                self.last_event = new_ev
 
     def snapshot(self, req_start_mono):
         now_m = time.monotonic()
@@ -389,15 +414,20 @@ class YtDlpCustomLogger:
                 "recent_logs": list(self.debug_logs[-10:]),
             }
 
-def _compact_captions_dict(caps):
+TLANG_PARAM_RE = re.compile(r"[?&]tlang=[^&#]+", re.IGNORECASE)
+
+def _compact_captions_dict(caps, is_auto=False):
     if not isinstance(caps, dict):
         return caps
     out = {}
     for lang, items in caps.items():
-        if str(lang).lower() == "live_chat" or not isinstance(items, list):
+        lang_str = str(lang)
+        lang_low = lang_str.lower()
+        if lang_low == "live_chat" or not isinstance(items, list):
             continue
         seen_exts = set()
         kept = []
+        has_untranslated = False
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -406,8 +436,13 @@ def _compact_captions_dict(caps):
             if not ext or not url or ext in seen_exts:
                 continue
             seen_exts.add(ext)
+            if not TLANG_PARAM_RE.search(url):
+                has_untranslated = True
             kept.append({k: item[k] for k in ("ext", "url", "name", "__yt_dlp_client") if k in item})
         if kept:
+            # Skip non-English auto-translated entries (tlang=) over IPC to avoid sending ~170 bloated variants
+            if is_auto and not has_untranslated and not (lang_low == "en" or lang_low.startswith("en-")):
+                continue
             out[lang] = kept
     return out
 
@@ -439,12 +474,73 @@ def _build_compact_transcript_info(sanitized, effective_clients):
         if k in sanitized and sanitized[k] is not None:
             compact[k] = sanitized[k]
     if "subtitles" in sanitized:
-        compact["subtitles"] = _compact_captions_dict(sanitized["subtitles"])
+        compact["subtitles"] = _compact_captions_dict(sanitized["subtitles"], is_auto=False)
     if "automatic_captions" in sanitized:
-        compact["automatic_captions"] = _compact_captions_dict(sanitized["automatic_captions"])
+        compact["automatic_captions"] = _compact_captions_dict(sanitized["automatic_captions"], is_auto=True)
     if effective_clients:
         compact["_laterbox_clients"] = effective_clients
     return compact
+
+def _parse_retry_after_header(headers):
+    if not headers:
+        return None
+    try:
+        raw = headers.get("Retry-After") or headers.get("retry-after")
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if s.isdigit():
+        return max(1, min(int(s), 120))
+    return None
+
+def _extract_exception_details(exc):
+    chain_parts = []
+    http_status = None
+    retry_after = None
+    seen = set()
+    cur = exc
+    while cur is not None and id(cur) not in seen and len(chain_parts) < 8:
+        seen.add(id(cur))
+        cls_name = type(cur).__name__
+        code_val = None
+        for attr in ("status", "code"):
+            v = getattr(cur, attr, None)
+            if isinstance(v, int) and 100 <= v <= 599:
+                code_val = v
+                break
+        if code_val is None:
+            resp = getattr(cur, "response", None)
+            if resp is not None:
+                st = getattr(resp, "status", None) or getattr(resp, "status_code", None)
+                if isinstance(st, int) and 100 <= st <= 599:
+                    code_val = st
+                    if retry_after is None:
+                        retry_after = _parse_retry_after_header(getattr(resp, "headers", None))
+        if code_val is not None:
+            if http_status is None:
+                http_status = code_val
+            if retry_after is None:
+                retry_after = _parse_retry_after_header(getattr(cur, "headers", None))
+            chain_parts.append(f"{cls_name}({code_val})")
+        else:
+            chain_parts.append(cls_name)
+        nxt = getattr(cur, "cause", None) or getattr(cur, "__cause__", None) or getattr(cur, "__context__", None)
+        if nxt is None:
+            ei = getattr(cur, "exc_info", None)
+            if isinstance(ei, tuple) and len(ei) >= 2 and isinstance(ei[1], BaseException):
+                nxt = ei[1]
+        if nxt is None:
+            reason = getattr(cur, "reason", None)
+            if isinstance(reason, BaseException):
+                nxt = reason
+        cur = nxt
+    return {
+        "http_status": http_status,
+        "retry_after_seconds": retry_after,
+        "exception_chain": " -> ".join(chain_parts) if chain_parts else None,
+    }
 
 def run_extraction(req_id, url, options, transcript_compact, logger, cancel_event):
     start_mono = time.monotonic()
@@ -545,6 +641,7 @@ def run_extraction(req_id, url, options, transcript_compact, logger, cancel_even
         }
     except Exception as e:
         snap = logger.snapshot(start_mono)
+        ex_details = _extract_exception_details(e)
         err_msg = _sanitize_log(str(e), 320)
         if not err_msg and logger.errors:
             err_msg = "\n".join(logger.errors)
@@ -553,6 +650,9 @@ def run_extraction(req_id, url, options, transcript_compact, logger, cancel_even
             "type": "result",
             "success": False,
             "error": err_msg or "Unknown extractor failure",
+            "http_status": ex_details["http_status"],
+            "retry_after_seconds": ex_details["retry_after_seconds"],
+            "exception_chain": ex_details["exception_chain"],
             "warnings": "\n".join(logger.warnings) if logger.warnings else None,
             "debug_logs": list(logger.debug_logs),
             "effective_clients": snap["effective_clients"],
@@ -715,6 +815,23 @@ while running:
     ) : SocketTimeoutException(
         buildString {
             append("Warm daemon exceeded overall deadline (${budgetMs}ms after $heartbeats heartbeats")
+            lastStage?.let { append(", stage=$it") }
+            lastEventAgeMs?.let { append(", lastEventAge=${it}ms") }
+            lastEvent?.takeIf { it.isNotBlank() }?.let { append(", lastEvent=$it") }
+            append(")")
+        }
+    )
+
+    private class ProgressStallTimeoutException(
+        val stallLimitMs: Long,
+        val stallAgeMs: Long,
+        val heartbeats: Int,
+        val lastStage: String? = null,
+        val lastEvent: String? = null,
+        val lastEventAgeMs: Long? = null
+    ) : SocketTimeoutException(
+        buildString {
+            append("Warm daemon stalled without meaningful progress for ${stallAgeMs}ms (limit ${stallLimitMs}ms, $heartbeats heartbeats")
             lastStage?.let { append(", stage=$it") }
             lastEventAgeMs?.let { append(", lastEventAge=${it}ms") }
             lastEvent?.takeIf { it.isNotBlank() }?.let { append(", lastEvent=$it") }
@@ -1053,6 +1170,12 @@ while running:
                     val baseDeadlineMono = waitStartedMono + baseBudgetMs
                     val maxDeadlineMono = waitStartedMono + maxBudgetMs
                     var currentDeadlineMono = baseDeadlineMono
+                    var lastProgressMono = waitStartedMono
+                    var prevProgressStage: String? = null
+                    var prevProgressEvent: String? = null
+                    var prevJsChallenges = 0
+                    var prevWarningsCount = 0
+                    var prevEventAgeMs: Long? = null
 
                     writer.println(reqObj.toString())
 
@@ -1160,6 +1283,24 @@ while running:
                             }
 
                             val nowHb = monotonicNowMs()
+                            val eventAgeDecreased = lastEventAgeMs != null &&
+                                prevEventAgeMs != null &&
+                                (lastEventAgeMs!! + 500L) < prevEventAgeMs!!
+                            val meaningfulProgress = heartbeatCount == 1 ||
+                                lastStage != prevProgressStage ||
+                                lastEvent != prevProgressEvent ||
+                                jsChallengesFromHb > prevJsChallenges ||
+                                warningsCount > prevWarningsCount ||
+                                eventAgeDecreased
+                            if (meaningfulProgress) {
+                                lastProgressMono = nowHb
+                                prevProgressStage = lastStage
+                                prevProgressEvent = lastEvent
+                                prevJsChallenges = jsChallengesFromHb
+                                prevWarningsCount = warningsCount
+                            }
+                            prevEventAgeMs = lastEventAgeMs
+
                             val remainingAfterHb = currentDeadlineMono - nowHb
                             val isActiveJsChallenge = lastStage == "js_challenge" ||
                                 lastStage == "downloading_player_js" ||
@@ -1175,6 +1316,30 @@ while running:
                                     currentDeadlineMono = nextDeadline
                                     deadlineExtendedMs = (currentDeadlineMono - baseDeadlineMono).coerceAtLeast(0L)
                                 }
+                            }
+
+                            val stallThreshold = if (isActiveJsChallenge) {
+                                progressStallTimeoutMs * 2L
+                            } else {
+                                progressStallTimeoutMs
+                            }
+                            val stallAgeMs = maxOf(
+                                lastEventAgeMs ?: 0L,
+                                (nowHb - lastProgressMono).coerceAtLeast(0L)
+                            )
+                            if (progressStallTimeoutMs > 0L &&
+                                heartbeatCount >= 2 &&
+                                stallThreshold < remainingAfterHb + (nowHb - waitStartedMono) &&
+                                stallAgeMs >= stallThreshold
+                            ) {
+                                throw ProgressStallTimeoutException(
+                                    stallLimitMs = stallThreshold,
+                                    stallAgeMs = stallAgeMs,
+                                    heartbeats = heartbeatCount,
+                                    lastStage = lastStage,
+                                    lastEvent = lastEvent,
+                                    lastEventAgeMs = lastEventAgeMs
+                                )
                             }
                             continue
                         }
@@ -1210,6 +1375,13 @@ while running:
                         warningsCount,
                         respObj.optInt("warnings_count", 0).coerceAtLeast(0)
                     )
+                    val httpStatus = if (respObj.has("http_status") && !respObj.isNull("http_status")) {
+                        respObj.optInt("http_status", -1).takeIf { it in 100..599 }
+                    } else null
+                    val retryAfterSec = if (respObj.has("retry_after_seconds") && !respObj.isNull("retry_after_seconds")) {
+                        respObj.optLong("retry_after_seconds", -1L).takeIf { it > 0L }
+                    } else null
+                    val exChain = respObj.optString("exception_chain").takeIf { it.isNotBlank() }
                     val success = respObj.optBoolean("success", false)
                     if (success) {
                         val out = respObj.optString("output")
@@ -1232,7 +1404,10 @@ while running:
                                 lastEventAgeMs = finalEventAgeMs,
                                 lastWarning = finalWarning,
                                 warningsCount = finalWarningsCount,
-                                deadlineExtendedMs = deadlineExtendedMs
+                                deadlineExtendedMs = deadlineExtendedMs,
+                                httpStatusCode = httpStatus,
+                                retryAfterSeconds = retryAfterSec,
+                                exceptionChain = exChain
                             )
                         }
                         WarmExecuteOutcome.Success(
@@ -1275,12 +1450,41 @@ while running:
                             lastEventAgeMs = finalEventAgeMs,
                             lastWarning = finalWarning,
                             warningsCount = finalWarningsCount,
-                            deadlineExtendedMs = deadlineExtendedMs
+                            deadlineExtendedMs = deadlineExtendedMs,
+                            httpStatusCode = httpStatus,
+                            retryAfterSeconds = retryAfterSec,
+                            exceptionChain = exChain
                         )
                     }
                 } catch (ce: CancellationException) {
                     cancel(processId)
                     throw ce
+                } catch (pse: ProgressStallTimeoutException) {
+                    currentCoroutineContext().ensureActive()
+                    invalidateSessionIfSame(session, excludeProcessId = processId)
+                    sendDaemonCancelPacket(session.port, session.token, processId)
+                    val nowMono = monotonicNowMs()
+                    WarmExecuteOutcome.MechanismFailure(
+                        reason = WarmFailureReason.PROGRESS_STALL_TIMEOUT,
+                        detail = pse.message ?: "Warm daemon stalled without meaningful progress",
+                        elapsedMs = (nowMono - startedMono).coerceAtLeast(0L),
+                        warmHealthyAtStart = healthyAtStart,
+                        cause = pse,
+                        startupMs = startupMs,
+                        handshakeMs = handshakeMs,
+                        socketWaitMs = (nowMono - waitStartedMono).coerceAtLeast(0L),
+                        effectiveClients = clientsFromHb,
+                        jsChallengesSolved = jsChallengesFromHb,
+                        heartbeatCount = heartbeatCount,
+                        debugLogs = recentLogsFromHb,
+                        lastStage = lastStage,
+                        lastEvent = lastEvent,
+                        lastEventAgeMs = lastEventAgeMs,
+                        lastWarning = lastWarning,
+                        warningsCount = warningsCount,
+                        deadlineExtendedMs = deadlineExtendedMs,
+                        progressStalled = true
+                    )
                 } catch (ode: OverallDeadlineTimeoutException) {
                     currentCoroutineContext().ensureActive()
                     invalidateSessionIfSame(session, excludeProcessId = processId)
@@ -1485,6 +1689,7 @@ while running:
             is WarmExecuteOutcome.ExtractorError -> throw YoutubeDLException(outcome.message)
             is WarmExecuteOutcome.MechanismFailure -> when (outcome.reason) {
                 WarmFailureReason.DAEMON_INACTIVITY_TIMEOUT,
+                WarmFailureReason.PROGRESS_STALL_TIMEOUT,
                 WarmFailureReason.SOCKET_TIMEOUT,
                 WarmFailureReason.OVERALL_DEADLINE_TIMEOUT ->
                     throw (outcome.cause as? SocketTimeoutException ?: SocketTimeoutException(outcome.detail))
@@ -1597,6 +1802,7 @@ while running:
     companion object {
         const val DEFAULT_HANDSHAKE_TIMEOUT_MS = 5_000L
         const val DEFAULT_INACTIVITY_TIMEOUT_MS = 15_000L
+        const val DEFAULT_PROGRESS_STALL_TIMEOUT_MS = 22_000L
 
         internal fun resolveDefaultRuntimeEnv(): DaemonRuntimeEnv? {
             val pythonPath = try {

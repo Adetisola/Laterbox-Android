@@ -1107,6 +1107,7 @@ private fun DiagnosticDetailsBox(diag: TranscriptDiagnosticInfo) {
             appendLine("Last meaningful event: $clipped")
         }
         diag.lastMeaningfulActivityAgeMs?.let { appendLine("Last activity age: ${it}ms") }
+        if (diag.progressStalled == true) appendLine("Progress stalled: true")
         diag.playlistPosition?.let { appendLine("Playlist position: #$it") }
         appendLine("Category: ${diag.errorCategory.name}")
         diag.failureClassification?.let { appendLine("Classification: $it") }
@@ -1150,13 +1151,18 @@ private fun DiagnosticDetailsBox(diag: TranscriptDiagnosticInfo) {
         diag.timeoutMs?.let { appendLine("Timeout budget: ${it}ms") }
         diag.deadlineExtendedMs?.takeIf { it > 0L }?.let { appendLine("Deadline extension: +${it}ms") }
         diag.elapsedMs?.let { appendLine("Elapsed: ${it}ms") }
+        if (diag.startedAtMillis != null && diag.endedAtMillis != null) {
+            appendLine("Timing window: ${diag.startedAtMillis}..${diag.endedAtMillis}")
+        }
         diag.warningsCount?.takeIf { it > 0 }?.let { appendLine("Warnings count: $it") }
         diag.lastWarning?.takeIf { it.isNotBlank() }?.let { warn ->
             val clipped = if (warn.length > 140) warn.take(137) + "..." else warn
             appendLine("Last warning: $clipped")
         }
         diag.httpStatusCode?.let { appendLine("HTTP status: $it") }
+        diag.retryAfterSeconds?.let { appendLine("Retry-After: ${it}s") }
         diag.exceptionType?.let { appendLine("Error type: $it") }
+        diag.exceptionChain?.takeIf { it.isNotBlank() && it != diag.exceptionType }?.let { appendLine("Exception chain: $it") }
         diag.sanitizedDetail?.takeIf { it.isNotBlank() }?.let { appendLine("Detail: $it") }
         if (diag.recentDebugLogs.isNotEmpty()) {
             appendLine("Recent logs:")

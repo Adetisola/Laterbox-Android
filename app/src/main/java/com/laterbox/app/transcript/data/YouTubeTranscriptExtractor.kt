@@ -1,6 +1,7 @@
 package com.laterbox.app.transcript.data
 
 import android.util.Log
+import com.laterbox.app.transcript.domain.CaptionTrackCandidate
 import com.laterbox.app.transcript.domain.CaptionType
 import com.laterbox.app.transcript.domain.PlaylistEntrySummary
 import com.laterbox.app.transcript.domain.TranscriptDiagnosticInfo
@@ -22,8 +23,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.IOException
+import java.net.ConnectException
 import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.util.UUID
+import javax.net.ssl.SSLException
 
 sealed interface TranscriptExtractionOutcome {
     data class Completed(val document: TranscriptDocument) : TranscriptExtractionOutcome
@@ -285,9 +289,11 @@ class YouTubeTranscriptExtractor(
                     existingEntry.diagnosticInfo?.failureClassification in setOf(
                         TranscriptFailureClassification.PLAYER_CLIENT_FAILURE,
                         TranscriptFailureClassification.METADATA_OPERATION_DEADLINE,
+                        TranscriptFailureClassification.STALLED_PROGRESS_TIMEOUT,
                         TranscriptFailureClassification.DAEMON_INACTIVITY_TIMEOUT,
                         TranscriptFailureClassification.JS_CHALLENGE_TIMEOUT
                     )
+                var observedRetryAfterSeconds: Long? = null
                 val refreshed = try {
                     extractSingleEntryIsolated(
                         position = existingEntry.position,
@@ -297,7 +303,8 @@ class YouTubeTranscriptExtractor(
                         processId = subProcId,
                         allowAlternativeRecovery = true,
                         preferAlternativeFirst = preferAltFirst,
-                        onRetryStatus = {
+                        onRetryAfterObserved = { retryAfter -> observedRetryAfterSeconds = retryAfter },
+                        onRetryStatus = { customMsg ->
                             onProgress(
                                 TranscriptExtractionProgress(
                                     stage = TranscriptExtractionStage.EXTRACTING_VIDEO,
@@ -307,7 +314,7 @@ class YouTubeTranscriptExtractor(
                                     successfulCount = successCount,
                                     noCaptionsCount = noCaptionsCount,
                                     failedCount = failedCount,
-                                    message = "Retrying video $retryHuman of $totalRetryCount after transient delay..."
+                                    message = customMsg ?: "Retrying video $retryHuman of $totalRetryCount after transient delay..."
                                 )
                             )
                         }
@@ -317,7 +324,7 @@ class YouTubeTranscriptExtractor(
                 }
 
                 updatedEntries[entryIdx] = refreshed
-                pacing.recordOutcome(refreshed.status, retryAfterSeconds = null)
+                pacing.recordOutcome(refreshed.status, retryAfterSeconds = observedRetryAfterSeconds)
 
                 successCount = updatedEntries.count { it.status == VideoTranscriptStatus.SUCCESS }
                 noCaptionsCount = updatedEntries.count { it.status == VideoTranscriptStatus.NO_CAPTIONS }
@@ -397,13 +404,13 @@ class YouTubeTranscriptExtractor(
                 fallbackSummary = null,
                 processId = "${processId}_v1",
                 allowAlternativeRecovery = true,
-                onRetryStatus = {
+                onRetryStatus = { customMsg ->
                     onProgress(
                         TranscriptExtractionProgress(
                             stage = TranscriptExtractionStage.EXTRACTING_VIDEO,
                             currentVideoIndex = 1,
                             totalVideos = 1,
-                            message = "Retrying metadata retrieval..."
+                            message = customMsg ?: "Retrying metadata retrieval..."
                         )
                     )
                 }
@@ -573,7 +580,7 @@ class YouTubeTranscriptExtractor(
                             fallbackSummary = summary,
                             processId = subProcId,
                             onRetryAfterObserved = { retryAfter -> observedRetryAfterSeconds = retryAfter },
-                            onRetryStatus = {
+                            onRetryStatus = { customMsg ->
                                 onProgress(
                                     TranscriptExtractionProgress(
                                         stage = TranscriptExtractionStage.EXTRACTING_VIDEO,
@@ -583,7 +590,7 @@ class YouTubeTranscriptExtractor(
                                         successfulCount = successCount,
                                         noCaptionsCount = noCaptionsCount,
                                         failedCount = failedCount,
-                                        message = "Retrying video $humanPos of $totalVideos..."
+                                        message = customMsg ?: "Retrying video $humanPos of $totalVideos..."
                                     )
                                 )
                             }
@@ -670,7 +677,7 @@ class YouTubeTranscriptExtractor(
         allowAlternativeRecovery: Boolean = false,
         preferAlternativeFirst: Boolean = false,
         onRetryAfterObserved: (Long?) -> Unit = {},
-        onRetryStatus: suspend () -> Unit = {}
+        onRetryStatus: suspend (String?) -> Unit = {}
     ): VideoTranscriptEntry {
         return try {
             extractSingleEntry(
@@ -687,15 +694,20 @@ class YouTubeTranscriptExtractor(
         } catch (ce: CancellationException) {
             throw ce
         } catch (t: Throwable) {
-            val status = when (t) {
-                is InternalTimeoutException, is SocketTimeoutException -> VideoTranscriptStatus.TIMEOUT
-                is HttpStatusException -> mapHttpStatus(t.code)
-                is IOException -> VideoTranscriptStatus.NETWORK_ERROR
+            val dnsCause = findCauseInChain<UnknownHostException>(t)
+            val tlsCause = findCauseInChain<SSLException>(t)
+            val connectCause = findCauseInChain<ConnectException>(t)
+            val socketTimeoutCause = findCauseInChain<SocketTimeoutException>(t)
+            val status = when {
+                t is InternalTimeoutException || socketTimeoutCause != null -> VideoTranscriptStatus.TIMEOUT
+                t is HttpStatusException -> mapHttpStatus(t.code)
+                dnsCause != null || tlsCause != null || connectCause != null || t is IOException -> VideoTranscriptStatus.NETWORK_ERROR
                 else -> VideoTranscriptStatus.EXTRACTION_ERROR
             }
             if (t is HttpStatusException && t.code == 429) {
                 onRetryAfterObserved(t.retryAfterSeconds)
             }
+            val nowMs = clock()
             val msg = TranscriptRedactor.sanitize(t.message ?: status.displayLabel, 220)
             val diag = TranscriptDiagnosticInfo(
                 videoId = videoId,
@@ -704,19 +716,25 @@ class YouTubeTranscriptExtractor(
                 ytDlpVersion = dataSource.currentYtDlpVersion(),
                 errorCategory = status,
                 exceptionType = describeTranscriptExceptionType(t),
+                exceptionChain = buildTranscriptExceptionChain(t),
                 httpStatusCode = (t as? HttpStatusException)?.code,
+                retryAfterSeconds = (t as? HttpStatusException)?.retryAfterSeconds,
+                endedAtMillis = nowMs,
                 sanitizedDetail = msg,
-                failureClassification = when (t) {
-                    is InternalTimeoutException -> TranscriptFailureClassification.METADATA_OPERATION_DEADLINE
-                    is SocketTimeoutException -> TranscriptFailureClassification.YT_DLP_NETWORK_TIMEOUT
-                    is HttpStatusException -> when (t.code) {
+                failureClassification = when {
+                    t is InternalTimeoutException -> TranscriptFailureClassification.METADATA_OPERATION_DEADLINE
+                    socketTimeoutCause != null -> TranscriptFailureClassification.YT_DLP_NETWORK_TIMEOUT
+                    dnsCause != null -> TranscriptFailureClassification.DNS_RESOLUTION_FAILURE
+                    tlsCause != null -> TranscriptFailureClassification.TLS_HANDSHAKE_FAILURE
+                    connectCause != null -> TranscriptFailureClassification.CONNECTION_FAILURE
+                    t is HttpStatusException -> when (t.code) {
                         429 -> TranscriptFailureClassification.YOUTUBE_HTTP_429
                         401, 403 -> TranscriptFailureClassification.YOUTUBE_HTTP_403
                         404, 410 -> TranscriptFailureClassification.VIDEO_UNAVAILABLE
                         in 500..599 -> TranscriptFailureClassification.YOUTUBE_HTTP_5XX
                         else -> TranscriptFailureClassification.PLAYER_CLIENT_FAILURE
                     }
-                    is IOException -> TranscriptFailureClassification.YT_DLP_NETWORK_TIMEOUT
+                    t is IOException -> TranscriptFailureClassification.YT_DLP_NETWORK_TIMEOUT
                     else -> TranscriptFailureClassification.PLAYER_CLIENT_FAILURE
                 }
             )
@@ -745,7 +763,7 @@ class YouTubeTranscriptExtractor(
         allowAlternativeRecovery: Boolean = false,
         preferAlternativeFirst: Boolean = false,
         onRetryAfterObserved: (Long?) -> Unit = {},
-        onRetryStatus: suspend () -> Unit = {}
+        onRetryStatus: suspend (String?) -> Unit = {}
     ): VideoTranscriptEntry {
         val startedAt = clock()
         val retryOutcome = fetchVideoInfoWithBoundedRetry(
@@ -765,20 +783,24 @@ class YouTubeTranscriptExtractor(
                 if (infoResult.status == VideoTranscriptStatus.RATE_LIMITED) {
                     onRetryAfterObserved(infoResult.retryAfterSeconds)
                 }
+                val endedAt = clock()
                 val baseDiag = infoResult.diagnosticInfo
+                val effectiveStartedAt = baseDiag?.startedAtMillis ?: startedAt
                 val diag = (baseDiag ?: TranscriptDiagnosticInfo(
                     videoId = videoId,
                     stage = "video_metadata",
                     ytDlpVersion = dataSource.currentYtDlpVersion(),
                     errorCategory = infoResult.status,
-                    elapsedMs = clock() - startedAt,
+                    elapsedMs = (endedAt - effectiveStartedAt).coerceAtLeast(0L),
                     sanitizedDetail = TranscriptRedactor.sanitize(infoResult.message)
                 )).copy(
                     playlistPosition = position,
                     retryCount = infoRetries,
                     attemptNumber = 1 + infoRetries,
-                    startedAtMillis = baseDiag?.startedAtMillis ?: startedAt,
-                    elapsedMs = clock() - startedAt,
+                    startedAtMillis = effectiveStartedAt,
+                    endedAtMillis = baseDiag?.endedAtMillis ?: endedAt,
+                    elapsedMs = (endedAt - effectiveStartedAt).coerceAtLeast(0L),
+                    retryAfterSeconds = baseDiag?.retryAfterSeconds ?: infoResult.retryAfterSeconds,
                     retryReasons = retryOutcome.retryReasons
                 )
                 logDiagnostic(diag)
@@ -812,8 +834,9 @@ class YouTubeTranscriptExtractor(
             )
         }
 
-        val selected = CaptionLanguageSelector.selectBest(info.captionTracks)
-        if (selected == null) {
+        val rankedSources = CaptionLanguageSelector.selectRankedSources(info.captionTracks)
+        if (rankedSources.isEmpty()) {
+            val endedAt = clock()
             val diag = TranscriptDiagnosticInfo(
                 videoId = info.videoId,
                 stage = "track_selection",
@@ -823,7 +846,8 @@ class YouTubeTranscriptExtractor(
                 effectivePlayerClient = info.playerClientUsed,
                 errorCategory = VideoTranscriptStatus.EXTRACTION_ERROR,
                 startedAtMillis = startedAt,
-                elapsedMs = clock() - startedAt,
+                endedAtMillis = endedAt,
+                elapsedMs = (endedAt - startedAt).coerceAtLeast(0L),
                 retryCount = infoRetries,
                 attemptNumber = 1 + infoRetries,
                 retryReasons = retryOutcome.retryReasons,
@@ -845,76 +869,113 @@ class YouTubeTranscriptExtractor(
             )
         }
 
-        // Build ordered formats (inline native content first if present, then HTTP format order)
-        val formatOrder = buildList {
-            add(selected.format to selected.url)
-            val preferredOrder = listOf("json3", "vtt", "srv3", "srv1", "ttml", "srt")
-            for (fmt in preferredOrder) {
-                val hasInline = !selected.track.inlineContentByFormat[fmt].isNullOrBlank()
-                val altUrl = selected.track.formatUrls[fmt]
-                if ((hasInline || !altUrl.isNullOrBlank()) && fmt != selected.format) {
-                    add(fmt to (altUrl ?: "native://${selected.track.languageCode}.$fmt"))
-                }
+        // Restrict fallback candidates to the top track's language family (avoiding cross-language mixups),
+        // e.g. trying 'en-orig' after an auto-translated 'en' (tlang=en) track hits HTTP 429/403.
+        val topLangNorm = rankedSources.first().track.languageCode.trim().lowercase()
+        val topBaseLang = topLangNorm.substringBefore('-')
+        val candidateSources = rankedSources.filter { src ->
+            val norm = src.track.languageCode.trim().lowercase()
+            if (topBaseLang == "en") {
+                norm == "en" || norm == "en-orig" || norm.startsWith("en-")
+            } else {
+                norm == topLangNorm || norm.substringBefore('-') == topBaseLang
             }
-        }
+        }.ifEmpty { listOf(rankedSources.first()) }.take(3)
+        val primarySelected = candidateSources.first()
 
         var lastFetchError: Throwable? = null
         var lastParseError: String? = null
         var captionRetries = 0
+        val preferredFormatOrder = listOf("json3", "vtt", "srv3", "srv1", "ttml", "srt")
 
-        for ((fmt, url) in formatOrder) {
+        for (candidate in candidateSources) {
             currentCoroutineContext().ensureActive()
 
-            val inlinePayload = selected.track.inlineContentByFormat[fmt]
-            val payload: String? = if (!inlinePayload.isNullOrBlank()) {
-                inlinePayload
-            } else if (url.startsWith("http://") || url.startsWith("https://")) {
-                val payloadResult = fetchCaptionPayloadWithRetry(url) { captionRetries++ }
-                if (payloadResult.isFailure) {
-                    lastFetchError = payloadResult.exceptionOrNull()
-                    null
-                } else {
-                    payloadResult.getOrNull()
+            // Build ordered formats (inline native content first if present, then HTTP format order)
+            val formatOrder = buildList {
+                add(candidate.format to candidate.url)
+                for (fmt in preferredFormatOrder) {
+                    val hasInline = !candidate.track.inlineContentByFormat[fmt].isNullOrBlank()
+                    val altUrl = candidate.track.formatUrls[fmt]
+                    if ((hasInline || !altUrl.isNullOrBlank()) && fmt != candidate.format) {
+                        add(fmt to (altUrl ?: "native://${candidate.track.languageCode}.$fmt"))
+                    }
                 }
-            } else {
-                null
             }
 
-            if (payload != null) {
-                if (looksLikeHtmlResponse(payload)) {
-                    lastFetchError = HttpStatusException(
-                        code = 403,
-                        message = "YouTube returned a verification or HTML error page instead of caption data."
+            var skipRemainingFormatsForRateLimitedTranslation = false
+            for ((fmt, url) in formatOrder) {
+                currentCoroutineContext().ensureActive()
+
+                val inlinePayload = candidate.track.inlineContentByFormat[fmt]
+                val isAutoTranslatedUrl = CaptionLanguageSelector.hasAutoTranslateParam(url)
+                val payload: String? = if (!inlinePayload.isNullOrBlank()) {
+                    inlinePayload
+                } else if (url.startsWith("http://") || url.startsWith("https://")) {
+                    val payloadResult = fetchCaptionPayloadWithRetry(
+                        url = url,
+                        allowRateLimitRetry = !isAutoTranslatedUrl || candidateSources.size == 1,
+                        onRetry = { msg ->
+                            captionRetries++
+                            onRetryStatus(msg)
+                        }
                     )
+                    if (payloadResult.isFailure) {
+                        lastFetchError = payloadResult.exceptionOrNull()
+                        val httpErr = lastFetchError as? HttpStatusException
+                        if (httpErr?.code == 429 && isAutoTranslatedUrl && candidateSources.size > 1) {
+                            skipRemainingFormatsForRateLimitedTranslation = true
+                        }
+                        null
+                    } else {
+                        payloadResult.getOrNull()
+                    }
                 } else {
-                    val parsed = CaptionTrackParser.parse(payload, formatHint = fmt)
-                    if (parsed.paragraphs.isNotEmpty()) {
-                        return VideoTranscriptEntry(
-                            position = position,
-                            videoId = info.videoId,
-                            title = info.title,
-                            url = info.url,
-                            channel = info.channel ?: fallbackSummary?.channel,
-                            durationSeconds = info.durationSeconds ?: fallbackSummary?.durationSeconds,
-                            thumbnailUrl = info.thumbnailUrl ?: fallbackSummary?.thumbnailUrl,
-                            captionLanguage = CaptionLanguageSelector.formatDisplayLanguage(selected.track),
-                            captionLanguageCode = selected.track.languageCode,
-                            captionType = if (selected.track.isAutoGenerated) CaptionType.AUTOMATIC else CaptionType.MANUAL,
-                            status = VideoTranscriptStatus.SUCCESS,
-                            statusMessage = VideoTranscriptStatus.SUCCESS.displayLabel,
-                            segments = parsed.segments,
-                            paragraphs = parsed.paragraphs
+                    null
+                }
+
+                if (skipRemainingFormatsForRateLimitedTranslation) {
+                    break
+                }
+
+                if (payload != null) {
+                    if (looksLikeHtmlResponse(payload)) {
+                        lastFetchError = HttpStatusException(
+                            code = 403,
+                            message = "YouTube returned a verification or HTML error page instead of caption data."
                         )
                     } else {
-                        lastParseError = "Caption response ($fmt) was empty or could not be parsed."
+                        val parsed = CaptionTrackParser.parse(payload, formatHint = fmt)
+                        if (parsed.paragraphs.isNotEmpty()) {
+                            return VideoTranscriptEntry(
+                                position = position,
+                                videoId = info.videoId,
+                                title = info.title,
+                                url = info.url,
+                                channel = info.channel ?: fallbackSummary?.channel,
+                                durationSeconds = info.durationSeconds ?: fallbackSummary?.durationSeconds,
+                                thumbnailUrl = info.thumbnailUrl ?: fallbackSummary?.thumbnailUrl,
+                                captionLanguage = CaptionLanguageSelector.formatDisplayLanguage(candidate.track),
+                                captionLanguageCode = candidate.track.languageCode,
+                                captionType = if (candidate.track.isAutoGenerated) CaptionType.AUTOMATIC else CaptionType.MANUAL,
+                                status = VideoTranscriptStatus.SUCCESS,
+                                statusMessage = VideoTranscriptStatus.SUCCESS.displayLabel,
+                                segments = parsed.segments,
+                                paragraphs = parsed.paragraphs
+                            )
+                        } else {
+                            lastParseError = "Caption response ($fmt) was empty or could not be parsed."
+                        }
                     }
                 }
             }
         }
 
-        // Fallback to native yt-dlp subtitle download when HTTP timedtext download failed with 403/unparseable
-        val shouldTryNativeFallback = selected.track.inlineContentByFormat.isEmpty() &&
-            ((lastFetchError as? HttpStatusException)?.code in setOf(401, 403) || lastParseError != null)
+        // Fallback to tight native yt-dlp subtitle download when HTTP timedtext download failed with 401/403/429 or unparseable output
+        val hadNoInlineContent = candidateSources.all { it.track.inlineContentByFormat.isEmpty() }
+        val lastHttpStatusCode = (lastFetchError as? HttpStatusException)?.code
+        val shouldTryNativeFallback = hadNoInlineContent &&
+            (lastHttpStatusCode in setOf(401, 403, 429) || lastParseError != null)
         var captionRecoveryOutcome: String? = null
         if (shouldTryNativeFallback) {
             currentCoroutineContext().ensureActive()
@@ -922,8 +983,8 @@ class YouTubeTranscriptExtractor(
                 videoId = info.videoId,
                 videoUrl = info.url,
                 processId = "${processId}_sub",
-                preferredLangSpec = "${selected.track.languageCode},en.*,en,.*",
-                playerClientOverride = "android_vr,tv,web_embedded"
+                preferredLangSpec = buildTightNativeLangSpec(candidateSources.map { it.track }),
+                playerClientOverride = LaterboxYouTubeTranscriptDataSource.NATIVE_SUBTITLE_PLAYER_CLIENTS
             )
             captionRecoveryOutcome = when (nativeRes) {
                 is VideoInfoFetchResult.Success -> "native_caption_recovery:tracks(${nativeRes.info.captionTracks.size})"
@@ -956,10 +1017,12 @@ class YouTubeTranscriptExtractor(
             }
         }
 
-        if (lastFetchError is HttpStatusException && lastFetchError.code == 429) {
-            onRetryAfterObserved(lastFetchError.retryAfterSeconds)
+        val httpException = lastFetchError as? HttpStatusException
+        if (httpException?.code == 429) {
+            onRetryAfterObserved(httpException.retryAfterSeconds)
         }
 
+        val endedAt = clock()
         // Caption tracks WERE listed, so never turn failure/unparseable payload into a misleading NO_CAPTIONS!
         val (status, message, failureClass) = classifyCaptionDownloadFailure(lastFetchError, lastParseError)
         val diag = TranscriptDiagnosticInfo(
@@ -971,9 +1034,12 @@ class YouTubeTranscriptExtractor(
             effectivePlayerClient = info.playerClientUsed,
             errorCategory = status,
             exceptionType = describeTranscriptExceptionType(lastFetchError),
-            httpStatusCode = (lastFetchError as? HttpStatusException)?.code,
+            exceptionChain = buildTranscriptExceptionChain(lastFetchError),
+            httpStatusCode = httpException?.code,
+            retryAfterSeconds = httpException?.retryAfterSeconds,
             startedAtMillis = startedAt,
-            elapsedMs = clock() - startedAt,
+            endedAtMillis = endedAt,
+            elapsedMs = (endedAt - startedAt).coerceAtLeast(0L),
             retryCount = infoRetries + captionRetries,
             attemptNumber = 1 + infoRetries + captionRetries,
             executionEngine = "http_timedtext",
@@ -992,13 +1058,33 @@ class YouTubeTranscriptExtractor(
             channel = info.channel ?: fallbackSummary?.channel,
             durationSeconds = info.durationSeconds ?: fallbackSummary?.durationSeconds,
             thumbnailUrl = info.thumbnailUrl ?: fallbackSummary?.thumbnailUrl,
-            captionLanguage = CaptionLanguageSelector.formatDisplayLanguage(selected.track),
-            captionLanguageCode = selected.track.languageCode,
-            captionType = if (selected.track.isAutoGenerated) CaptionType.AUTOMATIC else CaptionType.MANUAL,
+            captionLanguage = CaptionLanguageSelector.formatDisplayLanguage(primarySelected.track),
+            captionLanguageCode = primarySelected.track.languageCode,
+            captionType = if (primarySelected.track.isAutoGenerated) CaptionType.AUTOMATIC else CaptionType.MANUAL,
             status = status,
             statusMessage = message,
             diagnosticInfo = diag
         )
+    }
+
+    internal fun buildTightNativeLangSpec(tracks: List<CaptionTrackCandidate>): String {
+        val codes = LinkedHashSet<String>()
+        tracks.forEach { tr ->
+            val c = tr.languageCode.trim()
+            if (c.isNotBlank() && !c.contains('*')) {
+                codes.add(c)
+            }
+        }
+        val firstBase = tracks.firstOrNull()?.languageCode?.trim()?.lowercase()?.substringBefore('-')
+        if (firstBase.isNullOrBlank() || firstBase == "en") {
+            listOf("en-orig", "en", "en-US", "en-GB", "en-CA", "en-AU").forEach { codes.add(it) }
+        } else {
+            codes.add(firstBase)
+            codes.add("en-orig")
+            codes.add("en")
+        }
+        codes.add("-live_chat")
+        return codes.joinToString(",")
     }
 
     private data class CaptionFailureMapping(
@@ -1011,12 +1097,42 @@ class YouTubeTranscriptExtractor(
         lastFetchError: Throwable?,
         lastParseError: String?
     ): CaptionFailureMapping {
-        return when (lastFetchError) {
-            is InternalTimeoutException, is SocketTimeoutException -> CaptionFailureMapping(
+        if (lastFetchError == null) {
+            return CaptionFailureMapping(
+                status = VideoTranscriptStatus.EXTRACTION_ERROR,
+                message = lastParseError ?: "Caption data was returned in an empty or unsupported format.",
+                classification = TranscriptFailureClassification.MALFORMED_CAPTION_DATA
+            )
+        }
+        if (lastFetchError is InternalTimeoutException || findCauseInChain<SocketTimeoutException>(lastFetchError) != null) {
+            return CaptionFailureMapping(
                 status = VideoTranscriptStatus.TIMEOUT,
                 message = "Timed out while downloading captions.",
                 classification = TranscriptFailureClassification.YT_DLP_NETWORK_TIMEOUT
             )
+        }
+        if (findCauseInChain<UnknownHostException>(lastFetchError) != null) {
+            return CaptionFailureMapping(
+                status = VideoTranscriptStatus.NETWORK_ERROR,
+                message = "DNS resolution failed while downloading captions.",
+                classification = TranscriptFailureClassification.DNS_RESOLUTION_FAILURE
+            )
+        }
+        if (findCauseInChain<SSLException>(lastFetchError) != null) {
+            return CaptionFailureMapping(
+                status = VideoTranscriptStatus.NETWORK_ERROR,
+                message = "TLS handshake failed while downloading captions.",
+                classification = TranscriptFailureClassification.TLS_HANDSHAKE_FAILURE
+            )
+        }
+        if (findCauseInChain<ConnectException>(lastFetchError) != null) {
+            return CaptionFailureMapping(
+                status = VideoTranscriptStatus.NETWORK_ERROR,
+                message = "Connection failed while downloading captions.",
+                classification = TranscriptFailureClassification.CONNECTION_FAILURE
+            )
+        }
+        return when (lastFetchError) {
             is HttpStatusException -> {
                 val st = mapHttpStatus(lastFetchError.code)
                 val msgLower = lastFetchError.message.lowercase()
@@ -1044,11 +1160,6 @@ class YouTubeTranscriptExtractor(
                     200
                 ),
                 classification = TranscriptFailureClassification.CAPTION_DOWNLOAD_FAILURE
-            )
-            null -> CaptionFailureMapping(
-                status = VideoTranscriptStatus.EXTRACTION_ERROR,
-                message = lastParseError ?: "Caption data was returned in an empty or unsupported format.",
-                classification = TranscriptFailureClassification.MALFORMED_CAPTION_DATA
             )
             else -> CaptionFailureMapping(
                 status = VideoTranscriptStatus.EXTRACTION_ERROR,
@@ -1124,8 +1235,11 @@ class YouTubeTranscriptExtractor(
     }
 
     private fun shouldInvokeAlternativeRecovery(failed: VideoInfoFetchResult.Failed): Boolean {
+        val cls = failed.diagnosticInfo?.failureClassification
+        if (cls in NON_RECOVERY_CLASSIFICATIONS) return false
         return failed.status == VideoTranscriptStatus.TIMEOUT ||
-            failed.diagnosticInfo?.failureClassification in setOf(
+            cls in setOf(
+                TranscriptFailureClassification.STALLED_PROGRESS_TIMEOUT,
                 TranscriptFailureClassification.PLAYER_CLIENT_FAILURE,
                 TranscriptFailureClassification.JS_CHALLENGE_TIMEOUT,
                 TranscriptFailureClassification.DAEMON_INACTIVITY_TIMEOUT,
@@ -1139,7 +1253,7 @@ class YouTubeTranscriptExtractor(
         processId: String,
         allowAlternativeRecovery: Boolean = false,
         preferAlternativeFirst: Boolean = false,
-        onRetryStarting: suspend () -> Unit = {}
+        onRetryStarting: suspend (String?) -> Unit = {}
     ): MetadataRetryOutcome {
         val retryReasons = mutableListOf<String>()
 
@@ -1154,7 +1268,7 @@ class YouTubeTranscriptExtractor(
                     ?: "native_recovery:${altFirst.status.name.lowercase()}"
             }
             retryReasons.add("Alternative route did not return captions ($altSummary); trying primary route")
-            onRetryStarting()
+            onRetryStarting(null)
             val fallbackPrimary = dataSource.fetchVideoInfo(videoId, videoUrl, "${processId}_pri")
             val mergedResult = when (fallbackPrimary) {
                 is VideoInfoFetchResult.Success -> fallbackPrimary
@@ -1180,7 +1294,15 @@ class YouTubeTranscriptExtractor(
 
             val waitMs = computeMetadataRetryDelayMs(current, retriesExecuted)
             retriesExecuted++
-            onRetryStarting()
+            val rateLimitedMsg = if (current.status == VideoTranscriptStatus.RATE_LIMITED ||
+                current.diagnosticInfo?.httpStatusCode == 429
+            ) {
+                val secs = (waitMs / 1000L).coerceAtLeast(1L)
+                "Rate-limited by YouTube (HTTP 429); retrying in ${secs}s..."
+            } else {
+                null
+            }
+            onRetryStarting(rateLimitedMsg)
             if (waitMs > 0L) {
                 delay(waitMs)
                 currentCoroutineContext().ensureActive()
@@ -1195,7 +1317,7 @@ class YouTubeTranscriptExtractor(
             currentCoroutineContext().ensureActive()
             val classification = current.diagnosticInfo?.failureClassification ?: current.status.name
             retryReasons.add("Attempt ${1 + retriesExecuted} failed: $classification; invoking alternative recovery")
-            onRetryStarting()
+            onRetryStarting("Trying alternative YouTube client route...")
             retriesExecuted++
             val altResult = dataSource.fetchVideoInfoAlternative(videoId, videoUrl, "${processId}_alt")
             if (altResult is VideoInfoFetchResult.Success && altResult.info.captionTracks.isNotEmpty()) {
@@ -1221,15 +1343,21 @@ class YouTubeTranscriptExtractor(
 
     private suspend fun fetchCaptionPayloadWithRetry(
         url: String,
-        onRetry: () -> Unit
+        allowRateLimitRetry: Boolean = true,
+        onRetry: suspend (String?) -> Unit
     ): Result<String> {
         var attemptResult = dataSource.fetchCaptionPayload(url)
+        if (!allowRateLimitRetry) {
+            return attemptResult
+        }
         val delaysMs = listOf(1_200L, 2_500L)
         for (waitMs in delaysMs) {
             val ex = attemptResult.exceptionOrNull()
             if (ex is HttpStatusException && ex.code == 429) {
-                onRetry()
-                val retryAfterMs = ex.retryAfterSeconds?.times(1000L)?.coerceIn(500L, 10_000L) ?: waitMs
+                val maxAllowedMs = resilienceConfig.maxRateLimitRetryDelayMs.coerceAtLeast(1L)
+                val retryAfterMs = (ex.retryAfterSeconds?.times(1000L) ?: waitMs)
+                    .coerceIn(minOf(500L, maxAllowedMs), maxAllowedMs)
+                onRetry("Rate-limited by YouTube while loading captions (HTTP 429); retrying...")
                 delay(retryAfterMs)
                 currentCoroutineContext().ensureActive()
                 attemptResult = dataSource.fetchCaptionPayload(url)
@@ -1246,16 +1374,17 @@ class YouTubeTranscriptExtractor(
                 tag,
                 "Transcript failure video=${diag.videoId} pos=${diag.playlistPosition ?: "-"} " +
                     "stage=${diag.stage} lastStage=${diag.lastKnownStage ?: "-"} " +
-                    "lastActAgeMs=${diag.lastMeaningfulActivityAgeMs ?: "-"} status=${diag.errorCategory} " +
-                    "class=${diag.failureClassification ?: "-"} engine=${diag.executionEngine ?: "-"} " +
-                    "warmHealthy=${diag.warmDaemonHealthyAtStart ?: "-"} " +
+                    "lastActAgeMs=${diag.lastMeaningfulActivityAgeMs ?: "-"} stalled=${diag.progressStalled ?: "-"} " +
+                    "status=${diag.errorCategory} class=${diag.failureClassification ?: "-"} " +
+                    "engine=${diag.executionEngine ?: "-"} warmHealthy=${diag.warmDaemonHealthyAtStart ?: "-"} " +
                     "fallback=${if (diag.fallbackAttempted) (diag.fallbackResult ?: "yes") else "no"} " +
                     "client=${diag.playerClient ?: "-"} effClient=${diag.effectivePlayerClient ?: "-"} " +
                     "ytdlp=${diag.ytDlpVersion ?: "-"} qjs=${diag.quickJsIdentity ?: "-"}/${diag.quickJsVersion ?: "-"} " +
                     "ejs=${diag.ejsSolverAvailable ?: "-"} " +
                     "primary=${diag.primaryRouteOutcome ?: "-"} watchHtml=${diag.watchHtmlOutcome ?: "-"} " +
                     "recovery=${diag.recoveryRouteOutcome ?: "-"} " +
-                    "http=${diag.httpStatusCode ?: "-"} ex=${diag.exceptionType ?: "-"} " +
+                    "http=${diag.httpStatusCode ?: "-"} retryAfter=${diag.retryAfterSeconds ?: "-"} " +
+                    "ex=${diag.exceptionType ?: "-"} chain=${diag.exceptionChain ?: "-"} " +
                     "attempt=${diag.attemptNumber} retries=${diag.retryCount} " +
                     "timeoutMs=${diag.timeoutMs ?: "-"} extMs=${diag.deadlineExtendedMs ?: "-"} elapsedMs=${diag.elapsedMs ?: "-"} " +
                     "hb=${diag.heartbeatCount ?: "-"} jsCh=${diag.jsChallengesSolved ?: "-"} " +
@@ -1300,15 +1429,29 @@ class YouTubeTranscriptExtractor(
         )
 
         private val NON_RETRYABLE_CLASSIFICATIONS = setOf(
+            TranscriptFailureClassification.STALLED_PROGRESS_TIMEOUT,
             TranscriptFailureClassification.DAEMON_INACTIVITY_TIMEOUT,
             TranscriptFailureClassification.METADATA_OPERATION_DEADLINE,
             TranscriptFailureClassification.JS_CHALLENGE_TIMEOUT,
+            TranscriptFailureClassification.DNS_RESOLUTION_FAILURE,
+            TranscriptFailureClassification.TLS_HANDSHAKE_FAILURE,
             TranscriptFailureClassification.PO_TOKEN_REQUIRED,
+            TranscriptFailureClassification.CONSENT_WALL_REQUIRED,
             TranscriptFailureClassification.YOUTUBE_VERIFICATION_REQUIRED,
             TranscriptFailureClassification.YOUTUBE_HTTP_403,
             TranscriptFailureClassification.VIDEO_UNAVAILABLE,
             TranscriptFailureClassification.CAPTION_TRACKS_MISSING,
             TranscriptFailureClassification.USER_CANCELLED
+        )
+
+        private val NON_RECOVERY_CLASSIFICATIONS = setOf(
+            TranscriptFailureClassification.DNS_RESOLUTION_FAILURE,
+            TranscriptFailureClassification.TLS_HANDSHAKE_FAILURE,
+            TranscriptFailureClassification.PO_TOKEN_REQUIRED,
+            TranscriptFailureClassification.YOUTUBE_VERIFICATION_REQUIRED,
+            TranscriptFailureClassification.CONSENT_WALL_REQUIRED,
+            TranscriptFailureClassification.YOUTUBE_HTTP_403,
+            TranscriptFailureClassification.VIDEO_UNAVAILABLE
         )
 
         private val NON_RETRYABLE_KEYWORDS = listOf(

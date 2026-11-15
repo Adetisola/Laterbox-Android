@@ -16,6 +16,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -1254,17 +1255,19 @@ class YouTubeTranscriptExtractorTest {
         assertTrue(primaryOpts.contains("--no-playlist"))
         assertTrue(primaryOpts.contains("--skip-download"))
         assertTrue(primaryOpts.contains("--extractor-retries=1"))
-        assertTrue(primaryOpts.contains("--socket-timeout=15"))
-        assertTrue(primaryOpts.any { it.contains("player_skip=js;skip=dash,hls,translated_subs") })
+        assertTrue(primaryOpts.contains("--socket-timeout=10"))
+        assertTrue(primaryOpts.any { it.contains("player_client=android_vr;player_skip=js;skip=dash,hls,translated_subs") })
         assertFalse(primaryOpts.any { it.startsWith("--js-runtimes") })
+        assertFalse(primaryOpts.any { it.contains("tv") || it.contains("player_client=all") })
 
         val altOpts = ds.buildAlternativeVideoMetadataOptions()
         assertTrue(altOpts.contains("--dump-single-json"))
         assertTrue(altOpts.contains("--no-playlist"))
         assertTrue(altOpts.contains("--skip-download"))
         assertTrue(altOpts.contains("--extractor-retries=1"))
-        assertTrue(altOpts.contains("--socket-timeout=20"))
-        assertTrue(altOpts.any { it.contains("player_client=android_vr,tv,web_embedded") })
+        assertTrue(altOpts.contains("--socket-timeout=12"))
+        assertTrue(altOpts.any { it.contains("player_client=web_embedded,visionos") })
+        assertFalse(altOpts.any { it.contains("tv") || it.contains("player_client=all") })
     }
 
     @Test
@@ -1332,10 +1335,14 @@ class YouTubeTranscriptExtractorTest {
         val extractor = YouTubeTranscriptExtractor(dataSource = ds)
 
         val nonRetryable = listOf(
+            TranscriptFailureClassification.STALLED_PROGRESS_TIMEOUT,
             TranscriptFailureClassification.DAEMON_INACTIVITY_TIMEOUT,
             TranscriptFailureClassification.METADATA_OPERATION_DEADLINE,
             TranscriptFailureClassification.JS_CHALLENGE_TIMEOUT,
+            TranscriptFailureClassification.DNS_RESOLUTION_FAILURE,
+            TranscriptFailureClassification.TLS_HANDSHAKE_FAILURE,
             TranscriptFailureClassification.PO_TOKEN_REQUIRED,
+            TranscriptFailureClassification.CONSENT_WALL_REQUIRED,
             TranscriptFailureClassification.YOUTUBE_VERIFICATION_REQUIRED,
             TranscriptFailureClassification.YOUTUBE_HTTP_403,
             TranscriptFailureClassification.VIDEO_UNAVAILABLE,
@@ -1436,8 +1443,11 @@ class YouTubeTranscriptExtractorTest {
             MockResponse().setResponseCode(429).setBody("rate limit") to "http_429",
             MockResponse().setResponseCode(403).setBody("forbidden") to "http_403",
             MockResponse().setResponseCode(503).setBody("service unavailable") to "http_503",
-            MockResponse().setResponseCode(200).setBody("") to TranscriptFailureClassification.PLAYER_CLIENT_FAILURE,
-            MockResponse().setResponseCode(200).setBody("<html>var ytInitialPlayerResponse = {malformed json;</html>") to TranscriptFailureClassification.PLAYER_CLIENT_FAILURE
+            MockResponse().setResponseCode(200).setBody("") to TranscriptFailureClassification.WATCH_HTML_EMPTY,
+            MockResponse().setResponseCode(200).setBody("<html>consent.youtube.com continue to youtube</html>") to TranscriptFailureClassification.CONSENT_WALL_REQUIRED,
+            MockResponse().setResponseCode(200).setBody("<html>Confirm you're not a bot /recaptcha/</html>") to TranscriptFailureClassification.YOUTUBE_VERIFICATION_REQUIRED,
+            MockResponse().setResponseCode(200).setBody("<html>no player response object here</html>") to TranscriptFailureClassification.WATCH_HTML_MISSING_PLAYER_RESPONSE,
+            MockResponse().setResponseCode(200).setBody("<html>var ytInitialPlayerResponse = {[invalid]};</html>") to TranscriptFailureClassification.WATCH_HTML_MALFORMED_JSON
         )
 
         try {
@@ -1694,6 +1704,310 @@ class YouTubeTranscriptExtractorTest {
         assertEquals((1..27).map { "v$it" }, pass2.document.entries.map { it.videoId })
         assertEquals(VideoTranscriptStatus.NO_CAPTIONS, pass2.document.entries[11].status)
         assertEquals(VideoTranscriptStatus.ACCESS_ERROR, pass2.document.entries[15].status)
+    }
+
+    @Test
+    fun extractor_autoTranslatedTrackHitsHttp429_fallsBackToOriginalTrackWithoutHammering() = runTest {
+        val fetchedUrls = mutableListOf<String>()
+        val tlangVttUrl = "https://www.youtube.com/api/timedtext?v=tr1&lang=es&tlang=en&fmt=vtt"
+        val origVttUrl = "https://www.youtube.com/api/timedtext?v=tr1&lang=en-orig&fmt=vtt"
+
+        val ds = object : YouTubeTranscriptDataSource {
+            override suspend fun fetchVideoInfo(videoId: String, videoUrl: String, processId: String) =
+                VideoInfoFetchResult.Success(
+                    FetchedVideoInfo(
+                        videoId = videoId,
+                        title = "Bilingual Track Test",
+                        url = videoUrl,
+                        captionTracks = listOf(
+                            // Listed first in map, contains tlang=en and triggers 429 when hit
+                            CaptionTrackCandidate("en", "English", true, mapOf("vtt" to tlangVttUrl)),
+                            // Untranslated original
+                            CaptionTrackCandidate("en-orig", "English (Original)", true, mapOf("vtt" to origVttUrl))
+                        ),
+                        playerClientUsed = "android_vr"
+                    )
+                )
+
+            override suspend fun fetchPlaylistEntries(
+                playlistId: String,
+                playlistUrl: String,
+                processId: String,
+                onPageLoaded: suspend (Int, Int?) -> Unit
+            ) = PlaylistFetchResult.Failed(VideoTranscriptStatus.UNAVAILABLE, "unused")
+
+            override suspend fun fetchCaptionPayload(url: String): Result<String> {
+                fetchedUrls.add(url)
+                return if (url == origVttUrl) {
+                    Result.success("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nOriginal English line.")
+                } else {
+                    Result.failure(HttpStatusException(429, "HTTP 429", retryAfterSeconds = 5L))
+                }
+            }
+
+            override fun cancelProcess(processId: String) {}
+        }
+
+        val extractor = YouTubeTranscriptExtractor(
+            dataSource = ds,
+            ioDispatcher = coroutineContext[kotlin.coroutines.ContinuationInterceptor] as? kotlinx.coroutines.CoroutineDispatcher
+                ?: kotlinx.coroutines.Dispatchers.IO
+        )
+
+        val outcome = extractor.extract("https://www.youtube.com/watch?v=tr1", TranscriptTargetPreference.VIDEO)
+            as TranscriptExtractionOutcome.Completed
+
+        assertEquals(1, outcome.document.successfulCount)
+        assertEquals("en-orig", outcome.document.entries.single().captionLanguageCode)
+        assertEquals("Original English line.", outcome.document.entries.single().paragraphs.single().text)
+        // en-orig is prioritized directly before tlang=en, so tlang=en should not even be hammered!
+        assertFalse(fetchedUrls.contains(tlangVttUrl))
+
+        // Now verify when two non-tlang tracks exist and the first returns 429 once, candidate fallback still succeeds on en-orig
+        val calls2 = mutableListOf<String>()
+        val tlangMixedTrackUrl = "https://www.youtube.com/api/timedtext?v=tr2&lang=ko&tlang=en&fmt=vtt"
+        val origUrl2 = "https://www.youtube.com/api/timedtext?v=tr2&lang=en-orig&fmt=vtt"
+        val ds2 = object : YouTubeTranscriptDataSource {
+            override suspend fun fetchVideoInfo(videoId: String, videoUrl: String, processId: String) =
+                VideoInfoFetchResult.Success(
+                    FetchedVideoInfo(
+                        videoId = videoId,
+                        title = "Candidate Fallback Test",
+                        url = videoUrl,
+                        captionTracks = listOf(
+                            CaptionTrackCandidate("en-US", "English", false, mapOf("vtt" to tlangMixedTrackUrl)),
+                            CaptionTrackCandidate("en-orig", "English (Original)", false, mapOf("vtt" to origUrl2))
+                        )
+                    )
+                )
+
+            override suspend fun fetchPlaylistEntries(
+                playlistId: String,
+                playlistUrl: String,
+                processId: String,
+                onPageLoaded: suspend (Int, Int?) -> Unit
+            ) = PlaylistFetchResult.Failed(VideoTranscriptStatus.UNAVAILABLE, "unused")
+
+            override suspend fun fetchCaptionPayload(url: String): Result<String> {
+                calls2.add(url)
+                return if (url == origUrl2) {
+                    Result.success("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nSecond fallback succeeded.")
+                } else {
+                    Result.failure(HttpStatusException(429, "Rate limited"))
+                }
+            }
+
+            override fun cancelProcess(processId: String) {}
+        }
+
+        val extractor2 = YouTubeTranscriptExtractor(
+            dataSource = ds2,
+            ioDispatcher = coroutineContext[kotlin.coroutines.ContinuationInterceptor] as? kotlinx.coroutines.CoroutineDispatcher
+                ?: kotlinx.coroutines.Dispatchers.IO
+        )
+        val out2 = extractor2.extract("https://www.youtube.com/watch?v=tr2", TranscriptTargetPreference.VIDEO)
+            as TranscriptExtractionOutcome.Completed
+        assertEquals("Second fallback succeeded.", out2.document.entries.single().paragraphs.single().text)
+    }
+
+    @Test
+    fun extractor_http429OnAllTimedtextUrls_triggersTightNativeSubtitleFallbackWithoutWildcard() = runTest {
+        var capturedLangSpec: String? = null
+        var capturedClientOverride: String? = null
+
+        val ds = object : YouTubeTranscriptDataSource {
+            override suspend fun fetchVideoInfo(videoId: String, videoUrl: String, processId: String) =
+                VideoInfoFetchResult.Success(
+                    FetchedVideoInfo(
+                        videoId = videoId,
+                        title = "Native Recovery Video",
+                        url = videoUrl,
+                        captionTracks = listOf(
+                            CaptionTrackCandidate("en-orig", "English", false, mapOf("vtt" to "https://cap.test/429.vtt"))
+                        )
+                    )
+                )
+
+            override suspend fun fetchPlaylistEntries(
+                playlistId: String,
+                playlistUrl: String,
+                processId: String,
+                onPageLoaded: suspend (Int, Int?) -> Unit
+            ) = PlaylistFetchResult.Failed(VideoTranscriptStatus.UNAVAILABLE, "unused")
+
+            override suspend fun fetchCaptionPayload(url: String): Result<String> =
+                Result.failure(HttpStatusException(429, "HTTP 429", retryAfterSeconds = 2L))
+
+            override suspend fun fetchNativeSubtitles(
+                videoId: String,
+                videoUrl: String,
+                processId: String,
+                preferredLangSpec: String,
+                playerClientOverride: String?
+            ): VideoInfoFetchResult {
+                capturedLangSpec = preferredLangSpec
+                capturedClientOverride = playerClientOverride
+                return VideoInfoFetchResult.Success(
+                    FetchedVideoInfo(
+                        videoId = videoId,
+                        title = "Native Recovery Video",
+                        url = videoUrl,
+                        captionTracks = listOf(
+                            CaptionTrackCandidate(
+                                languageCode = "en-orig",
+                                languageName = "English",
+                                isAutoGenerated = false,
+                                formatUrls = emptyMap(),
+                                inlineContentByFormat = mapOf("vtt" to "WEBVTT\n\n00:00:00.000 --> 00:00:01.500\nNative subtitle content.")
+                            )
+                        )
+                    )
+                )
+            }
+
+            override fun cancelProcess(processId: String) {}
+        }
+
+        val extractor = YouTubeTranscriptExtractor(
+            dataSource = ds,
+            ioDispatcher = coroutineContext[kotlin.coroutines.ContinuationInterceptor] as? kotlinx.coroutines.CoroutineDispatcher
+                ?: kotlinx.coroutines.Dispatchers.IO,
+            resilienceConfig = PlaylistResilienceConfig(maxRateLimitRetryDelayMs = 1L)
+        )
+
+        val outcome = extractor.extract("https://www.youtube.com/watch?v=nat1", TranscriptTargetPreference.VIDEO)
+            as TranscriptExtractionOutcome.Completed
+
+        assertEquals(1, outcome.document.successfulCount)
+        assertEquals("Native subtitle content.", outcome.document.entries.single().paragraphs.single().text)
+        assertNotNull(capturedLangSpec)
+        assertFalse("Native lang spec must never contain .* wildcard: $capturedLangSpec", capturedLangSpec!!.contains(".*"))
+        assertTrue(capturedLangSpec!!.contains("en-orig"))
+        assertTrue(capturedLangSpec!!.contains("-live_chat"))
+        assertEquals(LaterboxYouTubeTranscriptDataSource.NATIVE_SUBTITLE_PLAYER_CLIENTS, capturedClientOverride)
+        assertFalse(capturedClientOverride!!.contains("tv"))
+    }
+
+    @Test
+    fun extractor_networkExceptionsClassifyDnsTlsConnectWithoutFabricatingHttpStatus() = runTest {
+        val causes = listOf(
+            java.net.UnknownHostException("Unable to resolve host www.youtube.com") to TranscriptFailureClassification.DNS_RESOLUTION_FAILURE,
+            javax.net.ssl.SSLException("SSLHandshakeException: Handshake failed") to TranscriptFailureClassification.TLS_HANDSHAKE_FAILURE,
+            java.net.ConnectException("Failed to connect to www.youtube.com/127.0.0.1:443") to TranscriptFailureClassification.CONNECTION_FAILURE
+        )
+
+        causes.forEachIndexed { idx, (cause, expectedClass) ->
+            val ds = object : YouTubeTranscriptDataSource {
+                override suspend fun fetchVideoInfo(videoId: String, videoUrl: String, processId: String) =
+                    VideoInfoFetchResult.Success(
+                        FetchedVideoInfo(
+                            videoId = videoId,
+                            title = "Net $idx",
+                            url = videoUrl,
+                            captionTracks = listOf(
+                                CaptionTrackCandidate("en", "English", false, mapOf("vtt" to "https://cap.test/$idx.vtt"))
+                            )
+                        )
+                    )
+
+                override suspend fun fetchPlaylistEntries(
+                    playlistId: String,
+                    playlistUrl: String,
+                    processId: String,
+                    onPageLoaded: suspend (Int, Int?) -> Unit
+                ) = PlaylistFetchResult.Failed(VideoTranscriptStatus.UNAVAILABLE, "unused")
+
+                override suspend fun fetchCaptionPayload(url: String): Result<String> =
+                    Result.failure(java.io.IOException("Wrapper around network failure", cause))
+
+                override fun cancelProcess(processId: String) {}
+            }
+
+            val extractor = YouTubeTranscriptExtractor(
+                dataSource = ds,
+                ioDispatcher = coroutineContext[kotlin.coroutines.ContinuationInterceptor] as? kotlinx.coroutines.CoroutineDispatcher
+                    ?: kotlinx.coroutines.Dispatchers.IO
+            )
+            val outcome = extractor.extract("https://www.youtube.com/watch?v=net_$idx", TranscriptTargetPreference.VIDEO)
+                as TranscriptExtractionOutcome.Completed
+            val entry = outcome.document.entries.single()
+            assertEquals(VideoTranscriptStatus.NETWORK_ERROR, entry.status)
+            assertEquals(expectedClass, entry.diagnosticInfo?.failureClassification)
+            assertEquals(null, entry.diagnosticInfo?.httpStatusCode)
+            assertTrue("Expected exceptionChain to include IOException", entry.diagnosticInfo?.exceptionChain?.contains("IOException") == true)
+        }
+    }
+
+    @Test
+    fun extractor_rateLimitBackoffHonorsRetryAfterAndCancelsPromptlyDuringWait() = runTest {
+        val progressMessages = mutableListOf<String>()
+        val progressStages = mutableListOf<TranscriptExtractionStage>()
+        val cancelledIds = mutableListOf<String>()
+        var attempts = 0
+        val ds = object : YouTubeTranscriptDataSource {
+            override suspend fun fetchVideoInfo(videoId: String, videoUrl: String, processId: String): VideoInfoFetchResult {
+                attempts++
+                return VideoInfoFetchResult.Failed(
+                    status = VideoTranscriptStatus.RATE_LIMITED,
+                    message = "YouTube rate-limited this request (HTTP 429).",
+                    retryable = true,
+                    retryAfterSeconds = 10L,
+                    diagnosticInfo = TranscriptDiagnosticInfo(
+                        videoId = videoId,
+                        stage = "video_metadata",
+                        errorCategory = VideoTranscriptStatus.RATE_LIMITED,
+                        httpStatusCode = 429,
+                        retryAfterSeconds = 10L,
+                        failureClassification = TranscriptFailureClassification.YOUTUBE_HTTP_429
+                    )
+                )
+            }
+
+            override suspend fun fetchPlaylistEntries(
+                playlistId: String,
+                playlistUrl: String,
+                processId: String,
+                onPageLoaded: suspend (Int, Int?) -> Unit
+            ) = PlaylistFetchResult.Failed(VideoTranscriptStatus.UNAVAILABLE, "unused")
+
+            override suspend fun fetchCaptionPayload(url: String) = Result.failure<String>(IllegalStateException())
+            override fun cancelProcess(processId: String) {
+                cancelledIds.add(processId)
+            }
+        }
+
+        val extractor = YouTubeTranscriptExtractor(
+            dataSource = ds,
+            ioDispatcher = coroutineContext[kotlin.coroutines.ContinuationInterceptor] as? kotlinx.coroutines.CoroutineDispatcher
+                ?: kotlinx.coroutines.Dispatchers.IO,
+            resilienceConfig = PlaylistResilienceConfig(maxMetadataRetries = 1, maxRateLimitRetryDelayMs = 15_000L)
+        )
+
+        val delayComputed = extractor.computeMetadataRetryDelayMs(
+            ds.fetchVideoInfo("v429", "https://www.youtube.com/watch?v=v429", "p0") as VideoInfoFetchResult.Failed,
+            retryIndex = 0
+        )
+        assertEquals(10_000L, delayComputed)
+        attempts = 0
+
+        val job = launch {
+            extractor.extract(
+                rawUrl = "https://www.youtube.com/watch?v=v429",
+                preference = TranscriptTargetPreference.VIDEO,
+                onProgress = {
+                    progressStages.add(it.stage)
+                    it.message?.let { msg -> progressMessages.add(msg) }
+                }
+            )
+        }
+        // Let first metadata failure enter 10s rate-limit backoff delay, then cancel while waiting
+        delay(200L)
+        job.cancel()
+        job.join()
+        assertTrue("Expected CANCELLED progress event during backoff wait, got $progressStages", TranscriptExtractionStage.CANCELLED in progressStages)
+        assertTrue("Expected cancelProcess to be invoked cleanly", cancelledIds.isNotEmpty())
+        assertEquals("Retry attempt must NOT fire after coroutine cancelled during delay", 1, attempts)
+        assertTrue(progressMessages.any { it.contains("429") || it.contains("Rate-limited") })
     }
 }
 

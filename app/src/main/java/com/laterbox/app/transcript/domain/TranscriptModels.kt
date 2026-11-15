@@ -26,8 +26,12 @@ enum class VideoTranscriptStatus(val displayLabel: String) {
 object TranscriptFailureClassification {
     const val DAEMON_TRANSPORT_FAILURE = "DAEMON_TRANSPORT_FAILURE"
     const val DAEMON_INACTIVITY_TIMEOUT = "DAEMON_INACTIVITY_TIMEOUT"
+    const val STALLED_PROGRESS_TIMEOUT = "STALLED_PROGRESS_TIMEOUT"
     const val METADATA_OPERATION_DEADLINE = "METADATA_OPERATION_DEADLINE"
     const val YT_DLP_NETWORK_TIMEOUT = "YT_DLP_NETWORK_TIMEOUT"
+    const val DNS_RESOLUTION_FAILURE = "DNS_RESOLUTION_FAILURE"
+    const val TLS_HANDSHAKE_FAILURE = "TLS_HANDSHAKE_FAILURE"
+    const val CONNECTION_FAILURE = "CONNECTION_FAILURE"
     const val YOUTUBE_HTTP_403 = "YOUTUBE_HTTP_403"
     const val YOUTUBE_HTTP_429 = "YOUTUBE_HTTP_429"
     const val YOUTUBE_HTTP_5XX = "YOUTUBE_HTTP_5XX"
@@ -35,6 +39,10 @@ object TranscriptFailureClassification {
     const val JS_CHALLENGE_TIMEOUT = "JS_CHALLENGE_TIMEOUT"
     const val PO_TOKEN_REQUIRED = "PO_TOKEN_REQUIRED"
     const val YOUTUBE_VERIFICATION_REQUIRED = "YOUTUBE_VERIFICATION_REQUIRED"
+    const val CONSENT_WALL_REQUIRED = "CONSENT_WALL_REQUIRED"
+    const val WATCH_HTML_EMPTY = "WATCH_HTML_EMPTY"
+    const val WATCH_HTML_MISSING_PLAYER_RESPONSE = "WATCH_HTML_MISSING_PLAYER_RESPONSE"
+    const val WATCH_HTML_MALFORMED_JSON = "WATCH_HTML_MALFORMED_JSON"
     const val CAPTION_TRACKS_MISSING = "CAPTION_TRACKS_MISSING"
     const val CAPTION_DOWNLOAD_FAILURE = "CAPTION_DOWNLOAD_FAILURE"
     const val MALFORMED_CAPTION_DATA = "MALFORMED_CAPTION_DATA"
@@ -50,7 +58,9 @@ data class TranscriptDiagnosticInfo(
     val playerClient: String? = null,
     val errorCategory: VideoTranscriptStatus,
     val exceptionType: String? = null,
+    val exceptionChain: String? = null,
     val httpStatusCode: Int? = null,
+    val retryAfterSeconds: Long? = null,
     val elapsedMs: Long? = null,
     val retryCount: Int = 0,
     val sanitizedDetail: String? = null,
@@ -58,6 +68,7 @@ data class TranscriptDiagnosticInfo(
     val executionEngine: String? = null,
     val attemptNumber: Int = 1,
     val startedAtMillis: Long? = null,
+    val endedAtMillis: Long? = null,
     val timeoutMs: Long? = null,
     val warmDaemonHealthyAtStart: Boolean? = null,
     val fallbackAttempted: Boolean = false,
@@ -75,6 +86,7 @@ data class TranscriptDiagnosticInfo(
     val extractMs: Long? = null,
     val jsChallengesSolved: Int? = null,
     val heartbeatCount: Int? = null,
+    val progressStalled: Boolean? = null,
     val lastKnownStage: String? = null,
     val lastMeaningfulEvent: String? = null,
     val lastMeaningfulActivityAgeMs: Long? = null,
