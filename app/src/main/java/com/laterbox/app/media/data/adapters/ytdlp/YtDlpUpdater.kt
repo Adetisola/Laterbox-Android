@@ -15,7 +15,8 @@ import kotlinx.coroutines.withContext
 class YtDlpUpdater(
     private val appContext: Context,
     private val userPreferencesRepository: UserPreferencesRepository,
-    private val runtimeManager: YtDlpRuntimeManager = (appContext.applicationContext as? LaterboxApplication)?.container?.ytDlpRuntimeManager ?: YtDlpRuntimeManager(appContext)
+    private val runtimeManager: YtDlpRuntimeManager = (appContext.applicationContext as? LaterboxApplication)?.container?.ytDlpRuntimeManager ?: YtDlpRuntimeManager(appContext),
+    private val onBinaryUpdated: (() -> Unit)? = null
 ) {
     private val tag = "YtDlpUpdater"
     private val updateMutex = Mutex()
@@ -121,6 +122,7 @@ class YtDlpUpdater(
 
                 val version = YoutubeDL.getInstance().version(appContext) ?: "latest"
                 userPreferencesRepository.recordYtDlpUpdate(version, System.currentTimeMillis())
+                onBinaryUpdated?.invoke()
                 Log.i(tag, "yt-dlp update completed and verified: status=$status, version=$version, python=$detectedPython")
                 Result.success(version)
             } catch (t: Throwable) {

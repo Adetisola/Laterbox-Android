@@ -28,7 +28,17 @@ data class TranscriptDiagnosticInfo(
     val httpStatusCode: Int? = null,
     val elapsedMs: Long? = null,
     val retryCount: Int = 0,
-    val sanitizedDetail: String? = null
+    val sanitizedDetail: String? = null,
+    val playlistPosition: Int? = null,
+    val executionEngine: String? = null,
+    val attemptNumber: Int = 1,
+    val startedAtMillis: Long? = null,
+    val timeoutMs: Long? = null,
+    val warmDaemonHealthyAtStart: Boolean? = null,
+    val fallbackAttempted: Boolean = false,
+    val fallbackResult: String? = null,
+    val failureClassification: String? = null,
+    val retryReasons: List<String> = emptyList()
 )
 
 data class TranscriptSegment(
@@ -61,6 +71,19 @@ data class VideoTranscriptEntry(
 ) {
     val hasTranscript: Boolean
         get() = status == VideoTranscriptStatus.SUCCESS && paragraphs.isNotEmpty()
+
+    val isRetryableFailure: Boolean
+        get() = !hasTranscript && status in RETRYABLE_FAILURE_STATUSES
+
+    companion object {
+        val RETRYABLE_FAILURE_STATUSES = setOf(
+            VideoTranscriptStatus.TIMEOUT,
+            VideoTranscriptStatus.NETWORK_ERROR,
+            VideoTranscriptStatus.RATE_LIMITED,
+            VideoTranscriptStatus.EXTRACTION_ERROR,
+            VideoTranscriptStatus.CANCELLED
+        )
+    }
 }
 
 data class TranscriptDocument(
@@ -76,6 +99,9 @@ data class TranscriptDocument(
 ) {
     val hasAnySuccessfulTranscript: Boolean
         get() = successfulCount > 0 && entries.any { it.hasTranscript }
+
+    val retryableFailedCount: Int
+        get() = entries.count { it.isRetryableFailure }
 }
 
 data class CaptionTrackCandidate(

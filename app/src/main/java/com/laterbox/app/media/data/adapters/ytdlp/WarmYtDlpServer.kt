@@ -5,8 +5,13 @@ import android.util.Log
 import com.laterbox.app.data.preferences.UserPreferencesRepository
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -15,34 +20,128 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
+import java.io.EOFException
 import java.io.File
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.io.PrintWriter
+import java.net.ConnectException
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketException
 import java.net.SocketTimeoutException
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 data class WarmExecutionResult(
     val output: String,
     val warnings: String? = null
 )
 
-class WarmYtDlpServer(
-    private val appContext: Context,
-    private val userPreferencesRepository: UserPreferencesRepository
+enum class WarmFailureReason {
+    DISABLED,
+    RUNTIME_NOT_READY,
+    STARTUP_FAILED,
+    HANDSHAKE_FAILED,
+    HANDSHAKE_TIMEOUT,
+    SOCKET_CONNECT_FAILED,
+    SOCKET_TIMEOUT,
+    PREMATURE_EOF,
+    PROTOCOL_MISMATCH,
+    EXTRACTOR_ERROR,
+    UNEXPECTED_ERROR
+}
+
+sealed interface WarmExecuteOutcome {
+    data class Success(
+        val output: String,
+        val warnings: String? = null,
+        val elapsedMs: Long = 0L,
+        val warmHealthyAtStart: Boolean = false
+    ) : WarmExecuteOutcome
+
+    data class ExtractorError(
+        val message: String,
+        val warnings: String? = null,
+        val elapsedMs: Long = 0L,
+        val warmHealthyAtStart: Boolean = false
+    ) : WarmExecuteOutcome
+
+    data class MechanismFailure(
+        val reason: WarmFailureReason,
+        val detail: String,
+        val elapsedMs: Long = 0L,
+        val warmHealthyAtStart: Boolean = false,
+        val cause: Throwable? = null
+    ) : WarmExecuteOutcome
+}
+
+internal data class DaemonRuntimeEnv(
+    val pythonPath: File,
+    val ytdlpPath: File,
+    val binDir: File? = null,
+    val envLd: String? = null,
+    val envSsl: String? = null,
+    val envPyHome: String? = null,
+    val tmpDir: String? = null
 ) {
+    val ytdlpSignature: String
+        get() = "${ytdlpPath.absolutePath}:${ytdlpPath.lastModified()}"
+}
+
+class WarmYtDlpServer internal constructor(
+    private val appContext: Context,
+    private val userPreferencesRepository: UserPreferencesRepository,
+    private val handshakeTimeoutMs: Long = DEFAULT_HANDSHAKE_TIMEOUT_MS,
+    private val runtimeEnvProvider: () -> DaemonRuntimeEnv? = { resolveDefaultRuntimeEnv() },
+    private val processLauncher: (DaemonRuntimeEnv, File) -> Process = { env, script ->
+        launchDefaultProcess(env, script)
+    }
+) {
+    constructor(
+        appContext: Context,
+        userPreferencesRepository: UserPreferencesRepository
+    ) : this(
+        appContext = appContext,
+        userPreferencesRepository = userPreferencesRepository,
+        handshakeTimeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_MS
+    )
+
+    private data class DaemonSession(
+        val sessionId: Long,
+        val process: Process,
+        val port: Int,
+        val token: String,
+        val ytdlpSignature: String
+    )
+
+    private data class ActiveRequestHandle(
+        val socket: Socket,
+        val session: DaemonSession
+    )
+
+    private sealed interface StartDaemonResult {
+        data class Ready(val session: DaemonSession) : StartDaemonResult
+        data class Failed(val reason: WarmFailureReason, val detail: String) : StartDaemonResult
+    }
 
     private val tag = "WarmYtDlpServer"
     private val startMutex = Mutex()
     private val concurrencySemaphore = Semaphore(2)
+    private val sessionLock = Any()
+    private val sessionIdCounter = AtomicLong(0L)
 
     @Volatile private var daemonProcess: Process? = null
     @Volatile private var serverPort: Int? = null
     @Volatile private var serverToken: String? = null
+    @Volatile private var activeSession: DaemonSession? = null
     private val isRunning = AtomicBoolean(false)
+
+    private val activeRequests = ConcurrentHashMap<String, ActiveRequestHandle>()
+    private val cancelledRequestIds = ConcurrentHashMap.newKeySet<String>()
 
     private val daemonScriptContent = """
 import sys
@@ -116,6 +215,7 @@ def run_extraction(req_id, url, options):
         parser, opts, all_urls, ydl_opts = yt_dlp.parse_options(args)
         ydl_opts["logger"] = logger
         ydl_opts["quiet"] = True
+        ydl_opts["no_color"] = True
 
         target_url = all_urls[0] if all_urls else url
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -150,10 +250,13 @@ def run_extraction(req_id, url, options):
             }
     except Exception as e:
         elapsed_ms = int((time.time() - start) * 1000)
+        err_msg = str(e)
+        if not err_msg and logger.errors:
+            err_msg = "\n".join(logger.errors)
         return {
             "id": req_id,
             "success": False,
-            "error": str(e),
+            "error": err_msg or "Unknown extractor failure",
             "warnings": "\n".join(logger.warnings) if logger.warnings else None,
             "elapsed_ms": elapsed_ms
         }
@@ -232,6 +335,16 @@ while running:
         }
     }
 
+    fun isHealthy(): Boolean {
+        synchronized(sessionLock) {
+            val session = activeSession ?: return false
+            return isRunning.get() &&
+                session.process.isAlive &&
+                serverPort == session.port &&
+                serverToken == session.token
+        }
+    }
+
     private fun ensureDaemonScript(): File {
         val scriptFile = File(appContext.filesDir, "ytdlp_daemon.py")
         if (!scriptFile.exists() || scriptFile.length() == 0L || scriptFile.readText() != daemonScriptContent) {
@@ -240,100 +353,115 @@ while running:
         return scriptFile
     }
 
-    private suspend fun startDaemon(): Boolean = withContext(Dispatchers.IO) {
+    private fun setSessionLocked(session: DaemonSession?) {
+        activeSession = session
+        daemonProcess = session?.process
+        serverPort = session?.port
+        serverToken = session?.token
+        isRunning.set(session != null)
+    }
+
+    private fun invalidateSessionIfSame(expected: DaemonSession, destroyProcess: Boolean = true) {
+        var procToDestroy: Process? = null
+        synchronized(sessionLock) {
+            if (activeSession?.sessionId == expected.sessionId) {
+                procToDestroy = activeSession?.process
+                setSessionLocked(null)
+            }
+        }
+        if (destroyProcess && procToDestroy != null) {
+            try {
+                procToDestroy?.destroyForcibly()
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private suspend fun startDaemon(): StartDaemonResult = withContext(Dispatchers.IO) {
         startMutex.withLock {
-            val proc = daemonProcess
-            val port = serverPort
-            val token = serverToken
-            if (proc != null && proc.isAlive && port != null && token != null) {
-                return@withContext true
+            currentCoroutineContext().ensureActive()
+
+            val env = runtimeEnvProvider()
+                ?: return@withContext StartDaemonResult.Failed(
+                    WarmFailureReason.RUNTIME_NOT_READY,
+                    "pythonPath or ytdlpPath is not initialized"
+                )
+            val expectedSig = env.ytdlpSignature
+
+            synchronized(sessionLock) {
+                val current = activeSession
+                if (current != null &&
+                    current.process.isAlive &&
+                    isRunning.get() &&
+                    current.ytdlpSignature == expectedSig
+                ) {
+                    return@withContext StartDaemonResult.Ready(current)
+                }
+                if (current != null) {
+                    val staleProc = current.process
+                    setSessionLocked(null)
+                    try {
+                        staleProc.destroyForcibly()
+                    } catch (_: Throwable) {
+                    }
+                }
             }
 
+            var newProc: Process? = null
             try {
-                val pythonPath = try {
-                    val field = YoutubeDL::class.java.getDeclaredField("pythonPath")
-                    field.isAccessible = true
-                    field.get(null) as? File
-                } catch (_: Throwable) { null }
-
-                val ytdlpPath = try {
-                    val field = YoutubeDL::class.java.getDeclaredField("ytdlpPath")
-                    field.isAccessible = true
-                    field.get(null) as? File
-                } catch (_: Throwable) { null }
-
-                val binDir = try {
-                    val field = YoutubeDL::class.java.getDeclaredField("binDir")
-                    field.isAccessible = true
-                    field.get(null) as? File
-                } catch (_: Throwable) { null }
-
-                val envLd = try {
-                    val field = YoutubeDL::class.java.getDeclaredField("ENV_LD_LIBRARY_PATH")
-                    field.isAccessible = true
-                    field.get(null) as? String
-                } catch (_: Throwable) { null }
-
-                val envSsl = try {
-                    val field = YoutubeDL::class.java.getDeclaredField("ENV_SSL_CERT_FILE")
-                    field.isAccessible = true
-                    field.get(null) as? String
-                } catch (_: Throwable) { null }
-
-                val envPyHome = try {
-                    val field = YoutubeDL::class.java.getDeclaredField("ENV_PYTHONHOME")
-                    field.isAccessible = true
-                    field.get(null) as? String
-                } catch (_: Throwable) { null }
-
-                val tmpDir = try {
-                    val field = YoutubeDL::class.java.getDeclaredField("TMPDIR")
-                    field.isAccessible = true
-                    field.get(null) as? String
-                } catch (_: Throwable) { null }
-
-                if (pythonPath == null || ytdlpPath == null) {
-                    Log.w(tag, "Cannot start daemon: pythonPath or ytdlpPath is null")
-                    return@withContext false
-                }
-
                 val scriptFile = ensureDaemonScript()
-                val pb = ProcessBuilder(listOf(pythonPath.absolutePath, scriptFile.absolutePath, ytdlpPath.absolutePath))
-                val env = pb.environment()
-                if (envLd != null) env["LD_LIBRARY_PATH"] = envLd
-                if (envSsl != null) env["SSL_CERT_FILE"] = envSsl
-                if (envPyHome != null) {
-                    env["PYTHONHOME"] = envPyHome
-                    env["HOME"] = envPyHome
-                }
-                if (tmpDir != null) env["TMPDIR"] = tmpDir
-                if (binDir != null) {
-                    val path = System.getenv("PATH") ?: ""
-                    env["PATH"] = "$path:${binDir.absolutePath}"
-                }
+                newProc = processLauncher(env, scriptFile)
+                val proc = newProc
+                val reader = BufferedReader(InputStreamReader(proc.inputStream))
 
-                val newProc = pb.start()
-                val reader = BufferedReader(InputStreamReader(newProc.inputStream))
-
-                // Consume stderr in background so buffer doesn't block process
+                val recentStderr = ArrayDeque<String>(12)
                 Thread({
                     try {
-                        val errReader = BufferedReader(InputStreamReader(newProc.errorStream))
-                        var errLine: String?
-                        while (errReader.readLine().also { errLine = it } != null) {
-                            Log.d(tag, "daemon stderr: $errLine")
+                        BufferedReader(InputStreamReader(proc.errorStream)).use { errReader ->
+                            var errLine: String?
+                            while (errReader.readLine().also { errLine = it } != null) {
+                                val line = errLine ?: continue
+                                synchronized(recentStderr) {
+                                    if (recentStderr.size >= 10) recentStderr.removeFirst()
+                                    recentStderr.addLast(line)
+                                }
+                                Log.d(tag, "daemon stderr: $line")
+                            }
                         }
-                    } catch (_: Throwable) {}
+                    } catch (_: Throwable) {
+                    }
                 }, "ytdlp-daemon-stderr").start()
 
-                var readyLine: String? = null
-                val deadline = System.currentTimeMillis() + 5000L
-                while (System.currentTimeMillis() < deadline) {
-                    if (reader.ready()) {
-                        readyLine = reader.readLine()
-                        break
+                var firstStdoutLine: String? = null
+                val handshakeLatch = CountDownLatch(1)
+                Thread({
+                    try {
+                        firstStdoutLine = reader.readLine()
+                    } catch (_: Throwable) {
+                    } finally {
+                        handshakeLatch.countDown()
                     }
-                    Thread.sleep(50)
+                    // Continue draining stdout so the pipe never fills up and deadlocks Python
+                    try {
+                        while (reader.readLine() != null) {
+                            // Drain
+                        }
+                    } catch (_: Throwable) {
+                    }
+                }, "ytdlp-daemon-stdout").start()
+
+                val completedHandshake = handshakeLatch.await(handshakeTimeoutMs, TimeUnit.MILLISECONDS)
+                val readyLine = firstStdoutLine
+                if (!completedHandshake) {
+                    val detail = synchronized(recentStderr) {
+                        recentStderr.joinToString("; ").takeIf { it.isNotBlank() }
+                    } ?: "Warm daemon handshake timed out after ${handshakeTimeoutMs}ms"
+                    Log.w(tag, detail)
+                    try {
+                        proc.destroyForcibly()
+                    } catch (_: Throwable) {
+                    }
+                    return@withContext StartDaemonResult.Failed(WarmFailureReason.HANDSHAKE_TIMEOUT, detail)
                 }
 
                 if (readyLine != null && readyLine.startsWith("READY ")) {
@@ -347,61 +475,126 @@ while running:
                             parsedToken = part.substring(6)
                         }
                     }
-                    if (parsedPort != null && parsedToken != null) {
-                        daemonProcess = newProc
-                        serverPort = parsedPort
-                        serverToken = parsedToken
-                        isRunning.set(true)
+                    if (parsedPort != null && parsedPort > 0 && !parsedToken.isNullOrBlank()) {
+                        val session = DaemonSession(
+                            sessionId = sessionIdCounter.incrementAndGet(),
+                            process = proc,
+                            port = parsedPort,
+                            token = parsedToken,
+                            ytdlpSignature = expectedSig
+                        )
+                        synchronized(sessionLock) {
+                            setSessionLocked(session)
+                        }
                         Log.i(tag, "Warm yt-dlp daemon started on port $parsedPort")
-                        return@withContext true
+                        return@withContext StartDaemonResult.Ready(session)
                     }
                 }
 
-                Log.w(tag, "Daemon handshake failed: readyLine='$readyLine'")
-                newProc.destroy()
-                false
+                val stderrSummary = synchronized(recentStderr) {
+                    recentStderr.joinToString("; ").takeIf { it.isNotBlank() }
+                }
+                val failDetail = "Daemon handshake failed: readyLine='${readyLine ?: "<eof>"}'" +
+                    (stderrSummary?.let { " ($it)" } ?: "")
+                Log.w(tag, failDetail)
+                try {
+                    proc.destroyForcibly()
+                } catch (_: Throwable) {
+                }
+                StartDaemonResult.Failed(
+                    reason = if (readyLine == null) WarmFailureReason.STARTUP_FAILED else WarmFailureReason.HANDSHAKE_FAILED,
+                    detail = failDetail
+                )
+            } catch (ce: CancellationException) {
+                try {
+                    newProc?.destroyForcibly()
+                } catch (_: Throwable) {
+                }
+                throw ce
             } catch (t: Throwable) {
-                Log.w(tag, "Failed to start warm daemon: ${t.message}", t)
-                false
+                try {
+                    newProc?.destroyForcibly()
+                } catch (_: Throwable) {
+                }
+                val msg = "Failed to start warm daemon: ${t.message ?: t.javaClass.simpleName}"
+                Log.w(tag, msg, t)
+                StartDaemonResult.Failed(WarmFailureReason.STARTUP_FAILED, msg)
             }
         }
     }
 
     /**
-     * Executes inspection via warm loopback daemon.
-     * Returns WarmExecutionResult if successful, or null if warm engine is disabled/unavailable (to trigger fallback).
-     * Throws YoutubeDLException if yt-dlp returns an error message.
+     * Executes inspection via warm loopback daemon and reports detailed mechanism vs extractor outcomes.
+     * Preserves coroutine cancellation cleanly without masking it as a transport failure or fallback.
      */
-    suspend fun execute(
+    suspend fun executeDetailed(
         url: String,
         options: List<String>,
         processId: String,
         timeoutMs: Long
-    ): WarmExecutionResult? = withContext(Dispatchers.IO) {
+    ): WarmExecuteOutcome = withContext(Dispatchers.IO) {
+        val startedAt = System.currentTimeMillis()
+        currentCoroutineContext().ensureActive()
+
         if (!isFastEngineEnabled()) {
-            return@withContext null
+            return@withContext WarmExecuteOutcome.MechanismFailure(
+                reason = WarmFailureReason.DISABLED,
+                detail = "Warm yt-dlp engine is disabled in preferences",
+                elapsedMs = 0L,
+                warmHealthyAtStart = false
+            )
+        }
+
+        if (cancelledRequestIds.contains(processId)) {
+            throw CancellationException("Warm request $processId was cancelled before execution")
         }
 
         concurrencySemaphore.withPermit {
-            if (!startDaemon()) {
-                return@withContext null
+            currentCoroutineContext().ensureActive()
+            if (cancelledRequestIds.contains(processId)) {
+                throw CancellationException("Warm request $processId was cancelled prior to daemon start")
             }
 
-            val port = serverPort ?: return@withContext null
-            val token = serverToken ?: return@withContext null
+            val healthyAtStart = isHealthy()
+            val session = when (val startResult = startDaemon()) {
+                is StartDaemonResult.Ready -> startResult.session
+                is StartDaemonResult.Failed -> {
+                    return@withContext WarmExecuteOutcome.MechanismFailure(
+                        reason = startResult.reason,
+                        detail = startResult.detail,
+                        elapsedMs = System.currentTimeMillis() - startedAt,
+                        warmHealthyAtStart = healthyAtStart
+                    )
+                }
+            }
 
+            currentCoroutineContext().ensureActive()
             var socket: Socket? = null
-            try {
-                socket = Socket()
-                socket.connect(InetSocketAddress("127.0.0.1", port), 2000)
-                socket.soTimeout = timeoutMs.coerceAtLeast(1000L).toInt()
+            var cancelDisposable: kotlinx.coroutines.DisposableHandle? = null
 
-                val writer = PrintWriter(OutputStreamWriter(socket.getOutputStream(), "UTF-8"), true)
-                val reader = BufferedReader(InputStreamReader(socket.getInputStream(), "UTF-8"))
+            try {
+                val sock = Socket()
+                socket = sock
+                activeRequests[processId] = ActiveRequestHandle(sock, session)
+                cancelDisposable = currentCoroutineContext()[Job]?.invokeOnCompletion { cause ->
+                    if (cause is CancellationException) {
+                        cancel(processId)
+                    }
+                }
+
+                if (cancelledRequestIds.contains(processId)) {
+                    throw CancellationException("Warm request $processId was cancelled")
+                }
+
+                sock.connect(InetSocketAddress("127.0.0.1", session.port), 2000)
+                sock.soTimeout = timeoutMs.coerceAtLeast(1000L).toInt()
+
+                val writer = PrintWriter(OutputStreamWriter(sock.getOutputStream(), "UTF-8"), true)
+                val reader = BufferedReader(InputStreamReader(sock.getInputStream(), "UTF-8"))
 
                 val reqObj = JSONObject().apply {
                     put("id", processId)
-                    put("token", token)
+                    put("token", session.token)
                     put("action", "inspect")
                     put("url", url)
                     val optsArr = JSONArray()
@@ -411,100 +604,312 @@ while running:
 
                 writer.println(reqObj.toString())
 
-                val respLine = reader.readLine() ?: throw java.io.EOFException("Premature EOF from daemon")
+                val respLine = reader.readLine()
+                    ?: throw EOFException("Premature EOF from warm daemon")
                 val respObj = JSONObject(respLine)
+                val respId = respObj.optString("id")
+                if (respId.isNotBlank() && respId != processId) {
+                    invalidateSessionIfSame(session)
+                    return@withContext WarmExecuteOutcome.MechanismFailure(
+                        reason = WarmFailureReason.PROTOCOL_MISMATCH,
+                        detail = "Warm daemon returned mismatched response id (expected $processId, got $respId)",
+                        elapsedMs = System.currentTimeMillis() - startedAt,
+                        warmHealthyAtStart = healthyAtStart
+                    )
+                }
 
+                val elapsed = System.currentTimeMillis() - startedAt
+                val warn = respObj.optString("warnings").takeIf { it.isNotBlank() }
                 val success = respObj.optBoolean("success", false)
                 if (success) {
                     val out = respObj.optString("output")
                     if (out.isBlank() || out.trim() == "null") {
-                        val warn = respObj.optString("warnings").takeIf { it.isNotBlank() }
-                        throw YoutubeDLException("Warm extractor returned empty or null metadata")
+                        return@withContext WarmExecuteOutcome.ExtractorError(
+                            message = "Warm extractor returned empty or null metadata",
+                            warnings = warn,
+                            elapsedMs = elapsed,
+                            warmHealthyAtStart = healthyAtStart
+                        )
                     }
-                    val warn = respObj.optString("warnings").takeIf { it.isNotBlank() }
-                    WarmExecutionResult(output = out, warnings = warn)
+                    WarmExecuteOutcome.Success(
+                        output = out,
+                        warnings = warn,
+                        elapsedMs = elapsed,
+                        warmHealthyAtStart = healthyAtStart
+                    )
                 } else {
                     val error = respObj.optString("error", "Unknown extraction error")
-                    throw YoutubeDLException(error)
+                    WarmExecuteOutcome.ExtractorError(
+                        message = error,
+                        warnings = warn,
+                        elapsedMs = elapsed,
+                        warmHealthyAtStart = healthyAtStart
+                    )
                 }
+            } catch (ce: CancellationException) {
+                cancel(processId)
+                throw ce
             } catch (te: SocketTimeoutException) {
-                val proc = daemonProcess
-                daemonProcess = null
-                serverPort = null
-                serverToken = null
-                isRunning.set(false)
-                try {
-                    proc?.destroyForcibly()
-                } catch (_: Throwable) {}
-                throw te
-            } catch (ye: YoutubeDLException) {
-                throw ye
+                currentCoroutineContext().ensureActive()
+                invalidateSessionIfSame(session)
+                WarmExecuteOutcome.MechanismFailure(
+                    reason = WarmFailureReason.SOCKET_TIMEOUT,
+                    detail = te.message ?: "Warm daemon read timed out after ${timeoutMs}ms",
+                    elapsedMs = System.currentTimeMillis() - startedAt,
+                    warmHealthyAtStart = healthyAtStart,
+                    cause = te
+                )
+            } catch (eof: EOFException) {
+                if (cancelledRequestIds.contains(processId) || !currentCoroutineContext().isActive) {
+                    throw CancellationException("Warm request $processId interrupted by cancellation", eof)
+                }
+                invalidateSessionIfSame(session)
+                WarmExecuteOutcome.MechanismFailure(
+                    reason = WarmFailureReason.PREMATURE_EOF,
+                    detail = eof.message ?: "Warm daemon closed connection prematurely",
+                    elapsedMs = System.currentTimeMillis() - startedAt,
+                    warmHealthyAtStart = healthyAtStart,
+                    cause = eof
+                )
+            } catch (ceConn: ConnectException) {
+                currentCoroutineContext().ensureActive()
+                invalidateSessionIfSame(session)
+                WarmExecuteOutcome.MechanismFailure(
+                    reason = WarmFailureReason.SOCKET_CONNECT_FAILED,
+                    detail = ceConn.message ?: "Could not connect to warm daemon socket",
+                    elapsedMs = System.currentTimeMillis() - startedAt,
+                    warmHealthyAtStart = healthyAtStart,
+                    cause = ceConn
+                )
+            } catch (se: SocketException) {
+                if (cancelledRequestIds.contains(processId) || !currentCoroutineContext().isActive) {
+                    throw CancellationException("Warm request socket closed due to cancellation", se)
+                }
+                invalidateSessionIfSame(session)
+                WarmExecuteOutcome.MechanismFailure(
+                    reason = WarmFailureReason.PREMATURE_EOF,
+                    detail = se.message ?: "Warm daemon socket error",
+                    elapsedMs = System.currentTimeMillis() - startedAt,
+                    warmHealthyAtStart = healthyAtStart,
+                    cause = se
+                )
             } catch (t: Throwable) {
-                Log.w(tag, "Warm daemon execution failed: ${t.message}. Triggering fallback.", t)
-                shutdown()
-                null
+                if (cancelledRequestIds.contains(processId) || !currentCoroutineContext().isActive) {
+                    throw CancellationException("Warm request aborted due to cancellation", t)
+                }
+                invalidateSessionIfSame(session)
+                WarmExecuteOutcome.MechanismFailure(
+                    reason = WarmFailureReason.UNEXPECTED_ERROR,
+                    detail = t.message ?: t.javaClass.simpleName,
+                    elapsedMs = System.currentTimeMillis() - startedAt,
+                    warmHealthyAtStart = healthyAtStart,
+                    cause = t
+                )
             } finally {
+                cancelDisposable?.dispose()
+                activeRequests.remove(processId)
+                cancelledRequestIds.remove(processId)
                 try {
                     socket?.close()
-                } catch (_: Throwable) {}
+                } catch (_: Throwable) {
+                }
+            }
+        }
+    }
+
+    /**
+     * Backwards-compatible execution entrypoint for general inspection callers.
+     * Returns WarmExecutionResult if successful, or null if warm engine is disabled/unavailable (to trigger fallback).
+     * Throws SocketTimeoutException on socket timeout and YoutubeDLException on extractor error.
+     */
+    suspend fun execute(
+        url: String,
+        options: List<String>,
+        processId: String,
+        timeoutMs: Long
+    ): WarmExecutionResult? {
+        return when (val outcome = executeDetailed(url, options, processId, timeoutMs)) {
+            is WarmExecuteOutcome.Success -> WarmExecutionResult(outcome.output, outcome.warnings)
+            is WarmExecuteOutcome.ExtractorError -> throw YoutubeDLException(outcome.message)
+            is WarmExecuteOutcome.MechanismFailure -> when (outcome.reason) {
+                WarmFailureReason.SOCKET_TIMEOUT ->
+                    throw (outcome.cause as? SocketTimeoutException ?: SocketTimeoutException(outcome.detail))
+                else -> {
+                    if (outcome.reason != WarmFailureReason.DISABLED) {
+                        Log.w(tag, "Warm daemon unavailable (${outcome.reason}): ${outcome.detail}. Triggering fallback.")
+                    }
+                    null
+                }
             }
         }
     }
 
     fun cancel(processId: String) {
-        val proc = daemonProcess
-        val port = serverPort
-        val token = serverToken
-        daemonProcess = null
-        serverPort = null
-        serverToken = null
-        isRunning.set(false)
-
+        cancelledRequestIds.add(processId)
+        val removedHandle = activeRequests.remove(processId)
         try {
-            proc?.destroyForcibly()
-        } catch (_: Throwable) {}
+            removedHandle?.socket?.close()
+        } catch (_: Throwable) {
+        }
 
-        if (port != null && token != null) {
+        val portSnapshot: Int?
+        val tokenSnapshot: String?
+        val legacyProcToDestroy: Process?
+        val shouldDestroyDaemon: Boolean
+
+        synchronized(sessionLock) {
+            portSnapshot = activeSession?.port ?: serverPort
+            tokenSnapshot = activeSession?.token ?: serverToken
+            shouldDestroyDaemon = activeRequests.isEmpty()
+            if (shouldDestroyDaemon) {
+                legacyProcToDestroy = activeSession?.process ?: daemonProcess
+                setSessionLocked(null)
+            } else {
+                legacyProcToDestroy = null
+            }
+        }
+
+        if (shouldDestroyDaemon) {
+            try {
+                legacyProcToDestroy?.destroyForcibly()
+            } catch (_: Throwable) {
+            }
+        }
+
+        if (portSnapshot != null && tokenSnapshot != null) {
             Thread({
                 try {
                     Socket().use { sock ->
-                        sock.connect(InetSocketAddress("127.0.0.1", port), 500)
+                        sock.connect(InetSocketAddress("127.0.0.1", portSnapshot), 500)
                         val writer = PrintWriter(OutputStreamWriter(sock.getOutputStream(), "UTF-8"), true)
                         val cancelReq = JSONObject().apply {
                             put("id", processId)
-                            put("token", token)
+                            put("token", tokenSnapshot)
                             put("action", "cancel")
                         }
                         writer.println(cancelReq.toString())
                     }
-                } catch (_: Throwable) {}
+                } catch (_: Throwable) {
+                }
             }, "ytdlp-daemon-cancel").start()
         }
     }
 
     fun shutdown() {
-        val proc = daemonProcess
-        val port = serverPort
-        val token = serverToken
-        daemonProcess = null
-        serverPort = null
-        serverToken = null
-        isRunning.set(false)
+        val portSnapshot: Int?
+        val tokenSnapshot: String?
+        val procToDestroy: Process?
+        synchronized(sessionLock) {
+            portSnapshot = activeSession?.port ?: serverPort
+            tokenSnapshot = activeSession?.token ?: serverToken
+            procToDestroy = activeSession?.process ?: daemonProcess
+            setSessionLocked(null)
+        }
 
-        if (port != null && token != null) {
+        val socketsToClose = activeRequests.values.map { it.socket }
+        activeRequests.clear()
+        socketsToClose.forEach { sock ->
+            try {
+                sock.close()
+            } catch (_: Throwable) {
+            }
+        }
+
+        if (portSnapshot != null && tokenSnapshot != null) {
             Thread({
                 try {
                     Socket().use { sock ->
-                        sock.connect(InetSocketAddress("127.0.0.1", port), 1000)
+                        sock.connect(InetSocketAddress("127.0.0.1", portSnapshot), 1000)
                         val writer = PrintWriter(OutputStreamWriter(sock.getOutputStream(), "UTF-8"), true)
-                        writer.println(JSONObject().put("action", "shutdown").put("token", token).toString())
+                        writer.println(JSONObject().put("action", "shutdown").put("token", tokenSnapshot).toString())
                     }
-                } catch (_: Throwable) {}
+                } catch (_: Throwable) {
+                }
             }, "ytdlp-daemon-shutdown").start()
         }
 
         try {
-            proc?.destroy()
-        } catch (_: Throwable) {}
+            procToDestroy?.destroyForcibly()
+        } catch (_: Throwable) {
+        }
+    }
+
+    companion object {
+        const val DEFAULT_HANDSHAKE_TIMEOUT_MS = 5_000L
+
+        internal fun resolveDefaultRuntimeEnv(): DaemonRuntimeEnv? {
+            val pythonPath = try {
+                val field = YoutubeDL::class.java.getDeclaredField("pythonPath")
+                field.isAccessible = true
+                field.get(null) as? File
+            } catch (_: Throwable) { null }
+
+            val ytdlpPath = try {
+                val field = YoutubeDL::class.java.getDeclaredField("ytdlpPath")
+                field.isAccessible = true
+                field.get(null) as? File
+            } catch (_: Throwable) { null }
+
+            if (pythonPath == null || ytdlpPath == null) return null
+
+            val binDir = try {
+                val field = YoutubeDL::class.java.getDeclaredField("binDir")
+                field.isAccessible = true
+                field.get(null) as? File
+            } catch (_: Throwable) { null }
+
+            val envLd = try {
+                val field = YoutubeDL::class.java.getDeclaredField("ENV_LD_LIBRARY_PATH")
+                field.isAccessible = true
+                field.get(null) as? String
+            } catch (_: Throwable) { null }
+
+            val envSsl = try {
+                val field = YoutubeDL::class.java.getDeclaredField("ENV_SSL_CERT_FILE")
+                field.isAccessible = true
+                field.get(null) as? String
+            } catch (_: Throwable) { null }
+
+            val envPyHome = try {
+                val field = YoutubeDL::class.java.getDeclaredField("ENV_PYTHONHOME")
+                field.isAccessible = true
+                field.get(null) as? String
+            } catch (_: Throwable) { null }
+
+            val tmpDir = try {
+                val field = YoutubeDL::class.java.getDeclaredField("TMPDIR")
+                field.isAccessible = true
+                field.get(null) as? String
+            } catch (_: Throwable) { null }
+
+            return DaemonRuntimeEnv(
+                pythonPath = pythonPath,
+                ytdlpPath = ytdlpPath,
+                binDir = binDir,
+                envLd = envLd,
+                envSsl = envSsl,
+                envPyHome = envPyHome,
+                tmpDir = tmpDir
+            )
+        }
+
+        internal fun launchDefaultProcess(env: DaemonRuntimeEnv, scriptFile: File): Process {
+            val pb = ProcessBuilder(
+                listOf(env.pythonPath.absolutePath, scriptFile.absolutePath, env.ytdlpPath.absolutePath)
+            )
+            val procEnv = pb.environment()
+            if (env.envLd != null) procEnv["LD_LIBRARY_PATH"] = env.envLd
+            if (env.envSsl != null) procEnv["SSL_CERT_FILE"] = env.envSsl
+            if (env.envPyHome != null) {
+                procEnv["PYTHONHOME"] = env.envPyHome
+                procEnv["HOME"] = env.envPyHome
+            }
+            if (env.tmpDir != null) procEnv["TMPDIR"] = env.tmpDir
+            if (env.binDir != null) {
+                val path = System.getenv("PATH") ?: ""
+                procEnv["PATH"] = "$path:${env.binDir.absolutePath}"
+            }
+            return pb.start()
+        }
     }
 }

@@ -96,7 +96,8 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
         com.laterbox.app.media.data.adapters.ytdlp.YtDlpUpdater(
             appContext = context.applicationContext,
             userPreferencesRepository = userPreferencesRepository,
-            runtimeManager = ytDlpRuntimeManager
+            runtimeManager = ytDlpRuntimeManager,
+            onBinaryUpdated = { warmYtDlpServer.shutdown() }
         )
     }
 

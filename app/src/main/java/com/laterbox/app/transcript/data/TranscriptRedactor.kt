@@ -42,6 +42,8 @@ object TranscriptRedactor {
     private val HEADER_SECRET_REGEX = Regex(
         """(?im)(Cookie|Set-Cookie|Authorization|X-Goog-Api-Key|Proxy-Authorization)\s*:\s*[^\r\n]+"""
     )
+    private val BEARER_TOKEN_REGEX = Regex("""(?i)\bBearer\s+[A-Za-z0-9\-._~+/]+=*""")
+    private val SAPISIDHASH_REGEX = Regex("""(?i)\bSAPISIDHASH\s+[^\s;"']+""")
     private val API_KEY_REGEX = Regex("""AIza[0-9A-Za-z_\-]{16,}""")
     private val OAUTH_TOKEN_REGEX = Regex("""ya29\.[0-9A-Za-z_\-]{16,}""")
     private val PRIVATE_PATH_REGEX = Regex("""/(?:data/user/\d+|data/data|storage/emulated/\d+|sdcard)/[^\s"'<>]+""")
@@ -63,6 +65,8 @@ object TranscriptRedactor {
         if (raw.isNullOrBlank()) return ""
         var cleaned = sanitizeUrl(raw)
         cleaned = HEADER_SECRET_REGEX.replace(cleaned) { m -> "${m.groupValues[1]}: [redacted]" }
+        cleaned = BEARER_TOKEN_REGEX.replace(cleaned, "Bearer [redacted]")
+        cleaned = SAPISIDHASH_REGEX.replace(cleaned, "SAPISIDHASH [redacted]")
         cleaned = API_KEY_REGEX.replace(cleaned, "[redacted-api-key]")
         cleaned = OAUTH_TOKEN_REGEX.replace(cleaned, "[redacted-token]")
         cleaned = PRIVATE_PATH_REGEX.replace(cleaned, "[redacted-path]")

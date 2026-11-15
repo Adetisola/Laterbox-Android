@@ -442,4 +442,97 @@ class TranscriptExportManagerAndViewModelTest {
         assertTrue(playlistClip.contains("Third video spoken text."))
         assertFalse(playlistClip.contains("No Captions Clip"))
     }
+
+    @Test
+    fun viewModel_retryFailedVideos_preserves20SucceededAndRetriesOnly7Failed() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val fetchedIds = mutableListOf<String>()
+        var failFirstSeven = true
+
+        val ds = object : YouTubeTranscriptDataSource {
+            override suspend fun fetchVideoInfo(videoId: String, videoUrl: String, processId: String): VideoInfoFetchResult {
+                fetchedIds.add(videoId)
+                val idx = videoId.removePrefix("v").toInt()
+                return if (failFirstSeven && idx in 1..7) {
+                    VideoInfoFetchResult.Failed(
+                        status = VideoTranscriptStatus.TIMEOUT,
+                        message = "Timed out retrieving metadata",
+                        retryable = true
+                    )
+                } else {
+                    VideoInfoFetchResult.Success(
+                        FetchedVideoInfo(
+                            videoId = videoId,
+                            title = "Episode $idx",
+                            url = videoUrl,
+                            captionTracks = listOf(
+                                CaptionTrackCandidate("en", "English", false, mapOf("vtt" to "https://cap.test/$idx.vtt"))
+                            )
+                        )
+                    )
+                }
+            }
+
+            override suspend fun fetchPlaylistEntries(
+                playlistId: String,
+                playlistUrl: String,
+                processId: String,
+                onPageLoaded: suspend (Int, Int?) -> Unit
+            ): PlaylistFetchResult = PlaylistFetchResult.Success(
+                com.laterbox.app.transcript.domain.PlaylistResolution(
+                    playlistId = playlistId,
+                    title = "27-Part Course",
+                    sourceUrl = playlistUrl,
+                    totalCountHint = 27,
+                    entries = (1..27).map { idx ->
+                        com.laterbox.app.transcript.domain.PlaylistEntrySummary(
+                            position = idx,
+                            videoId = "v$idx",
+                            title = "Episode $idx",
+                            url = "https://www.youtube.com/watch?v=v$idx"
+                        )
+                    }
+                )
+            )
+
+            override suspend fun fetchCaptionPayload(url: String): Result<String> {
+                val idx = url.substringAfterLast("/").substringBefore(".vtt")
+                return Result.success("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nTranscript line for $idx.")
+            }
+
+            override fun cancelProcess(processId: String) {}
+        }
+
+        val extractor = YouTubeTranscriptExtractor(
+            dataSource = ds,
+            ioDispatcher = mainDispatcherRule.testDispatcher,
+            resilienceConfig = com.laterbox.app.transcript.data.PlaylistResilienceConfig(
+                baseInterVideoDelayMs = 1L,
+                maxMetadataRetries = 0
+            )
+        )
+        val vm = YouTubeTranscriptViewModel(
+            extractor = extractor,
+            exportManager = TranscriptExportManager(context, ioDispatcher = mainDispatcherRule.testDispatcher),
+            userPreferencesRepository = UserPreferencesRepository(context)
+        )
+
+        vm.openForUrl("https://www.youtube.com/playlist?list=PL27vm")
+        advanceUntilIdle()
+        val initialDoc = vm.uiState.value.document!!
+        assertEquals(20, initialDoc.successfulCount)
+        assertEquals(7, initialDoc.retryableFailedCount)
+
+        fetchedIds.clear()
+        failFirstSeven = false
+        vm.retryFailedVideos()
+        advanceUntilIdle()
+
+        assertEquals((1..7).map { "v$it" }, fetchedIds)
+        val updatedDoc = vm.uiState.value.document!!
+        assertEquals(27, updatedDoc.successfulCount)
+        assertEquals(0, updatedDoc.retryableFailedCount)
+        assertTrue(vm.uiState.value.canExport)
+    }
 }
+

@@ -361,4 +361,91 @@ class YouTubeTranscriptUiTest {
         composeTestRule.onNodeWithText("Extract Transcript").performClick()
         assertEquals(1, manualSubmitClicks)
     }
+
+    @Test
+    fun youTubeTranscriptSheet_rendersRetryFailedButtonAndExpandedDiagnosticsFields() {
+        val doc = TranscriptDocument(
+            isPlaylist = true,
+            title = "Course Playlist",
+            sourceUrl = "https://www.youtube.com/playlist?list=PLcourse",
+            extractedAtMillis = 1794700800000L,
+            videosFound = 2,
+            successfulCount = 1,
+            noCaptionsCount = 0,
+            inaccessibleCount = 1,
+            entries = listOf(
+                VideoTranscriptEntry(
+                    position = 1,
+                    videoId = "v1",
+                    title = "Succeeded Lesson",
+                    url = "https://www.youtube.com/watch?v=v1",
+                    status = VideoTranscriptStatus.SUCCESS,
+                    paragraphs = listOf(TranscriptParagraph(0L, "Hello lesson."))
+                ),
+                VideoTranscriptEntry(
+                    position = 2,
+                    videoId = "v2",
+                    title = "Failed Lesson",
+                    url = "https://www.youtube.com/watch?v=v2",
+                    status = VideoTranscriptStatus.TIMEOUT,
+                    statusMessage = "Timed out while retrieving video metadata.",
+                    diagnosticInfo = com.laterbox.app.transcript.domain.TranscriptDiagnosticInfo(
+                        videoId = "v2",
+                        playlistPosition = 2,
+                        stage = "video_metadata",
+                        ytDlpVersion = "2025.11.12",
+                        executionEngine = "warm_daemon->standard_process",
+                        attemptNumber = 2,
+                        timeoutMs = 35000L,
+                        warmDaemonHealthyAtStart = false,
+                        fallbackAttempted = true,
+                        fallbackResult = "timeout",
+                        errorCategory = VideoTranscriptStatus.TIMEOUT,
+                        failureClassification = "warm_daemon_timeout->standard_process_timeout",
+                        retryCount = 1,
+                        retryReasons = listOf("Attempt 1 failed: warm_daemon_timeout->standard_process_timeout"),
+                        elapsedMs = 70200L,
+                        sanitizedDetail = "SocketTimeoutException after 35s"
+                    )
+                )
+            )
+        )
+
+        var retryFailedClicks = 0
+        composeTestRule.setContent {
+            LaterboxTheme {
+                YouTubeTranscriptSheetContent(
+                    uiState = YouTubeTranscriptUiState(
+                        isSheetVisible = true,
+                        sourceUrl = doc.sourceUrl,
+                        document = doc
+                    ),
+                    onChooseTarget = {},
+                    onCancelExtraction = {},
+                    onRetryExtraction = {},
+                    onToggleFormat = {},
+                    onSetSelectAllFormats = {},
+                    hasWritableSafFolder = { false },
+                    onLaunchFolderPicker = {},
+                    onExportToSafTree = { _, _, _ -> },
+                    onExportToDownloads = {},
+                    onDismiss = {},
+                    onRetryFailedEntries = { retryFailedClicks++ }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithText("Retry Failed (1)").performScrollTo().performClick()
+        assertEquals(1, retryFailedClicks)
+
+        composeTestRule.onNodeWithText("2. Failed Lesson").performScrollTo().performClick()
+        composeTestRule.onNodeWithText("Technical details").performScrollTo().performClick()
+        composeTestRule.onNodeWithText("Classification: warm_daemon_timeout->standard_process_timeout", substring = true)
+            .performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule.onNodeWithText("Standard fallback attempted: true (timeout)", substring = true)
+            .performScrollTo()
+            .assertIsDisplayed()
+    }
 }
+

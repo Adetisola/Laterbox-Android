@@ -30,11 +30,94 @@ sealed interface TranscriptExtractionOutcome {
     data class Failed(val message: String) : TranscriptExtractionOutcome
 }
 
+data class PlaylistResilienceConfig(
+    val baseInterVideoDelayMs: Long = DEFAULT_INTER_VIDEO_DELAY_MS,
+    val maxInterVideoDelayMs: Long = 5_000L,
+    val rateLimitCooldownMs: Long = 4_000L,
+    val transientBackoffStepMs: Long = 600L,
+    val recoverySuccessStreak: Int = 3,
+    val maxMetadataRetries: Int = 1,
+    val baseTransientRetryDelayMs: Long = 1_000L,
+    val maxTransientRetryDelayMs: Long = 5_000L,
+    val baseRateLimitRetryDelayMs: Long = 2_500L,
+    val maxRateLimitRetryDelayMs: Long = 15_000L
+) {
+    companion object {
+        const val DEFAULT_INTER_VIDEO_DELAY_MS = 650L
+    }
+}
+
+internal class PlaylistPacingController(
+    private val config: PlaylistResilienceConfig
+) {
+    var currentDelayMs: Long = config.baseInterVideoDelayMs.coerceAtLeast(0L)
+        private set
+
+    var consecutiveSuccesses: Int = 0
+        private set
+
+    var consecutiveTransientFailures: Int = 0
+        private set
+
+    private var pendingCooldownMs: Long = 0L
+
+    fun recordOutcome(
+        status: VideoTranscriptStatus,
+        retryAfterSeconds: Long? = null,
+        wasListingUnavailable: Boolean = false
+    ) {
+        if (wasListingUnavailable) return
+        when (status) {
+            VideoTranscriptStatus.SUCCESS -> {
+                consecutiveSuccesses++
+                consecutiveTransientFailures = 0
+                if (consecutiveSuccesses >= config.recoverySuccessStreak &&
+                    currentDelayMs > config.baseInterVideoDelayMs
+                ) {
+                    currentDelayMs = (currentDelayMs - config.transientBackoffStepMs)
+                        .coerceAtLeast(config.baseInterVideoDelayMs)
+                }
+            }
+            VideoTranscriptStatus.RATE_LIMITED -> {
+                consecutiveSuccesses = 0
+                consecutiveTransientFailures++
+                val elevated = (currentDelayMs + 1_000L).coerceAtMost(config.maxInterVideoDelayMs)
+                currentDelayMs = maxOf(config.baseInterVideoDelayMs, elevated)
+                val retryAfterMs = retryAfterSeconds?.times(1000L)?.coerceIn(1_000L, 30_000L)
+                pendingCooldownMs = maxOf(config.rateLimitCooldownMs, retryAfterMs ?: 0L)
+            }
+            VideoTranscriptStatus.TIMEOUT,
+            VideoTranscriptStatus.NETWORK_ERROR,
+            VideoTranscriptStatus.EXTRACTION_ERROR -> {
+                consecutiveSuccesses = 0
+                consecutiveTransientFailures++
+                val step = config.transientBackoffStepMs * consecutiveTransientFailures.coerceAtMost(3)
+                currentDelayMs = (currentDelayMs + step).coerceAtMost(config.maxInterVideoDelayMs)
+            }
+            VideoTranscriptStatus.UNAVAILABLE,
+            VideoTranscriptStatus.ACCESS_ERROR,
+            VideoTranscriptStatus.NO_CAPTIONS,
+            VideoTranscriptStatus.CANCELLED -> {
+                // Non-throttling outcomes do not escalate request pacing
+            }
+        }
+    }
+
+    fun consumeNextDelayMs(): Long {
+        val next = maxOf(currentDelayMs, pendingCooldownMs).coerceAtLeast(0L)
+        pendingCooldownMs = 0L
+        return next
+    }
+}
+
 class YouTubeTranscriptExtractor(
     private val dataSource: YouTubeTranscriptDataSource,
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-    private val playlistInterVideoDelayMs: Long = 150L
+    private val playlistInterVideoDelayMs: Long = PlaylistResilienceConfig.DEFAULT_INTER_VIDEO_DELAY_MS,
+    private val resilienceConfig: PlaylistResilienceConfig = PlaylistResilienceConfig(
+        baseInterVideoDelayMs = playlistInterVideoDelayMs.coerceAtLeast(0L)
+    )
 ) {
     private val tag = "YTTranscriptExtractor"
 
@@ -108,6 +191,176 @@ class YouTubeTranscriptExtractor(
         }
     }
 
+    /**
+     * Retries only failed/retryable entries in an existing [TranscriptDocument], preserving all
+     * already extracted transcripts and non-retryable terminal entries without re-fetching them.
+     */
+    suspend fun retryFailedEntries(
+        existingDocument: TranscriptDocument,
+        onProgress: suspend (TranscriptExtractionProgress) -> Unit = {}
+    ): TranscriptExtractionOutcome = withContext(ioDispatcher) {
+        if (!existingDocument.isPlaylist) {
+            val target = YouTubeUrlParser.parse(existingDocument.sourceUrl)
+            val videoUrl = when (target) {
+                is YouTubeUrlTarget.SingleVideo -> target.canonicalUrl
+                is YouTubeUrlTarget.VideoInPlaylist -> target.videoCanonicalUrl
+                else -> existingDocument.entries.firstOrNull()?.url ?: existingDocument.sourceUrl
+            }
+            val videoId = when (target) {
+                is YouTubeUrlTarget.SingleVideo -> target.videoId
+                is YouTubeUrlTarget.VideoInPlaylist -> target.videoId
+                else -> existingDocument.entries.firstOrNull()?.videoId.orEmpty()
+            }
+            if (videoId.isBlank()) {
+                return@withContext TranscriptExtractionOutcome.Failed("Cannot determine video to retry.")
+            }
+            return@withContext extractSingleVideo(
+                videoId = videoId,
+                videoUrl = videoUrl,
+                sourceUrl = existingDocument.sourceUrl,
+                processId = "transcript_retry_${clock()}_${UUID.randomUUID().toString().take(6)}",
+                onProgress = onProgress
+            )
+        }
+
+        val retryIndices = existingDocument.entries.mapIndexedNotNull { idx, entry ->
+            if (entry.isRetryableFailure) idx else null
+        }
+        if (retryIndices.isEmpty()) {
+            return@withContext TranscriptExtractionOutcome.Completed(existingDocument)
+        }
+
+        val processRoot = "transcript_retry_${clock()}_${UUID.randomUUID().toString().take(6)}"
+        val updatedEntries = existingDocument.entries.toMutableList()
+        val pacing = PlaylistPacingController(resilienceConfig)
+        val totalRetryCount = retryIndices.size
+        var activeSubProcessId: String? = null
+
+        var successCount = updatedEntries.count { it.status == VideoTranscriptStatus.SUCCESS }
+        var noCaptionsCount = updatedEntries.count { it.status == VideoTranscriptStatus.NO_CAPTIONS }
+        var failedCount = updatedEntries.count {
+            it.status != VideoTranscriptStatus.SUCCESS && it.status != VideoTranscriptStatus.NO_CAPTIONS
+        }
+
+        try {
+            for ((retryOrdinal, entryIdx) in retryIndices.withIndex()) {
+                currentCoroutineContext().ensureActive()
+                if (retryOrdinal > 0) {
+                    val paceDelay = pacing.consumeNextDelayMs()
+                    if (paceDelay > 0L) {
+                        delay(paceDelay)
+                        currentCoroutineContext().ensureActive()
+                    }
+                }
+
+                val existingEntry = updatedEntries[entryIdx]
+                val retryHuman = retryOrdinal + 1
+                onProgress(
+                    TranscriptExtractionProgress(
+                        stage = TranscriptExtractionStage.EXTRACTING_VIDEO,
+                        currentVideoIndex = retryHuman,
+                        totalVideos = totalRetryCount,
+                        currentVideoTitle = existingEntry.title,
+                        successfulCount = successCount,
+                        noCaptionsCount = noCaptionsCount,
+                        failedCount = failedCount,
+                        message = "Retrying failed video $retryHuman of $totalRetryCount"
+                    )
+                )
+
+                val summary = PlaylistEntrySummary(
+                    position = existingEntry.position,
+                    videoId = existingEntry.videoId,
+                    title = existingEntry.title,
+                    url = existingEntry.url,
+                    channel = existingEntry.channel,
+                    durationSeconds = existingEntry.durationSeconds,
+                    thumbnailUrl = existingEntry.thumbnailUrl
+                )
+                val subProcId = "${processRoot}_v${existingEntry.position}"
+                activeSubProcessId = subProcId
+                val refreshed = try {
+                    extractSingleEntryIsolated(
+                        position = existingEntry.position,
+                        videoId = existingEntry.videoId,
+                        videoUrl = existingEntry.url.ifBlank { YouTubeUrlParser.canonicalVideoUrl(existingEntry.videoId) },
+                        fallbackSummary = summary,
+                        processId = subProcId,
+                        onRetryStatus = {
+                            onProgress(
+                                TranscriptExtractionProgress(
+                                    stage = TranscriptExtractionStage.EXTRACTING_VIDEO,
+                                    currentVideoIndex = retryHuman,
+                                    totalVideos = totalRetryCount,
+                                    currentVideoTitle = existingEntry.title,
+                                    successfulCount = successCount,
+                                    noCaptionsCount = noCaptionsCount,
+                                    failedCount = failedCount,
+                                    message = "Retrying video $retryHuman of $totalRetryCount after transient delay..."
+                                )
+                            )
+                        }
+                    )
+                } finally {
+                    activeSubProcessId = null
+                }
+
+                updatedEntries[entryIdx] = refreshed
+                pacing.recordOutcome(refreshed.status, retryAfterSeconds = null)
+
+                successCount = updatedEntries.count { it.status == VideoTranscriptStatus.SUCCESS }
+                noCaptionsCount = updatedEntries.count { it.status == VideoTranscriptStatus.NO_CAPTIONS }
+                failedCount = updatedEntries.count {
+                    it.status != VideoTranscriptStatus.SUCCESS && it.status != VideoTranscriptStatus.NO_CAPTIONS
+                }
+            }
+        } catch (ce: CancellationException) {
+            var partialDoc: TranscriptDocument? = null
+            withContext(NonCancellable) {
+                activeSubProcessId?.let { dataSource.cancelProcess(it) }
+                partialDoc = buildDocument(
+                    isPlaylist = true,
+                    title = existingDocument.title,
+                    sourceUrl = existingDocument.sourceUrl,
+                    entries = updatedEntries,
+                    totalFoundOverride = existingDocument.videosFound
+                )
+                onProgress(
+                    TranscriptExtractionProgress(
+                        stage = TranscriptExtractionStage.CANCELLED,
+                        currentVideoIndex = retryIndices.size,
+                        totalVideos = totalRetryCount,
+                        successfulCount = partialDoc!!.successfulCount,
+                        noCaptionsCount = partialDoc!!.noCaptionsCount,
+                        failedCount = partialDoc!!.inaccessibleCount,
+                        message = "Retry cancelled; preserved ${partialDoc!!.successfulCount} extracted transcripts."
+                    )
+                )
+            }
+            return@withContext TranscriptExtractionOutcome.Cancelled(partialDoc)
+        }
+
+        val doc = buildDocument(
+            isPlaylist = true,
+            title = existingDocument.title,
+            sourceUrl = existingDocument.sourceUrl,
+            entries = updatedEntries,
+            totalFoundOverride = existingDocument.videosFound
+        )
+        onProgress(
+            TranscriptExtractionProgress(
+                stage = TranscriptExtractionStage.COMPLETED,
+                currentVideoIndex = totalRetryCount,
+                totalVideos = totalRetryCount,
+                successfulCount = doc.successfulCount,
+                noCaptionsCount = doc.noCaptionsCount,
+                failedCount = doc.inaccessibleCount,
+                message = "Retry complete: ${doc.successfulCount} of ${doc.videosFound} transcripts extracted."
+            )
+        )
+        TranscriptExtractionOutcome.Completed(doc)
+    }
+
     private suspend fun extractSingleVideo(
         videoId: String,
         videoUrl: String,
@@ -131,7 +384,17 @@ class YouTubeTranscriptExtractor(
                 videoId = videoId,
                 videoUrl = videoUrl,
                 fallbackSummary = null,
-                processId = "${processId}_v1"
+                processId = "${processId}_v1",
+                onRetryStatus = {
+                    onProgress(
+                        TranscriptExtractionProgress(
+                            stage = TranscriptExtractionStage.EXTRACTING_VIDEO,
+                            currentVideoIndex = 1,
+                            totalVideos = 1,
+                            message = "Retrying metadata retrieval..."
+                        )
+                    )
+                }
             )
 
             val doc = buildDocument(
@@ -229,18 +492,18 @@ class YouTubeTranscriptExtractor(
 
         val totalVideos = playlistResolution.entries.size
         val extractedEntries = mutableListOf<VideoTranscriptEntry>()
+        val pacing = PlaylistPacingController(resilienceConfig)
         var successCount = 0
         var noCaptionsCount = 0
         var failedCount = 0
         var activeSubProcessId: String? = null
-        var previousWasRateLimited = false
 
         try {
             for ((idx, summary) in playlistResolution.entries.withIndex()) {
                 currentCoroutineContext().ensureActive()
 
                 if (idx > 0) {
-                    val paceDelay = if (previousWasRateLimited) 1_200L else playlistInterVideoDelayMs
+                    val paceDelay = pacing.consumeNextDelayMs()
                     if (paceDelay > 0L) {
                         delay(paceDelay)
                         currentCoroutineContext().ensureActive()
@@ -261,6 +524,7 @@ class YouTubeTranscriptExtractor(
                     )
                 )
 
+                var observedRetryAfterSeconds: Long? = null
                 val entry = if (summary.unavailabilityStatus != null) {
                     VideoTranscriptEntry(
                         position = summary.position,
@@ -275,8 +539,14 @@ class YouTubeTranscriptExtractor(
                         diagnosticInfo = TranscriptDiagnosticInfo(
                             videoId = summary.videoId,
                             stage = "playlist_listing",
+                            playlistPosition = summary.position,
                             ytDlpVersion = dataSource.currentYtDlpVersion(),
                             errorCategory = summary.unavailabilityStatus,
+                            failureClassification = if (summary.unavailabilityStatus == VideoTranscriptStatus.ACCESS_ERROR) {
+                                "auth_or_access_error"
+                            } else {
+                                "video_unavailable"
+                            },
                             sanitizedDetail = TranscriptRedactor.sanitize(summary.unavailableReason)
                         )
                     )
@@ -289,14 +559,33 @@ class YouTubeTranscriptExtractor(
                             videoId = summary.videoId,
                             videoUrl = summary.url.ifBlank { YouTubeUrlParser.canonicalVideoUrl(summary.videoId) },
                             fallbackSummary = summary,
-                            processId = subProcId
+                            processId = subProcId,
+                            onRetryAfterObserved = { retryAfter -> observedRetryAfterSeconds = retryAfter },
+                            onRetryStatus = {
+                                onProgress(
+                                    TranscriptExtractionProgress(
+                                        stage = TranscriptExtractionStage.EXTRACTING_VIDEO,
+                                        currentVideoIndex = humanPos,
+                                        totalVideos = totalVideos,
+                                        currentVideoTitle = summary.title,
+                                        successfulCount = successCount,
+                                        noCaptionsCount = noCaptionsCount,
+                                        failedCount = failedCount,
+                                        message = "Retrying video $humanPos of $totalVideos..."
+                                    )
+                                )
+                            }
                         )
                     } finally {
                         activeSubProcessId = null
                     }
                 }
 
-                previousWasRateLimited = entry.status == VideoTranscriptStatus.RATE_LIMITED
+                pacing.recordOutcome(
+                    status = entry.status,
+                    retryAfterSeconds = observedRetryAfterSeconds,
+                    wasListingUnavailable = summary.unavailabilityStatus != null
+                )
                 extractedEntries.add(entry)
                 when (entry.status) {
                     VideoTranscriptStatus.SUCCESS -> successCount++
@@ -365,10 +654,20 @@ class YouTubeTranscriptExtractor(
         videoId: String,
         videoUrl: String,
         fallbackSummary: PlaylistEntrySummary?,
-        processId: String
+        processId: String,
+        onRetryAfterObserved: (Long?) -> Unit = {},
+        onRetryStatus: suspend () -> Unit = {}
     ): VideoTranscriptEntry {
         return try {
-            extractSingleEntry(position, videoId, videoUrl, fallbackSummary, processId)
+            extractSingleEntry(
+                position = position,
+                videoId = videoId,
+                videoUrl = videoUrl,
+                fallbackSummary = fallbackSummary,
+                processId = processId,
+                onRetryAfterObserved = onRetryAfterObserved,
+                onRetryStatus = onRetryStatus
+            )
         } catch (ce: CancellationException) {
             throw ce
         } catch (t: Throwable) {
@@ -378,15 +677,24 @@ class YouTubeTranscriptExtractor(
                 is IOException -> VideoTranscriptStatus.NETWORK_ERROR
                 else -> VideoTranscriptStatus.EXTRACTION_ERROR
             }
+            if (t is HttpStatusException && t.code == 429) {
+                onRetryAfterObserved(t.retryAfterSeconds)
+            }
             val msg = TranscriptRedactor.sanitize(t.message ?: status.displayLabel, 220)
             val diag = TranscriptDiagnosticInfo(
                 videoId = videoId,
                 stage = "entry_isolation",
+                playlistPosition = position,
                 ytDlpVersion = dataSource.currentYtDlpVersion(),
                 errorCategory = status,
                 exceptionType = t.javaClass.simpleName,
                 httpStatusCode = (t as? HttpStatusException)?.code,
-                sanitizedDetail = msg
+                sanitizedDetail = msg,
+                failureClassification = when (status) {
+                    VideoTranscriptStatus.TIMEOUT -> "network_timeout"
+                    VideoTranscriptStatus.RATE_LIMITED -> "http_429_rate_limit"
+                    else -> "extraction_error"
+                }
             )
             logDiagnostic(diag)
             VideoTranscriptEntry(
@@ -409,26 +717,42 @@ class YouTubeTranscriptExtractor(
         videoId: String,
         videoUrl: String,
         fallbackSummary: PlaylistEntrySummary?,
-        processId: String
+        processId: String,
+        onRetryAfterObserved: (Long?) -> Unit = {},
+        onRetryStatus: suspend () -> Unit = {}
     ): VideoTranscriptEntry {
         val startedAt = clock()
-        var infoRetries = 0
-        val infoResult = fetchVideoInfoWithRateLimitRetry(videoId, videoUrl, processId) {
-            infoRetries++
-        }
+        val retryOutcome = fetchVideoInfoWithBoundedRetry(
+            videoId = videoId,
+            videoUrl = videoUrl,
+            processId = processId,
+            onRetryStarting = onRetryStatus
+        )
+        val infoRetries = retryOutcome.retriesExecuted
+        val infoResult = retryOutcome.result
+
         val info = when (infoResult) {
             is VideoInfoFetchResult.Success -> infoResult.info
             is VideoInfoFetchResult.Failed -> {
-                val diag = infoResult.diagnosticInfo?.copy(retryCount = infoRetries)
-                    ?: TranscriptDiagnosticInfo(
-                        videoId = videoId,
-                        stage = "video_metadata",
-                        ytDlpVersion = dataSource.currentYtDlpVersion(),
-                        errorCategory = infoResult.status,
-                        retryCount = infoRetries,
-                        elapsedMs = clock() - startedAt,
-                        sanitizedDetail = TranscriptRedactor.sanitize(infoResult.message)
-                    )
+                if (infoResult.status == VideoTranscriptStatus.RATE_LIMITED) {
+                    onRetryAfterObserved(infoResult.retryAfterSeconds)
+                }
+                val baseDiag = infoResult.diagnosticInfo
+                val diag = (baseDiag ?: TranscriptDiagnosticInfo(
+                    videoId = videoId,
+                    stage = "video_metadata",
+                    ytDlpVersion = dataSource.currentYtDlpVersion(),
+                    errorCategory = infoResult.status,
+                    elapsedMs = clock() - startedAt,
+                    sanitizedDetail = TranscriptRedactor.sanitize(infoResult.message)
+                )).copy(
+                    playlistPosition = position,
+                    retryCount = infoRetries,
+                    attemptNumber = 1 + infoRetries,
+                    startedAtMillis = baseDiag?.startedAtMillis ?: startedAt,
+                    elapsedMs = clock() - startedAt,
+                    retryReasons = retryOutcome.retryReasons
+                )
                 logDiagnostic(diag)
                 return VideoTranscriptEntry(
                     position = position,
@@ -465,10 +789,16 @@ class YouTubeTranscriptExtractor(
             val diag = TranscriptDiagnosticInfo(
                 videoId = info.videoId,
                 stage = "track_selection",
+                playlistPosition = position,
                 ytDlpVersion = dataSource.currentYtDlpVersion(),
                 playerClient = info.playerClientUsed,
                 errorCategory = VideoTranscriptStatus.EXTRACTION_ERROR,
+                startedAtMillis = startedAt,
                 elapsedMs = clock() - startedAt,
+                retryCount = infoRetries,
+                attemptNumber = 1 + infoRetries,
+                retryReasons = retryOutcome.retryReasons,
+                failureClassification = "extraction_error",
                 sanitizedDetail = "Caption tracks were listed (${info.captionTracks.size}) but no usable format URLs were present."
             )
             logDiagnostic(diag)
@@ -592,18 +922,33 @@ class YouTubeTranscriptExtractor(
             }
         }
 
+        if (lastFetchError is HttpStatusException && lastFetchError.code == 429) {
+            onRetryAfterObserved(lastFetchError.retryAfterSeconds)
+        }
+
         // Caption tracks WERE listed, so never turn failure/unparseable payload into a misleading NO_CAPTIONS!
         val (status, message) = classifyCaptionDownloadFailure(lastFetchError, lastParseError)
         val diag = TranscriptDiagnosticInfo(
             videoId = info.videoId,
             stage = "caption_download",
+            playlistPosition = position,
             ytDlpVersion = dataSource.currentYtDlpVersion(),
             playerClient = info.playerClientUsed,
             errorCategory = status,
             exceptionType = lastFetchError?.javaClass?.simpleName,
             httpStatusCode = (lastFetchError as? HttpStatusException)?.code,
+            startedAtMillis = startedAt,
             elapsedMs = clock() - startedAt,
             retryCount = infoRetries + captionRetries,
+            attemptNumber = 1 + infoRetries + captionRetries,
+            executionEngine = "http_timedtext",
+            failureClassification = when (status) {
+                VideoTranscriptStatus.TIMEOUT -> "network_timeout"
+                VideoTranscriptStatus.RATE_LIMITED -> "http_429_rate_limit"
+                VideoTranscriptStatus.ACCESS_ERROR -> "auth_or_access_error"
+                else -> "extraction_error"
+            },
+            retryReasons = retryOutcome.retryReasons,
             sanitizedDetail = TranscriptRedactor.sanitize(lastFetchError?.message ?: lastParseError ?: message)
         )
         logDiagnostic(diag)
@@ -674,23 +1019,77 @@ class YouTubeTranscriptExtractor(
             (sample.contains("<html") && (sample.contains("sorry") || sample.contains("consent") || sample.contains("sign in")))
     }
 
-    private suspend fun fetchVideoInfoWithRateLimitRetry(
+    private data class MetadataRetryOutcome(
+        val result: VideoInfoFetchResult,
+        val retriesExecuted: Int,
+        val retryReasons: List<String>
+    )
+
+    internal fun isRetryableMetadataFailure(failed: VideoInfoFetchResult.Failed): Boolean {
+        if (!failed.retryable) return false
+        if (failed.status !in RETRYABLE_METADATA_STATUSES) return false
+
+        val lower = failed.message.lowercase()
+        val detailLower = failed.diagnosticInfo?.sanitizedDetail?.lowercase().orEmpty()
+        val combined = "$lower $detailLower"
+        if (NON_RETRYABLE_KEYWORDS.any { combined.contains(it) }) {
+            return false
+        }
+        return true
+    }
+
+    internal fun computeMetadataRetryDelayMs(
+        failed: VideoInfoFetchResult.Failed,
+        retryIndex: Int
+    ): Long {
+        if (failed.status == VideoTranscriptStatus.RATE_LIMITED ||
+            failed.diagnosticInfo?.httpStatusCode == 429
+        ) {
+            val retryAfterMs = failed.retryAfterSeconds?.times(1000L)
+            if (retryAfterMs != null && retryAfterMs > 0L) {
+                return retryAfterMs.coerceIn(1_000L, resilienceConfig.maxRateLimitRetryDelayMs)
+            }
+            val multiplier = 1L shl retryIndex.coerceIn(0, 3)
+            return (resilienceConfig.baseRateLimitRetryDelayMs * multiplier)
+                .coerceAtMost(resilienceConfig.maxRateLimitRetryDelayMs)
+        }
+
+        val multiplier = 1L shl retryIndex.coerceIn(0, 3)
+        return (resilienceConfig.baseTransientRetryDelayMs * multiplier)
+            .coerceAtMost(resilienceConfig.maxTransientRetryDelayMs)
+    }
+
+    private suspend fun fetchVideoInfoWithBoundedRetry(
         videoId: String,
         videoUrl: String,
         processId: String,
-        onRetry: () -> Unit
-    ): VideoInfoFetchResult {
-        val first = dataSource.fetchVideoInfo(videoId, videoUrl, processId)
-        if (first is VideoInfoFetchResult.Failed &&
-            first.retryable &&
-            (first.status == VideoTranscriptStatus.RATE_LIMITED || first.message.contains("429"))
-        ) {
-            onRetry()
-            delay(1_200L)
+        onRetryStarting: suspend () -> Unit = {}
+    ): MetadataRetryOutcome {
+        val maxRetries = resilienceConfig.maxMetadataRetries.coerceAtLeast(0)
+        var current = dataSource.fetchVideoInfo(videoId, videoUrl, processId)
+        var retriesExecuted = 0
+        val retryReasons = mutableListOf<String>()
+
+        while (retriesExecuted < maxRetries && current is VideoInfoFetchResult.Failed && isRetryableMetadataFailure(current)) {
             currentCoroutineContext().ensureActive()
-            return dataSource.fetchVideoInfo(videoId, videoUrl, "${processId}_r1")
+            val classification = current.diagnosticInfo?.failureClassification ?: current.status.name
+            retryReasons.add("Attempt ${1 + retriesExecuted} failed: $classification")
+
+            val waitMs = computeMetadataRetryDelayMs(current, retriesExecuted)
+            retriesExecuted++
+            onRetryStarting()
+            if (waitMs > 0L) {
+                delay(waitMs)
+                currentCoroutineContext().ensureActive()
+            }
+            current = dataSource.fetchVideoInfo(videoId, videoUrl, "${processId}_r$retriesExecuted")
         }
-        return first
+
+        return MetadataRetryOutcome(
+            result = current,
+            retriesExecuted = retriesExecuted,
+            retryReasons = retryReasons
+        )
     }
 
     private suspend fun fetchCaptionPayloadWithRetry(
@@ -718,10 +1117,16 @@ class YouTubeTranscriptExtractor(
         try {
             Log.w(
                 tag,
-                "Transcript failure video=${diag.videoId} stage=${diag.stage} status=${diag.errorCategory} " +
+                "Transcript failure video=${diag.videoId} pos=${diag.playlistPosition ?: "-"} " +
+                    "stage=${diag.stage} status=${diag.errorCategory} " +
+                    "class=${diag.failureClassification ?: "-"} engine=${diag.executionEngine ?: "-"} " +
+                    "warmHealthy=${diag.warmDaemonHealthyAtStart ?: "-"} " +
+                    "fallback=${if (diag.fallbackAttempted) (diag.fallbackResult ?: "yes") else "no"} " +
                     "client=${diag.playerClient ?: "-"} ytdlp=${diag.ytDlpVersion ?: "-"} " +
                     "http=${diag.httpStatusCode ?: "-"} ex=${diag.exceptionType ?: "-"} " +
-                    "retries=${diag.retryCount} elapsedMs=${diag.elapsedMs ?: "-"} detail=${diag.sanitizedDetail ?: "-"}"
+                    "attempt=${diag.attemptNumber} retries=${diag.retryCount} " +
+                    "timeoutMs=${diag.timeoutMs ?: "-"} elapsedMs=${diag.elapsedMs ?: "-"} " +
+                    "detail=${diag.sanitizedDetail ?: "-"}"
             )
         } catch (_: Throwable) {
             // Safe no-op in unmocked unit environments if needed
@@ -750,6 +1155,30 @@ class YouTubeTranscriptExtractor(
             noCaptionsCount = noCaptionsCount,
             inaccessibleCount = inaccessibleCount,
             entries = entries
+        )
+    }
+
+    companion object {
+        private val RETRYABLE_METADATA_STATUSES = setOf(
+            VideoTranscriptStatus.TIMEOUT,
+            VideoTranscriptStatus.NETWORK_ERROR,
+            VideoTranscriptStatus.RATE_LIMITED,
+            VideoTranscriptStatus.EXTRACTION_ERROR
+        )
+
+        private val NON_RETRYABLE_KEYWORDS = listOf(
+            "po token",
+            "not a bot",
+            "confirm you're not",
+            "confirm you’re not",
+            "private video",
+            "members-only",
+            "join this channel",
+            "sign in to confirm",
+            "video is private",
+            "does not exist",
+            "has been removed",
+            "account associated with this video has been terminated"
         )
     }
 }

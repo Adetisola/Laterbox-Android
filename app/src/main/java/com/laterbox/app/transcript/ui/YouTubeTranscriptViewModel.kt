@@ -207,6 +207,80 @@ class YouTubeTranscriptViewModel(
         startExtraction(url, state.selectedPreference)
     }
 
+    fun retryFailedVideos() {
+        val state = _uiState.value
+        if (state.isExtracting) return
+        val currentDoc = state.document ?: return
+        if (currentDoc.isPlaylist && currentDoc.retryableFailedCount == 0) return
+
+        extractionJob?.cancel()
+        extractionJob = viewModelScope.launch {
+            val totalToRetry = if (currentDoc.isPlaylist) currentDoc.retryableFailedCount else 1
+            _uiState.update {
+                it.copy(
+                    isExtracting = true,
+                    wasCancelled = false,
+                    errorMessage = null,
+                    exportResult = null,
+                    exportStatusNotice = null,
+                    progress = TranscriptExtractionProgress(
+                        stage = TranscriptExtractionStage.EXTRACTING_VIDEO,
+                        currentVideoIndex = 0,
+                        totalVideos = totalToRetry,
+                        successfulCount = currentDoc.successfulCount,
+                        noCaptionsCount = currentDoc.noCaptionsCount,
+                        failedCount = currentDoc.inaccessibleCount,
+                        message = if (currentDoc.isPlaylist) {
+                            "Retrying $totalToRetry failed video(s)..."
+                        } else {
+                            "Retrying transcript extraction..."
+                        }
+                    )
+                )
+            }
+
+            val outcome = extractor.retryFailedEntries(
+                existingDocument = currentDoc,
+                onProgress = { prog ->
+                    _uiState.update { it.copy(progress = prog) }
+                }
+            )
+
+            when (outcome) {
+                is TranscriptExtractionOutcome.Completed -> {
+                    _uiState.update {
+                        it.copy(
+                            isExtracting = false,
+                            document = outcome.document,
+                            errorMessage = null,
+                            wasCancelled = false
+                        )
+                    }
+                }
+                is TranscriptExtractionOutcome.Cancelled -> {
+                    _uiState.update {
+                        it.copy(
+                            isExtracting = false,
+                            document = outcome.partialDocument ?: currentDoc,
+                            wasCancelled = true,
+                            errorMessage = null
+                        )
+                    }
+                }
+                is TranscriptExtractionOutcome.Failed -> {
+                    _uiState.update {
+                        it.copy(
+                            isExtracting = false,
+                            document = currentDoc,
+                            errorMessage = outcome.message,
+                            wasCancelled = false
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     private fun startExtraction(url: String, preference: TranscriptTargetPreference) {
         extractionJob?.cancel()
         extractionJob = viewModelScope.launch {

@@ -1205,6 +1205,7 @@ fun LaterboxApp(
             onChooseTarget = youTubeTranscriptViewModel::chooseTargetAndExtract,
             onCancelExtraction = youTubeTranscriptViewModel::cancelExtraction,
             onRetryExtraction = youTubeTranscriptViewModel::retryExtraction,
+            onRetryFailedEntries = youTubeTranscriptViewModel::retryFailedVideos,
             onToggleFormat = youTubeTranscriptViewModel::toggleFormat,
             onSetSelectAllFormats = youTubeTranscriptViewModel::setSelectAllFormats,
             hasWritableSafFolder = youTubeTranscriptViewModel::hasWritableConfiguredSafFolder,

@@ -100,6 +100,7 @@ fun YouTubeTranscriptSheet(
     onManualUrlChange: (String) -> Unit = {},
     onSubmitManualUrl: () -> Unit = {},
     onSaveToLibrary: () -> Unit = {},
+    onRetryFailedEntries: () -> Unit = {},
     sheetState: SheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 ) {
     val colors = LaterboxTheme.colors
@@ -156,7 +157,8 @@ fun YouTubeTranscriptSheet(
             onDismiss = onDismiss,
             onManualUrlChange = onManualUrlChange,
             onSubmitManualUrl = onSubmitManualUrl,
-            onSaveToLibrary = onSaveToLibrary
+            onSaveToLibrary = onSaveToLibrary,
+            onRetryFailedEntries = onRetryFailedEntries
         )
     }
 }
@@ -176,7 +178,8 @@ internal fun YouTubeTranscriptSheetContent(
     onDismiss: () -> Unit,
     onManualUrlChange: (String) -> Unit = {},
     onSubmitManualUrl: () -> Unit = {},
-    onSaveToLibrary: () -> Unit = {}
+    onSaveToLibrary: () -> Unit = {},
+    onRetryFailedEntries: () -> Unit = {}
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -358,6 +361,8 @@ internal fun YouTubeTranscriptSheetContent(
 
             if (!document.hasAnySuccessfulTranscript) {
                 val singleEntry = document.entries.firstOrNull()
+                val canRetrySubset = document.isPlaylist && document.retryableFailedCount > 0 &&
+                    document.retryableFailedCount < document.videosFound
                 LaterboxBanner(
                     text = if (document.isPlaylist) {
                         "No transcripts could be extracted for any of the ${document.videosFound} playlist videos."
@@ -366,8 +371,19 @@ internal fun YouTubeTranscriptSheetContent(
                             ?: "No accessible captions were found for this video."
                     },
                     isWarning = true,
-                    actionText = "Retry",
-                    onActionClick = onRetryExtraction
+                    actionText = if (canRetrySubset) {
+                        "Retry Failed (${document.retryableFailedCount})"
+                    } else {
+                        "Retry"
+                    },
+                    onActionClick = if (canRetrySubset) onRetryFailedEntries else onRetryExtraction
+                )
+            } else if (document.isPlaylist && document.retryableFailedCount > 0) {
+                LaterboxBanner(
+                    text = "${document.retryableFailedCount} video(s) failed with a transient error or timeout. Already extracted transcripts are preserved.",
+                    isWarning = true,
+                    actionText = "Retry Failed (${document.retryableFailedCount})",
+                    onActionClick = onRetryFailedEntries
                 )
             }
 
@@ -1085,13 +1101,24 @@ private fun DiagnosticDetailsBox(diag: TranscriptDiagnosticInfo) {
 
     val summary = buildString {
         appendLine("Stage: ${diag.stage}")
+        diag.playlistPosition?.let { appendLine("Playlist position: #$it") }
         appendLine("Category: ${diag.errorCategory.name}")
+        diag.failureClassification?.let { appendLine("Classification: $it") }
+        diag.executionEngine?.let { appendLine("Engine: $it") }
         diag.ytDlpVersion?.let { appendLine("Extractor: yt-dlp $it") }
         diag.playerClient?.let { appendLine("Client: $it") }
+        if (diag.attemptNumber > 1) appendLine("Attempt: #${diag.attemptNumber}")
+        if (diag.retryCount > 0) appendLine("Retries: ${diag.retryCount}")
+        if (diag.retryReasons.isNotEmpty()) appendLine("Retry reasons: ${diag.retryReasons.joinToString()}")
+        diag.warmDaemonHealthyAtStart?.let { appendLine("Warm daemon healthy at start: $it") }
+        if (diag.fallbackAttempted) {
+            val resultPart = diag.fallbackResult?.let { " ($it)" }.orEmpty()
+            appendLine("Standard fallback attempted: true$resultPart")
+        }
+        diag.timeoutMs?.let { appendLine("Timeout budget: ${it}ms") }
+        diag.elapsedMs?.let { appendLine("Elapsed: ${it}ms") }
         diag.httpStatusCode?.let { appendLine("HTTP status: $it") }
         diag.exceptionType?.let { appendLine("Error type: $it") }
-        if (diag.retryCount > 0) appendLine("Retries: ${diag.retryCount}")
-        diag.elapsedMs?.let { appendLine("Elapsed: ${it}ms") }
         diag.sanitizedDetail?.takeIf { it.isNotBlank() }?.let { append("Detail: $it") }
     }.trim()
 

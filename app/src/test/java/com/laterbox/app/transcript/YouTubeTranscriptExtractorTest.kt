@@ -416,8 +416,10 @@ class YouTubeTranscriptExtractorTest {
             assertEquals(VideoTranscriptStatus.TIMEOUT, failed.status)
             assertNotNull(failed.diagnosticInfo)
 
-            // Re-enqueue HTML for extractor invocation and confirm extractor surfaces TIMEOUT (not Cancelled)
-            server.enqueue(MockResponse().setResponseCode(200).setBody(emptyHtml))
+            // Re-enqueue HTML for extractor invocation (initial + 1 bounded retry) and confirm extractor surfaces TIMEOUT (not Cancelled)
+            repeat(2) {
+                server.enqueue(MockResponse().setResponseCode(200).setBody(emptyHtml))
+            }
             val outcome = YouTubeTranscriptExtractor(dataSource, ioDispatcher = kotlinx.coroutines.Dispatchers.IO)
                 .extract("https://www.youtube.com/watch?v=t123")
             assertTrue("Expected Completed doc with TIMEOUT entry, got $outcome", outcome is TranscriptExtractionOutcome.Completed)
@@ -456,7 +458,9 @@ class YouTubeTranscriptExtractorTest {
             assertTrue(infoRes is VideoInfoFetchResult.Failed)
             assertEquals(VideoTranscriptStatus.EXTRACTION_ERROR, (infoRes as VideoInfoFetchResult.Failed).status)
 
-            server.enqueue(MockResponse().setResponseCode(503).setBody("Unavailable"))
+            repeat(2) {
+                server.enqueue(MockResponse().setResponseCode(503).setBody("Unavailable"))
+            }
             val outcome = YouTubeTranscriptExtractor(dataSource).extract("https://www.youtube.com/watch?v=c123")
             assertTrue("Expected Completed doc with EXTRACTION_ERROR (not Cancelled) when parent coroutine is active", outcome is TranscriptExtractionOutcome.Completed)
             val entry = (outcome as TranscriptExtractionOutcome.Completed).document.entries.single()
@@ -642,12 +646,560 @@ class YouTubeTranscriptExtractorTest {
     fun redactor_scrubsTokensSignedUrlsApiKeysAndDevicePaths() {
         val raw = "Failed fetching https://www.youtube.com/api/timedtext?v=abc&sig=SECRET_SIG&pot=SECRET_POT " +
             "key=AIzaSySecretApiKey12345678901234567 from /data/user/0/com.laterbox.app/cache/sub.vtt " +
-            "Bearer ya29.secret_oauth_token"
+            "Bearer ya29.secret_oauth_token SAPISIDHASH 1700000_abcd1234CookieHeader Cookie: SID=secret_cookie; HSID=abc"
         val clean = TranscriptRedactor.sanitize(raw, maxLen = 500)
         assertFalse(clean.contains("SECRET_SIG"))
         assertFalse(clean.contains("SECRET_POT"))
         assertFalse(clean.contains("AIzaSySecretApiKey"))
         assertFalse(clean.contains("/data/user/0/"))
         assertFalse(clean.contains("ya29.secret_oauth_token"))
+        assertFalse(clean.contains("1700000_abcd1234"))
+        assertFalse(clean.contains("secret_cookie"))
+    }
+
+    @Test
+    fun dataSource_warmTimeoutAndEof_fallbackToStandardProcessWithUniqueStdIdAndSucceed() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val userPrefs = com.laterbox.app.data.preferences.UserPreferencesRepository(context)
+        userPrefs.setFastEngineEnabled(true)
+
+        val serverSocket = java.net.ServerSocket(0, 10, java.net.InetAddress.getByName("127.0.0.1"))
+        val token = "tok_ds_test"
+        val mode = java.util.concurrent.atomic.AtomicInteger(0) // 0 = timeout, 1 = premature EOF
+        val dummyYtdlp = java.io.File(context.cacheDir, "ds_fake_ytdlp").apply { writeText("x") }
+
+        val stdoutPipe = java.io.PipedOutputStream()
+        val stdoutIn = java.io.PipedInputStream(stdoutPipe)
+        Thread {
+            stdoutPipe.write("READY port=${serverSocket.localPort} token=$token\n".toByteArray())
+            stdoutPipe.flush()
+        }.start()
+
+        val acceptAlive = java.util.concurrent.atomic.AtomicBoolean(true)
+        Thread({
+            while (acceptAlive.get() && !serverSocket.isClosed) {
+                try {
+                    val client = serverSocket.accept()
+                    Thread {
+                        try {
+                            val r = java.io.BufferedReader(java.io.InputStreamReader(client.getInputStream()))
+                            r.readLine()
+                            if (mode.get() == 0) {
+                                Thread.sleep(2200L) // Trigger warm socket timeout (timeoutMs=1000)
+                            } else {
+                                client.close() // Trigger premature EOF
+                            }
+                        } catch (_: Throwable) {
+                        }
+                    }.start()
+                } catch (_: Throwable) {
+                    break
+                }
+            }
+        }, "ds-warm-accept").start()
+
+        val fakeProc = object : Process() {
+            override fun isAlive(): Boolean = acceptAlive.get()
+            override fun destroy() { destroyForcibly() }
+            override fun destroyForcibly(): Process {
+                acceptAlive.set(false)
+                try { serverSocket.close() } catch (_: Throwable) {}
+                try { stdoutPipe.close() } catch (_: Throwable) {}
+                return this
+            }
+            override fun exitValue(): Int = 0
+            override fun getErrorStream(): java.io.InputStream = java.io.ByteArrayInputStream(ByteArray(0))
+            override fun getInputStream(): java.io.InputStream = stdoutIn
+            override fun getOutputStream(): java.io.OutputStream = java.io.ByteArrayOutputStream()
+            override fun waitFor(): Int = 0
+        }
+
+        val warmServer = com.laterbox.app.media.data.adapters.ytdlp.WarmYtDlpServer(
+            appContext = context,
+            userPreferencesRepository = userPrefs,
+            handshakeTimeoutMs = 1500L,
+            runtimeEnvProvider = {
+                com.laterbox.app.media.data.adapters.ytdlp.DaemonRuntimeEnv(dummyYtdlp, dummyYtdlp)
+            },
+            processLauncher = { _, _ -> fakeProc }
+        )
+
+        val observedStdIds = mutableListOf<String>()
+        val dataSource = LaterboxYouTubeTranscriptDataSource(
+            appContext = context,
+            runtimeManager = YtDlpRuntimeManager(context),
+            warmServer = warmServer,
+            metadataTimeoutMs = 1000L,
+            customExecutor = { req ->
+                val cmd = req.buildCommand().joinToString(" ")
+                val id = if (cmd.contains("v2")) "v2" else "v1"
+                val json = """{"id":"$id","title":"Recovered $id","subtitles":{"en":[{"ext":"vtt","url":"https://cap.test/$id.vtt"}]}}"""
+                com.yausername.youtubedl_android.YoutubeDLResponse(listOf<String?>(), 0, 20L, json, "")
+            }
+        ).apply {
+            onStandardExecute = { procId, _ -> observedStdIds.add(procId) }
+        }
+
+        try {
+            val res1 = dataSource.fetchVideoInfo("v1", "https://www.youtube.com/watch?v=v1", "proc_v1")
+            assertTrue("Warm socket timeout must fall back to standard process and succeed, got $res1", res1 is VideoInfoFetchResult.Success)
+            assertTrue(observedStdIds.contains("proc_v1_std"))
+
+            mode.set(1)
+            val res2 = dataSource.fetchVideoInfo("v2", "https://www.youtube.com/watch?v=v2", "proc_v2")
+            assertTrue("Warm premature EOF must fall back to standard process and succeed, got $res2", res2 is VideoInfoFetchResult.Success)
+            assertTrue(observedStdIds.contains("proc_v2_std"))
+        } finally {
+            acceptAlive.set(false)
+            warmServer.shutdown()
+            try { serverSocket.close() } catch (_: Throwable) {}
+        }
+    }
+
+    @Test
+    fun dataSource_warmAuthoritativeErrorDoesNotFallback_andWarmDoubleTimeoutRecordsFallbackDiagnostics() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val userPrefs = com.laterbox.app.data.preferences.UserPreferencesRepository(context)
+        userPrefs.setFastEngineEnabled(true)
+
+        val server = MockWebServer()
+        server.start()
+        val ss = java.net.ServerSocket(0, 10, java.net.InetAddress.getByName("127.0.0.1"))
+        val token = "tok_err_test"
+        val mode = java.util.concurrent.atomic.AtomicInteger(0) // 0 = ExtractorError(Private), 1 = SocketTimeout
+        val dummyYtdlp = java.io.File(context.cacheDir, "err_fake_ytdlp").apply { writeText("x") }
+
+        val stdoutPipe = java.io.PipedOutputStream()
+        val stdoutIn = java.io.PipedInputStream(stdoutPipe)
+        Thread {
+            stdoutPipe.write("READY port=${ss.localPort} token=$token\n".toByteArray())
+            stdoutPipe.flush()
+        }.start()
+
+        val alive = java.util.concurrent.atomic.AtomicBoolean(true)
+        Thread {
+            while (alive.get() && !ss.isClosed) {
+                try {
+                    val client = ss.accept()
+                    Thread {
+                        try {
+                            val r = java.io.BufferedReader(java.io.InputStreamReader(client.getInputStream()))
+                            val req = org.json.JSONObject(r.readLine()!!)
+                            val w = java.io.PrintWriter(java.io.OutputStreamWriter(client.getOutputStream()), true)
+                            if (mode.get() == 0) {
+                                w.println(
+                                    org.json.JSONObject()
+                                        .put("id", req.optString("id"))
+                                        .put("success", false)
+                                        .put("error", "ERROR: [youtube] priv1: Private video. Sign in if you've been granted access")
+                                        .toString()
+                                )
+                            } else {
+                                Thread.sleep(2200L) // Warm read timeout (timeoutMs=1000)
+                            }
+                        } catch (_: Throwable) {
+                        }
+                    }.start()
+                } catch (_: Throwable) {
+                    break
+                }
+            }
+        }.start()
+
+        val fakeProc = object : Process() {
+            override fun isAlive(): Boolean = alive.get()
+            override fun destroy() { destroyForcibly() }
+            override fun destroyForcibly(): Process {
+                alive.set(false)
+                try { ss.close() } catch (_: Throwable) {}
+                try { stdoutPipe.close() } catch (_: Throwable) {}
+                return this
+            }
+            override fun exitValue(): Int = 0
+            override fun getErrorStream(): java.io.InputStream = java.io.ByteArrayInputStream(ByteArray(0))
+            override fun getInputStream(): java.io.InputStream = stdoutIn
+            override fun getOutputStream(): java.io.OutputStream = java.io.ByteArrayOutputStream()
+            override fun waitFor(): Int = 0
+        }
+
+        val warmServer = com.laterbox.app.media.data.adapters.ytdlp.WarmYtDlpServer(
+            appContext = context,
+            userPreferencesRepository = userPrefs,
+            handshakeTimeoutMs = 1500L,
+            runtimeEnvProvider = { com.laterbox.app.media.data.adapters.ytdlp.DaemonRuntimeEnv(dummyYtdlp, dummyYtdlp) },
+            processLauncher = { _, _ -> fakeProc }
+        )
+
+        val httpClient = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                chain.proceed(chain.request().newBuilder().url(server.url("/watch")).build())
+            }
+            .build()
+
+        var stdExecutions = 0
+        val dataSource = LaterboxYouTubeTranscriptDataSource(
+            appContext = context,
+            runtimeManager = YtDlpRuntimeManager(context),
+            warmServer = warmServer,
+            okHttpClient = httpClient,
+            metadataTimeoutMs = 1000L,
+            customExecutor = {
+                Thread.sleep(1500L) // Time out standard fallback too
+                com.yausername.youtubedl_android.YoutubeDLResponse(listOf<String?>(), 0, 1500L, "{}", "")
+            }
+        ).apply {
+            onStandardExecute = { _, _ -> stdExecutions++ }
+        }
+
+        try {
+            // 1. Authoritative ExtractorError must NOT trigger standard fallback
+            server.enqueue(MockResponse().setResponseCode(503).setBody("unavailable"))
+            val privRes = dataSource.fetchVideoInfo("priv1", "https://www.youtube.com/watch?v=priv1", "p_priv")
+            assertTrue(privRes is VideoInfoFetchResult.Failed)
+            val privFailed = privRes as VideoInfoFetchResult.Failed
+            assertEquals(VideoTranscriptStatus.ACCESS_ERROR, privFailed.status)
+            assertFalse(privFailed.retryable)
+            assertEquals("Authoritative warm extractor error must NOT fall back to standard process", 0, stdExecutions)
+            assertEquals(false, privFailed.diagnosticInfo?.fallbackAttempted)
+
+            // 2. Warm socket timeout + standard process timeout -> rich combined failureClassification
+            mode.set(1)
+            server.enqueue(MockResponse().setResponseCode(503).setBody("unavailable"))
+            val doubleToRes = dataSource.fetchVideoInfo("to1", "https://www.youtube.com/watch?v=to1", "p_to")
+            assertTrue(doubleToRes is VideoInfoFetchResult.Failed)
+            val doubleFailed = doubleToRes as VideoInfoFetchResult.Failed
+            assertEquals(VideoTranscriptStatus.TIMEOUT, doubleFailed.status)
+            assertEquals(1, stdExecutions)
+            val diag = doubleFailed.diagnosticInfo
+            assertNotNull(diag)
+            assertEquals(true, diag!!.fallbackAttempted)
+            assertEquals("timeout", diag.fallbackResult)
+            assertEquals("warm_daemon->standard_process", diag.executionEngine)
+            assertEquals("warm_daemon_timeout->standard_process_timeout", diag.failureClassification)
+        } finally {
+            alive.set(false)
+            warmServer.shutdown()
+            try { ss.close() } catch (_: Throwable) {}
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun dataSource_cancelledDuringWarmExecution_neverStartsStandardFallback() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val userPrefs = com.laterbox.app.data.preferences.UserPreferencesRepository(context)
+        userPrefs.setFastEngineEnabled(true)
+
+        val ss = java.net.ServerSocket(0, 10, java.net.InetAddress.getByName("127.0.0.1"))
+        val token = "tok_cancel_warm"
+        val dummyYtdlp = java.io.File(context.cacheDir, "cancel_fake_ytdlp").apply { writeText("x") }
+        val stdoutPipe = java.io.PipedOutputStream()
+        val stdoutIn = java.io.PipedInputStream(stdoutPipe)
+        Thread {
+            stdoutPipe.write("READY port=${ss.localPort} token=$token\n".toByteArray())
+            stdoutPipe.flush()
+        }.start()
+
+        val startedLatch = java.util.concurrent.CountDownLatch(1)
+        val alive = java.util.concurrent.atomic.AtomicBoolean(true)
+        Thread {
+            while (alive.get() && !ss.isClosed) {
+                try {
+                    val client = ss.accept()
+                    Thread {
+                        try {
+                            val r = java.io.BufferedReader(java.io.InputStreamReader(client.getInputStream()))
+                            r.readLine()
+                            startedLatch.countDown()
+                            Thread.sleep(3000L)
+                        } catch (_: Throwable) {
+                        }
+                    }.start()
+                } catch (_: Throwable) {
+                    break
+                }
+            }
+        }.start()
+
+        val fakeProc = object : Process() {
+            override fun isAlive(): Boolean = alive.get()
+            override fun destroy() { destroyForcibly() }
+            override fun destroyForcibly(): Process {
+                alive.set(false)
+                try { ss.close() } catch (_: Throwable) {}
+                try { stdoutPipe.close() } catch (_: Throwable) {}
+                return this
+            }
+            override fun exitValue(): Int = 0
+            override fun getErrorStream(): java.io.InputStream = java.io.ByteArrayInputStream(ByteArray(0))
+            override fun getInputStream(): java.io.InputStream = stdoutIn
+            override fun getOutputStream(): java.io.OutputStream = java.io.ByteArrayOutputStream()
+            override fun waitFor(): Int = 0
+        }
+
+        val warmServer = com.laterbox.app.media.data.adapters.ytdlp.WarmYtDlpServer(
+            appContext = context,
+            userPreferencesRepository = userPrefs,
+            handshakeTimeoutMs = 1500L,
+            runtimeEnvProvider = { com.laterbox.app.media.data.adapters.ytdlp.DaemonRuntimeEnv(dummyYtdlp, dummyYtdlp) },
+            processLauncher = { _, _ -> fakeProc }
+        )
+
+        var stdCalls = 0
+        val dataSource = LaterboxYouTubeTranscriptDataSource(
+            appContext = context,
+            runtimeManager = YtDlpRuntimeManager(context),
+            warmServer = warmServer,
+            metadataTimeoutMs = 3000L,
+            customExecutor = {
+                com.yausername.youtubedl_android.YoutubeDLResponse(listOf<String?>(), 0, 10L, "{}", "")
+            }
+        ).apply {
+            onStandardExecute = { _, _ -> stdCalls++ }
+        }
+
+        try {
+            val job = async(kotlinx.coroutines.Dispatchers.IO) {
+                dataSource.fetchVideoInfo("vc", "https://www.youtube.com/watch?v=vc", "proc_cancel")
+            }
+            assertTrue(startedLatch.await(2, java.util.concurrent.TimeUnit.SECONDS))
+            job.cancel(CancellationException("User cancelled extraction"))
+            var threwCancel = false
+            try {
+                job.await()
+            } catch (_: CancellationException) {
+                threwCancel = true
+            }
+            assertTrue(threwCancel)
+            assertEquals("Standard fallback must NEVER run when user/parent cancels", 0, stdCalls)
+        } finally {
+            alive.set(false)
+            warmServer.shutdown()
+            try { ss.close() } catch (_: Throwable) {}
+        }
+    }
+
+    @Test
+    fun extract_boundedMetadataRetry_retriesTransientOnceWithoutDoubleCountingProgressAndSkipsNonRetryable() = runTest {
+        val cap1 = "https://captions.test/r1.vtt"
+        val attempts = linkedMapOf<String, Int>()
+        val ds = object : YouTubeTranscriptDataSource {
+            override suspend fun fetchVideoInfo(videoId: String, videoUrl: String, processId: String): VideoInfoFetchResult {
+                val n = (attempts[videoId] ?: 0) + 1
+                attempts[videoId] = n
+                return when (videoId) {
+                    "v_recover" -> if (n == 1) {
+                        VideoInfoFetchResult.Failed(VideoTranscriptStatus.TIMEOUT, "Timed out", retryable = true)
+                    } else {
+                        VideoInfoFetchResult.Success(
+                            FetchedVideoInfo("v_recover", "Recovered Video", videoUrl, captionTracks = listOf(CaptionTrackCandidate("en", "English", false, mapOf("vtt" to cap1))))
+                        )
+                    }
+                    "v_always_net" -> VideoInfoFetchResult.Failed(VideoTranscriptStatus.NETWORK_ERROR, "Connection reset", retryable = true)
+                    "v_private" -> VideoInfoFetchResult.Failed(VideoTranscriptStatus.ACCESS_ERROR, "Private video", retryable = false)
+                    "v_pot" -> VideoInfoFetchResult.Failed(VideoTranscriptStatus.ACCESS_ERROR, "PO token required to bypass bot check", retryable = true)
+                    else -> VideoInfoFetchResult.Failed(VideoTranscriptStatus.UNAVAILABLE, "Removed")
+                }
+            }
+
+            override suspend fun fetchPlaylistEntries(
+                playlistId: String,
+                playlistUrl: String,
+                processId: String,
+                onPageLoaded: suspend (Int, Int?) -> Unit
+            ): PlaylistFetchResult = PlaylistFetchResult.Success(
+                PlaylistResolution(
+                    playlistId = playlistId,
+                    title = "Retry Policy Test",
+                    sourceUrl = playlistUrl,
+                    totalCountHint = 4,
+                    entries = listOf(
+                        PlaylistEntrySummary(1, "v_recover", "Video 1", "https://www.youtube.com/watch?v=v_recover"),
+                        PlaylistEntrySummary(2, "v_always_net", "Video 2", "https://www.youtube.com/watch?v=v_always_net"),
+                        PlaylistEntrySummary(3, "v_private", "Video 3", "https://www.youtube.com/watch?v=v_private"),
+                        PlaylistEntrySummary(4, "v_pot", "Video 4", "https://www.youtube.com/watch?v=v_pot")
+                    )
+                )
+            )
+
+            override suspend fun fetchCaptionPayload(url: String): Result<String> =
+                Result.success("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nRecovered after bounded retry.")
+
+            override fun cancelProcess(processId: String) {}
+        }
+
+        val config = PlaylistResilienceConfig(
+            baseInterVideoDelayMs = 10L,
+            maxMetadataRetries = 1,
+            baseTransientRetryDelayMs = 10L,
+            maxTransientRetryDelayMs = 20L
+        )
+        val extractor = YouTubeTranscriptExtractor(
+            dataSource = ds,
+            clock = { 1700000000000L },
+            ioDispatcher = coroutineContext[kotlin.coroutines.ContinuationInterceptor] as? kotlinx.coroutines.CoroutineDispatcher
+                ?: kotlinx.coroutines.Dispatchers.IO,
+            resilienceConfig = config
+        )
+
+        val progressEvents = mutableListOf<TranscriptExtractionProgress>()
+        val outcome = extractor.extract(
+            rawUrl = "https://www.youtube.com/playlist?list=PLretry",
+            preference = TranscriptTargetPreference.PLAYLIST,
+            onProgress = { progressEvents.add(it) }
+        ) as TranscriptExtractionOutcome.Completed
+
+        val doc = outcome.document
+        assertEquals(4, doc.videosFound)
+        assertEquals(1, doc.successfulCount)
+        assertEquals(3, doc.inaccessibleCount)
+        assertEquals(2, attempts["v_recover"])
+        assertEquals(2, attempts["v_always_net"])
+        assertEquals("Private video must NOT be retried", 1, attempts["v_private"])
+        assertEquals("PO token failure must NOT be retried even if retryable flag set", 1, attempts["v_pot"])
+
+        // Verify diagnostic retry counters & non-double-counted progress index 1..4
+        assertEquals(1, doc.entries[1].diagnosticInfo?.retryCount)
+        assertEquals(2, doc.entries[1].diagnosticInfo?.attemptNumber)
+        val v1Progress = progressEvents.filter { it.stage == TranscriptExtractionStage.EXTRACTING_VIDEO && it.currentVideoIndex == 1 }
+        assertEquals(1, v1Progress.count { it.message == "Extracting video 1 of 4" })
+
+        // Verify Retry-After delay precedence for HTTP 429
+        val rateLimitedFailed = VideoInfoFetchResult.Failed(
+            status = VideoTranscriptStatus.RATE_LIMITED,
+            message = "HTTP 429 Too Many Requests",
+            retryable = true,
+            retryAfterSeconds = 7L
+        )
+        assertEquals(7000L, extractor.computeMetadataRetryDelayMs(rateLimitedFailed, retryIndex = 0))
+    }
+
+    @Test
+    fun playlistPacingController_escalatesOnTransientAnd429_ignoresTerminal_andRecoversOnSuccesses() {
+        val config = PlaylistResilienceConfig(
+            baseInterVideoDelayMs = 650L,
+            maxInterVideoDelayMs = 5000L,
+            rateLimitCooldownMs = 4000L,
+            transientBackoffStepMs = 600L,
+            recoverySuccessStreak = 3
+        )
+        val controller = PlaylistPacingController(config)
+        assertEquals(650L, controller.currentDelayMs)
+
+        // Terminal outcomes should not increase pacing delay
+        controller.recordOutcome(VideoTranscriptStatus.NO_CAPTIONS)
+        controller.recordOutcome(VideoTranscriptStatus.ACCESS_ERROR)
+        controller.recordOutcome(VideoTranscriptStatus.UNAVAILABLE)
+        assertEquals(650L, controller.currentDelayMs)
+        assertEquals(650L, controller.consumeNextDelayMs())
+
+        // Transient timeout escalates pacing delay
+        controller.recordOutcome(VideoTranscriptStatus.TIMEOUT)
+        assertTrue(controller.currentDelayMs > 650L)
+        val elevated = controller.currentDelayMs
+
+        // HTTP 429 with Retry-After=6 imposes 6000ms cooldown and escalates base delay
+        controller.recordOutcome(VideoTranscriptStatus.RATE_LIMITED, retryAfterSeconds = 6L)
+        assertTrue(controller.currentDelayMs > elevated)
+        val nextCooldown = controller.consumeNextDelayMs()
+        assertEquals(6000L, nextCooldown)
+
+        // Subsequent normal call uses regular currentDelayMs (cooldown consumed once)
+        val regularAfter = controller.consumeNextDelayMs()
+        assertEquals(controller.currentDelayMs, regularAfter)
+
+        // 3 consecutive successes begin stepping delay back down toward 650ms
+        val peakDelay = controller.currentDelayMs
+        repeat(3) { controller.recordOutcome(VideoTranscriptStatus.SUCCESS) }
+        assertTrue(controller.currentDelayMs < peakDelay)
+    }
+
+    @Test
+    fun extract_27VideoPlaylist_partialFailureVideos1To7Preserves8To27_andRetryFailedEntriesRetriesOnly1To7() = runTest {
+        val capUrl: (Int) -> String = { idx -> "https://captions.test/ep$idx.vtt" }
+        val entries = (1..27).map { idx ->
+            PlaylistEntrySummary(idx, "v$idx", "Episode $idx", "https://www.youtube.com/watch?v=v$idx")
+        }
+        val fetchedVideoIds = mutableListOf<String>()
+        var failFirstSeven = true
+
+        val ds = object : YouTubeTranscriptDataSource {
+            override suspend fun fetchVideoInfo(videoId: String, videoUrl: String, processId: String): VideoInfoFetchResult {
+                fetchedVideoIds.add(videoId)
+                val idx = videoId.removePrefix("v").toInt()
+                return if (failFirstSeven && idx in 1..7) {
+                    VideoInfoFetchResult.Failed(
+                        status = VideoTranscriptStatus.TIMEOUT,
+                        message = "Timed out while retrieving video metadata from YouTube.",
+                        retryable = true
+                    )
+                } else {
+                    VideoInfoFetchResult.Success(
+                        FetchedVideoInfo(
+                            videoId = videoId,
+                            title = "Episode $idx",
+                            url = videoUrl,
+                            captionTracks = listOf(CaptionTrackCandidate("en", "English", false, mapOf("vtt" to capUrl(idx))))
+                        )
+                    )
+                }
+            }
+
+            override suspend fun fetchPlaylistEntries(
+                playlistId: String,
+                playlistUrl: String,
+                processId: String,
+                onPageLoaded: suspend (Int, Int?) -> Unit
+            ): PlaylistFetchResult = PlaylistFetchResult.Success(
+                PlaylistResolution(playlistId, "27-Part Course", playlistUrl, 27, entries)
+            )
+
+            override suspend fun fetchCaptionPayload(url: String): Result<String> {
+                val ep = url.substringAfter("ep").substringBefore(".vtt")
+                return Result.success("WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nVerbatim caption for episode $ep.")
+            }
+
+            override fun cancelProcess(processId: String) {}
+        }
+
+        val extractor = YouTubeTranscriptExtractor(
+            dataSource = ds,
+            clock = { 1700000000000L },
+            ioDispatcher = coroutineContext[kotlin.coroutines.ContinuationInterceptor] as? kotlinx.coroutines.CoroutineDispatcher
+                ?: kotlinx.coroutines.Dispatchers.IO,
+            resilienceConfig = PlaylistResilienceConfig(
+                baseInterVideoDelayMs = 1L,
+                maxMetadataRetries = 1,
+                baseTransientRetryDelayMs = 1L
+            )
+        )
+
+        // Pass 1: Videos 1-7 fail metadata timeout while 8-27 succeed cleanly
+        val firstOutcome = extractor.extract(
+            rawUrl = "https://www.youtube.com/playlist?list=PL27",
+            preference = TranscriptTargetPreference.PLAYLIST
+        ) as TranscriptExtractionOutcome.Completed
+
+        val firstDoc = firstOutcome.document
+        assertEquals(27, firstDoc.videosFound)
+        assertEquals(20, firstDoc.successfulCount)
+        assertEquals(7, firstDoc.inaccessibleCount)
+        assertEquals(7, firstDoc.retryableFailedCount)
+
+        // Pass 2: Retry ONLY the 7 failed entries -> 8..27 must NOT be re-fetched and order must stay 1..27
+        fetchedVideoIds.clear()
+        failFirstSeven = false
+        val retryOutcome = extractor.retryFailedEntries(firstDoc) as TranscriptExtractionOutcome.Completed
+        val finalDoc = retryOutcome.document
+
+        assertEquals((1..7).map { "v$it" }, fetchedVideoIds)
+        assertEquals(27, finalDoc.videosFound)
+        assertEquals(27, finalDoc.successfulCount)
+        assertEquals(0, finalDoc.inaccessibleCount)
+        assertEquals(0, finalDoc.retryableFailedCount)
+        assertEquals((1..27).map { "v$it" }, finalDoc.entries.map { it.videoId })
+        assertEquals("Verbatim caption for episode 1.", finalDoc.entries[0].paragraphs.single().text)
+        assertEquals("Verbatim caption for episode 27.", finalDoc.entries[26].paragraphs.single().text)
     }
 }
+
