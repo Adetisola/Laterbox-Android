@@ -1,7 +1,9 @@
 package com.laterbox.app.transcript.data
 
+import android.util.Log
 import com.laterbox.app.transcript.domain.CaptionType
 import com.laterbox.app.transcript.domain.PlaylistEntrySummary
+import com.laterbox.app.transcript.domain.TranscriptDiagnosticInfo
 import com.laterbox.app.transcript.domain.TranscriptDocument
 import com.laterbox.app.transcript.domain.TranscriptExtractionProgress
 import com.laterbox.app.transcript.domain.TranscriptExtractionStage
@@ -18,6 +20,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import java.io.IOException
+import java.net.SocketTimeoutException
 import java.util.UUID
 
 sealed interface TranscriptExtractionOutcome {
@@ -29,8 +33,10 @@ sealed interface TranscriptExtractionOutcome {
 class YouTubeTranscriptExtractor(
     private val dataSource: YouTubeTranscriptDataSource,
     private val clock: () -> Long = { System.currentTimeMillis() },
-    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val playlistInterVideoDelayMs: Long = 150L
 ) {
+    private val tag = "YTTranscriptExtractor"
 
     suspend fun extract(
         rawUrl: String,
@@ -120,7 +126,7 @@ class YouTubeTranscriptExtractor(
                 )
             )
 
-            val entry = extractSingleEntry(
+            val entry = extractSingleEntryIsolated(
                 position = 1,
                 videoId = videoId,
                 videoUrl = videoUrl,
@@ -148,7 +154,7 @@ class YouTubeTranscriptExtractor(
                     message = if (doc.successfulCount > 0) {
                         "Transcript extracted."
                     } else {
-                        entry.statusMessage ?: "No captions available."
+                        entry.statusMessage ?: entry.status.displayLabel
                     }
                 )
             )
@@ -227,10 +233,20 @@ class YouTubeTranscriptExtractor(
         var noCaptionsCount = 0
         var failedCount = 0
         var activeSubProcessId: String? = null
+        var previousWasRateLimited = false
 
         try {
             for ((idx, summary) in playlistResolution.entries.withIndex()) {
                 currentCoroutineContext().ensureActive()
+
+                if (idx > 0) {
+                    val paceDelay = if (previousWasRateLimited) 1_200L else playlistInterVideoDelayMs
+                    if (paceDelay > 0L) {
+                        delay(paceDelay)
+                        currentCoroutineContext().ensureActive()
+                    }
+                }
+
                 val humanPos = idx + 1
                 onProgress(
                     TranscriptExtractionProgress(
@@ -255,13 +271,20 @@ class YouTubeTranscriptExtractor(
                         durationSeconds = summary.durationSeconds,
                         thumbnailUrl = summary.thumbnailUrl,
                         status = summary.unavailabilityStatus,
-                        statusMessage = summary.unavailableReason ?: summary.unavailabilityStatus.displayLabel
+                        statusMessage = summary.unavailableReason ?: summary.unavailabilityStatus.displayLabel,
+                        diagnosticInfo = TranscriptDiagnosticInfo(
+                            videoId = summary.videoId,
+                            stage = "playlist_listing",
+                            ytDlpVersion = dataSource.currentYtDlpVersion(),
+                            errorCategory = summary.unavailabilityStatus,
+                            sanitizedDetail = TranscriptRedactor.sanitize(summary.unavailableReason)
+                        )
                     )
                 } else {
                     val subProcId = "${processId}_v$humanPos"
                     activeSubProcessId = subProcId
                     try {
-                        extractSingleEntry(
+                        extractSingleEntryIsolated(
                             position = summary.position,
                             videoId = summary.videoId,
                             videoUrl = summary.url.ifBlank { YouTubeUrlParser.canonicalVideoUrl(summary.videoId) },
@@ -273,6 +296,7 @@ class YouTubeTranscriptExtractor(
                     }
                 }
 
+                previousWasRateLimited = entry.status == VideoTranscriptStatus.RATE_LIMITED
                 extractedEntries.add(entry)
                 when (entry.status) {
                     VideoTranscriptStatus.SUCCESS -> successCount++
@@ -280,6 +304,9 @@ class YouTubeTranscriptExtractor(
                     VideoTranscriptStatus.UNAVAILABLE,
                     VideoTranscriptStatus.ACCESS_ERROR,
                     VideoTranscriptStatus.NETWORK_ERROR,
+                    VideoTranscriptStatus.TIMEOUT,
+                    VideoTranscriptStatus.RATE_LIMITED,
+                    VideoTranscriptStatus.EXTRACTION_ERROR,
                     VideoTranscriptStatus.CANCELLED -> failedCount++
                 }
             }
@@ -333,6 +360,50 @@ class YouTubeTranscriptExtractor(
         return TranscriptExtractionOutcome.Completed(doc)
     }
 
+    private suspend fun extractSingleEntryIsolated(
+        position: Int,
+        videoId: String,
+        videoUrl: String,
+        fallbackSummary: PlaylistEntrySummary?,
+        processId: String
+    ): VideoTranscriptEntry {
+        return try {
+            extractSingleEntry(position, videoId, videoUrl, fallbackSummary, processId)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            val status = when (t) {
+                is InternalTimeoutException, is SocketTimeoutException -> VideoTranscriptStatus.TIMEOUT
+                is HttpStatusException -> mapHttpStatus(t.code)
+                is IOException -> VideoTranscriptStatus.NETWORK_ERROR
+                else -> VideoTranscriptStatus.EXTRACTION_ERROR
+            }
+            val msg = TranscriptRedactor.sanitize(t.message ?: status.displayLabel, 220)
+            val diag = TranscriptDiagnosticInfo(
+                videoId = videoId,
+                stage = "entry_isolation",
+                ytDlpVersion = dataSource.currentYtDlpVersion(),
+                errorCategory = status,
+                exceptionType = t.javaClass.simpleName,
+                httpStatusCode = (t as? HttpStatusException)?.code,
+                sanitizedDetail = msg
+            )
+            logDiagnostic(diag)
+            VideoTranscriptEntry(
+                position = position,
+                videoId = videoId,
+                title = fallbackSummary?.title ?: "Video $position ($videoId)",
+                url = videoUrl,
+                channel = fallbackSummary?.channel,
+                durationSeconds = fallbackSummary?.durationSeconds,
+                thumbnailUrl = fallbackSummary?.thumbnailUrl,
+                status = status,
+                statusMessage = msg,
+                diagnosticInfo = diag
+            )
+        }
+    }
+
     private suspend fun extractSingleEntry(
         position: Int,
         videoId: String,
@@ -340,10 +411,25 @@ class YouTubeTranscriptExtractor(
         fallbackSummary: PlaylistEntrySummary?,
         processId: String
     ): VideoTranscriptEntry {
-        val infoResult = fetchVideoInfoWithRateLimitRetry(videoId, videoUrl, processId)
+        val startedAt = clock()
+        var infoRetries = 0
+        val infoResult = fetchVideoInfoWithRateLimitRetry(videoId, videoUrl, processId) {
+            infoRetries++
+        }
         val info = when (infoResult) {
             is VideoInfoFetchResult.Success -> infoResult.info
             is VideoInfoFetchResult.Failed -> {
+                val diag = infoResult.diagnosticInfo?.copy(retryCount = infoRetries)
+                    ?: TranscriptDiagnosticInfo(
+                        videoId = videoId,
+                        stage = "video_metadata",
+                        ytDlpVersion = dataSource.currentYtDlpVersion(),
+                        errorCategory = infoResult.status,
+                        retryCount = infoRetries,
+                        elapsedMs = clock() - startedAt,
+                        sanitizedDetail = TranscriptRedactor.sanitize(infoResult.message)
+                    )
+                logDiagnostic(diag)
                 return VideoTranscriptEntry(
                     position = position,
                     videoId = videoId,
@@ -353,13 +439,14 @@ class YouTubeTranscriptExtractor(
                     durationSeconds = fallbackSummary?.durationSeconds,
                     thumbnailUrl = fallbackSummary?.thumbnailUrl,
                     status = infoResult.status,
-                    statusMessage = infoResult.message
+                    statusMessage = infoResult.message,
+                    diagnosticInfo = diag
                 )
             }
         }
 
-        val selected = CaptionLanguageSelector.selectBest(info.captionTracks)
-        if (selected == null) {
+        // Only report NO_CAPTIONS when metadata succeeded AND confirmed zero caption tracks exist.
+        if (info.captionTracks.isEmpty()) {
             return VideoTranscriptEntry(
                 position = position,
                 videoId = info.videoId,
@@ -373,90 +460,232 @@ class YouTubeTranscriptExtractor(
             )
         }
 
-        // Try selected format, then fallback format(s) on the same track if parsing/fetch fails
+        val selected = CaptionLanguageSelector.selectBest(info.captionTracks)
+        if (selected == null) {
+            val diag = TranscriptDiagnosticInfo(
+                videoId = info.videoId,
+                stage = "track_selection",
+                ytDlpVersion = dataSource.currentYtDlpVersion(),
+                playerClient = info.playerClientUsed,
+                errorCategory = VideoTranscriptStatus.EXTRACTION_ERROR,
+                elapsedMs = clock() - startedAt,
+                sanitizedDetail = "Caption tracks were listed (${info.captionTracks.size}) but no usable format URLs were present."
+            )
+            logDiagnostic(diag)
+            return VideoTranscriptEntry(
+                position = position,
+                videoId = info.videoId,
+                title = info.title,
+                url = info.url,
+                channel = info.channel ?: fallbackSummary?.channel,
+                durationSeconds = info.durationSeconds ?: fallbackSummary?.durationSeconds,
+                thumbnailUrl = info.thumbnailUrl ?: fallbackSummary?.thumbnailUrl,
+                status = VideoTranscriptStatus.EXTRACTION_ERROR,
+                statusMessage = "Caption tracks were listed, but no downloadable caption format was available.",
+                diagnosticInfo = diag
+            )
+        }
+
+        // Build ordered formats (inline native content first if present, then HTTP format order)
         val formatOrder = buildList {
             add(selected.format to selected.url)
-            val preferredOrder = listOf("json3", "vtt", "srv3", "srv1", "ttml")
+            val preferredOrder = listOf("json3", "vtt", "srv3", "srv1", "ttml", "srt")
             for (fmt in preferredOrder) {
+                val hasInline = !selected.track.inlineContentByFormat[fmt].isNullOrBlank()
                 val altUrl = selected.track.formatUrls[fmt]
-                if (!altUrl.isNullOrBlank() && fmt != selected.format) {
-                    add(fmt to altUrl)
+                if ((hasInline || !altUrl.isNullOrBlank()) && fmt != selected.format) {
+                    add(fmt to (altUrl ?: "native://${selected.track.languageCode}.$fmt"))
                 }
             }
         }
 
-        var lastError: Throwable? = null
+        var lastFetchError: Throwable? = null
+        var lastParseError: String? = null
+        var captionRetries = 0
+
         for ((fmt, url) in formatOrder) {
             currentCoroutineContext().ensureActive()
-            val payloadResult = fetchCaptionPayloadWithRetry(url)
-            val payload = payloadResult.getOrNull()
-            if (payload != null) {
-                val parsed = CaptionTrackParser.parse(payload, formatHint = fmt)
-                if (parsed.paragraphs.isNotEmpty()) {
-                    return VideoTranscriptEntry(
-                        position = position,
-                        videoId = info.videoId,
-                        title = info.title,
-                        url = info.url,
-                        channel = info.channel ?: fallbackSummary?.channel,
-                        durationSeconds = info.durationSeconds ?: fallbackSummary?.durationSeconds,
-                        thumbnailUrl = info.thumbnailUrl ?: fallbackSummary?.thumbnailUrl,
-                        captionLanguage = CaptionLanguageSelector.formatDisplayLanguage(selected.track),
-                        captionLanguageCode = selected.track.languageCode,
-                        captionType = if (selected.track.isAutoGenerated) CaptionType.AUTOMATIC else CaptionType.MANUAL,
-                        status = VideoTranscriptStatus.SUCCESS,
-                        statusMessage = VideoTranscriptStatus.SUCCESS.displayLabel,
-                        segments = parsed.segments,
-                        paragraphs = parsed.paragraphs
-                    )
+
+            val inlinePayload = selected.track.inlineContentByFormat[fmt]
+            val payload: String? = if (!inlinePayload.isNullOrBlank()) {
+                inlinePayload
+            } else if (url.startsWith("http://") || url.startsWith("https://")) {
+                val payloadResult = fetchCaptionPayloadWithRetry(url) { captionRetries++ }
+                if (payloadResult.isFailure) {
+                    lastFetchError = payloadResult.exceptionOrNull()
+                    null
+                } else {
+                    payloadResult.getOrNull()
                 }
             } else {
-                lastError = payloadResult.exceptionOrNull()
+                null
+            }
+
+            if (payload != null) {
+                if (looksLikeHtmlResponse(payload)) {
+                    lastFetchError = HttpStatusException(
+                        code = 403,
+                        message = "YouTube returned a verification or HTML error page instead of caption data."
+                    )
+                } else {
+                    val parsed = CaptionTrackParser.parse(payload, formatHint = fmt)
+                    if (parsed.paragraphs.isNotEmpty()) {
+                        return VideoTranscriptEntry(
+                            position = position,
+                            videoId = info.videoId,
+                            title = info.title,
+                            url = info.url,
+                            channel = info.channel ?: fallbackSummary?.channel,
+                            durationSeconds = info.durationSeconds ?: fallbackSummary?.durationSeconds,
+                            thumbnailUrl = info.thumbnailUrl ?: fallbackSummary?.thumbnailUrl,
+                            captionLanguage = CaptionLanguageSelector.formatDisplayLanguage(selected.track),
+                            captionLanguageCode = selected.track.languageCode,
+                            captionType = if (selected.track.isAutoGenerated) CaptionType.AUTOMATIC else CaptionType.MANUAL,
+                            status = VideoTranscriptStatus.SUCCESS,
+                            statusMessage = VideoTranscriptStatus.SUCCESS.displayLabel,
+                            segments = parsed.segments,
+                            paragraphs = parsed.paragraphs
+                        )
+                    } else {
+                        lastParseError = "Caption response ($fmt) was empty or could not be parsed."
+                    }
+                }
             }
         }
 
-        val isRateLimited = (lastError as? HttpStatusException)?.code == 429
-        return if (lastError != null && (lastError is HttpStatusException || isRateLimited)) {
-            VideoTranscriptEntry(
-                position = position,
+        // Fallback to native yt-dlp subtitle download when HTTP timedtext download failed with 403/unparseable
+        val shouldTryNativeFallback = selected.track.inlineContentByFormat.isEmpty() &&
+            ((lastFetchError as? HttpStatusException)?.code in setOf(401, 403) || lastParseError != null)
+        if (shouldTryNativeFallback) {
+            currentCoroutineContext().ensureActive()
+            val nativeRes = dataSource.fetchNativeSubtitles(
                 videoId = info.videoId,
-                title = info.title,
-                url = info.url,
-                channel = info.channel ?: fallbackSummary?.channel,
-                durationSeconds = info.durationSeconds ?: fallbackSummary?.durationSeconds,
-                thumbnailUrl = info.thumbnailUrl ?: fallbackSummary?.thumbnailUrl,
-                captionLanguage = CaptionLanguageSelector.formatDisplayLanguage(selected.track),
-                captionLanguageCode = selected.track.languageCode,
-                captionType = if (selected.track.isAutoGenerated) CaptionType.AUTOMATIC else CaptionType.MANUAL,
-                status = VideoTranscriptStatus.NETWORK_ERROR,
-                statusMessage = lastError.message ?: "Failed to retrieve caption track."
+                videoUrl = info.url,
+                processId = "${processId}_sub",
+                preferredLangSpec = "${selected.track.languageCode},en.*,en,.*",
+                playerClientOverride = "tv,android_vr,web_embedded"
             )
-        } else {
-            VideoTranscriptEntry(
-                position = position,
-                videoId = info.videoId,
-                title = info.title,
-                url = info.url,
-                channel = info.channel ?: fallbackSummary?.channel,
-                durationSeconds = info.durationSeconds ?: fallbackSummary?.durationSeconds,
-                thumbnailUrl = info.thumbnailUrl ?: fallbackSummary?.thumbnailUrl,
-                status = VideoTranscriptStatus.NO_CAPTIONS,
-                statusMessage = "No accessible captions were found for this video."
-            )
+            if (nativeRes is VideoInfoFetchResult.Success) {
+                val nativeSelected = CaptionLanguageSelector.selectBest(nativeRes.info.captionTracks)
+                val nativeContent = nativeSelected?.track?.inlineContentByFormat?.get(nativeSelected.format)
+                if (nativeSelected != null && !nativeContent.isNullOrBlank()) {
+                    val parsedNative = CaptionTrackParser.parse(nativeContent, formatHint = nativeSelected.format)
+                    if (parsedNative.paragraphs.isNotEmpty()) {
+                        return VideoTranscriptEntry(
+                            position = position,
+                            videoId = info.videoId,
+                            title = info.title,
+                            url = info.url,
+                            channel = info.channel ?: fallbackSummary?.channel,
+                            durationSeconds = info.durationSeconds ?: fallbackSummary?.durationSeconds,
+                            thumbnailUrl = info.thumbnailUrl ?: fallbackSummary?.thumbnailUrl,
+                            captionLanguage = CaptionLanguageSelector.formatDisplayLanguage(nativeSelected.track),
+                            captionLanguageCode = nativeSelected.track.languageCode,
+                            captionType = if (nativeSelected.track.isAutoGenerated) CaptionType.AUTOMATIC else CaptionType.MANUAL,
+                            status = VideoTranscriptStatus.SUCCESS,
+                            statusMessage = VideoTranscriptStatus.SUCCESS.displayLabel,
+                            segments = parsedNative.segments,
+                            paragraphs = parsedNative.paragraphs
+                        )
+                    }
+                }
+            }
         }
+
+        // Caption tracks WERE listed, so never turn failure/unparseable payload into a misleading NO_CAPTIONS!
+        val (status, message) = classifyCaptionDownloadFailure(lastFetchError, lastParseError)
+        val diag = TranscriptDiagnosticInfo(
+            videoId = info.videoId,
+            stage = "caption_download",
+            ytDlpVersion = dataSource.currentYtDlpVersion(),
+            playerClient = info.playerClientUsed,
+            errorCategory = status,
+            exceptionType = lastFetchError?.javaClass?.simpleName,
+            httpStatusCode = (lastFetchError as? HttpStatusException)?.code,
+            elapsedMs = clock() - startedAt,
+            retryCount = infoRetries + captionRetries,
+            sanitizedDetail = TranscriptRedactor.sanitize(lastFetchError?.message ?: lastParseError ?: message)
+        )
+        logDiagnostic(diag)
+
+        return VideoTranscriptEntry(
+            position = position,
+            videoId = info.videoId,
+            title = info.title,
+            url = info.url,
+            channel = info.channel ?: fallbackSummary?.channel,
+            durationSeconds = info.durationSeconds ?: fallbackSummary?.durationSeconds,
+            thumbnailUrl = info.thumbnailUrl ?: fallbackSummary?.thumbnailUrl,
+            captionLanguage = CaptionLanguageSelector.formatDisplayLanguage(selected.track),
+            captionLanguageCode = selected.track.languageCode,
+            captionType = if (selected.track.isAutoGenerated) CaptionType.AUTOMATIC else CaptionType.MANUAL,
+            status = status,
+            statusMessage = message,
+            diagnosticInfo = diag
+        )
+    }
+
+    private fun classifyCaptionDownloadFailure(
+        lastFetchError: Throwable?,
+        lastParseError: String?
+    ): Pair<VideoTranscriptStatus, String> {
+        return when (lastFetchError) {
+            is InternalTimeoutException, is SocketTimeoutException -> {
+                VideoTranscriptStatus.TIMEOUT to "Timed out while downloading captions."
+            }
+            is HttpStatusException -> {
+                val st = mapHttpStatus(lastFetchError.code)
+                st to TranscriptRedactor.sanitize(lastFetchError.message, 200)
+            }
+            is IOException -> {
+                VideoTranscriptStatus.NETWORK_ERROR to TranscriptRedactor.sanitize(
+                    lastFetchError.message ?: "Network error while downloading captions.",
+                    200
+                )
+            }
+            null -> {
+                VideoTranscriptStatus.EXTRACTION_ERROR to (
+                    lastParseError ?: "Caption data was returned in an empty or unsupported format."
+                    )
+            }
+            else -> {
+                VideoTranscriptStatus.EXTRACTION_ERROR to TranscriptRedactor.sanitize(
+                    lastFetchError.message ?: "Failed to extract caption track.",
+                    200
+                )
+            }
+        }
+    }
+
+    private fun mapHttpStatus(code: Int): VideoTranscriptStatus {
+        return when (code) {
+            429 -> VideoTranscriptStatus.RATE_LIMITED
+            401, 403 -> VideoTranscriptStatus.ACCESS_ERROR
+            404, 410 -> VideoTranscriptStatus.UNAVAILABLE
+            in 500..599 -> VideoTranscriptStatus.NETWORK_ERROR
+            else -> VideoTranscriptStatus.EXTRACTION_ERROR
+        }
+    }
+
+    private fun looksLikeHtmlResponse(payload: String): Boolean {
+        val sample = payload.trimStart().take(240).lowercase()
+        return sample.startsWith("<!doctype html") ||
+            sample.startsWith("<html") ||
+            (sample.contains("<html") && (sample.contains("sorry") || sample.contains("consent") || sample.contains("sign in")))
     }
 
     private suspend fun fetchVideoInfoWithRateLimitRetry(
         videoId: String,
         videoUrl: String,
-        processId: String
+        processId: String,
+        onRetry: () -> Unit
     ): VideoInfoFetchResult {
         val first = dataSource.fetchVideoInfo(videoId, videoUrl, processId)
         if (first is VideoInfoFetchResult.Failed &&
-            first.status == VideoTranscriptStatus.NETWORK_ERROR &&
             first.retryable &&
-            first.message.contains("429")
+            (first.status == VideoTranscriptStatus.RATE_LIMITED || first.message.contains("429"))
         ) {
+            onRetry()
             delay(1_200L)
             currentCoroutineContext().ensureActive()
             return dataSource.fetchVideoInfo(videoId, videoUrl, "${processId}_r1")
@@ -464,15 +693,39 @@ class YouTubeTranscriptExtractor(
         return first
     }
 
-    private suspend fun fetchCaptionPayloadWithRetry(url: String): Result<String> {
-        val first = dataSource.fetchCaptionPayload(url)
-        val ex = first.exceptionOrNull()
-        if (ex is HttpStatusException && ex.code == 429) {
-            delay(1_200L)
-            currentCoroutineContext().ensureActive()
-            return dataSource.fetchCaptionPayload(url)
+    private suspend fun fetchCaptionPayloadWithRetry(
+        url: String,
+        onRetry: () -> Unit
+    ): Result<String> {
+        var attemptResult = dataSource.fetchCaptionPayload(url)
+        val delaysMs = listOf(1_200L, 2_500L)
+        for (waitMs in delaysMs) {
+            val ex = attemptResult.exceptionOrNull()
+            if (ex is HttpStatusException && ex.code == 429) {
+                onRetry()
+                val retryAfterMs = ex.retryAfterSeconds?.times(1000L)?.coerceIn(500L, 10_000L) ?: waitMs
+                delay(retryAfterMs)
+                currentCoroutineContext().ensureActive()
+                attemptResult = dataSource.fetchCaptionPayload(url)
+            } else {
+                break
+            }
         }
-        return first
+        return attemptResult
+    }
+
+    private fun logDiagnostic(diag: TranscriptDiagnosticInfo) {
+        try {
+            Log.w(
+                tag,
+                "Transcript failure video=${diag.videoId} stage=${diag.stage} status=${diag.errorCategory} " +
+                    "client=${diag.playerClient ?: "-"} ytdlp=${diag.ytDlpVersion ?: "-"} " +
+                    "http=${diag.httpStatusCode ?: "-"} ex=${diag.exceptionType ?: "-"} " +
+                    "retries=${diag.retryCount} elapsedMs=${diag.elapsedMs ?: "-"} detail=${diag.sanitizedDetail ?: "-"}"
+            )
+        } catch (_: Throwable) {
+            // Safe no-op in unmocked unit environments if needed
+        }
     }
 
     internal fun buildDocument(

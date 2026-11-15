@@ -9,6 +9,9 @@ import com.laterbox.app.data.preferences.UserPreferencesRepository
 import com.laterbox.app.data.repository.ActivityEventRepository
 import com.laterbox.app.data.repository.ActivityEventType
 import com.laterbox.app.domain.model.ContentType
+import com.laterbox.app.media.data.adapters.ytdlp.YtDlpRuntimeManager
+import com.laterbox.app.media.data.db.entity.DownloadedAssetEntity
+import com.laterbox.app.media.domain.model.MediaType
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertFalse
@@ -23,6 +26,7 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34])
 class LaterboxContextEngineTest {
 
+    private lateinit var context: Context
     private lateinit var db: LaterboxDatabase
     private lateinit var prefsRepo: UserPreferencesRepository
     private lateinit var activityRepo: ActivityEventRepository
@@ -30,7 +34,7 @@ class LaterboxContextEngineTest {
 
     @Before
     fun setUp() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
+        context = ApplicationProvider.getApplicationContext<Context>()
         db = Room.inMemoryDatabaseBuilder(context, LaterboxDatabase::class.java)
             .allowMainThreadQueries()
             .build()
@@ -39,7 +43,9 @@ class LaterboxContextEngineTest {
         engine = LaterboxContextEngine(
             database = db,
             activityEventRepository = activityRepo,
-            userPreferencesRepository = prefsRepo
+            userPreferencesRepository = prefsRepo,
+            ytDlpRuntimeManager = YtDlpRuntimeManager(context),
+            appContext = context
         )
     }
 
@@ -79,9 +85,36 @@ class LaterboxContextEngineTest {
     }
 
     @Test
-    fun buildContextForPrompt_injectsHonestyReminderForTranscriptOrFullArticleQueries() = runTest {
-        val built = engine.buildContextForPrompt("Give me the full transcript of what they said in that video")
-        assertTrue(built.contextBlock.contains("HONESTY REMINDER"))
-        assertTrue(built.systemInstruction.contains("Allowed action objects ONLY"))
+    fun buildContextForPrompt_reportsLiveTranscriptAndDocumentLibraryCapabilitiesWithoutOutdatedClaims() = runTest {
+        prefsRepo.setCustomExportDirectory("content://com.android.externalstorage.documents/tree/primary%3ATranscripts", "Transcripts")
+        repeat(2) { idx ->
+            db.downloadedAssetDao().insertAsset(
+                DownloadedAssetEntity(
+                    id = "doc_$idx",
+                    savedLinkId = null,
+                    sourcePlatform = "YouTube Transcript",
+                    originalSourceUrl = "https://www.youtube.com/watch?v=vid$idx",
+                    title = "Transcript_$idx.md",
+                    mimeType = "text/markdown",
+                    mediaType = MediaType.DOCUMENT.name,
+                    localPath = "document/Transcript_$idx.md",
+                    fileSize = 256L,
+                    checksum = "hash_$idx",
+                    createdAt = 1700000000000L + idx
+                )
+            )
+        }
+
+        val built = engine.buildContextForPrompt("Can you extract a YouTube video transcript and export PDF?")
+        assertTrue(built.contextBlock.contains("Live App Capabilities & Runtime Status:"))
+        assertTrue(built.contextBlock.contains("YouTube Transcript Extraction"))
+        assertTrue(built.contextBlock.contains("Markdown (.md), Plain Text (.txt), PDF (.pdf)"))
+        assertTrue(built.contextBlock.contains("Transcript clipboard copy"))
+        assertTrue(built.contextBlock.contains("Downloads Library (Documents): Supported (2 saved documents)"))
+        assertTrue(built.contextBlock.contains("Transcripts"))
+        assertTrue(built.contextBlock.contains("CONTENT GROUNDING NOTE"))
+        assertTrue(built.systemInstruction.contains("OPEN_YOUTUBE_TRANSCRIPTS"))
+        assertFalse(built.systemInstruction.contains("does NOT transcribe videos"))
+        assertFalse(built.contextBlock.contains("video transcript is not stored locally"))
     }
 }

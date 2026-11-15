@@ -435,6 +435,7 @@ private fun ChatEmptyStarter(
 
     val starterPrompts = remember {
         listOf(
+            "Can you extract YouTube transcripts?",
             "Summarize what I saved recently",
             "Why did a download or inspection fail?",
             "Find my unread videos",
@@ -463,7 +464,7 @@ private fun ChatEmptyStarter(
         )
         Spacer(modifier = Modifier.height(spacing.xs))
         Text(
-            text = "Search your saved library, check media extractions and downloads, or run diagnostics.",
+            text = "Search your saved library, extract YouTube transcripts, check downloads, or run diagnostics.",
             style = typography.bodySecondary,
             color = colors.textSecondary
         )

@@ -68,6 +68,18 @@ sealed interface ChatAction {
         override val label: String get() = if (initialTab == 1) "Open download queue" else "Open downloads"
     }
 
+    data class OpenYouTubeTranscripts(
+        val url: String? = null,
+        val labelTitle: String? = null
+    ) : ChatAction {
+        override val label: String
+            get() = when {
+                !labelTitle.isNullOrBlank() -> labelTitle.take(36)
+                !url.isNullOrBlank() -> "Extract YouTube transcript"
+                else -> "Open YouTube Transcripts"
+            }
+    }
+
     data object OpenCollections : ChatAction {
         override val label: String get() = "Open collections"
     }
@@ -192,6 +204,11 @@ object AssistantActionHandler {
                     obj.put("type", "OPEN_DOWNLOADS")
                     obj.put("initialTab", action.initialTab)
                 }
+                is ChatAction.OpenYouTubeTranscripts -> {
+                    obj.put("type", "OPEN_YOUTUBE_TRANSCRIPTS")
+                    if (!action.url.isNullOrBlank()) obj.put("url", action.url)
+                    if (!action.labelTitle.isNullOrBlank()) obj.put("title", action.labelTitle)
+                }
                 is ChatAction.OpenCollections -> {
                     obj.put("type", "OPEN_COLLECTIONS")
                 }
@@ -240,6 +257,16 @@ object AssistantActionHandler {
             "OPEN_DOWNLOADS" -> {
                 val tab = obj.optInt("initialTab", 0).coerceIn(0, 1)
                 ChatAction.OpenDownloads(tab)
+            }
+            "OPEN_YOUTUBE_TRANSCRIPTS" -> {
+                val rawUrl = obj.optString("url").trim().takeIf { it.isNotBlank() }?.take(300)
+                val validUrl = if (rawUrl != null && com.laterbox.app.transcript.domain.YouTubeUrlParser.isYouTubeUrl(rawUrl)) {
+                    rawUrl
+                } else {
+                    null
+                }
+                val title = obj.optString("title").trim().takeIf { it.isNotBlank() }?.take(60)
+                ChatAction.OpenYouTubeTranscripts(url = validUrl, labelTitle = title)
             }
             "OPEN_COLLECTIONS" -> ChatAction.OpenCollections
             "OPEN_SETTINGS" -> {

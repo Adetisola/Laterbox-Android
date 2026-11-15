@@ -155,7 +155,9 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             database = database,
             activityEventRepository = activityEventRepository,
             userPreferencesRepository = userPreferencesRepository,
-            appHealthChecker = appHealthChecker
+            appHealthChecker = appHealthChecker,
+            ytDlpRuntimeManager = ytDlpRuntimeManager,
+            appContext = context.applicationContext
         )
     }
 
@@ -211,7 +213,8 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
 
     override val transcriptExportManager: com.laterbox.app.transcript.export.TranscriptExportManager by lazy {
         com.laterbox.app.transcript.export.TranscriptExportManager(
-            context = context.applicationContext
+            context = context.applicationContext,
+            mediaRepository = mediaRepository
         )
     }
 }

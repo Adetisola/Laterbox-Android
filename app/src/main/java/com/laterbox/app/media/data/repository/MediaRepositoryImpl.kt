@@ -285,6 +285,53 @@ class MediaRepositoryImpl(
         inspectionManager?.cancelInspection(linkId)
     }
 
+    override suspend fun saveGeneratedDocument(
+        title: String,
+        filename: String,
+        mimeType: String,
+        bytes: ByteArray,
+        sourcePlatform: String,
+        originalSourceUrl: String,
+        savedLinkId: Long?,
+        qualityLabel: String?
+    ): MediaAsset = withContext(Dispatchers.IO) {
+        val storageResult = storageManager.saveDocumentBytes(
+            filename = filename,
+            mimeType = mimeType,
+            bytes = bytes
+        )
+        val entity = com.laterbox.app.media.data.db.entity.DownloadedAssetEntity(
+            id = UUID.randomUUID().toString(),
+            savedLinkId = savedLinkId,
+            sourcePlatform = sourcePlatform,
+            originalSourceUrl = originalSourceUrl,
+            title = title,
+            mimeType = storageResult.mimeType,
+            mediaType = MediaType.DOCUMENT.name,
+            localPath = storageResult.relativePath,
+            exportedUri = null,
+            fileStatus = AssetFileStatus.AVAILABLE.name,
+            fileSize = storageResult.fileSize,
+            qualityLabel = qualityLabel,
+            checksum = storageResult.checksum,
+            createdAt = System.currentTimeMillis()
+        )
+        try {
+            assetDao.insertAsset(entity)
+        } catch (t: Throwable) {
+            val existingRefs = try { assetDao.countByLocalPath(storageResult.relativePath) } catch (_: Throwable) { 0 }
+            if (existingRefs == 0) {
+                storageManager.deletePhysicalFileIfUnreferenced(storageResult.relativePath, activeRefCount = 1)
+            }
+            throw t
+        }
+        entity.toDomain()
+    }
+
+    override suspend fun markAssetExported(assetId: String, exportedUri: String?): Unit = withContext(Dispatchers.IO) {
+        assetDao.updateExportedUri(assetId, exportedUri)
+    }
+
     override suspend fun recoverOrphanedInspection(linkId: Long) {
         inspectionManager?.recoverIfOrphaned(linkId)
     }

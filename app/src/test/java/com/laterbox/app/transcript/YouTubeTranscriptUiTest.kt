@@ -9,6 +9,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -248,5 +249,116 @@ class YouTubeTranscriptUiTest {
         composeTestRule.onNodeWithText("Scaling Storage Engines").assertIsDisplayed()
         composeTestRule.onNodeWithText("Cancel").performClick()
         assertEquals(1, cancelClicks)
+    }
+
+    @Test
+    fun youTubeTranscriptSheet_supportsCopyFullTranscriptCopyAllSaveToLibraryAndTechnicalDetails() {
+        val context = org.robolectric.RuntimeEnvironment.getApplication()
+        val longParagraphs = (1..90).map { idx ->
+            TranscriptParagraph(startMs = idx * 1000L, text = "Verbatim paragraph line $idx.")
+        }
+        val doc = TranscriptDocument(
+            isPlaylist = true,
+            title = "Systems Course",
+            sourceUrl = "https://www.youtube.com/playlist?list=PLsys",
+            extractedAtMillis = 1794700800000L,
+            videosFound = 2,
+            successfulCount = 1,
+            noCaptionsCount = 0,
+            inaccessibleCount = 1,
+            entries = listOf(
+                VideoTranscriptEntry(
+                    position = 1,
+                    videoId = "sys1",
+                    title = "Intro to Distributed Systems",
+                    url = "https://www.youtube.com/watch?v=sys1",
+                    captionLanguage = "English",
+                    captionType = CaptionType.MANUAL,
+                    status = VideoTranscriptStatus.SUCCESS,
+                    paragraphs = longParagraphs
+                ),
+                VideoTranscriptEntry(
+                    position = 2,
+                    videoId = "sys2",
+                    title = "Timed Out Episode",
+                    url = "https://www.youtube.com/watch?v=sys2",
+                    status = VideoTranscriptStatus.TIMEOUT,
+                    statusMessage = "Timed out while retrieving video metadata.",
+                    diagnosticInfo = com.laterbox.app.transcript.domain.TranscriptDiagnosticInfo(
+                        videoId = "sys2",
+                        stage = "video_metadata",
+                        ytDlpVersion = "2025.11.12",
+                        errorCategory = VideoTranscriptStatus.TIMEOUT,
+                        elapsedMs = 35000L,
+                        sanitizedDetail = "Timed out after 35s"
+                    )
+                )
+            )
+        )
+
+        var saveToLibraryClicks = 0
+        var manualSubmitClicks = 0
+        var showManualOnly by mutableStateOf(false)
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                YouTubeTranscriptSheetContent(
+                    uiState = if (showManualOnly) {
+                        YouTubeTranscriptUiState(
+                            isSheetVisible = true,
+                            allowManualUrlEntry = true,
+                            manualUrlInput = "https://www.youtube.com/watch?v=sys1"
+                        )
+                    } else {
+                        YouTubeTranscriptUiState(
+                            isSheetVisible = true,
+                            sourceUrl = doc.sourceUrl,
+                            document = doc
+                        )
+                    },
+                    onChooseTarget = {},
+                    onCancelExtraction = {},
+                    onRetryExtraction = {},
+                    onToggleFormat = {},
+                    onSetSelectAllFormats = {},
+                    hasWritableSafFolder = { false },
+                    onLaunchFolderPicker = {},
+                    onExportToSafTree = { _, _, _ -> },
+                    onExportToDownloads = {},
+                    onDismiss = {},
+                    onManualUrlChange = {},
+                    onSubmitManualUrl = { manualSubmitClicks++ },
+                    onSaveToLibrary = { saveToLibraryClicks++ }
+                )
+            }
+        }
+
+        // Expand video 2 and inspect Technical details
+        composeTestRule.onNodeWithText("2. Timed Out Episode").performScrollTo().performClick()
+        composeTestRule.onNodeWithText("Technical details").performScrollTo().performClick()
+        composeTestRule.onNodeWithText("Extractor: yt-dlp 2025.11.12", substring = true).performScrollTo().assertIsDisplayed()
+
+        // Click per-video Copy button on video 1 -> copies full 90 paragraphs (not truncated to 80!)
+        composeTestRule.onNodeWithText("1. Intro to Distributed Systems").performScrollTo()
+        composeTestRule.onNodeWithContentDescription("Copy transcript for Intro to Distributed Systems").performClick()
+        val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        val copiedSingle = clipboard.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
+        assertTrue(copiedSingle.contains("Verbatim paragraph line 90."))
+
+        // Click Copy All button on playlist summary card
+        composeTestRule.onNodeWithText("Copy All").performScrollTo().performClick()
+        val copiedAll = clipboard.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
+        assertTrue(copiedAll.contains("Systems Course"))
+        assertTrue(copiedAll.contains("Verbatim paragraph line 90."))
+
+        // Save to Laterbox Library (Documents)
+        composeTestRule.onNodeWithText("Save to Laterbox Library (Documents)").performScrollTo().performClick()
+        assertEquals(1, saveToLibraryClicks)
+
+        // Manual URL entry card when opened from Assistant
+        showManualOnly = true
+        composeTestRule.onNodeWithText("Enter a YouTube video or playlist URL").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Extract Transcript").performClick()
+        assertEquals(1, manualSubmitClicks)
     }
 }

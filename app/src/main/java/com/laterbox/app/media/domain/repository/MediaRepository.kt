@@ -49,4 +49,19 @@ interface MediaRepository {
     fun startInspection(linkId: Long, url: String, previewImageUrl: String? = null, forceRefresh: Boolean = false)
     suspend fun cancelInspection(linkId: Long)
     suspend fun recoverOrphanedInspection(linkId: Long) {}
+
+    suspend fun saveGeneratedDocument(
+        title: String,
+        filename: String,
+        mimeType: String,
+        bytes: ByteArray,
+        sourcePlatform: String,
+        originalSourceUrl: String,
+        savedLinkId: Long? = null,
+        qualityLabel: String? = null
+    ): MediaAsset {
+        throw UnsupportedOperationException("saveGeneratedDocument not implemented")
+    }
+
+    suspend fun markAssetExported(assetId: String, exportedUri: String?) {}
 }

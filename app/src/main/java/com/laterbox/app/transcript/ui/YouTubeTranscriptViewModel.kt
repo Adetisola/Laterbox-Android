@@ -28,6 +28,8 @@ import kotlinx.coroutines.launch
 data class YouTubeTranscriptUiState(
     val isSheetVisible: Boolean = false,
     val sourceUrl: String = "",
+    val manualUrlInput: String = "",
+    val allowManualUrlEntry: Boolean = false,
     val parsedTarget: YouTubeUrlTarget? = null,
     val selectedPreference: TranscriptTargetPreference = TranscriptTargetPreference.VIDEO,
     val needsTargetChoice: Boolean = false,
@@ -71,6 +73,60 @@ class YouTubeTranscriptViewModel(
         }
     }
 
+    /**
+     * Read-only Assistant entry point: opens the transcript sheet (optionally prefilled with a URL)
+     * without automatically firing extraction or mutating user library files without user interaction.
+     */
+    fun openFromAssistant(url: String? = null) {
+        val trimmed = url?.trim().orEmpty()
+        if (trimmed.isNotBlank() && _uiState.value.sourceUrl == trimmed &&
+            (_uiState.value.isExtracting || _uiState.value.document != null)
+        ) {
+            _uiState.update { it.copy(isSheetVisible = true) }
+            return
+        }
+
+        extractionJob?.cancel()
+        val parsed = if (trimmed.isNotBlank()) YouTubeUrlParser.parse(trimmed) else null
+        val defaultPref = when (parsed) {
+            is YouTubeUrlTarget.Playlist -> TranscriptTargetPreference.PLAYLIST
+            is YouTubeUrlTarget.VideoInPlaylist -> if (parsed.isAutoMix) TranscriptTargetPreference.VIDEO else TranscriptTargetPreference.PLAYLIST
+            else -> TranscriptTargetPreference.VIDEO
+        }
+
+        _uiState.update { state ->
+            YouTubeTranscriptUiState(
+                isSheetVisible = true,
+                sourceUrl = trimmed,
+                manualUrlInput = trimmed,
+                allowManualUrlEntry = true,
+                parsedTarget = parsed,
+                selectedPreference = defaultPref,
+                needsTargetChoice = parsed is YouTubeUrlTarget.VideoInPlaylist && !parsed.isAutoMix,
+                savedExportFolderUri = state.savedExportFolderUri,
+                savedExportFolderName = state.savedExportFolderName
+            )
+        }
+    }
+
+    fun onManualUrlChange(newUrl: String) {
+        _uiState.update {
+            it.copy(
+                manualUrlInput = newUrl,
+                errorMessage = null
+            )
+        }
+    }
+
+    fun submitManualUrlExtraction() {
+        val raw = _uiState.value.manualUrlInput.trim()
+        if (raw.isBlank()) {
+            _uiState.update { it.copy(errorMessage = "Enter a YouTube video or playlist URL.") }
+            return
+        }
+        openForUrl(raw)
+    }
+
     fun openForUrl(url: String) {
         val current = _uiState.value
         if (current.sourceUrl == url && (current.isExtracting || current.document != null)) {
@@ -87,6 +143,7 @@ class YouTubeTranscriptViewModel(
                 it.copy(
                     isSheetVisible = true,
                     sourceUrl = url,
+                    manualUrlInput = url,
                     parsedTarget = parsed,
                     needsTargetChoice = false,
                     isExtracting = false,
@@ -110,6 +167,7 @@ class YouTubeTranscriptViewModel(
             it.copy(
                 isSheetVisible = true,
                 sourceUrl = url,
+                manualUrlInput = url,
                 parsedTarget = parsed,
                 selectedPreference = defaultPreference,
                 needsTargetChoice = isAmbiguousPlaylist,
@@ -129,10 +187,11 @@ class YouTubeTranscriptViewModel(
     }
 
     fun chooseTargetAndExtract(preference: TranscriptTargetPreference) {
-        val url = _uiState.value.sourceUrl
+        val url = _uiState.value.sourceUrl.ifBlank { _uiState.value.manualUrlInput.trim() }
         if (url.isBlank()) return
         _uiState.update {
             it.copy(
+                sourceUrl = url,
                 selectedPreference = preference,
                 needsTargetChoice = false,
                 errorMessage = null
@@ -143,8 +202,9 @@ class YouTubeTranscriptViewModel(
 
     fun retryExtraction() {
         val state = _uiState.value
-        if (state.sourceUrl.isBlank()) return
-        startExtraction(state.sourceUrl, state.selectedPreference)
+        val url = state.sourceUrl.ifBlank { state.manualUrlInput.trim() }
+        if (url.isBlank()) return
+        startExtraction(url, state.selectedPreference)
     }
 
     private fun startExtraction(url: String, preference: TranscriptTargetPreference) {
@@ -241,6 +301,10 @@ class YouTubeTranscriptViewModel(
         return exportManager.isTreeUriWritable(context, _uiState.value.savedExportFolderUri)
     }
 
+    fun saveToLaterboxLibrary() {
+        runExport(ExportDestination.LaterboxLibrary)
+    }
+
     fun exportToSafTree(
         treeUri: Uri,
         displayName: String?,
@@ -284,6 +348,10 @@ class YouTubeTranscriptViewModel(
     }
 
     fun exportToDownloadsFolder() {
+        runExport(ExportDestination.DownloadsFolder)
+    }
+
+    private fun runExport(destination: ExportDestination) {
         val state = _uiState.value
         val doc = state.document ?: return
         if (state.selectedFormats.isEmpty() || state.isExporting) return
@@ -299,7 +367,7 @@ class YouTubeTranscriptViewModel(
             val result = exportManager.exportSelectedFormats(
                 document = doc,
                 formats = state.selectedFormats,
-                destination = ExportDestination.DownloadsFolder
+                destination = destination
             )
 
             _uiState.update {

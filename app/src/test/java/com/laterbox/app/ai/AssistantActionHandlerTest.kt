@@ -86,4 +86,31 @@ class AssistantActionHandlerTest {
         assertEquals(emptyList<ChatAction>(), AssistantActionHandler.fromJsonList("{not valid json"))
         assertEquals(emptyList<ChatAction>(), AssistantActionHandler.fromJsonList(null))
     }
+
+    @Test
+    fun openYouTubeTranscripts_validatesYouTubeUrlIsReadOnlyAndRoundTrips() {
+        val raw = """
+            You can open the YouTube transcript extractor directly.
+            [ACTIONS]
+            [
+              {"type":"OPEN_YOUTUBE_TRANSCRIPTS","url":"https://www.youtube.com/watch?v=dQw4w9WgXcQ","title":"Extract Talk Transcript"},
+              {"type":"OPEN_YOUTUBE_TRANSCRIPTS","url":"https://evil.example/not-youtube","title":"Manual Entry"}
+            ]
+            [/ACTIONS]
+        """.trimIndent()
+
+        val parsed = AssistantActionHandler.parseModelResponse(raw)
+        assertEquals(2, parsed.actions.size)
+        val first = parsed.actions[0] as ChatAction.OpenYouTubeTranscripts
+        assertEquals("https://www.youtube.com/watch?v=dQw4w9WgXcQ", first.url)
+        assertEquals("Extract Talk Transcript", first.labelTitle)
+        assertEquals(ActionCategory.READ_ONLY, first.category)
+
+        val second = parsed.actions[1] as ChatAction.OpenYouTubeTranscripts
+        assertEquals(null, second.url)
+        assertEquals("Manual Entry", second.labelTitle)
+
+        val roundTripped = AssistantActionHandler.fromJsonList(AssistantActionHandler.toJsonList(parsed.actions))
+        assertEquals(parsed.actions, roundTripped)
+    }
 }

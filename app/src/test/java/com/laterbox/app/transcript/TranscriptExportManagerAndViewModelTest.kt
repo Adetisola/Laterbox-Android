@@ -23,6 +23,7 @@ import com.laterbox.app.transcript.export.TranscriptTargetWriter
 import com.laterbox.app.transcript.ui.YouTubeTranscriptViewModel
 import com.laterbox.app.util.MainDispatcherRule
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -266,5 +267,179 @@ class TranscriptExportManagerAndViewModelTest {
         assertTrue(res!!.allSucceeded)
         assertEquals(3, res.outcomes.size)
         assertEquals(3, writer.writtenFiles.size)
+    }
+
+    @Test
+    fun exportManager_persistsDocumentsIntoDownloadsLibrary_andPreservesInternalCopyOnExternalFailure() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(
+            context,
+            com.laterbox.app.data.local.LaterboxDatabase::class.java
+        ).allowMainThreadQueries().build()
+        try {
+            val mediaRepo = com.laterbox.app.media.data.repository.MediaRepositoryImpl(
+                context = context,
+                assetDao = db.downloadedAssetDao(),
+                taskDao = db.downloadTaskDao()
+            )
+            val doc = sampleDocument()
+
+            // 1. Export directly to Laterbox Downloads Library (Documents)
+            val libraryOnlyManager = TranscriptExportManager(
+                context = context,
+                mediaRepository = mediaRepo,
+                ioDispatcher = mainDispatcherRule.testDispatcher
+            )
+            val libRes = libraryOnlyManager.exportSelectedFormats(
+                document = doc,
+                formats = setOf(ExportFormat.MARKDOWN, ExportFormat.PLAIN_TEXT),
+                destination = ExportDestination.LaterboxLibrary
+            )
+            assertTrue(libRes.allSucceeded)
+            assertTrue(libRes.anySavedToLibrary)
+
+            val storedDocs = db.downloadedAssetDao()
+                .filterAssets(com.laterbox.app.media.domain.model.MediaType.DOCUMENT.name, "")
+                .first()
+            assertEquals(2, storedDocs.size)
+            assertTrue(storedDocs.all { it.savedLinkId == null })
+            assertTrue(storedDocs.all { it.localPath.startsWith("document/") })
+            assertTrue(storedDocs.all { java.io.File(context.filesDir, "media/${it.localPath}").exists() })
+
+            // 2. External SAF export partially fails on PDF -> internal Library PDF document must still be preserved!
+            val partialFailingWriter = InMemoryTargetWriter(failFormats = setOf(ExportFormat.PDF))
+            val hybridManager = TranscriptExportManager(
+                context = context,
+                mediaRepository = mediaRepo,
+                targetWriter = partialFailingWriter,
+                ioDispatcher = mainDispatcherRule.testDispatcher
+            )
+            val hybridRes = hybridManager.exportSelectedFormats(
+                document = doc,
+                formats = setOf(ExportFormat.MARKDOWN, ExportFormat.PDF),
+                destination = ExportDestination.SafTree(Uri.parse("content://test.saf/tree/dir"), "Exports")
+            )
+            assertFalse(hybridRes.allSucceeded)
+            assertTrue(hybridRes.anySavedToLibrary)
+            val mdOutcome = hybridRes.outcomes.first { it.format == ExportFormat.MARKDOWN }
+            val pdfOutcome = hybridRes.outcomes.first { it.format == ExportFormat.PDF }
+            assertTrue(mdOutcome.success && mdOutcome.savedToLibrary)
+            assertFalse(pdfOutcome.success)
+            assertTrue("Internal Library document must be saved even when external SAF export fails", pdfOutcome.savedToLibrary)
+
+            val updatedDocs = db.downloadedAssetDao()
+                .filterAssets(com.laterbox.app.media.domain.model.MediaType.DOCUMENT.name, "")
+                .first()
+            assertEquals(4, updatedDocs.size)
+            val savedMdAsset = updatedDocs.firstOrNull { it.id == mdOutcome.libraryAssetId }
+            assertNotNull(savedMdAsset?.exportedUri)
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun viewModel_timeoutDoesNotShowCancelled_andOpenFromAssistantDoesNotAutoExtract() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        var videoFetchCalls = 0
+        val timeoutDs = object : YouTubeTranscriptDataSource {
+            override suspend fun fetchVideoInfo(videoId: String, videoUrl: String, processId: String): VideoInfoFetchResult {
+                videoFetchCalls++
+                return VideoInfoFetchResult.Failed(
+                    status = VideoTranscriptStatus.TIMEOUT,
+                    message = "Timed out while retrieving video metadata from YouTube."
+                )
+            }
+
+            override suspend fun fetchPlaylistEntries(
+                playlistId: String,
+                playlistUrl: String,
+                processId: String,
+                onPageLoaded: suspend (Int, Int?) -> Unit
+            ): PlaylistFetchResult = PlaylistFetchResult.Failed(VideoTranscriptStatus.TIMEOUT, "timeout")
+
+            override suspend fun fetchCaptionPayload(url: String): Result<String> = Result.failure(IOException("unused"))
+            override fun cancelProcess(processId: String) {}
+        }
+
+        val vm = YouTubeTranscriptViewModel(
+            extractor = YouTubeTranscriptExtractor(timeoutDs, ioDispatcher = mainDispatcherRule.testDispatcher),
+            exportManager = TranscriptExportManager(context, ioDispatcher = mainDispatcherRule.testDispatcher),
+            userPreferencesRepository = UserPreferencesRepository(context)
+        )
+
+        // Assistant opens sheet read-only with prefilled URL -> must NOT auto-extract
+        vm.openFromAssistant("https://www.youtube.com/watch?v=vid_to")
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.isSheetVisible)
+        assertTrue(vm.uiState.value.allowManualUrlEntry)
+        assertFalse(vm.uiState.value.isExtracting)
+        assertEquals(0, videoFetchCalls)
+
+        // User submits extraction -> timeout produces document entry with TIMEOUT status and does NOT mark wasCancelled
+        vm.submitManualUrlExtraction()
+        advanceUntilIdle()
+        assertEquals(1, videoFetchCalls)
+        assertFalse(vm.uiState.value.wasCancelled)
+        val entry = vm.uiState.value.document?.entries?.singleOrNull()
+        assertNotNull(entry)
+        assertEquals(VideoTranscriptStatus.TIMEOUT, entry!!.status)
+        assertTrue(entry.statusMessage?.contains("Timed out") == true)
+        assertFalse(vm.uiState.value.errorMessage.orEmpty().contains("was cancelled"))
+    }
+
+    @Test
+    fun clipboardFormatter_copiesFullUntruncatedSingleAndPlaylistTranscripts() {
+        val longParagraphs = (1..120).map { idx ->
+            TranscriptParagraph(startMs = idx * 1000L, text = "Spoken sentence number $idx.")
+        }
+        val successEntry1 = VideoTranscriptEntry(
+            position = 1,
+            videoId = "v1",
+            title = "Long Video",
+            url = "https://www.youtube.com/watch?v=v1",
+            status = VideoTranscriptStatus.SUCCESS,
+            paragraphs = longParagraphs
+        )
+        val singleClip = com.laterbox.app.transcript.export.TranscriptClipboardFormatter.formatSingleVideo(successEntry1)
+        assertTrue(singleClip.contains("Long Video"))
+        assertTrue(singleClip.contains("Spoken sentence number 1."))
+        assertTrue("Clipboard copy must include all paragraphs beyond 80 preview cap", singleClip.contains("Spoken sentence number 120."))
+
+        val playlistDoc = TranscriptDocument(
+            isPlaylist = true,
+            title = "Series Title",
+            sourceUrl = "https://www.youtube.com/playlist?list=PLseries",
+            extractedAtMillis = 1794700800000L,
+            videosFound = 3,
+            successfulCount = 2,
+            noCaptionsCount = 1,
+            inaccessibleCount = 0,
+            entries = listOf(
+                successEntry1,
+                VideoTranscriptEntry(
+                    position = 2,
+                    videoId = "v2",
+                    title = "No Captions Clip",
+                    url = "https://www.youtube.com/watch?v=v2",
+                    status = VideoTranscriptStatus.NO_CAPTIONS
+                ),
+                VideoTranscriptEntry(
+                    position = 3,
+                    videoId = "v3",
+                    title = "Third Video",
+                    url = "https://www.youtube.com/watch?v=v3",
+                    status = VideoTranscriptStatus.SUCCESS,
+                    paragraphs = listOf(TranscriptParagraph(5000L, "Third video spoken text."))
+                )
+            )
+        )
+        val playlistClip = com.laterbox.app.transcript.export.TranscriptClipboardFormatter.formatPlaylist(playlistDoc)
+        assertTrue(playlistClip.contains("Series Title"))
+        assertTrue(playlistClip.contains("1. Long Video"))
+        assertTrue(playlistClip.contains("Spoken sentence number 120."))
+        assertTrue(playlistClip.contains("3. Third Video"))
+        assertTrue(playlistClip.contains("Third video spoken text."))
+        assertFalse(playlistClip.contains("No Captions Clip"))
     }
 }

@@ -27,7 +27,7 @@ object CaptionLanguageSelector {
     fun selectBest(tracks: List<CaptionTrackCandidate>): SelectedCaptionSource? {
         if (tracks.isEmpty()) return null
 
-        val viableTracks = tracks.filter { it.formatUrls.isNotEmpty() }
+        val viableTracks = tracks.filter { it.formatUrls.isNotEmpty() || it.inlineContentByFormat.isNotEmpty() }
         if (viableTracks.isEmpty()) return null
 
         val rankedTrack = viableTracks.minWithOrNull(
@@ -38,12 +38,30 @@ object CaptionLanguageSelector {
             )
         ) ?: return null
 
+        val bestInline = selectBestInlineFormat(rankedTrack.inlineContentByFormat)
+        if (bestInline != null) {
+            return SelectedCaptionSource(
+                track = rankedTrack,
+                format = bestInline,
+                url = rankedTrack.formatUrls[bestInline] ?: "native://${rankedTrack.languageCode}.$bestInline"
+            )
+        }
+
         val bestFormat = selectBestFormat(rankedTrack.formatUrls) ?: return null
         return SelectedCaptionSource(
             track = rankedTrack,
             format = bestFormat.first,
             url = bestFormat.second
         )
+    }
+
+    private fun selectBestInlineFormat(inlineMap: Map<String, String>): String? {
+        if (inlineMap.isEmpty()) return null
+        val lowerMap = inlineMap.entries.associate { it.key.lowercase() to it.value }
+        for (fmt in FORMAT_PREFERENCE) {
+            if (!lowerMap[fmt].isNullOrBlank()) return fmt
+        }
+        return inlineMap.entries.firstOrNull { it.value.isNotBlank() }?.key?.lowercase()
     }
 
     fun selectBestFormat(formatUrls: Map<String, String>): Pair<String, String>? {

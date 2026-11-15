@@ -1,5 +1,7 @@
 package com.laterbox.app.transcript.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -24,6 +26,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
@@ -39,14 +44,18 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -54,10 +63,12 @@ import androidx.documentfile.provider.DocumentFile
 import com.laterbox.app.transcript.domain.CaptionType
 import com.laterbox.app.transcript.domain.ExportFormat
 import com.laterbox.app.transcript.domain.SingleExportOutcome
+import com.laterbox.app.transcript.domain.TranscriptDiagnosticInfo
 import com.laterbox.app.transcript.domain.TranscriptDocument
 import com.laterbox.app.transcript.domain.TranscriptTargetPreference
 import com.laterbox.app.transcript.domain.VideoTranscriptEntry
 import com.laterbox.app.transcript.domain.VideoTranscriptStatus
+import com.laterbox.app.transcript.export.TranscriptClipboardFormatter
 import com.laterbox.app.transcript.export.TranscriptFormatting
 import com.laterbox.app.ui.components.LaterboxBadge
 import com.laterbox.app.ui.components.LaterboxBadgeVariant
@@ -86,10 +97,12 @@ fun YouTubeTranscriptSheet(
     onExportToDownloads: () -> Unit,
     onDestinationPickerCancelled: () -> Unit,
     onDismiss: () -> Unit,
+    onManualUrlChange: (String) -> Unit = {},
+    onSubmitManualUrl: () -> Unit = {},
+    onSaveToLibrary: () -> Unit = {},
     sheetState: SheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 ) {
     val colors = LaterboxTheme.colors
-    val typography = LaterboxTheme.typography
     val spacing = LaterboxTheme.spacing
     val context = LocalContext.current
 
@@ -140,7 +153,10 @@ fun YouTubeTranscriptSheet(
             onLaunchFolderPicker = { folderPickerLauncher.launch(null) },
             onExportToSafTree = onExportToSafTree,
             onExportToDownloads = onExportToDownloads,
-            onDismiss = onDismiss
+            onDismiss = onDismiss,
+            onManualUrlChange = onManualUrlChange,
+            onSubmitManualUrl = onSubmitManualUrl,
+            onSaveToLibrary = onSaveToLibrary
         )
     }
 }
@@ -157,7 +173,10 @@ internal fun YouTubeTranscriptSheetContent(
     onLaunchFolderPicker: () -> Unit,
     onExportToSafTree: (Uri, String?, Boolean) -> Unit,
     onExportToDownloads: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onManualUrlChange: (String) -> Unit = {},
+    onSubmitManualUrl: () -> Unit = {},
+    onSaveToLibrary: () -> Unit = {}
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -201,6 +220,59 @@ internal fun YouTubeTranscriptSheetContent(
                 tint = colors.textPrimary,
                 onClick = onDismiss
             )
+        }
+
+        // Manual URL Entry Card (when opened from Assistant or ready to extract a custom YouTube URL)
+        if (uiState.allowManualUrlEntry && !uiState.isExtracting && uiState.document == null && !uiState.needsTargetChoice) {
+            LaterboxCard(variant = LaterboxCardVariant.SECONDARY) {
+                Column(
+                    modifier = Modifier.padding(spacing.md),
+                    verticalArrangement = Arrangement.spacedBy(spacing.sm)
+                ) {
+                    Text(
+                        text = "Enter a YouTube video or playlist URL",
+                        style = typography.cardTitle,
+                        color = colors.textPrimary
+                    )
+                    Text(
+                        text = "Laterbox extracts existing YouTube captions without downloading video or audio.",
+                        style = typography.bodySecondary,
+                        color = colors.textSecondary
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(LaterboxShapeTokens.InputField)
+                            .background(colors.surfacePrimary)
+                            .border(spacing.hairline, colors.borderSubtle, LaterboxShapeTokens.InputField)
+                            .padding(horizontal = spacing.md, vertical = 12.dp)
+                    ) {
+                        if (uiState.manualUrlInput.isBlank()) {
+                            Text(
+                                text = "https://www.youtube.com/watch?v=... or playlist URL",
+                                style = typography.bodySecondary,
+                                color = colors.textTertiary
+                            )
+                        }
+                        BasicTextField(
+                            value = uiState.manualUrlInput,
+                            onValueChange = onManualUrlChange,
+                            singleLine = true,
+                            textStyle = typography.bodyPrimary.copy(color = colors.textPrimary),
+                            cursorBrush = SolidColor(colors.accentPrimary),
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                            keyboardActions = KeyboardActions(onGo = { onSubmitManualUrl() }),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    LaterboxPrimaryButton(
+                        text = "Extract Transcript",
+                        onClick = onSubmitManualUrl,
+                        enabled = uiState.manualUrlInput.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
         }
 
         // Step 1: Target Disambiguation for video URL inside a playlist
@@ -271,14 +343,26 @@ internal fun YouTubeTranscriptSheetContent(
         // Step 3: Extracted Document Summary, Entries, and Multi-Format Export
         val document = uiState.document
         if (document != null && !uiState.isExtracting) {
-            TranscriptSummaryCard(document = document)
+            TranscriptSummaryCard(
+                document = document,
+                onCopyAll = {
+                    val text = TranscriptClipboardFormatter.formatPlaylist(document)
+                    copyTextToClipboard(
+                        context = context,
+                        label = document.title,
+                        text = text,
+                        toastMessage = if (document.isPlaylist) "All transcripts copied." else "Transcript copied."
+                    )
+                }
+            )
 
             if (!document.hasAnySuccessfulTranscript) {
+                val singleEntry = document.entries.firstOrNull()
                 LaterboxBanner(
                     text = if (document.isPlaylist) {
-                        "No accessible captions were found for any of the ${document.videosFound} playlist videos."
+                        "No transcripts could be extracted for any of the ${document.videosFound} playlist videos."
                     } else {
-                        document.entries.firstOrNull()?.statusMessage
+                        singleEntry?.statusMessage
                             ?: "No accessible captions were found for this video."
                     },
                     isWarning = true,
@@ -306,6 +390,7 @@ internal fun YouTubeTranscriptSheetContent(
                             onLaunchFolderPicker()
                         }
                     },
+                    onSaveToLibraryClick = onSaveToLibrary,
                     onChangeFolderClick = onLaunchFolderPicker,
                     onExportToDownloadsClick = onExportToDownloads
                 )
@@ -319,13 +404,25 @@ internal fun YouTubeTranscriptSheetContent(
                     allSucceeded = exportResult.allSucceeded,
                     anySucceeded = exportResult.anySucceeded,
                     anyFailed = exportResult.anyFailed,
+                    anySavedToLibrary = exportResult.anySavedToLibrary,
                     onOpenOutcome = { outcome -> openExportedFile(context, outcome) },
                     onShareOutcome = { outcome -> shareExportedFile(context, outcome) }
                 )
             }
 
             // Individual Video Entries Preview
-            TranscriptEntriesSection(document = document)
+            TranscriptEntriesSection(
+                document = document,
+                onCopyEntry = { entry ->
+                    val text = TranscriptClipboardFormatter.formatSingleVideo(entry)
+                    copyTextToClipboard(
+                        context = context,
+                        label = entry.title,
+                        text = text,
+                        toastMessage = "Transcript copied."
+                    )
+                }
+            )
         }
     }
 }
@@ -424,7 +521,10 @@ private fun ExtractionProgressCard(
 }
 
 @Composable
-private fun TranscriptSummaryCard(document: TranscriptDocument) {
+private fun TranscriptSummaryCard(
+    document: TranscriptDocument,
+    onCopyAll: () -> Unit
+) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
     val spacing = LaterboxTheme.spacing
@@ -435,18 +535,32 @@ private fun TranscriptSummaryCard(document: TranscriptDocument) {
             verticalArrangement = Arrangement.spacedBy(spacing.xs)
         ) {
             Row(
+                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(spacing.xs)
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                LaterboxBadge(
-                    text = if (document.isPlaylist) "Playlist" else "Single Video",
-                    variant = LaterboxBadgeVariant.ACCENT
-                )
-                Text(
-                    text = TranscriptFormatting.formatDateIso(document.extractedAtMillis),
-                    style = typography.metaText,
-                    color = colors.textTertiary
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(spacing.xs)
+                ) {
+                    LaterboxBadge(
+                        text = if (document.isPlaylist) "Playlist" else "Single Video",
+                        variant = LaterboxBadgeVariant.ACCENT
+                    )
+                    Text(
+                        text = TranscriptFormatting.formatDateIso(document.extractedAtMillis),
+                        style = typography.metaText,
+                        color = colors.textTertiary
+                    )
+                }
+
+                if (document.isPlaylist && document.hasAnySuccessfulTranscript) {
+                    LaterboxTextButton(
+                        text = "Copy All",
+                        onClick = onCopyAll,
+                        color = colors.accentPrimary
+                    )
+                }
             }
 
             Text(
@@ -512,6 +626,7 @@ private fun MultiFormatExportCard(
     onToggleFormat: (ExportFormat) -> Unit,
     onSetSelectAllFormats: (Boolean) -> Unit,
     onExportClick: () -> Unit,
+    onSaveToLibraryClick: () -> Unit,
     onChangeFolderClick: () -> Unit,
     onExportToDownloadsClick: () -> Unit
 ) {
@@ -615,6 +730,13 @@ private fun MultiFormatExportCard(
                 modifier = Modifier.fillMaxWidth()
             )
 
+            LaterboxSecondaryButton(
+                text = "Save to Laterbox Library (Documents)",
+                onClick = onSaveToLibraryClick,
+                enabled = uiState.canExport,
+                modifier = Modifier.fillMaxWidth()
+            )
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 LaterboxSecondaryButton(
                     text = "Quick Save to Downloads/Laterbox",
@@ -623,6 +745,12 @@ private fun MultiFormatExportCard(
                     modifier = Modifier.fillMaxWidth()
                 )
             }
+
+            Text(
+                text = "Exported files are also stored under Downloads → Library → Documents.",
+                style = typography.caption,
+                color = colors.textTertiary
+            )
         }
     }
 }
@@ -681,6 +809,7 @@ private fun ExportResultSection(
     allSucceeded: Boolean,
     anySucceeded: Boolean,
     anyFailed: Boolean,
+    anySavedToLibrary: Boolean,
     onOpenOutcome: (SingleExportOutcome) -> Unit,
     onShareOutcome: (SingleExportOutcome) -> Unit
 ) {
@@ -690,8 +819,10 @@ private fun ExportResultSection(
 
     Column(verticalArrangement = Arrangement.spacedBy(spacing.xs)) {
         val summaryText = when {
+            allSucceeded && anySavedToLibrary -> "Saved ${outcomes.size} file(s) to Documents Library and exported."
             allSucceeded -> "Exported ${outcomes.size} file(s) successfully."
             anySucceeded && anyFailed -> "Partial export: some files failed to save."
+            anySavedToLibrary && anyFailed -> "Saved to Downloads Library (Documents), but external export failed."
             else -> "Export failed: no files could be saved."
         }
         LaterboxBanner(
@@ -719,7 +850,7 @@ private fun ExportResultSection(
                         ) {
                             LaterboxBadge(
                                 text = outcome.format.extension.uppercase(),
-                                variant = if (outcome.success) LaterboxBadgeVariant.SUCCESS else LaterboxBadgeVariant.DANGER,
+                                variant = if (outcome.success || outcome.savedToLibrary) LaterboxBadgeVariant.SUCCESS else LaterboxBadgeVariant.DANGER,
                                 isMonospace = true
                             )
                             Text(
@@ -747,7 +878,7 @@ private fun ExportResultSection(
                         }
                     }
 
-                    if (outcome.success && !outcome.uri.isNullOrBlank()) {
+                    if ((outcome.success || outcome.savedToLibrary) && !outcome.uri.isNullOrBlank()) {
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             LaterboxTextButton(
                                 text = "Open",
@@ -766,7 +897,10 @@ private fun ExportResultSection(
 }
 
 @Composable
-private fun TranscriptEntriesSection(document: TranscriptDocument) {
+private fun TranscriptEntriesSection(
+    document: TranscriptDocument,
+    onCopyEntry: (VideoTranscriptEntry) -> Unit
+) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
     val spacing = LaterboxTheme.spacing
@@ -792,7 +926,8 @@ private fun TranscriptEntriesSection(document: TranscriptDocument) {
                 entry = entry,
                 isPlaylist = document.isPlaylist,
                 isExpanded = isExpanded,
-                onToggleExpand = { expandedStates[index] = !isExpanded }
+                onToggleExpand = { expandedStates[index] = !isExpanded },
+                onCopy = { onCopyEntry(entry) }
             )
         }
     }
@@ -803,15 +938,17 @@ private fun TranscriptEntryCard(
     entry: VideoTranscriptEntry,
     isPlaylist: Boolean,
     isExpanded: Boolean,
-    onToggleExpand: () -> Unit
+    onToggleExpand: () -> Unit,
+    onCopy: () -> Unit
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
     val spacing = LaterboxTheme.spacing
+    var showDiagnostics by remember(entry.videoId, entry.position) { mutableStateOf(false) }
 
     val badgeVariant = when (entry.status) {
         VideoTranscriptStatus.SUCCESS -> LaterboxBadgeVariant.SUCCESS
-        VideoTranscriptStatus.NO_CAPTIONS -> LaterboxBadgeVariant.WARNING
+        VideoTranscriptStatus.NO_CAPTIONS, VideoTranscriptStatus.CANCELLED -> LaterboxBadgeVariant.WARNING
         else -> LaterboxBadgeVariant.DANGER
     }
 
@@ -863,14 +1000,24 @@ private fun TranscriptEntryCard(
                     }
                 }
 
-                Icon(
-                    painter = painterResource(
-                        id = if (isExpanded) LaterboxIcons.ChevronDown else LaterboxIcons.ChevronRight
-                    ),
-                    contentDescription = if (isExpanded) "Collapse transcript" else "Expand transcript",
-                    tint = colors.textSecondary,
-                    modifier = Modifier.size(18.dp)
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (entry.hasTranscript) {
+                        LaterboxIconButton(
+                            iconRes = LaterboxIcons.Copy,
+                            contentDescription = "Copy transcript for ${entry.title}",
+                            tint = colors.accentPrimary,
+                            onClick = onCopy
+                        )
+                    }
+                    Icon(
+                        painter = painterResource(
+                            id = if (isExpanded) LaterboxIcons.ChevronDown else LaterboxIcons.ChevronRight
+                        ),
+                        contentDescription = if (isExpanded) "Collapse transcript" else "Expand transcript",
+                        tint = colors.textSecondary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
 
             AnimatedVisibility(visible = isExpanded) {
@@ -897,7 +1044,7 @@ private fun TranscriptEntryCard(
                         }
                         if (entry.paragraphs.size > previewLimit) {
                             Text(
-                                text = "... ${entry.paragraphs.size - previewLimit} more sections included in exported file(s).",
+                                text = "... ${entry.paragraphs.size - previewLimit} more sections included when copying or exporting.",
                                 style = typography.metaText.copy(fontWeight = FontWeight.Medium),
                                 color = colors.accentPrimary
                             )
@@ -906,13 +1053,74 @@ private fun TranscriptEntryCard(
                         Text(
                             text = entry.statusMessage ?: "No accessible captions were found for this video.",
                             style = typography.bodySecondary,
-                            color = colors.statusDanger
+                            color = if (entry.status == VideoTranscriptStatus.NO_CAPTIONS) {
+                                colors.statusWarning
+                            } else {
+                                colors.statusDanger
+                            }
                         )
+
+                        val diag = entry.diagnosticInfo
+                        if (diag != null) {
+                            LaterboxTextButton(
+                                text = if (showDiagnostics) "Hide details" else "Technical details",
+                                onClick = { showDiagnostics = !showDiagnostics }
+                            )
+                            if (showDiagnostics) {
+                                DiagnosticDetailsBox(diag)
+                            }
+                        }
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun DiagnosticDetailsBox(diag: TranscriptDiagnosticInfo) {
+    val colors = LaterboxTheme.colors
+    val typography = LaterboxTheme.typography
+    val spacing = LaterboxTheme.spacing
+
+    val summary = buildString {
+        appendLine("Stage: ${diag.stage}")
+        appendLine("Category: ${diag.errorCategory.name}")
+        diag.ytDlpVersion?.let { appendLine("Extractor: yt-dlp $it") }
+        diag.playerClient?.let { appendLine("Client: $it") }
+        diag.httpStatusCode?.let { appendLine("HTTP status: $it") }
+        diag.exceptionType?.let { appendLine("Error type: $it") }
+        if (diag.retryCount > 0) appendLine("Retries: ${diag.retryCount}")
+        diag.elapsedMs?.let { appendLine("Elapsed: ${it}ms") }
+        diag.sanitizedDetail?.takeIf { it.isNotBlank() }?.let { append("Detail: $it") }
+    }.trim()
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(LaterboxShapeTokens.Card)
+            .background(colors.surfacePrimary)
+            .border(spacing.hairline, colors.borderSubtle, LaterboxShapeTokens.Card)
+            .padding(spacing.sm)
+    ) {
+        Text(
+            text = summary,
+            style = typography.caption,
+            color = colors.textSecondary
+        )
+    }
+}
+
+private fun copyTextToClipboard(
+    context: Context,
+    label: String,
+    text: String,
+    toastMessage: String
+) {
+    if (text.isBlank()) return
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+    clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
+    Toast.makeText(context, toastMessage, Toast.LENGTH_SHORT).show()
 }
 
 private fun openExportedFile(context: Context, outcome: SingleExportOutcome) {

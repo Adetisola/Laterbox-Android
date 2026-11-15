@@ -166,16 +166,81 @@ class MediaStorageManager(private val context: Context) {
         return deleted
     }
 
+    fun saveDocumentBytes(
+        filename: String,
+        mimeType: String,
+        bytes: ByteArray
+    ): FinalizedStorageResult {
+        if (bytes.isEmpty()) {
+            throw IOException("Cannot save empty document \"$filename\"")
+        }
+        val cleanFilename = sanitizeDocumentFilename(filename)
+        val ext = cleanFilename.substringAfterLast('.', "").lowercase()
+            .takeIf { it.isNotBlank() }
+            ?: resolveExtension(mimeType, null, MediaType.DOCUMENT)
+        val normalizedMime = when (ext) {
+            "md", "markdown" -> "text/markdown"
+            "txt" -> "text/plain"
+            "pdf" -> "application/pdf"
+            else -> mimeType.ifBlank { "application/octet-stream" }
+        }
+        val baseWithoutExt = cleanFilename.substringBeforeLast('.', cleanFilename).ifBlank { "Laterbox_Document" }
+        val typeDir = File(mediaBaseDir, MediaType.DOCUMENT.name.lowercase()).apply {
+            if (!exists()) mkdirs()
+        }
+        val targetFile = resolveUniqueDocumentFile(typeDir, baseWithoutExt, ext)
+        val tempFile = File(typeDir, ".${targetFile.name}.${System.nanoTime()}.tmp")
+        try {
+            tempFile.writeBytes(bytes)
+            if (!tempFile.renameTo(targetFile)) {
+                tempFile.copyTo(targetFile, overwrite = true)
+                tempFile.delete()
+            }
+        } catch (t: Throwable) {
+            try { tempFile.delete() } catch (_: Throwable) {}
+            throw t
+        }
+
+        val checksum = ChecksumUtil.calculateSha256(targetFile)
+        val relativePath = "${MediaType.DOCUMENT.name.lowercase()}/${targetFile.name}"
+        return FinalizedStorageResult(
+            relativePath = relativePath,
+            checksum = checksum,
+            fileSize = targetFile.length(),
+            mimeType = normalizedMime,
+            isDuplicateReused = false
+        )
+    }
+
+    private fun sanitizeDocumentFilename(raw: String): String {
+        val cleaned = raw
+            .replace(Regex("""[\\/:*?"<>|\u0000-\u001F]"""), "_")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .trim('.')
+        return cleaned.ifBlank { "Laterbox_Document" }
+    }
+
+    private fun resolveUniqueDocumentFile(dir: File, baseName: String, ext: String): File {
+        val safeBase = baseName.take(80).trim().trim('.').ifBlank { "Laterbox_Document" }
+        val first = File(dir, "$safeBase.$ext")
+        if (!first.exists()) return first
+        for (i in 1..100) {
+            val candidate = File(dir, "${safeBase}_($i).$ext")
+            if (!candidate.exists()) return candidate
+        }
+        return File(dir, "${safeBase}_${System.currentTimeMillis()}.$ext")
+    }
+
     internal fun resolveExtension(mimeType: String, suggestedExt: String?, mediaType: MediaType? = null): String {
         val cleanSuggested = suggestedExt?.trim()?.removePrefix(".")?.lowercase()
         if (!cleanSuggested.isNullOrBlank() && cleanSuggested.length in 2..5 && !cleanSuggested.contains("[") && !cleanSuggested.contains("/")) {
             return cleanSuggested
         }
-        val fromMime = MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType)
-        if (!fromMime.isNullOrBlank()) {
-            return fromMime
-        }
-        return when (mimeType) {
+        return when (mimeType.lowercase()) {
+            "text/markdown" -> "md"
+            "text/plain" -> "txt"
+            "application/pdf" -> "pdf"
             "image/jpeg" -> "jpg"
             "image/png" -> "png"
             "image/webp" -> "webp"
@@ -187,8 +252,18 @@ class MediaStorageManager(private val context: Context) {
             "audio/flac" -> "flac"
             "audio/mp4", "audio/m4a" -> "m4a"
             "audio/mpeg" -> "mp3"
-            "application/pdf" -> "pdf"
-            else -> if (mediaType == MediaType.AUDIO) "m4a" else "bin"
+            else -> {
+                val fromMime = MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType)
+                if (!fromMime.isNullOrBlank()) {
+                    fromMime
+                } else if (mediaType == MediaType.AUDIO) {
+                    "m4a"
+                } else if (mediaType == MediaType.DOCUMENT) {
+                    "txt"
+                } else {
+                    "bin"
+                }
+            }
         }
     }
 
@@ -254,6 +329,11 @@ class MediaStorageManager(private val context: Context) {
 
         if (!fallbackExt.isNullOrBlank() && !fallbackExt.contains("[") && !fallbackExt.contains("/")) {
             val ext = fallbackExt.removePrefix(".").lowercase()
+            when (ext) {
+                "md", "markdown" -> return "text/markdown"
+                "txt" -> return "text/plain"
+                "pdf" -> return "application/pdf"
+            }
             val fromExt = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
             if (!fromExt.isNullOrBlank()) return fromExt
         }

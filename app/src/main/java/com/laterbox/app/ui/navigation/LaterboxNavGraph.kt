@@ -639,6 +639,9 @@ fun LaterboxApp(
                                             )
                                             navigateTopLevel(LaterboxDestination.Downloads.route)
                                         }
+                                        is ChatAction.OpenYouTubeTranscripts -> {
+                                            youTubeTranscriptViewModel.openFromAssistant(action.url)
+                                        }
                                         is ChatAction.OpenCollections -> {
                                             navigateTopLevel(LaterboxDestination.Collections.route)
                                         }
@@ -1214,6 +1217,9 @@ fun LaterboxApp(
                     youTubeTranscriptViewModel.dismissSheet()
                 }
             },
+            onManualUrlChange = youTubeTranscriptViewModel::onManualUrlChange,
+            onSubmitManualUrl = youTubeTranscriptViewModel::submitManualUrlExtraction,
+            onSaveToLibrary = youTubeTranscriptViewModel::saveToLaterboxLibrary,
             sheetState = transcriptSheetState
         )
     }

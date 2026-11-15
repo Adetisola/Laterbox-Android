@@ -36,7 +36,7 @@ class MediaStoreExporter(
             return@withContext Result.failure(IllegalStateException("Local file not found at ${sourceFile.absolutePath}"))
         }
 
-        val effectiveMimeType = normalizeMimeType(asset.mediaType, asset.mimeType)
+        val effectiveMimeType = normalizeMimeType(asset.mediaType, asset.mimeType, sourceFile.extension)
         val ext = sourceFile.extension.takeIf { it.isNotBlank() } ?: when (asset.mediaType) {
             MediaType.IMAGE -> "jpg"
             MediaType.VIDEO -> "mp4"
@@ -44,7 +44,12 @@ class MediaStoreExporter(
             MediaType.DOCUMENT -> "pdf"
             MediaType.OTHER -> "bin"
         }
-        val exportFilename = "${sanitizeFilename(asset.title)}.$ext"
+        val cleanTitle = sanitizeFilename(asset.title)
+        val exportFilename = if (cleanTitle.endsWith(".$ext", ignoreCase = true)) {
+            cleanTitle
+        } else {
+            "$cleanTitle.$ext"
+        }
 
         // 1. Try user-configured custom export folder via SAF if present
         if (userPreferencesRepository != null) {
@@ -55,7 +60,8 @@ class MediaStoreExporter(
                     val customTreeUri = Uri.parse(customDirUriStr)
                     val treeDoc = DocumentFile.fromTreeUri(context, customTreeUri)
                     if (treeDoc != null && treeDoc.exists() && treeDoc.canWrite()) {
-                        val newDocFile = treeDoc.createFile(effectiveMimeType, exportFilename)
+                        val uniqueName = resolveUniqueSafFilename(treeDoc, exportFilename)
+                        val newDocFile = treeDoc.createFile(effectiveMimeType, uniqueName)
                         if (newDocFile != null) {
                             contentResolver.openOutputStream(newDocFile.uri)?.use { out ->
                                 FileInputStream(sourceFile).use { input ->
@@ -84,8 +90,24 @@ class MediaStoreExporter(
         }
     }
 
-    private fun normalizeMimeType(mediaType: MediaType, rawMime: String): String {
+    private fun resolveUniqueSafFilename(treeDoc: DocumentFile, desiredName: String): String {
+        val existing = treeDoc.findFile(desiredName) ?: return desiredName
+        if (!existing.exists()) return desiredName
+        val base = desiredName.substringBeforeLast('.')
+        val ext = desiredName.substringAfterLast('.', "")
+        val suffix = if (ext.isNotEmpty()) ".$ext" else ""
+        for (idx in 1..20) {
+            val candidate = "${base}_($idx)$suffix"
+            if (treeDoc.findFile(candidate) == null) return candidate
+        }
+        return "${base}_${System.currentTimeMillis()}$suffix"
+    }
+
+    private fun normalizeMimeType(mediaType: MediaType, rawMime: String, ext: String = ""): String {
         return when {
+            mediaType == MediaType.DOCUMENT && ext.equals("md", ignoreCase = true) -> "text/markdown"
+            mediaType == MediaType.DOCUMENT && ext.equals("txt", ignoreCase = true) -> "text/plain"
+            mediaType == MediaType.DOCUMENT && ext.equals("pdf", ignoreCase = true) -> "application/pdf"
             mediaType == MediaType.AUDIO && rawMime.startsWith("video/") -> "audio/mp4"
             mediaType == MediaType.AUDIO && rawMime == "application/octet-stream" -> "audio/mp4"
             mediaType == MediaType.VIDEO && rawMime.startsWith("audio/") -> "video/mp4"

@@ -1,10 +1,17 @@
 package com.laterbox.app.ai
 
+import android.content.Context
+import android.net.Uri
+import androidx.documentfile.provider.DocumentFile
 import com.laterbox.app.data.local.LaterboxDatabase
 import com.laterbox.app.data.local.entity.SavedLinkWithCollection
 import com.laterbox.app.data.preferences.UserPreferencesRepository
 import com.laterbox.app.data.repository.ActivityEventRepository
 import com.laterbox.app.diagnostics.AppHealthChecker
+import com.laterbox.app.media.data.adapters.ytdlp.QuickJsHelper
+import com.laterbox.app.media.data.adapters.ytdlp.YtDlpInitState
+import com.laterbox.app.media.data.adapters.ytdlp.YtDlpRuntimeManager
+import com.laterbox.app.media.domain.model.MediaType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -18,7 +25,9 @@ class LaterboxContextEngine(
     private val database: LaterboxDatabase,
     private val activityEventRepository: ActivityEventRepository,
     private val userPreferencesRepository: UserPreferencesRepository,
-    private val appHealthChecker: AppHealthChecker? = null
+    private val appHealthChecker: AppHealthChecker? = null,
+    private val ytDlpRuntimeManager: YtDlpRuntimeManager? = null,
+    private val appContext: Context? = null
 ) {
 
     suspend fun buildContextForPrompt(prompt: String): BuiltAssistantContext = withContext(Dispatchers.IO) {
@@ -58,6 +67,11 @@ class LaterboxContextEngine(
         } catch (_: Throwable) {
             0
         }
+        val storedDocumentCount = try {
+            database.downloadedAssetDao().filterAssets(MediaType.DOCUMENT.name, "").first().size
+        } catch (_: Throwable) {
+            0
+        }
         val recentNotifications = try {
             database.notificationHistoryDao().getRecentHistorySnapshot(8)
         } catch (_: Throwable) {
@@ -69,9 +83,44 @@ class LaterboxContextEngine(
             emptyList()
         }
 
+        val ytDlpState = ytDlpRuntimeManager?.ytDlpState?.value
+        val ffmpegState = ytDlpRuntimeManager?.ffmpegState?.value
+        val ytDlpVersion = when (ytDlpState) {
+            is YtDlpInitState.Initialized -> ytDlpState.version ?: prefs.ytDlpVersion.ifBlank { null }
+            else -> prefs.ytDlpVersion.ifBlank { null }
+        }
+        val quickJsReady = appContext?.let {
+            try {
+                QuickJsHelper.getQuickJsExecutable(it) != null
+            } catch (_: Throwable) {
+                false
+            }
+        } ?: false
+        val exportFolderWritable = if (!prefs.customExportDirectoryUri.isNullOrBlank() && appContext != null) {
+            try {
+                val tree = DocumentFile.fromTreeUri(appContext, Uri.parse(prefs.customExportDirectoryUri))
+                tree != null && tree.exists() && tree.canWrite()
+            } catch (_: Throwable) {
+                false
+            }
+        } else {
+            false
+        }
+        val capabilitySnapshot = CapabilitySnapshot(
+            ytDlpState = ytDlpState?.name ?: "NOT_INITIALIZED",
+            ytDlpVersion = ytDlpVersion,
+            quickJsReady = quickJsReady,
+            ffmpegState = ffmpegState?.name ?: "NOT_INITIALIZED",
+            youtubeTranscriptsReady = ytDlpState !is YtDlpInitState.Failed,
+            storedDocumentCount = storedDocumentCount,
+            configuredExportFolderName = prefs.customExportDirectoryName?.let { sanitize(it, 60) },
+            configuredExportFolderWritable = exportFolderWritable
+        )
+
         val asksAboutHealthOrDiagnostics = listOf(
             "health", "diagnostic", "yt-dlp", "ytdlp", "ffmpeg", "quickjs",
-            "fail", "error", "broken", "slow", "storage", "permission", "download", "inspect"
+            "fail", "error", "broken", "slow", "storage", "permission", "download", "inspect",
+            "transcript", "caption", "export", "document"
         ).any { lowerPrompt.contains(it) }
 
         val healthReport = if (asksAboutHealthOrDiagnostics && appHealthChecker != null) {
@@ -83,7 +132,7 @@ class LaterboxContextEngine(
         } else null
 
         val asksForDeepContent = listOf(
-            "transcript", "full article", "summarize the video", "what did they say",
+            "transcript", "caption", "full article", "summarize the video", "what did they say",
             "read the whole", "word for word", "entire page", "full text"
         ).any { lowerPrompt.contains(it) }
 
@@ -92,7 +141,9 @@ class LaterboxContextEngine(
             if (prefs.userName.isNotBlank()) {
                 appendLine("User name: ${sanitize(prefs.userName, 40)}")
             }
-            appendLine("Library summary: $inboxCount inbox links, $archivedCount archived links, $downloadedAssetCount downloaded media files.")
+            appendLine("Library summary: $inboxCount inbox links, $archivedCount archived links, $downloadedAssetCount downloaded media files ($storedDocumentCount saved documents).")
+            appendLine()
+            appendLine(AppCapabilityRegistry.formatLiveCapabilitiesBlock(capabilitySnapshot))
 
             if (rankedLinks.isNotEmpty()) {
                 appendLine("\nRelevant & recent saved links (max ${rankedLinks.size}):")
@@ -161,7 +212,7 @@ class LaterboxContextEngine(
             }
 
             if (asksForDeepContent) {
-                appendLine("\nHONESTY REMINDER: Laterbox only stores link title, URL, snippet/description, personal note, and media format metadata — NOT full paywalled article text or video transcripts. Tell the user honestly if the requested content is not stored locally.")
+                appendLine("\nCONTENT GROUNDING NOTE: Laterbox does not store full paywalled article bodies or run local speech-to-text audio transcription. However, Laterbox DOES support verbatim YouTube caption/transcript extraction for single videos and playlists, clipboard copying, and exporting to Markdown (.md), Plain Text (.txt), and PDF (.pdf) into Downloads Library → Documents (and a configured export folder). Never invent or paraphrase unextracted video speech; you may offer OPEN_YOUTUBE_TRANSCRIPTS so the user can extract available captions directly.")
             }
         }.trim()
 

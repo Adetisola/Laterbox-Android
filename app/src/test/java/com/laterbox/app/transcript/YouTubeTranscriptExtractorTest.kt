@@ -375,4 +375,279 @@ class YouTubeTranscriptExtractorTest {
             server.shutdown()
         }
     }
+
+    @Test
+    fun dataSource_internalTimeoutMapsToTimeoutNotCancelledAndIsNotMaskedByEmptyWatchHtml() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val server = MockWebServer()
+        server.start()
+        try {
+            // Empty watch HTML without captions should NOT mask a timed-out yt-dlp metadata call
+            val emptyHtml = """
+                <html><head><script>
+                var ytInitialPlayerResponse = {"playabilityStatus":{"status":"OK"},"videoDetails":{"videoId":"t123","title":"No Tracks HTML","lengthSeconds":"100"}};
+                </script></head></html>
+            """.trimIndent()
+            server.enqueue(MockResponse().setResponseCode(200).setBody(emptyHtml))
+
+            val client = okhttp3.OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    val redirected = chain.request().newBuilder()
+                        .url(server.url("/watch?v=t123"))
+                        .build()
+                    chain.proceed(redirected)
+                }
+                .build()
+
+            val dataSource = LaterboxYouTubeTranscriptDataSource(
+                appContext = context,
+                runtimeManager = YtDlpRuntimeManager(context),
+                okHttpClient = client,
+                metadataTimeoutMs = 50L,
+                customExecutor = {
+                    Thread.sleep(600L)
+                    com.yausername.youtubedl_android.YoutubeDLResponse(listOf<String?>(), 0, 600L, "{}", "")
+                }
+            )
+
+            val res = dataSource.fetchVideoInfo("t123", "https://www.youtube.com/watch?v=t123", "proc_to")
+            assertTrue("Expected Failed result, got $res", res is VideoInfoFetchResult.Failed)
+            val failed = res as VideoInfoFetchResult.Failed
+            assertEquals(VideoTranscriptStatus.TIMEOUT, failed.status)
+            assertNotNull(failed.diagnosticInfo)
+
+            // Re-enqueue HTML for extractor invocation and confirm extractor surfaces TIMEOUT (not Cancelled)
+            server.enqueue(MockResponse().setResponseCode(200).setBody(emptyHtml))
+            val outcome = YouTubeTranscriptExtractor(dataSource, ioDispatcher = kotlinx.coroutines.Dispatchers.IO)
+                .extract("https://www.youtube.com/watch?v=t123")
+            assertTrue("Expected Completed doc with TIMEOUT entry, got $outcome", outcome is TranscriptExtractionOutcome.Completed)
+            val entry = (outcome as TranscriptExtractionOutcome.Completed).document.entries.single()
+            assertEquals(VideoTranscriptStatus.TIMEOUT, entry.status)
+            assertEquals(1, outcome.document.inaccessibleCount)
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun dataSource_spuriousYtDlpCanceledExceptionWhenParentActiveMapsToErrorNotUserCancellation() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val server = MockWebServer()
+        server.start()
+        try {
+            // Force HTML fallback to 503 so yt-dlp failure surfaces directly
+            server.enqueue(MockResponse().setResponseCode(503).setBody("Unavailable"))
+            val client = okhttp3.OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    chain.proceed(chain.request().newBuilder().url(server.url("/watch")).build())
+                }
+                .build()
+
+            val dataSource = LaterboxYouTubeTranscriptDataSource(
+                appContext = context,
+                runtimeManager = YtDlpRuntimeManager(context),
+                okHttpClient = client,
+                customExecutor = {
+                    throw com.yausername.youtubedl_android.YoutubeDL.CanceledException()
+                }
+            )
+
+            val infoRes = dataSource.fetchVideoInfo("c123", "https://www.youtube.com/watch?v=c123", "proc_cancel_err")
+            assertTrue(infoRes is VideoInfoFetchResult.Failed)
+            assertEquals(VideoTranscriptStatus.EXTRACTION_ERROR, (infoRes as VideoInfoFetchResult.Failed).status)
+
+            server.enqueue(MockResponse().setResponseCode(503).setBody("Unavailable"))
+            val outcome = YouTubeTranscriptExtractor(dataSource).extract("https://www.youtube.com/watch?v=c123")
+            assertTrue("Expected Completed doc with EXTRACTION_ERROR (not Cancelled) when parent coroutine is active", outcome is TranscriptExtractionOutcome.Completed)
+            val entry = (outcome as TranscriptExtractionOutcome.Completed).document.entries.single()
+            assertEquals(VideoTranscriptStatus.EXTRACTION_ERROR, entry.status)
+            assertEquals(1, outcome.document.inaccessibleCount)
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun extract_listedCaptionTrackReturningHtmlOrMalformedBodyMapsToErrorNotNoCaptions() = runTest {
+        val htmlUrl = "https://captions.test/botcheck?sig=TOPSECRET999&pot=POTSECRET"
+        val badUrl = "https://captions.test/corrupt"
+        val ds = FakeTranscriptDataSource(
+            videos = mapOf(
+                "vid_bot" to VideoInfoFetchResult.Success(
+                    FetchedVideoInfo(
+                        videoId = "vid_bot",
+                        title = "Verification Blocked Video",
+                        url = "https://www.youtube.com/watch?v=vid_bot",
+                        captionTracks = listOf(CaptionTrackCandidate("en", "English", false, mapOf("json3" to htmlUrl)))
+                    )
+                ),
+                "vid_corrupt" to VideoInfoFetchResult.Success(
+                    FetchedVideoInfo(
+                        videoId = "vid_corrupt",
+                        title = "Malformed Caption Video",
+                        url = "https://www.youtube.com/watch?v=vid_corrupt",
+                        captionTracks = listOf(CaptionTrackCandidate("en", "English", false, mapOf("json3" to badUrl)))
+                    )
+                )
+            ),
+            payloads = mapOf(
+                htmlUrl to { Result.success("<html><body><p>Sign in to confirm you're not a bot</p></body></html>") },
+                badUrl to { Result.success("<<<corrupt-unparseable-caption-stream>>>") }
+            )
+        )
+
+        val extractor = YouTubeTranscriptExtractor(ds, playlistInterVideoDelayMs = 0L)
+
+        val botOutcome = extractor.extract("https://www.youtube.com/watch?v=vid_bot") as TranscriptExtractionOutcome.Completed
+        val botEntry = botOutcome.document.entries.single()
+        assertEquals(VideoTranscriptStatus.ACCESS_ERROR, botEntry.status)
+        assertNotNull(botEntry.diagnosticInfo)
+        assertFalse(botEntry.diagnosticInfo!!.sanitizedDetail.orEmpty().contains("TOPSECRET999"))
+        assertFalse(botEntry.diagnosticInfo!!.sanitizedDetail.orEmpty().contains("POTSECRET"))
+
+        val corruptOutcome = extractor.extract("https://www.youtube.com/watch?v=vid_corrupt") as TranscriptExtractionOutcome.Completed
+        val corruptEntry = corruptOutcome.document.entries.single()
+        assertEquals(VideoTranscriptStatus.EXTRACTION_ERROR, corruptEntry.status)
+        assertEquals(1, corruptOutcome.document.inaccessibleCount)
+        assertEquals(0, corruptOutcome.document.noCaptionsCount)
+    }
+
+    @Test
+    fun extract_27VideoPlaylist_whenVideo1TimesOut_recordsFailureAndContinuesVideos2To27() = runTest {
+        val entries = (1..27).map { idx ->
+            PlaylistEntrySummary(idx, "v$idx", "Episode $idx", "https://www.youtube.com/watch?v=v$idx")
+        }
+        val videoMap = linkedMapOf<String, VideoInfoFetchResult>()
+        val payloadMap = linkedMapOf<String, suspend () -> Result<String>>()
+
+        videoMap["v1"] = VideoInfoFetchResult.Failed(VideoTranscriptStatus.TIMEOUT, "Timed out retrieving metadata for video 1")
+        videoMap["v2"] = VideoInfoFetchResult.Failed(VideoTranscriptStatus.ACCESS_ERROR, "Sign in to confirm your age (HTTP 403)")
+        videoMap["v3"] = VideoInfoFetchResult.Failed(VideoTranscriptStatus.RATE_LIMITED, "HTTP 429 Too Many Requests", retryable = false)
+        videoMap["v4"] = VideoInfoFetchResult.Success(
+            FetchedVideoInfo("v4", "Episode 4", "https://www.youtube.com/watch?v=v4", captionTracks = emptyList())
+        )
+        for (idx in 5..27) {
+            val url = "https://captions.test/v$idx.vtt"
+            videoMap["v$idx"] = VideoInfoFetchResult.Success(
+                FetchedVideoInfo(
+                    videoId = "v$idx",
+                    title = "Episode $idx",
+                    url = "https://www.youtube.com/watch?v=v$idx",
+                    captionTracks = listOf(CaptionTrackCandidate("en", "English", false, mapOf("vtt" to url)))
+                )
+            )
+            payloadMap[url] = {
+                Result.success("WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nTranscript for episode $idx.")
+            }
+        }
+
+        val ds = FakeTranscriptDataSource(
+            playlists = mapOf(
+                "PL27" to PlaylistFetchResult.Success(
+                    PlaylistResolution("PL27", "27-Part Course", "https://www.youtube.com/playlist?list=PL27", 27, entries)
+                )
+            ),
+            videos = videoMap,
+            payloads = payloadMap
+        )
+
+        val outcome = YouTubeTranscriptExtractor(ds, playlistInterVideoDelayMs = 0L)
+            .extract("https://www.youtube.com/playlist?list=PL27", preference = TranscriptTargetPreference.PLAYLIST)
+
+        assertTrue(outcome is TranscriptExtractionOutcome.Completed)
+        val doc = (outcome as TranscriptExtractionOutcome.Completed).document
+        assertEquals(27, doc.videosFound)
+        assertEquals(23, doc.successfulCount)
+        assertEquals(1, doc.noCaptionsCount)
+        assertEquals(3, doc.inaccessibleCount)
+        assertEquals(VideoTranscriptStatus.TIMEOUT, doc.entries[0].status)
+        assertEquals(VideoTranscriptStatus.ACCESS_ERROR, doc.entries[1].status)
+        assertEquals(VideoTranscriptStatus.RATE_LIMITED, doc.entries[2].status)
+        assertEquals(VideoTranscriptStatus.NO_CAPTIONS, doc.entries[3].status)
+        assertEquals(VideoTranscriptStatus.SUCCESS, doc.entries[4].status)
+        assertEquals(VideoTranscriptStatus.SUCCESS, doc.entries[26].status)
+        assertEquals("Transcript for episode 27.", doc.entries[26].paragraphs.single().text)
+    }
+
+    @Test
+    fun dataSource_nativeSubtitleFallback_parsesWrittenFilesAndCleansTempDir() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        var capturedPathsDir: java.io.File? = null
+
+        val dataSource = LaterboxYouTubeTranscriptDataSource(
+            appContext = context,
+            runtimeManager = YtDlpRuntimeManager(context),
+            customExecutor = { req ->
+                val opts = req.buildCommand().toList()
+                assertTrue(opts.contains("--skip-download"))
+                assertTrue(opts.contains("--write-subs"))
+                assertTrue(opts.contains("--write-auto-subs"))
+                val pathsIdx = opts.indexOf("--paths")
+                assertTrue(pathsIdx >= 0)
+                val dir = java.io.File(opts[pathsIdx + 1])
+                capturedPathsDir = dir
+                java.io.File(dir, "nat01.info.json").writeText(
+                    """{"id":"nat01","title":"Native Fallback Video","channel":"Dev Channel","duration":90}"""
+                )
+                java.io.File(dir, "nat01.en.vtt").writeText(
+                    "WEBVTT\n\n00:00:01.000 --> 00:00:04.000\nNative subtitle extraction succeeded."
+                )
+                com.yausername.youtubedl_android.YoutubeDLResponse(opts, 0, 20L, "", "")
+            }
+        )
+
+        val res = dataSource.fetchNativeSubtitles("nat01", "https://www.youtube.com/watch?v=nat01", "proc_nat")
+        assertTrue(res is VideoInfoFetchResult.Success)
+        val info = (res as VideoInfoFetchResult.Success).info
+        assertEquals("Native Fallback Video", info.title)
+        assertEquals(1, info.captionTracks.size)
+        assertTrue(info.captionTracks.single().inlineContentByFormat["vtt"]?.contains("Native subtitle extraction succeeded.") == true)
+        assertNotNull(capturedPathsDir)
+        assertFalse("Temp subtitle dir must be cleaned up in finally", capturedPathsDir!!.exists())
+    }
+
+    @Test
+    fun dataSource_fetchCaptionPayload_surfaces429RetryAfterAndSupportsCoroutineCancellation() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val server = MockWebServer()
+        server.start()
+        try {
+            server.enqueue(MockResponse().setResponseCode(429).addHeader("Retry-After", "2"))
+            val dataSource = LaterboxYouTubeTranscriptDataSource(context, YtDlpRuntimeManager(context))
+            val res429 = dataSource.fetchCaptionPayload(server.url("/cap").toString())
+            assertTrue(res429.isFailure)
+            val ex = res429.exceptionOrNull() as? HttpStatusException
+            assertNotNull(ex)
+            assertEquals(429, ex!!.code)
+            assertEquals(2L, ex.retryAfterSeconds)
+
+            server.enqueue(MockResponse().setBodyDelay(5, java.util.concurrent.TimeUnit.SECONDS).setBody("WEBVTT"))
+            val job = async(kotlinx.coroutines.Dispatchers.IO) {
+                dataSource.fetchCaptionPayload(server.url("/slow").toString())
+            }
+            delay(60L)
+            job.cancel(CancellationException("User cancelled HTTP call"))
+            try {
+                job.await()
+            } catch (_: CancellationException) {
+                // Expected cancellation
+            }
+            assertTrue(job.isCancelled)
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun redactor_scrubsTokensSignedUrlsApiKeysAndDevicePaths() {
+        val raw = "Failed fetching https://www.youtube.com/api/timedtext?v=abc&sig=SECRET_SIG&pot=SECRET_POT " +
+            "key=AIzaSySecretApiKey12345678901234567 from /data/user/0/com.laterbox.app/cache/sub.vtt " +
+            "Bearer ya29.secret_oauth_token"
+        val clean = TranscriptRedactor.sanitize(raw, maxLen = 500)
+        assertFalse(clean.contains("SECRET_SIG"))
+        assertFalse(clean.contains("SECRET_POT"))
+        assertFalse(clean.contains("AIzaSySecretApiKey"))
+        assertFalse(clean.contains("/data/user/0/"))
+        assertFalse(clean.contains("ya29.secret_oauth_token"))
+    }
 }
