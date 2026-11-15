@@ -48,6 +48,7 @@ enum class WarmFailureReason {
     HANDSHAKE_FAILED,
     HANDSHAKE_TIMEOUT,
     SOCKET_CONNECT_FAILED,
+    DAEMON_INACTIVITY_TIMEOUT,
     SOCKET_TIMEOUT,
     OVERALL_DEADLINE_TIMEOUT,
     PREMATURE_EOF,
@@ -67,6 +68,12 @@ sealed interface WarmExecuteOutcome {
     val jsChallengesSolved: Int
     val heartbeatCount: Int
     val debugLogs: List<String>
+    val lastStage: String?
+    val lastEvent: String?
+    val lastEventAgeMs: Long?
+    val lastWarning: String?
+    val warningsCount: Int
+    val deadlineExtendedMs: Long
 
     data class Success(
         val output: String,
@@ -80,7 +87,13 @@ sealed interface WarmExecuteOutcome {
         override val effectiveClients: List<String> = emptyList(),
         override val jsChallengesSolved: Int = 0,
         override val heartbeatCount: Int = 0,
-        override val debugLogs: List<String> = emptyList()
+        override val debugLogs: List<String> = emptyList(),
+        override val lastStage: String? = null,
+        override val lastEvent: String? = null,
+        override val lastEventAgeMs: Long? = null,
+        override val lastWarning: String? = null,
+        override val warningsCount: Int = 0,
+        override val deadlineExtendedMs: Long = 0L
     ) : WarmExecuteOutcome
 
     data class ExtractorError(
@@ -95,7 +108,13 @@ sealed interface WarmExecuteOutcome {
         override val effectiveClients: List<String> = emptyList(),
         override val jsChallengesSolved: Int = 0,
         override val heartbeatCount: Int = 0,
-        override val debugLogs: List<String> = emptyList()
+        override val debugLogs: List<String> = emptyList(),
+        override val lastStage: String? = null,
+        override val lastEvent: String? = null,
+        override val lastEventAgeMs: Long? = null,
+        override val lastWarning: String? = null,
+        override val warningsCount: Int = 0,
+        override val deadlineExtendedMs: Long = 0L
     ) : WarmExecuteOutcome
 
     data class MechanismFailure(
@@ -111,7 +130,13 @@ sealed interface WarmExecuteOutcome {
         override val effectiveClients: List<String> = emptyList(),
         override val jsChallengesSolved: Int = 0,
         override val heartbeatCount: Int = 0,
-        override val debugLogs: List<String> = emptyList()
+        override val debugLogs: List<String> = emptyList(),
+        override val lastStage: String? = null,
+        override val lastEvent: String? = null,
+        override val lastEventAgeMs: Long? = null,
+        override val lastWarning: String? = null,
+        override val warningsCount: Int = 0,
+        override val deadlineExtendedMs: Long = 0L
     ) : WarmExecuteOutcome
 }
 
@@ -240,48 +265,129 @@ def idle_checker():
 
 threading.Thread(target=idle_checker, daemon=True).start()
 
-CLIENT_RE = re.compile(r"Downloading\s+([a-z0-9_]+)\s+player\s+API", re.IGNORECASE)
+CLIENT_RE = re.compile(r"Downloading\s+([a-z0-9_ ]+?)\s+player\s+API", re.IGNORECASE)
+SENSITIVE_QUERY_RE = re.compile(r"([?&](?:sig|s|lsig|pot|key|signature|token|auth|oauth|cookie|sapisid|sid)=)[^&\s\"']+", re.IGNORECASE)
+SENSITIVE_HEADER_RE = re.compile(r"(Bearer\s+|Authorization:\s*|Cookie:\s*|SAPISIDHASH\s+)[^\s,;\"']+(?:[^\n]*?(?=\s|$))", re.IGNORECASE)
+DEVICE_PATH_RE = re.compile(r"/data/(?:user|data)/\d+/[^\s\"']+")
+
+def _sanitize_log(msg, limit=220):
+    if msg is None:
+        return ""
+    s = str(msg).replace("\r", " ").replace("\n", " ").strip()
+    if not s:
+        return ""
+    s = SENSITIVE_QUERY_RE.sub(r"\1<redacted>", s)
+    s = SENSITIVE_HEADER_RE.sub(r"\1<redacted>", s)
+    s = DEVICE_PATH_RE.sub("<app-path>", s)
+    if len(s) > limit:
+        return s[:limit - 3] + "..."
+    return s
 
 class YtDlpCustomLogger:
     def __init__(self, cancel_event):
+        self._lock = threading.Lock()
         self.warnings = []
         self.errors = []
         self.debug_logs = []
         self.clients = []
         self.js_challenges = 0
-        self.stage = "extracting_metadata"
+        self.stage = "initializing"
+        self.last_event = "Extraction started"
+        self.last_event_mono = time.monotonic()
         self.cancel_event = cancel_event
 
     def _check_cancel(self):
         if self.cancel_event is not None and self.cancel_event.is_set():
             raise _CancelledByClientException("Cancelled by client")
 
+    def _push_debug(self, clean):
+        if len(self.debug_logs) >= 50:
+            self.debug_logs.pop(0)
+        self.debug_logs.append(clean)
+
     def debug(self, msg):
         self._check_cancel()
         s = str(msg)
-        low = s.lower()
-        if "solving js challenge" in low or "ejs" in low:
-            self.stage = "js_challenge"
-            if "solving js challenge" in low:
-                self.js_challenges += 1
-        elif "downloading m3u8" in low or "playlist" in low:
-            self.stage = "playlist_fetch"
-        m = CLIENT_RE.search(s)
-        if m:
-            cli = m.group(1)
-            if cli not in self.clients:
-                self.clients.append(cli)
-        if len(self.debug_logs) < 60 and any(k in low for k in ("[youtube]", "client", "challenge", "po token", "subtitles", "player", "error", "warning")):
-            self.debug_logs.append(s[:220])
+        clean = _sanitize_log(s, 220)
+        low = clean.lower()
+        with self._lock:
+            prev_stage = self.stage
+            if "solving js challenge" in low or "ejs" in low or "n challenge" in low or "sig challenge" in low:
+                self.stage = "js_challenge"
+                if "solving js challenge" in low or "solving n " in low or "solving sig" in low:
+                    self.js_challenges += 1
+            elif "downloading webpage" in low:
+                self.stage = "fetching_webpage"
+            elif "downloading initial data api" in low:
+                self.stage = "fetching_initial_data"
+            elif "ytcfg" in low or "player config" in low:
+                self.stage = "fetching_player_config"
+            elif "downloading player " in low or "player script" in low:
+                self.stage = "downloading_player_js"
+            elif "writing video subtitles" in low or "downloading subtitles" in low or "subtitles" in low:
+                self.stage = "extracting_subtitles"
+            elif "downloading m3u8" in low or "playlist" in low:
+                self.stage = "playlist_fetch"
+
+            m = CLIENT_RE.search(clean)
+            if m:
+                self.stage = "downloading_player_api"
+                cli = m.group(1).strip().lower().replace(" ", "_")
+                if cli and cli not in self.clients:
+                    self.clients.append(cli)
+
+            if clean:
+                self.last_event = clean
+                self.last_event_mono = time.monotonic()
+                if self.stage != prev_stage or any(
+                    k in low for k in ("[youtube]", "client", "challenge", "po token", "subtitles", "player", "error", "warning", "webpage", "ytcfg")
+                ):
+                    self._push_debug(clean)
 
     def warning(self, msg):
         self._check_cancel()
-        if len(self.warnings) < 40:
-            self.warnings.append(str(msg)[:300])
+        clean = _sanitize_log(msg, 260)
+        with self._lock:
+            if clean:
+                self.last_event = f"WARN: {clean}"[:220]
+                self.last_event_mono = time.monotonic()
+                if len(self.warnings) >= 40:
+                    self.warnings.pop(0)
+                self.warnings.append(clean)
+                self._push_debug(self.last_event)
 
     def error(self, msg):
-        if len(self.errors) < 40:
-            self.errors.append(str(msg)[:300])
+        clean = _sanitize_log(msg, 260)
+        with self._lock:
+            if clean:
+                self.last_event = f"ERR: {clean}"[:220]
+                self.last_event_mono = time.monotonic()
+                if len(self.errors) >= 40:
+                    self.errors.pop(0)
+                self.errors.append(clean)
+                self._push_debug(self.last_event)
+
+    def set_stage(self, stage_name, event_msg=None):
+        with self._lock:
+            self.stage = stage_name
+            if event_msg:
+                self.last_event = _sanitize_log(event_msg, 220)
+            self.last_event_mono = time.monotonic()
+
+    def snapshot(self, req_start_mono):
+        now_m = time.monotonic()
+        with self._lock:
+            return {
+                "stage": self.stage,
+                "elapsed_ms": int((now_m - req_start_mono) * 1000),
+                "last_event": self.last_event,
+                "last_event_age_ms": int(max(0.0, (now_m - self.last_event_mono) * 1000)),
+                "effective_clients": list(self.clients),
+                "js_challenges": self.js_challenges,
+                "warnings_count": len(self.warnings),
+                "last_warning": self.warnings[-1] if self.warnings else None,
+                "recent_logs": list(self.debug_logs[-10:]),
+            }
 
 def _compact_captions_dict(caps):
     if not isinstance(caps, dict):
@@ -341,7 +447,7 @@ def _build_compact_transcript_info(sanitized, effective_clients):
     return compact
 
 def run_extraction(req_id, url, options, transcript_compact, logger, cancel_event):
-    start = time.time()
+    start_mono = time.monotonic()
     try:
         args = list(options)
         if url:
@@ -352,13 +458,14 @@ def run_extraction(req_id, url, options, transcript_compact, logger, cancel_even
         ydl_opts["no_color"] = True
 
         target_url = all_urls[0] if all_urls else url
+        logger.set_stage("extracting_metadata", "Invoking yt-dlp extract_info")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(target_url, download=False)
             if cancel_event.is_set():
                 raise _CancelledByClientException("Cancelled")
-            logger.stage = "sanitizing"
+            logger.set_stage("sanitizing", "Sanitizing extracted metadata")
+            snap = logger.snapshot(start_mono)
             if info is None or not isinstance(info, dict):
-                elapsed_ms = int((time.time() - start) * 1000)
                 err_msg = "yt-dlp returned no metadata or null info for URL"
                 if logger.errors:
                     err_msg = "\n".join(logger.errors)
@@ -368,54 +475,77 @@ def run_extraction(req_id, url, options, transcript_compact, logger, cancel_even
                     "success": False,
                     "error": err_msg,
                     "warnings": "\n".join(logger.warnings) if logger.warnings else None,
-                    "debug_logs": logger.debug_logs,
-                    "effective_clients": logger.clients,
-                    "js_challenges": logger.js_challenges,
-                    "elapsed_ms": elapsed_ms
+                    "debug_logs": list(logger.debug_logs),
+                    "effective_clients": snap["effective_clients"],
+                    "js_challenges": snap["js_challenges"],
+                    "elapsed_ms": snap["elapsed_ms"],
+                    "last_stage": snap["stage"],
+                    "last_event": snap["last_event"],
+                    "last_event_age_ms": snap["last_event_age_ms"],
+                    "warnings_count": snap["warnings_count"],
+                    "last_warning": snap["last_warning"],
                 }
-            effective_clients = _collect_clients_from_info(info, logger.clients)
+            effective_clients = _collect_clients_from_info(info, snap["effective_clients"])
             sanitized = ydl.sanitize_info(info)
             if sanitized is None or not isinstance(sanitized, dict):
-                elapsed_ms = int((time.time() - start) * 1000)
+                snap = logger.snapshot(start_mono)
                 return {
                     "id": req_id,
                     "type": "result",
                     "success": False,
                     "error": "Failed to sanitize extractor metadata",
                     "warnings": "\n".join(logger.warnings) if logger.warnings else None,
-                    "debug_logs": logger.debug_logs,
+                    "debug_logs": list(logger.debug_logs),
                     "effective_clients": effective_clients,
-                    "js_challenges": logger.js_challenges,
-                    "elapsed_ms": elapsed_ms
+                    "js_challenges": snap["js_challenges"],
+                    "elapsed_ms": snap["elapsed_ms"],
+                    "last_stage": snap["stage"],
+                    "last_event": snap["last_event"],
+                    "last_event_age_ms": snap["last_event_age_ms"],
+                    "warnings_count": snap["warnings_count"],
+                    "last_warning": snap["last_warning"],
                 }
             if transcript_compact:
                 sanitized = _build_compact_transcript_info(sanitized, effective_clients)
             out_json = json.dumps(sanitized)
-            elapsed_ms = int((time.time() - start) * 1000)
+            snap = logger.snapshot(start_mono)
             return {
                 "id": req_id,
                 "type": "result",
                 "success": True,
                 "output": out_json,
                 "warnings": "\n".join(logger.warnings) if logger.warnings else None,
-                "debug_logs": logger.debug_logs,
+                "debug_logs": list(logger.debug_logs),
                 "effective_clients": effective_clients,
-                "js_challenges": logger.js_challenges,
-                "elapsed_ms": elapsed_ms
+                "js_challenges": snap["js_challenges"],
+                "elapsed_ms": snap["elapsed_ms"],
+                "last_stage": snap["stage"],
+                "last_event": snap["last_event"],
+                "last_event_age_ms": snap["last_event_age_ms"],
+                "warnings_count": snap["warnings_count"],
+                "last_warning": snap["last_warning"],
             }
     except _CancelledByClientException:
-        elapsed_ms = int((time.time() - start) * 1000)
+        snap = logger.snapshot(start_mono)
         return {
             "id": req_id,
             "type": "result",
             "success": False,
             "cancelled": True,
             "error": "Request cancelled",
-            "elapsed_ms": elapsed_ms
+            "elapsed_ms": snap["elapsed_ms"],
+            "last_stage": snap["stage"],
+            "last_event": snap["last_event"],
+            "last_event_age_ms": snap["last_event_age_ms"],
+            "effective_clients": snap["effective_clients"],
+            "js_challenges": snap["js_challenges"],
+            "warnings_count": snap["warnings_count"],
+            "last_warning": snap["last_warning"],
+            "debug_logs": list(logger.debug_logs),
         }
     except Exception as e:
-        elapsed_ms = int((time.time() - start) * 1000)
-        err_msg = str(e)
+        snap = logger.snapshot(start_mono)
+        err_msg = _sanitize_log(str(e), 320)
         if not err_msg and logger.errors:
             err_msg = "\n".join(logger.errors)
         return {
@@ -424,10 +554,15 @@ def run_extraction(req_id, url, options, transcript_compact, logger, cancel_even
             "success": False,
             "error": err_msg or "Unknown extractor failure",
             "warnings": "\n".join(logger.warnings) if logger.warnings else None,
-            "debug_logs": logger.debug_logs,
-            "effective_clients": logger.clients,
-            "js_challenges": logger.js_challenges,
-            "elapsed_ms": elapsed_ms
+            "debug_logs": list(logger.debug_logs),
+            "effective_clients": snap["effective_clients"],
+            "js_challenges": snap["js_challenges"],
+            "elapsed_ms": snap["elapsed_ms"],
+            "last_stage": snap["stage"],
+            "last_event": snap["last_event"],
+            "last_event_age_ms": snap["last_event_age_ms"],
+            "warnings_count": snap["warnings_count"],
+            "last_warning": snap["last_warning"],
         }
 
 def client_worker(conn):
@@ -481,7 +616,7 @@ def client_worker(conn):
                 cancel_event = threading.Event()
                 logger = YtDlpCustomLogger(cancel_event)
                 done_event = threading.Event()
-                req_start = time.time()
+                req_start_mono = time.monotonic()
 
                 with lock:
                     active_reqs.add(req_id)
@@ -492,12 +627,10 @@ def client_worker(conn):
                         if cancel_event.is_set():
                             break
                         try:
-                            pkt = json.dumps({
-                                "id": req_id,
-                                "type": "heartbeat",
-                                "stage": logger.stage,
-                                "elapsed_ms": int((time.time() - req_start) * 1000)
-                            })
+                            snap = logger.snapshot(req_start_mono)
+                            snap["id"] = req_id
+                            snap["type"] = "heartbeat"
+                            pkt = json.dumps(snap)
                             with write_lock:
                                 if not done_event.is_set():
                                     w.write(pkt + "\n")
@@ -575,8 +708,19 @@ while running:
 
     private class OverallDeadlineTimeoutException(
         val budgetMs: Long,
-        val heartbeats: Int
-    ) : SocketTimeoutException("Warm daemon exceeded overall deadline (${budgetMs}ms after $heartbeats heartbeats)")
+        val heartbeats: Int,
+        val lastStage: String? = null,
+        val lastEvent: String? = null,
+        val lastEventAgeMs: Long? = null
+    ) : SocketTimeoutException(
+        buildString {
+            append("Warm daemon exceeded overall deadline (${budgetMs}ms after $heartbeats heartbeats")
+            lastStage?.let { append(", stage=$it") }
+            lastEventAgeMs?.let { append(", lastEventAge=${it}ms") }
+            lastEvent?.takeIf { it.isNotBlank() }?.let { append(", lastEvent=$it") }
+            append(")")
+        }
+    )
 
     private fun jsonArrayToStringList(arr: JSONArray?): List<String> {
         if (arr == null || arr.length() == 0) return emptyList()
@@ -780,17 +924,37 @@ while running:
         }
     }
 
+    private fun sendDaemonCancelPacket(port: Int, token: String, processId: String) {
+        Thread({
+            try {
+                Socket().use { sock ->
+                    sock.connect(InetSocketAddress("127.0.0.1", port), 500)
+                    val writer = PrintWriter(OutputStreamWriter(sock.getOutputStream(), "UTF-8"), true)
+                    val cancelReq = JSONObject().apply {
+                        put("id", processId)
+                        put("token", token)
+                        put("action", "cancel")
+                    }
+                    writer.println(cancelReq.toString())
+                }
+            } catch (_: Throwable) {
+            }
+        }, "ytdlp-daemon-cancel-req").start()
+    }
+
     /**
      * Executes inspection via warm loopback daemon and reports detailed mechanism vs extractor outcomes.
      * Supports streaming heartbeat/progress packets bounded by per-inactivity + overall monotonic deadlines,
-     * and preserves coroutine cancellation cleanly without masking it as a transport failure or fallback.
+     * optional bounded stage extension for active JS challenge solving, and preserves coroutine cancellation
+     * cleanly without masking it as a transport failure or fallback.
      */
     suspend fun executeDetailed(
         url: String,
         options: List<String>,
         processId: String,
         timeoutMs: Long,
-        compactTranscript: Boolean = false
+        compactTranscript: Boolean = false,
+        maxStageExtendedTimeoutMs: Long = timeoutMs
     ): WarmExecuteOutcome = withContext(Dispatchers.IO) {
         val startedMono = monotonicNowMs()
         currentCoroutineContext().ensureActive()
@@ -841,6 +1005,18 @@ while running:
                 var cancelDisposable: kotlinx.coroutines.DisposableHandle? = null
                 var heartbeatCount = 0
                 var waitStartedMono = monotonicNowMs()
+                var lastStage: String? = null
+                var lastEvent: String? = null
+                var lastEventAgeMs: Long? = null
+                var lastWarning: String? = null
+                var warningsCount = 0
+                var jsChallengesFromHb = 0
+                var clientsFromHb: List<String> = emptyList()
+                var recentLogsFromHb: List<String> = emptyList()
+                var deadlineExtendedMs = 0L
+                val baseBudgetMs = timeoutMs.coerceAtLeast(1000L)
+                val maxBudgetMs = maxStageExtendedTimeoutMs.coerceAtLeast(baseBudgetMs)
+                var armedTimeoutReason = WarmFailureReason.DAEMON_INACTIVITY_TIMEOUT
 
                 try {
                     val sock = Socket()
@@ -856,10 +1032,7 @@ while running:
                         throw CancellationException("Warm request $processId was cancelled")
                     }
 
-                    val overallBudgetMs = timeoutMs.coerceAtLeast(1000L)
-                    val deadlineMono = monotonicNowMs() + overallBudgetMs
-                    val effectiveInactivityMs = minOf(overallBudgetMs, inactivityTimeoutMs).coerceAtLeast(1000L)
-
+                    val effectiveInactivityMs = inactivityTimeoutMs.coerceAtLeast(1000L)
                     sock.connect(InetSocketAddress("127.0.0.1", session.port), 2000)
 
                     val writer = PrintWriter(OutputStreamWriter(sock.getOutputStream(), "UTF-8"), true)
@@ -877,6 +1050,10 @@ while running:
                     }
 
                     waitStartedMono = monotonicNowMs()
+                    val baseDeadlineMono = waitStartedMono + baseBudgetMs
+                    val maxDeadlineMono = waitStartedMono + maxBudgetMs
+                    var currentDeadlineMono = baseDeadlineMono
+
                     writer.println(reqObj.toString())
 
                     var respObj: JSONObject
@@ -885,9 +1062,22 @@ while running:
                         if (cancelledRequestIds.contains(processId)) {
                             throw CancellationException("Warm request $processId was cancelled")
                         }
-                        val remainingOverall = deadlineMono - monotonicNowMs()
+                        val nowLoop = monotonicNowMs()
+                        val remainingOverall = currentDeadlineMono - nowLoop
                         if (remainingOverall <= 0L) {
-                            throw OverallDeadlineTimeoutException(overallBudgetMs, heartbeatCount)
+                            throw OverallDeadlineTimeoutException(
+                                budgetMs = baseBudgetMs + deadlineExtendedMs,
+                                heartbeats = heartbeatCount,
+                                lastStage = lastStage,
+                                lastEvent = lastEvent,
+                                lastEventAgeMs = lastEventAgeMs
+                            )
+                        }
+                        val cappedByOverall = remainingOverall <= effectiveInactivityMs
+                        armedTimeoutReason = if (cappedByOverall) {
+                            WarmFailureReason.OVERALL_DEADLINE_TIMEOUT
+                        } else {
+                            WarmFailureReason.DAEMON_INACTIVITY_TIMEOUT
                         }
                         sock.soTimeout = minOf(effectiveInactivityMs, remainingOverall).coerceAtLeast(1L).toInt()
 
@@ -906,7 +1096,16 @@ while running:
                                 startupMs = startupMs,
                                 handshakeMs = handshakeMs,
                                 socketWaitMs = (monotonicNowMs() - waitStartedMono).coerceAtLeast(0L),
-                                heartbeatCount = heartbeatCount
+                                effectiveClients = clientsFromHb,
+                                jsChallengesSolved = jsChallengesFromHb,
+                                heartbeatCount = heartbeatCount,
+                                debugLogs = recentLogsFromHb,
+                                lastStage = lastStage,
+                                lastEvent = lastEvent,
+                                lastEventAgeMs = lastEventAgeMs,
+                                lastWarning = lastWarning,
+                                warningsCount = warningsCount,
+                                deadlineExtendedMs = deadlineExtendedMs
                             )
                         }
 
@@ -921,13 +1120,62 @@ while running:
                                 startupMs = startupMs,
                                 handshakeMs = handshakeMs,
                                 socketWaitMs = (monotonicNowMs() - waitStartedMono).coerceAtLeast(0L),
-                                heartbeatCount = heartbeatCount
+                                effectiveClients = clientsFromHb,
+                                jsChallengesSolved = jsChallengesFromHb,
+                                heartbeatCount = heartbeatCount,
+                                debugLogs = recentLogsFromHb,
+                                lastStage = lastStage,
+                                lastEvent = lastEvent,
+                                lastEventAgeMs = lastEventAgeMs,
+                                lastWarning = lastWarning,
+                                warningsCount = warningsCount,
+                                deadlineExtendedMs = deadlineExtendedMs
                             )
                         }
 
                         val pktType = packet.optString("type").lowercase()
                         if (pktType == "heartbeat" || pktType == "progress") {
                             heartbeatCount++
+                            packet.optString("stage").ifBlank { packet.optString("last_stage") }
+                                .takeIf { it.isNotBlank() }
+                                ?.let { lastStage = it }
+                            packet.optString("last_event").takeIf { it.isNotBlank() }?.let { lastEvent = it }
+                            if (packet.has("last_event_age_ms") && !packet.isNull("last_event_age_ms")) {
+                                lastEventAgeMs = packet.optLong("last_event_age_ms", 0L).coerceAtLeast(0L)
+                            }
+                            packet.optString("last_warning").takeIf { it.isNotBlank() }?.let { lastWarning = it }
+                            if (packet.has("warnings_count")) {
+                                warningsCount = packet.optInt("warnings_count", warningsCount).coerceAtLeast(0)
+                            }
+                            if (packet.has("js_challenges")) {
+                                jsChallengesFromHb = packet.optInt("js_challenges", jsChallengesFromHb).coerceAtLeast(0)
+                            }
+                            val hbClients = jsonArrayToStringList(packet.optJSONArray("effective_clients"))
+                            if (hbClients.isNotEmpty()) {
+                                clientsFromHb = (clientsFromHb + hbClients).distinct()
+                            }
+                            val hbLogs = jsonArrayToStringList(packet.optJSONArray("recent_logs"))
+                            if (hbLogs.isNotEmpty()) {
+                                recentLogsFromHb = (recentLogsFromHb + hbLogs).distinct().takeLast(20)
+                            }
+
+                            val nowHb = monotonicNowMs()
+                            val remainingAfterHb = currentDeadlineMono - nowHb
+                            val isActiveJsChallenge = lastStage == "js_challenge" ||
+                                lastStage == "downloading_player_js" ||
+                                jsChallengesFromHb > 0
+                            val recentlyActive = (lastEventAgeMs ?: 0L) < effectiveInactivityMs
+                            if (maxDeadlineMono > currentDeadlineMono &&
+                                remainingAfterHb <= 10_000L &&
+                                isActiveJsChallenge &&
+                                recentlyActive
+                            ) {
+                                val nextDeadline = minOf(maxDeadlineMono, nowHb + 15_000L)
+                                if (nextDeadline > currentDeadlineMono) {
+                                    currentDeadlineMono = nextDeadline
+                                    deadlineExtendedMs = (currentDeadlineMono - baseDeadlineMono).coerceAtLeast(0L)
+                                }
+                            }
                             continue
                         }
 
@@ -943,10 +1191,25 @@ while running:
                     val elapsed = (nowMono - startedMono).coerceAtLeast(0L)
                     val socketWaitMs = (nowMono - waitStartedMono).coerceAtLeast(0L)
                     val extractMs = respObj.optLong("elapsed_ms", 0L).coerceAtLeast(0L)
-                    val effectiveClients = jsonArrayToStringList(respObj.optJSONArray("effective_clients"))
-                    val jsChallenges = respObj.optInt("js_challenges", 0).coerceAtLeast(0)
-                    val debugLogs = jsonArrayToStringList(respObj.optJSONArray("debug_logs"))
+                    val effectiveClients = (clientsFromHb + jsonArrayToStringList(respObj.optJSONArray("effective_clients"))).distinct()
+                    val jsChallenges = maxOf(jsChallengesFromHb, respObj.optInt("js_challenges", 0).coerceAtLeast(0))
+                    val debugLogs = jsonArrayToStringList(respObj.optJSONArray("debug_logs")).ifEmpty { recentLogsFromHb }
                     val warn = respObj.optString("warnings").takeIf { it.isNotBlank() }
+                    val finalStage = respObj.optString("last_stage").ifBlank { respObj.optString("stage") }
+                        .takeIf { it.isNotBlank() } ?: lastStage
+                    val finalEvent = respObj.optString("last_event").takeIf { it.isNotBlank() } ?: lastEvent
+                    val finalEventAgeMs = if (respObj.has("last_event_age_ms") && !respObj.isNull("last_event_age_ms")) {
+                        respObj.optLong("last_event_age_ms", 0L).coerceAtLeast(0L)
+                    } else {
+                        lastEventAgeMs
+                    }
+                    val finalWarning = respObj.optString("last_warning").takeIf { it.isNotBlank() }
+                        ?: warn?.lineSequence()?.lastOrNull { it.isNotBlank() }?.take(220)
+                        ?: lastWarning
+                    val finalWarningsCount = maxOf(
+                        warningsCount,
+                        respObj.optInt("warnings_count", 0).coerceAtLeast(0)
+                    )
                     val success = respObj.optBoolean("success", false)
                     if (success) {
                         val out = respObj.optString("output")
@@ -963,7 +1226,13 @@ while running:
                                 effectiveClients = effectiveClients,
                                 jsChallengesSolved = jsChallenges,
                                 heartbeatCount = heartbeatCount,
-                                debugLogs = debugLogs
+                                debugLogs = debugLogs,
+                                lastStage = finalStage,
+                                lastEvent = finalEvent,
+                                lastEventAgeMs = finalEventAgeMs,
+                                lastWarning = finalWarning,
+                                warningsCount = finalWarningsCount,
+                                deadlineExtendedMs = deadlineExtendedMs
                             )
                         }
                         WarmExecuteOutcome.Success(
@@ -978,7 +1247,13 @@ while running:
                             effectiveClients = effectiveClients,
                             jsChallengesSolved = jsChallenges,
                             heartbeatCount = heartbeatCount,
-                            debugLogs = debugLogs
+                            debugLogs = debugLogs,
+                            lastStage = finalStage,
+                            lastEvent = finalEvent,
+                            lastEventAgeMs = finalEventAgeMs,
+                            lastWarning = finalWarning,
+                            warningsCount = finalWarningsCount,
+                            deadlineExtendedMs = deadlineExtendedMs
                         )
                     } else {
                         val error = respObj.optString("error", "Unknown extraction error")
@@ -994,7 +1269,13 @@ while running:
                             effectiveClients = effectiveClients,
                             jsChallengesSolved = jsChallenges,
                             heartbeatCount = heartbeatCount,
-                            debugLogs = debugLogs
+                            debugLogs = debugLogs,
+                            lastStage = finalStage,
+                            lastEvent = finalEvent,
+                            lastEventAgeMs = finalEventAgeMs,
+                            lastWarning = finalWarning,
+                            warningsCount = finalWarningsCount,
+                            deadlineExtendedMs = deadlineExtendedMs
                         )
                     }
                 } catch (ce: CancellationException) {
@@ -1003,37 +1284,72 @@ while running:
                 } catch (ode: OverallDeadlineTimeoutException) {
                     currentCoroutineContext().ensureActive()
                     invalidateSessionIfSame(session, excludeProcessId = processId)
+                    sendDaemonCancelPacket(session.port, session.token, processId)
                     val nowMono = monotonicNowMs()
                     WarmExecuteOutcome.MechanismFailure(
                         reason = WarmFailureReason.OVERALL_DEADLINE_TIMEOUT,
-                        detail = ode.message ?: "Warm daemon exceeded overall deadline (${timeoutMs}ms)",
+                        detail = ode.message ?: "Warm daemon exceeded overall deadline (${baseBudgetMs + deadlineExtendedMs}ms)",
                         elapsedMs = (nowMono - startedMono).coerceAtLeast(0L),
                         warmHealthyAtStart = healthyAtStart,
                         cause = ode,
                         startupMs = startupMs,
                         handshakeMs = handshakeMs,
                         socketWaitMs = (nowMono - waitStartedMono).coerceAtLeast(0L),
-                        heartbeatCount = heartbeatCount
+                        effectiveClients = clientsFromHb,
+                        jsChallengesSolved = jsChallengesFromHb,
+                        heartbeatCount = heartbeatCount,
+                        debugLogs = recentLogsFromHb,
+                        lastStage = lastStage,
+                        lastEvent = lastEvent,
+                        lastEventAgeMs = lastEventAgeMs,
+                        lastWarning = lastWarning,
+                        warningsCount = warningsCount,
+                        deadlineExtendedMs = deadlineExtendedMs
                     )
                 } catch (te: SocketTimeoutException) {
                     currentCoroutineContext().ensureActive()
                     invalidateSessionIfSame(session, excludeProcessId = processId)
+                    sendDaemonCancelPacket(session.port, session.token, processId)
                     val nowMono = monotonicNowMs()
-                    val reason = if (heartbeatCount > 0 && (nowMono - waitStartedMono) >= timeoutMs.coerceAtLeast(1000L)) {
+                    val socketWait = (nowMono - waitStartedMono).coerceAtLeast(0L)
+                    val effectiveBudget = baseBudgetMs + deadlineExtendedMs
+                    val reason = if (armedTimeoutReason == WarmFailureReason.OVERALL_DEADLINE_TIMEOUT ||
+                        (heartbeatCount > 0 && socketWait >= effectiveBudget - 50L)
+                    ) {
                         WarmFailureReason.OVERALL_DEADLINE_TIMEOUT
                     } else {
-                        WarmFailureReason.SOCKET_TIMEOUT
+                        WarmFailureReason.DAEMON_INACTIVITY_TIMEOUT
+                    }
+                    val detail = buildString {
+                        if (reason == WarmFailureReason.OVERALL_DEADLINE_TIMEOUT) {
+                            append("Warm daemon exceeded overall deadline (${effectiveBudget}ms after $heartbeatCount heartbeats")
+                        } else {
+                            append("Warm daemon produced no activity for ${inactivityTimeoutMs.coerceAtLeast(1000L)}ms ($heartbeatCount heartbeats")
+                        }
+                        lastStage?.let { append(", stage=$it") }
+                        lastEventAgeMs?.let { append(", lastEventAge=${it}ms") }
+                        lastEvent?.takeIf { it.isNotBlank() }?.let { append(", lastEvent=$it") }
+                        append(")")
                     }
                     WarmExecuteOutcome.MechanismFailure(
                         reason = reason,
-                        detail = te.message ?: "Warm daemon read timed out after ${timeoutMs}ms",
+                        detail = detail,
                         elapsedMs = (nowMono - startedMono).coerceAtLeast(0L),
                         warmHealthyAtStart = healthyAtStart,
                         cause = te,
                         startupMs = startupMs,
                         handshakeMs = handshakeMs,
-                        socketWaitMs = (nowMono - waitStartedMono).coerceAtLeast(0L),
-                        heartbeatCount = heartbeatCount
+                        socketWaitMs = socketWait,
+                        effectiveClients = clientsFromHb,
+                        jsChallengesSolved = jsChallengesFromHb,
+                        heartbeatCount = heartbeatCount,
+                        debugLogs = recentLogsFromHb,
+                        lastStage = lastStage,
+                        lastEvent = lastEvent,
+                        lastEventAgeMs = lastEventAgeMs,
+                        lastWarning = lastWarning,
+                        warningsCount = warningsCount,
+                        deadlineExtendedMs = deadlineExtendedMs
                     )
                 } catch (eof: EOFException) {
                     if (cancelledRequestIds.contains(processId) || !currentCoroutineContext().isActive) {
@@ -1050,7 +1366,16 @@ while running:
                         startupMs = startupMs,
                         handshakeMs = handshakeMs,
                         socketWaitMs = (nowMono - waitStartedMono).coerceAtLeast(0L),
-                        heartbeatCount = heartbeatCount
+                        effectiveClients = clientsFromHb,
+                        jsChallengesSolved = jsChallengesFromHb,
+                        heartbeatCount = heartbeatCount,
+                        debugLogs = recentLogsFromHb,
+                        lastStage = lastStage,
+                        lastEvent = lastEvent,
+                        lastEventAgeMs = lastEventAgeMs,
+                        lastWarning = lastWarning,
+                        warningsCount = warningsCount,
+                        deadlineExtendedMs = deadlineExtendedMs
                     )
                 } catch (ceConn: ConnectException) {
                     currentCoroutineContext().ensureActive()
@@ -1065,7 +1390,16 @@ while running:
                         startupMs = startupMs,
                         handshakeMs = handshakeMs,
                         socketWaitMs = (nowMono - waitStartedMono).coerceAtLeast(0L),
-                        heartbeatCount = heartbeatCount
+                        effectiveClients = clientsFromHb,
+                        jsChallengesSolved = jsChallengesFromHb,
+                        heartbeatCount = heartbeatCount,
+                        debugLogs = recentLogsFromHb,
+                        lastStage = lastStage,
+                        lastEvent = lastEvent,
+                        lastEventAgeMs = lastEventAgeMs,
+                        lastWarning = lastWarning,
+                        warningsCount = warningsCount,
+                        deadlineExtendedMs = deadlineExtendedMs
                     )
                 } catch (se: SocketException) {
                     if (cancelledRequestIds.contains(processId) || !currentCoroutineContext().isActive) {
@@ -1082,7 +1416,16 @@ while running:
                         startupMs = startupMs,
                         handshakeMs = handshakeMs,
                         socketWaitMs = (nowMono - waitStartedMono).coerceAtLeast(0L),
-                        heartbeatCount = heartbeatCount
+                        effectiveClients = clientsFromHb,
+                        jsChallengesSolved = jsChallengesFromHb,
+                        heartbeatCount = heartbeatCount,
+                        debugLogs = recentLogsFromHb,
+                        lastStage = lastStage,
+                        lastEvent = lastEvent,
+                        lastEventAgeMs = lastEventAgeMs,
+                        lastWarning = lastWarning,
+                        warningsCount = warningsCount,
+                        deadlineExtendedMs = deadlineExtendedMs
                     )
                 } catch (t: Throwable) {
                     if (cancelledRequestIds.contains(processId) || !currentCoroutineContext().isActive) {
@@ -1099,7 +1442,16 @@ while running:
                         startupMs = startupMs,
                         handshakeMs = handshakeMs,
                         socketWaitMs = (nowMono - waitStartedMono).coerceAtLeast(0L),
-                        heartbeatCount = heartbeatCount
+                        effectiveClients = clientsFromHb,
+                        jsChallengesSolved = jsChallengesFromHb,
+                        heartbeatCount = heartbeatCount,
+                        debugLogs = recentLogsFromHb,
+                        lastStage = lastStage,
+                        lastEvent = lastEvent,
+                        lastEventAgeMs = lastEventAgeMs,
+                        lastWarning = lastWarning,
+                        warningsCount = warningsCount,
+                        deadlineExtendedMs = deadlineExtendedMs
                     )
                 } finally {
                     cancelDisposable?.dispose()
@@ -1120,7 +1472,7 @@ while running:
     /**
      * Backwards-compatible execution entrypoint for general inspection callers.
      * Returns WarmExecutionResult if successful, or null if warm engine is disabled/unavailable (to trigger fallback).
-     * Throws SocketTimeoutException on socket timeout and YoutubeDLException on extractor error.
+     * Throws SocketTimeoutException on timeout and YoutubeDLException on extractor error.
      */
     suspend fun execute(
         url: String,
@@ -1132,6 +1484,7 @@ while running:
             is WarmExecuteOutcome.Success -> WarmExecutionResult(outcome.output, outcome.warnings)
             is WarmExecuteOutcome.ExtractorError -> throw YoutubeDLException(outcome.message)
             is WarmExecuteOutcome.MechanismFailure -> when (outcome.reason) {
+                WarmFailureReason.DAEMON_INACTIVITY_TIMEOUT,
                 WarmFailureReason.SOCKET_TIMEOUT,
                 WarmFailureReason.OVERALL_DEADLINE_TIMEOUT ->
                     throw (outcome.cause as? SocketTimeoutException ?: SocketTimeoutException(outcome.detail))

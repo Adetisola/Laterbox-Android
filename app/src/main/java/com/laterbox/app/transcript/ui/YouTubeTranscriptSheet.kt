@@ -1101,6 +1101,12 @@ private fun DiagnosticDetailsBox(diag: TranscriptDiagnosticInfo) {
 
     val summary = buildString {
         appendLine("Stage: ${diag.stage}")
+        diag.lastKnownStage?.takeIf { it.isNotBlank() }?.let { appendLine("Last known stage: $it") }
+        diag.lastMeaningfulEvent?.takeIf { it.isNotBlank() }?.let { ev ->
+            val clipped = if (ev.length > 140) ev.take(137) + "..." else ev
+            appendLine("Last meaningful event: $clipped")
+        }
+        diag.lastMeaningfulActivityAgeMs?.let { appendLine("Last activity age: ${it}ms") }
         diag.playlistPosition?.let { appendLine("Playlist position: #$it") }
         appendLine("Category: ${diag.errorCategory.name}")
         diag.failureClassification?.let { appendLine("Classification: $it") }
@@ -1129,6 +1135,9 @@ private fun DiagnosticDetailsBox(diag: TranscriptDiagnosticInfo) {
         if (diag.retryCount > 0) appendLine("Retries: ${diag.retryCount}")
         if (diag.retryReasons.isNotEmpty()) appendLine("Retry reasons: ${diag.retryReasons.joinToString()}")
         diag.warmDaemonHealthyAtStart?.let { appendLine("Warm daemon healthy at start: $it") }
+        diag.primaryRouteOutcome?.takeIf { it.isNotBlank() }?.let { appendLine("Primary route: $it") }
+        diag.watchHtmlOutcome?.takeIf { it.isNotBlank() }?.let { appendLine("Watch HTML route: $it") }
+        diag.recoveryRouteOutcome?.takeIf { it.isNotBlank() }?.let { appendLine("Recovery route: $it") }
         if (diag.fallbackAttempted) {
             val resultPart = diag.fallbackResult?.let { " ($it)" }.orEmpty()
             appendLine("Standard fallback attempted: true$resultPart")
@@ -1139,10 +1148,23 @@ private fun DiagnosticDetailsBox(diag: TranscriptDiagnosticInfo) {
         diag.jsChallengesSolved?.takeIf { it > 0 }?.let { appendLine("JS challenges solved: $it") }
         diag.heartbeatCount?.takeIf { it > 0 }?.let { appendLine("Heartbeats received: $it") }
         diag.timeoutMs?.let { appendLine("Timeout budget: ${it}ms") }
+        diag.deadlineExtendedMs?.takeIf { it > 0L }?.let { appendLine("Deadline extension: +${it}ms") }
         diag.elapsedMs?.let { appendLine("Elapsed: ${it}ms") }
+        diag.warningsCount?.takeIf { it > 0 }?.let { appendLine("Warnings count: $it") }
+        diag.lastWarning?.takeIf { it.isNotBlank() }?.let { warn ->
+            val clipped = if (warn.length > 140) warn.take(137) + "..." else warn
+            appendLine("Last warning: $clipped")
+        }
         diag.httpStatusCode?.let { appendLine("HTTP status: $it") }
         diag.exceptionType?.let { appendLine("Error type: $it") }
-        diag.sanitizedDetail?.takeIf { it.isNotBlank() }?.let { append("Detail: $it") }
+        diag.sanitizedDetail?.takeIf { it.isNotBlank() }?.let { appendLine("Detail: $it") }
+        if (diag.recentDebugLogs.isNotEmpty()) {
+            appendLine("Recent logs:")
+            diag.recentDebugLogs.takeLast(5).forEach { logLine ->
+                val clipped = if (logLine.length > 140) logLine.take(137) + "..." else logLine
+                appendLine("  - $clipped")
+            }
+        }
     }.trim()
 
     Box(

@@ -388,24 +388,32 @@ class YouTubeTranscriptUiTest {
                     title = "Failed Lesson",
                     url = "https://www.youtube.com/watch?v=v2",
                     status = VideoTranscriptStatus.TIMEOUT,
-                    statusMessage = "Timed out while retrieving video metadata.",
+                    statusMessage = "YouTube metadata extraction stayed active (stage: js_challenge) but did not complete within 90s.",
                     diagnosticInfo = com.laterbox.app.transcript.domain.TranscriptDiagnosticInfo(
                         videoId = "v2",
                         playlistPosition = 2,
                         stage = "video_metadata",
-                        ytDlpVersion = "2025.11.12",
+                        ytDlpVersion = "2026.10.26",
                         executionEngine = "warm_daemon->standard_process",
                         attemptNumber = 2,
-                        timeoutMs = 35000L,
+                        timeoutMs = 60000L,
                         warmDaemonHealthyAtStart = false,
                         fallbackAttempted = true,
                         fallbackResult = "timeout",
                         errorCategory = VideoTranscriptStatus.TIMEOUT,
-                        failureClassification = "warm_daemon_timeout->standard_process_timeout",
+                        failureClassification = com.laterbox.app.transcript.domain.TranscriptFailureClassification.DAEMON_TRANSPORT_FAILURE,
                         retryCount = 1,
-                        retryReasons = listOf("Attempt 1 failed: warm_daemon_timeout->standard_process_timeout"),
+                        retryReasons = listOf("Attempt 1 failed: DAEMON_TRANSPORT_FAILURE"),
                         elapsedMs = 70200L,
-                        sanitizedDetail = "SocketTimeoutException after 35s"
+                        lastKnownStage = "js_challenge",
+                        lastMeaningfulEvent = "Solving n challenge",
+                        lastMeaningfulActivityAgeMs = 180L,
+                        deadlineExtendedMs = 30000L,
+                        primaryRouteOutcome = "primary_jsless:timeout(DAEMON_TRANSPORT_FAILURE)",
+                        watchHtmlOutcome = "watch_html:network_error(http_503)",
+                        recoveryRouteOutcome = "native_recovery:timeout(YT_DLP_NETWORK_TIMEOUT)",
+                        recentDebugLogs = listOf("Downloading webpage", "Solving n challenge"),
+                        sanitizedDetail = "SocketTimeoutException after 60s"
                     )
                 )
             )
@@ -440,7 +448,19 @@ class YouTubeTranscriptUiTest {
 
         composeTestRule.onNodeWithText("2. Failed Lesson").performScrollTo().performClick()
         composeTestRule.onNodeWithText("Technical details").performScrollTo().performClick()
-        composeTestRule.onNodeWithText("Classification: warm_daemon_timeout->standard_process_timeout", substring = true)
+        composeTestRule.onNodeWithText("Classification: ${com.laterbox.app.transcript.domain.TranscriptFailureClassification.DAEMON_TRANSPORT_FAILURE}", substring = true)
+            .performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule.onNodeWithText("Last known stage: js_challenge", substring = true)
+            .performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule.onNodeWithText("Primary route: primary_jsless:timeout(DAEMON_TRANSPORT_FAILURE)", substring = true)
+            .performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule.onNodeWithText("Watch HTML route: watch_html:network_error(http_503)", substring = true)
+            .performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule.onNodeWithText("Recovery route: native_recovery:timeout(YT_DLP_NETWORK_TIMEOUT)", substring = true)
             .performScrollTo()
             .assertIsDisplayed()
         composeTestRule.onNodeWithText("Standard fallback attempted: true (timeout)", substring = true)

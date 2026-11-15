@@ -381,7 +381,7 @@ class WarmYtDlpServerTest {
     }
 
     @Test
-    fun executeDetailed_socketTimeoutAndPrematureEofInvalidateDaemonAndRecoverOnNextLaunch() = runTest {
+    fun executeDetailed_inactivityTimeoutAndPrematureEofInvalidateDaemonAndRecoverOnNextLaunch() = runTest {
         val userPrefs = UserPreferencesRepository(context)
         userPrefs.setFastEngineEnabled(true)
         val launchCount = AtomicInteger(0)
@@ -390,13 +390,14 @@ class WarmYtDlpServerTest {
             appContext = context,
             userPreferencesRepository = userPrefs,
             handshakeTimeoutMs = 1000L,
+            inactivityTimeoutMs = 1000L,
             runtimeEnvProvider = { testRuntimeEnv() },
             processLauncher = { _, _ ->
                 val num = launchCount.incrementAndGet()
                 FakeDaemonProcess { req, sock, writer ->
                     val id = req.optString("id")
                     when (num) {
-                        1 -> Thread.sleep(2000L) // Cause SocketTimeoutException on client (timeoutMs=1000)
+                        1 -> Thread.sleep(2000L) // Exceeds inactivityTimeoutMs=1000 while timeoutMs=3000
                         2 -> sock.close() // Cause premature EOF
                         else -> writer.println(JSONObject().put("id", id).put("success", true).put("output", """{"id":"recovered"}""").toString())
                     }
@@ -405,17 +406,17 @@ class WarmYtDlpServerTest {
         )
 
         try {
-            val out1 = server.executeDetailed("https://youtu.be/1", emptyList(), "p_1", 1000L)
+            val out1 = server.executeDetailed("https://youtu.be/1", emptyList(), "p_1", 3000L)
             assertTrue(out1 is WarmExecuteOutcome.MechanismFailure)
-            assertEquals(WarmFailureReason.SOCKET_TIMEOUT, (out1 as WarmExecuteOutcome.MechanismFailure).reason)
-            assertFalse("Daemon must be invalidated after socket timeout", server.isHealthy())
+            assertEquals(WarmFailureReason.DAEMON_INACTIVITY_TIMEOUT, (out1 as WarmExecuteOutcome.MechanismFailure).reason)
+            assertFalse("Daemon must be invalidated after inactivity timeout", server.isHealthy())
 
-            val out2 = server.executeDetailed("https://youtu.be/2", emptyList(), "p_2", 1000L)
+            val out2 = server.executeDetailed("https://youtu.be/2", emptyList(), "p_2", 3000L)
             assertTrue(out2 is WarmExecuteOutcome.MechanismFailure)
             assertEquals(WarmFailureReason.PREMATURE_EOF, (out2 as WarmExecuteOutcome.MechanismFailure).reason)
             assertFalse("Daemon must be invalidated after premature EOF", server.isHealthy())
 
-            val out3 = server.executeDetailed("https://youtu.be/3", emptyList(), "p_3", 1500L)
+            val out3 = server.executeDetailed("https://youtu.be/3", emptyList(), "p_3", 3000L)
             assertTrue(out3 is WarmExecuteOutcome.Success)
             assertTrue(server.isHealthy())
             assertEquals(3, launchCount.get())
@@ -519,7 +520,7 @@ class WarmYtDlpServerTest {
     }
 
     @Test
-    fun executeDetailed_streamingHeartbeatsKeepSocketAliveAndPopulateMetadata() = runTest {
+    fun executeDetailed_streamingHeartbeatsKeepSocketAliveAndPopulateRichTelemetry() = runTest {
         val userPrefs = UserPreferencesRepository(context)
         userPrefs.setFastEngineEnabled(true)
         var capturedCompactFlag: Boolean? = null
@@ -534,16 +535,46 @@ class WarmYtDlpServerTest {
                     val id = req.optString("id")
                     capturedCompactFlag = req.optBoolean("transcript_compact", false)
                     Thread.sleep(600L)
-                    writer.println(JSONObject().put("id", id).put("type", "heartbeat").put("elapsed_ms", 600).toString())
+                    writer.println(
+                        JSONObject()
+                            .put("id", id)
+                            .put("type", "heartbeat")
+                            .put("elapsed_ms", 600)
+                            .put("stage", "extracting_webpage")
+                            .put("last_event", "Downloading webpage")
+                            .put("last_event_age_ms", 40)
+                            .put("warnings_count", 0)
+                            .put("recent_logs", org.json.JSONArray(listOf("Downloading webpage")))
+                            .toString()
+                    )
                     Thread.sleep(600L)
-                    writer.println(JSONObject().put("id", id).put("type", "heartbeat").put("elapsed_ms", 1200).toString())
+                    writer.println(
+                        JSONObject()
+                            .put("id", id)
+                            .put("type", "heartbeat")
+                            .put("elapsed_ms", 1200)
+                            .put("stage", "player_api")
+                            .put("last_event", "Downloading tv samsung player API JSON")
+                            .put("last_event_age_ms", 25)
+                            .put("warnings_count", 1)
+                            .put("last_warning", "Some client warning")
+                            .put("effective_clients", org.json.JSONArray(listOf("tv_samsung")))
+                            .put("recent_logs", org.json.JSONArray(listOf("Downloading tv samsung player API JSON")))
+                            .toString()
+                    )
                     Thread.sleep(200L)
                     writer.println(
                         JSONObject()
                             .put("id", id)
+                            .put("type", "result")
                             .put("success", true)
                             .put("elapsed_ms", 1400L)
                             .put("js_challenges", 2)
+                            .put("last_stage", "sanitizing")
+                            .put("last_event", "Sanitizing extracted metadata")
+                            .put("last_event_age_ms", 10)
+                            .put("warnings_count", 1)
+                            .put("last_warning", "Some client warning")
                             .put("effective_clients", org.json.JSONArray(listOf("android_vr", "tv")))
                             .put("output", """{"id":"hb1","title":"Heartbeat OK"}""")
                             .toString()
@@ -566,8 +597,14 @@ class WarmYtDlpServerTest {
             assertEquals(true, capturedCompactFlag)
             assertEquals(2, ok.heartbeatCount)
             assertEquals(2, ok.jsChallengesSolved)
-            assertEquals(listOf("android_vr", "tv"), ok.effectiveClients)
+            assertEquals(listOf("tv_samsung", "android_vr", "tv"), ok.effectiveClients)
             assertEquals(1400L, ok.extractMs)
+            assertEquals("sanitizing", ok.lastStage)
+            assertEquals("Sanitizing extracted metadata", ok.lastEvent)
+            assertEquals(10L, ok.lastEventAgeMs)
+            assertEquals(1, ok.warningsCount)
+            assertEquals("Some client warning", ok.lastWarning)
+            assertTrue(ok.debugLogs.isNotEmpty())
             assertTrue(ok.output.contains("Heartbeat OK"))
         } finally {
             server.shutdown()
@@ -575,7 +612,98 @@ class WarmYtDlpServerTest {
     }
 
     @Test
-    fun executeDetailed_continuousHeartbeatsPastOverallDeadline_returnsOverallDeadlineTimeout() = runTest {
+    fun executeDetailed_jsChallengeStageExtendsDeadlineUpToMaxStageExtendedBudget() = runTest {
+        val userPrefs = UserPreferencesRepository(context)
+        userPrefs.setFastEngineEnabled(true)
+
+        val server = WarmYtDlpServer(
+            appContext = context,
+            userPreferencesRepository = userPrefs,
+            handshakeTimeoutMs = 1000L,
+            runtimeEnvProvider = { testRuntimeEnv() },
+            processLauncher = { _, _ ->
+                FakeDaemonProcess { req, _, writer ->
+                    val id = req.optString("id")
+                    // Run for ~2700ms (> 2000ms base budget, < 5000ms maxStageExtendedTimeoutMs) while solving JS challenge
+                    repeat(5) { idx ->
+                        Thread.sleep(500L)
+                        writer.println(
+                            JSONObject()
+                                .put("id", id)
+                                .put("type", "heartbeat")
+                                .put("elapsed_ms", (idx + 1) * 500)
+                                .put("stage", "js_challenge")
+                                .put("last_event", "Solving n challenge part ${idx + 1}")
+                                .put("last_event_age_ms", 20)
+                                .put("js_challenges", 1)
+                                .toString()
+                        )
+                    }
+                    Thread.sleep(200L)
+                    writer.println(
+                        JSONObject()
+                            .put("id", id)
+                            .put("type", "result")
+                            .put("success", true)
+                            .put("elapsed_ms", 2700L)
+                            .put("js_challenges", 1)
+                            .put("last_stage", "sanitizing")
+                            .put("output", """{"id":"jsext","title":"Extended OK"}""")
+                            .toString()
+                    )
+                }
+            },
+            inactivityTimeoutMs = 1500L
+        )
+
+        try {
+            val outcome = server.executeDetailed(
+                url = "https://youtu.be/jsext",
+                options = listOf("--dump-single-json"),
+                processId = "req_js_ext",
+                timeoutMs = 2000L,
+                maxStageExtendedTimeoutMs = 5000L
+            )
+            assertTrue("Active js_challenge stage should extend deadline up to 5000ms and succeed, got $outcome", outcome is WarmExecuteOutcome.Success)
+            val ok = outcome as WarmExecuteOutcome.Success
+            assertTrue("Expected deadlineExtendedMs > 0, got ${ok.deadlineExtendedMs}", ok.deadlineExtendedMs > 0L)
+            assertEquals(1, ok.jsChallengesSolved)
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun executeDetailed_cappedByOverallDeadlineWithZeroHeartbeats_classifiesAsOverallDeadlineTimeout() = runTest {
+        val userPrefs = UserPreferencesRepository(context)
+        userPrefs.setFastEngineEnabled(true)
+
+        val server = WarmYtDlpServer(
+            appContext = context,
+            userPreferencesRepository = userPrefs,
+            handshakeTimeoutMs = 1000L,
+            inactivityTimeoutMs = 15_000L,
+            runtimeEnvProvider = { testRuntimeEnv() },
+            processLauncher = { _, _ ->
+                FakeDaemonProcess { _, _, _ ->
+                    Thread.sleep(2200L) // Exceeds overall timeoutMs=1000 while < inactivityTimeoutMs=15000
+                }
+            }
+        )
+
+        try {
+            val outcome = server.executeDetailed("https://youtu.be/zero_hb", emptyList(), "req_zero_hb", 1000L)
+            assertTrue(outcome is WarmExecuteOutcome.MechanismFailure)
+            val fail = outcome as WarmExecuteOutcome.MechanismFailure
+            assertEquals(WarmFailureReason.OVERALL_DEADLINE_TIMEOUT, fail.reason)
+            assertEquals(0, fail.heartbeatCount)
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun executeDetailed_continuousHeartbeatsPastOverallDeadline_returnsOverallDeadlineTimeoutWithTelemetry() = runTest {
         val userPrefs = UserPreferencesRepository(context)
         userPrefs.setFastEngineEnabled(true)
 
@@ -589,7 +717,16 @@ class WarmYtDlpServerTest {
                     val id = req.optString("id")
                     repeat(8) { idx ->
                         Thread.sleep(250L)
-                        writer.println(JSONObject().put("id", id).put("type", "heartbeat").put("elapsed_ms", (idx + 1) * 250).toString())
+                        writer.println(
+                            JSONObject()
+                                .put("id", id)
+                                .put("type", "heartbeat")
+                                .put("elapsed_ms", (idx + 1) * 250)
+                                .put("stage", "player_api")
+                                .put("last_event", "Fetching player API attempt ${idx + 1}")
+                                .put("last_event_age_ms", 35)
+                                .toString()
+                        )
                     }
                 }
             },
@@ -602,13 +739,16 @@ class WarmYtDlpServerTest {
             val fail = outcome as WarmExecuteOutcome.MechanismFailure
             assertEquals(WarmFailureReason.OVERALL_DEADLINE_TIMEOUT, fail.reason)
             assertTrue("Expected heartbeatCount > 0 before deadline", fail.heartbeatCount > 0)
+            assertEquals("player_api", fail.lastStage)
+            assertTrue(fail.lastEvent?.startsWith("Fetching player API attempt") == true)
+            assertEquals(35L, fail.lastEventAgeMs)
         } finally {
             server.shutdown()
         }
     }
 
     @Test
-    fun executeDetailed_socketTimeoutWithActiveSibling_doesNotDestroySiblingDaemon() = runTest {
+    fun executeDetailed_inactivityTimeoutWithActiveSibling_doesNotDestroySiblingDaemon() = runTest {
         val userPrefs = UserPreferencesRepository(context)
         userPrefs.setFastEngineEnabled(true)
         val bothStarted = CountDownLatch(2)
@@ -619,15 +759,26 @@ class WarmYtDlpServerTest {
             appContext = context,
             userPreferencesRepository = userPrefs,
             handshakeTimeoutMs = 1000L,
+            inactivityTimeoutMs = 1000L,
             runtimeEnvProvider = { testRuntimeEnv() },
             processLauncher = { _, _ ->
                 FakeDaemonProcess { req, _, writer ->
                     val id = req.optString("id")
                     bothStarted.countDown()
                     if (id == "req_slow") {
-                        Thread.sleep(2500L) // Exceeds 1000ms timeout
+                        Thread.sleep(2500L) // Exceeds 1000ms inactivity timeout while timeoutMs=3500
                     } else if (id == "req_fast_after") {
-                        allowBFinish.await(3, TimeUnit.SECONDS)
+                        var waited = 0
+                        while (!allowBFinish.await(350, TimeUnit.MILLISECONDS) && waited < 10) {
+                            waited++
+                            writer.println(
+                                JSONObject()
+                                    .put("id", id)
+                                    .put("type", "heartbeat")
+                                    .put("stage", "player_api")
+                                    .toString()
+                            )
+                        }
                         writer.println(JSONObject().put("id", id).put("success", true).put("output", """{"id":"B_ok"}""").toString())
                     }
                 }.also { proc = it }
@@ -636,7 +787,7 @@ class WarmYtDlpServerTest {
 
         try {
             val slowJob = async(Dispatchers.IO) {
-                server.executeDetailed("https://youtu.be/slow", emptyList(), "req_slow", 1000L)
+                server.executeDetailed("https://youtu.be/slow", emptyList(), "req_slow", 3500L)
             }
             val siblingJob = async(Dispatchers.IO) {
                 server.executeDetailed("https://youtu.be/sib", emptyList(), "req_fast_after", 4000L)
@@ -645,12 +796,12 @@ class WarmYtDlpServerTest {
             assertTrue(bothStarted.await(2, TimeUnit.SECONDS))
             val slowOutcome = slowJob.await()
             assertTrue(slowOutcome is WarmExecuteOutcome.MechanismFailure)
-            assertEquals(WarmFailureReason.SOCKET_TIMEOUT, (slowOutcome as WarmExecuteOutcome.MechanismFailure).reason)
+            assertEquals(WarmFailureReason.DAEMON_INACTIVITY_TIMEOUT, (slowOutcome as WarmExecuteOutcome.MechanismFailure).reason)
             assertFalse("Sibling request still active so daemon process must NOT be forcibly destroyed", proc?.forciblyDestroyed?.get() == true)
 
             allowBFinish.countDown()
             val siblingOutcome = siblingJob.await()
-            assertTrue("Sibling request must succeed after sibling socket timeout", siblingOutcome is WarmExecuteOutcome.Success)
+            assertTrue("Sibling request must succeed after sibling inactivity timeout", siblingOutcome is WarmExecuteOutcome.Success)
         } finally {
             server.shutdown()
         }

@@ -14,6 +14,7 @@ import com.laterbox.app.transcript.domain.FetchedVideoInfo
 import com.laterbox.app.transcript.domain.PlaylistEntrySummary
 import com.laterbox.app.transcript.domain.PlaylistResolution
 import com.laterbox.app.transcript.domain.TranscriptDiagnosticInfo
+import com.laterbox.app.transcript.domain.TranscriptFailureClassification
 import com.laterbox.app.transcript.domain.VideoTranscriptStatus
 import com.laterbox.app.transcript.domain.YouTubeUrlParser
 import com.yausername.youtubedl_android.YoutubeDL
@@ -120,6 +121,16 @@ interface YouTubeTranscriptDataSource {
         processId: String
     ): VideoInfoFetchResult
 
+    suspend fun fetchVideoInfoAlternative(
+        videoId: String,
+        videoUrl: String,
+        processId: String
+    ): VideoInfoFetchResult = VideoInfoFetchResult.Failed(
+        status = VideoTranscriptStatus.EXTRACTION_ERROR,
+        message = "Alternative recovery route is unavailable.",
+        retryable = false
+    )
+
     suspend fun fetchPlaylistEntries(
         playlistId: String,
         playlistUrl: String,
@@ -152,7 +163,8 @@ class LaterboxYouTubeTranscriptDataSource(
     private val warmServer: WarmYtDlpServer? = null,
     private val okHttpClient: OkHttpClient = defaultHttpClient(),
     private val customExecutor: ((YoutubeDLRequest) -> YoutubeDLResponse)? = null,
-    private val metadataTimeoutMs: Long = VIDEO_METADATA_TIMEOUT_MS
+    private val metadataTimeoutMs: Long = VIDEO_METADATA_TIMEOUT_MS,
+    private val maxStageExtendedTimeoutMs: Long = VIDEO_METADATA_MAX_JS_CHALLENGE_TIMEOUT_MS
 ) : YouTubeTranscriptDataSource {
 
     private val tag = "YTTranscriptDataSource"
@@ -196,6 +208,46 @@ class LaterboxYouTubeTranscriptDataSource(
         return status
     }
 
+    private fun summarizeRouteOutcome(label: String, result: VideoInfoFetchResult): String {
+        return when (result) {
+            is VideoInfoFetchResult.Success -> {
+                if (result.info.captionTracks.isNotEmpty()) {
+                    "$label:success(${result.info.captionTracks.size}_tracks)"
+                } else {
+                    val client = result.info.playerClientUsed ?: "default"
+                    if (result.info.poTokenSkippedWarning) {
+                        "$label:no_tracks(client=$client,po_token_skipped)"
+                    } else {
+                        "$label:no_tracks(client=$client)"
+                    }
+                }
+            }
+            is VideoInfoFetchResult.Failed -> {
+                val httpPart = result.diagnosticInfo?.httpStatusCode?.let { "http_$it" }
+                val detailPart = httpPart
+                    ?: result.diagnosticInfo?.failureClassification
+                    ?: result.status.name.lowercase()
+                "$label:${result.status.name.lowercase()}($detailPart)"
+            }
+        }
+    }
+
+    private fun VideoInfoFetchResult.withRouteOutcomes(
+        primaryRouteOutcome: String? = null,
+        watchHtmlOutcome: String? = null,
+        recoveryRouteOutcome: String? = null
+    ): VideoInfoFetchResult {
+        if (this !is VideoInfoFetchResult.Failed) return this
+        val existing = diagnosticInfo ?: return this
+        return copy(
+            diagnosticInfo = existing.copy(
+                primaryRouteOutcome = primaryRouteOutcome ?: existing.primaryRouteOutcome,
+                watchHtmlOutcome = watchHtmlOutcome ?: existing.watchHtmlOutcome,
+                recoveryRouteOutcome = recoveryRouteOutcome ?: existing.recoveryRouteOutcome
+            )
+        )
+    }
+
     override suspend fun fetchVideoInfo(
         videoId: String,
         videoUrl: String,
@@ -205,6 +257,7 @@ class LaterboxYouTubeTranscriptDataSource(
 
         // 1. Primary path: Fast JSless inspection via WarmYtDlpServer / embedded yt-dlp
         val ytdlpResult = fetchVideoInfoViaYtDlp(videoId, canonicalUrl, processId)
+        val primaryOutcome = summarizeRouteOutcome("primary_jsless", ytdlpResult)
         if (ytdlpResult is VideoInfoFetchResult.Success && ytdlpResult.info.captionTracks.isNotEmpty()) {
             return@withContext ytdlpResult
         }
@@ -213,12 +266,14 @@ class LaterboxYouTubeTranscriptDataSource(
         //    Handles uninitialized runtime or missing caption metadata, while NEVER letting an empty
         //    watch-HTML track list mask a real yt-dlp timeout, rate-limit, or access failure.
         val htmlResult = fetchVideoInfoViaWatchHtml(videoId, canonicalUrl)
+        val watchOutcome = summarizeRouteOutcome("watch_html", htmlResult)
         if (htmlResult is VideoInfoFetchResult.Success && htmlResult.info.captionTracks.isNotEmpty()) {
             return@withContext htmlResult
         }
 
         // 3. If yt-dlp skipped client subtitles due to PO token policy on web/default, retry native
         //    yt-dlp subtitle extraction using clients that do not enforce web subtitle PO tokens.
+        var recoveryOutcome: String? = null
         if (ytdlpResult is VideoInfoFetchResult.Success &&
             ytdlpResult.info.captionTracks.isEmpty() &&
             ytdlpResult.info.poTokenSkippedWarning
@@ -227,14 +282,15 @@ class LaterboxYouTubeTranscriptDataSource(
                 videoId = videoId,
                 videoUrl = canonicalUrl,
                 processId = "${processId}_altcli",
-                playerClientOverride = "tv,android_vr,web_embedded"
+                playerClientOverride = "android_vr,tv,web_embedded"
             )
+            recoveryOutcome = summarizeRouteOutcome("altcli_native", altNative)
             if (altNative is VideoInfoFetchResult.Success && altNative.info.captionTracks.isNotEmpty()) {
                 return@withContext altNative
             }
         }
 
-        when {
+        val chosen = when {
             ytdlpResult is VideoInfoFetchResult.Success -> ytdlpResult
             htmlResult is VideoInfoFetchResult.Success &&
                 ytdlpResult is VideoInfoFetchResult.Failed &&
@@ -245,6 +301,37 @@ class LaterboxYouTubeTranscriptDataSource(
                 htmlResult.status != VideoTranscriptStatus.NETWORK_ERROR -> htmlResult
             else -> ytdlpResult
         }
+
+        chosen.withRouteOutcomes(
+            primaryRouteOutcome = primaryOutcome,
+            watchHtmlOutcome = watchOutcome,
+            recoveryRouteOutcome = recoveryOutcome
+        )
+    }
+
+    /**
+     * Distinct recovery path invoked only after an initial video metadata failure (e.g., deadline timeout
+     * or client failure) or during targeted retry of failed entries. Uses non-web clients with JS runtime
+     * and native subtitle metadata without downloading media.
+     */
+    override suspend fun fetchVideoInfoAlternative(
+        videoId: String,
+        videoUrl: String,
+        processId: String
+    ): VideoInfoFetchResult = withContext(Dispatchers.IO) {
+        val canonicalUrl = YouTubeUrlParser.canonicalVideoUrl(videoId)
+        val altNative = fetchNativeSubtitles(
+            videoId = videoId,
+            videoUrl = canonicalUrl,
+            processId = "${processId}_natrec",
+            preferredLangSpec = "en.*,en,.*",
+            playerClientOverride = "android_vr,tv,web_embedded"
+        )
+        val recOutcome = summarizeRouteOutcome("native_recovery", altNative)
+        if (altNative is VideoInfoFetchResult.Success && altNative.info.captionTracks.isNotEmpty()) {
+            return@withContext altNative
+        }
+        altNative.withRouteOutcomes(recoveryRouteOutcome = recOutcome)
     }
 
     override suspend fun fetchNativeSubtitles(
@@ -275,6 +362,7 @@ class LaterboxYouTubeTranscriptDataSource(
                         playerClient = clientArg,
                         errorCategory = VideoTranscriptStatus.EXTRACTION_ERROR,
                         exceptionType = describeTranscriptExceptionType(initErr),
+                        failureClassification = TranscriptFailureClassification.PLAYER_CLIENT_FAILURE,
                         elapsedMs = System.currentTimeMillis() - startedAt,
                         sanitizedDetail = TranscriptRedactor.sanitize(initErr?.message),
                         quickJsIdentity = qjsInfo?.identity,
@@ -295,7 +383,16 @@ class LaterboxYouTubeTranscriptDataSource(
             return@withContext VideoInfoFetchResult.Failed(
                 status = VideoTranscriptStatus.EXTRACTION_ERROR,
                 message = "Could not create temporary caption workspace.",
-                retryable = false
+                retryable = false,
+                diagnosticInfo = TranscriptDiagnosticInfo(
+                    videoId = videoId,
+                    stage = "native_subtitles",
+                    ytDlpVersion = currentYtDlpVersion(),
+                    playerClient = clientArg,
+                    errorCategory = VideoTranscriptStatus.EXTRACTION_ERROR,
+                    failureClassification = TranscriptFailureClassification.CAPTION_DOWNLOAD_FAILURE,
+                    sanitizedDetail = "Could not create temporary caption workspace."
+                )
             )
         }
 
@@ -303,6 +400,7 @@ class LaterboxYouTubeTranscriptDataSource(
             val request = YoutubeDLRequest(canonicalUrl).apply {
                 addOption("--no-playlist")
                 addOption("--skip-download")
+                addOption("--extractor-retries", "1")
                 addOption("--write-subs")
                 addOption("--write-auto-subs")
                 addOption("--write-info-json")
@@ -420,6 +518,7 @@ class LaterboxYouTubeTranscriptDataSource(
                 "--yes-playlist",
                 "--ignore-errors",
                 "--skip-download",
+                "--extractor-retries=1",
                 "--playlist-items=$startIndex:$endIndex",
                 "--socket-timeout=20",
                 "--cache-dir=${YtDlpOptimizer.getCacheDir(appContext).absolutePath}"
@@ -447,6 +546,7 @@ class LaterboxYouTubeTranscriptDataSource(
                 if (collected.isNotEmpty()) break
                 val isTimeout = ye.cause is InternalTimeoutException ||
                     ye.cause is SocketTimeoutException ||
+                    ye.warmFailureReason == WarmFailureReason.DAEMON_INACTIVITY_TIMEOUT ||
                     ye.warmFailureReason == WarmFailureReason.SOCKET_TIMEOUT ||
                     ye.warmFailureReason == WarmFailureReason.OVERALL_DEADLINE_TIMEOUT
                 if (isTimeout) {
@@ -615,10 +715,28 @@ class LaterboxYouTubeTranscriptDataSource(
             "--dump-single-json",
             "--no-playlist",
             "--skip-download",
+            "--extractor-retries=1",
             "--socket-timeout=15",
             "--cache-dir=${YtDlpOptimizer.getCacheDir(appContext).absolutePath}",
             "--extractor-args=youtube:player_client=default;player_skip=js;skip=dash,hls,translated_subs"
         )
+    }
+
+    internal fun buildAlternativeVideoMetadataOptions(
+        playerClients: String = "android_vr,tv,web_embedded"
+    ): List<String> {
+        return buildList {
+            add("--dump-single-json")
+            add("--no-playlist")
+            add("--skip-download")
+            add("--extractor-retries=1")
+            add("--socket-timeout=20")
+            add("--cache-dir=${YtDlpOptimizer.getCacheDir(appContext).absolutePath}")
+            add("--extractor-args=youtube:player_client=$playerClients;skip=dash,hls,translated_subs")
+            QuickJsHelper.getJsRuntimeArgument(appContext)?.let {
+                add("--js-runtimes=$it")
+            }
+        }
     }
 
     private fun shouldFallbackToStandard(reason: WarmFailureReason): Boolean {
@@ -632,9 +750,18 @@ class LaterboxYouTubeTranscriptDataSource(
             WarmFailureReason.PREMATURE_EOF,
             WarmFailureReason.PROTOCOL_MISMATCH,
             WarmFailureReason.UNEXPECTED_ERROR -> true
+            WarmFailureReason.DAEMON_INACTIVITY_TIMEOUT,
             WarmFailureReason.SOCKET_TIMEOUT,
             WarmFailureReason.OVERALL_DEADLINE_TIMEOUT,
             WarmFailureReason.EXTRACTOR_ERROR -> false
+        }
+    }
+
+    private fun effectiveStageExtendedBudgetMs(): Long {
+        return if (metadataTimeoutMs < VIDEO_METADATA_TIMEOUT_MS) {
+            metadataTimeoutMs
+        } else {
+            maxStageExtendedTimeoutMs.coerceAtLeast(metadataTimeoutMs)
         }
     }
 
@@ -662,6 +789,7 @@ class LaterboxYouTubeTranscriptDataSource(
                         playerClient = clientArg,
                         errorCategory = VideoTranscriptStatus.EXTRACTION_ERROR,
                         exceptionType = describeTranscriptExceptionType(initErr),
+                        failureClassification = TranscriptFailureClassification.PLAYER_CLIENT_FAILURE,
                         startedAtMillis = startedAt,
                         elapsedMs = System.currentTimeMillis() - startedAt,
                         timeoutMs = metadataTimeoutMs,
@@ -677,6 +805,7 @@ class LaterboxYouTubeTranscriptDataSource(
         }
 
         val options = buildPrimaryVideoMetadataOptions()
+        val maxExtendedBudget = effectiveStageExtendedBudgetMs()
 
         return try {
             val execution = executeYtDlpJson(
@@ -684,7 +813,8 @@ class LaterboxYouTubeTranscriptDataSource(
                 options = options,
                 processId = processId,
                 timeoutMs = metadataTimeoutMs,
-                compactTranscript = true
+                compactTranscript = true,
+                maxStageExtendedTimeoutMs = maxExtendedBudget
             )
             if (execution.fallbackAttempted && execution.fallbackResult == "succeeded") {
                 Log.i(
@@ -713,7 +843,7 @@ class LaterboxYouTubeTranscriptDataSource(
                         warmDaemonHealthyAtStart = execution.warmDaemonHealthyAtStart,
                         fallbackAttempted = execution.fallbackAttempted,
                         fallbackResult = execution.fallbackResult,
-                        failureClassification = "extraction_error",
+                        failureClassification = TranscriptFailureClassification.PLAYER_CLIENT_FAILURE,
                         sanitizedDetail = "Empty JSON output from extractor.",
                         quickJsIdentity = qjsInfo?.identity,
                         quickJsVersion = qjsInfo?.version,
@@ -724,7 +854,14 @@ class LaterboxYouTubeTranscriptDataSource(
                         socketWaitMs = execution.socketWaitMs,
                         extractMs = execution.extractMs,
                         jsChallengesSolved = execution.jsChallengesSolved,
-                        heartbeatCount = execution.heartbeatCount
+                        heartbeatCount = execution.heartbeatCount,
+                        lastKnownStage = execution.lastStage,
+                        lastMeaningfulEvent = execution.lastEvent,
+                        lastMeaningfulActivityAgeMs = execution.lastEventAgeMs,
+                        recentDebugLogs = execution.recentDebugLogs,
+                        warningsCount = execution.warningsCount,
+                        lastWarning = execution.lastWarning,
+                        deadlineExtendedMs = execution.deadlineExtendedMs
                     )
                 )
             } else {
@@ -766,7 +903,14 @@ class LaterboxYouTubeTranscriptDataSource(
         val socketWaitMs: Long? = null,
         val extractMs: Long? = null,
         val jsChallengesSolved: Int? = null,
-        val heartbeatCount: Int? = null
+        val heartbeatCount: Int? = null,
+        val lastStage: String? = null,
+        val lastEvent: String? = null,
+        val lastEventAgeMs: Long? = null,
+        val lastWarning: String? = null,
+        val warningsCount: Int? = null,
+        val recentDebugLogs: List<String> = emptyList(),
+        val deadlineExtendedMs: Long? = null
     )
 
     internal class YtDlpExecutionException(
@@ -782,7 +926,14 @@ class LaterboxYouTubeTranscriptDataSource(
         val socketWaitMs: Long? = null,
         val extractMs: Long? = null,
         val jsChallengesSolved: Int? = null,
-        val heartbeatCount: Int? = null
+        val heartbeatCount: Int? = null,
+        val lastStage: String? = null,
+        val lastEvent: String? = null,
+        val lastEventAgeMs: Long? = null,
+        val lastWarning: String? = null,
+        val warningsCount: Int? = null,
+        val recentDebugLogs: List<String> = emptyList(),
+        val deadlineExtendedMs: Long? = null
     ) : Exception(message, cause)
 
     private suspend fun executeYtDlpJson(
@@ -790,7 +941,8 @@ class LaterboxYouTubeTranscriptDataSource(
         options: List<String>,
         processId: String,
         timeoutMs: Long,
-        compactTranscript: Boolean = false
+        compactTranscript: Boolean = false,
+        maxStageExtendedTimeoutMs: Long = timeoutMs
     ): JsonExecutionOutput {
         var warmFailureReason: WarmFailureReason? = null
         var warmHealthyAtStart: Boolean? = null
@@ -801,6 +953,13 @@ class LaterboxYouTubeTranscriptDataSource(
         var warmJsChallenges: Int? = null
         var warmHeartbeats: Int? = null
         var warmClients: List<String> = emptyList()
+        var warmLastStage: String? = null
+        var warmLastEvent: String? = null
+        var warmLastEventAgeMs: Long? = null
+        var warmLastWarning: String? = null
+        var warmWarningsCount: Int? = null
+        var warmRecentLogs: List<String> = emptyList()
+        var warmDeadlineExtendedMs: Long? = null
 
         if (warmServer != null) {
             activeEngineByProcessId[processId] = "warm"
@@ -810,7 +969,8 @@ class LaterboxYouTubeTranscriptDataSource(
                     options = options,
                     processId = processId,
                     timeoutMs = timeoutMs,
-                    compactTranscript = compactTranscript
+                    compactTranscript = compactTranscript,
+                    maxStageExtendedTimeoutMs = maxStageExtendedTimeoutMs
                 )
             } finally {
                 activeEngineByProcessId.remove(processId, "warm")
@@ -829,7 +989,14 @@ class LaterboxYouTubeTranscriptDataSource(
                         socketWaitMs = warmOutcome.socketWaitMs.takeIf { it > 0L },
                         extractMs = warmOutcome.extractMs.takeIf { it > 0L },
                         jsChallengesSolved = warmOutcome.jsChallengesSolved.takeIf { it > 0 },
-                        heartbeatCount = warmOutcome.heartbeatCount.takeIf { it > 0 }
+                        heartbeatCount = warmOutcome.heartbeatCount.takeIf { it > 0 },
+                        lastStage = warmOutcome.lastStage,
+                        lastEvent = warmOutcome.lastEvent,
+                        lastEventAgeMs = warmOutcome.lastEventAgeMs,
+                        lastWarning = warmOutcome.lastWarning,
+                        warningsCount = warmOutcome.warningsCount.takeIf { it > 0 },
+                        recentDebugLogs = warmOutcome.debugLogs,
+                        deadlineExtendedMs = warmOutcome.deadlineExtendedMs.takeIf { it > 0L }
                     )
                 }
                 is WarmExecuteOutcome.ExtractorError -> {
@@ -846,7 +1013,14 @@ class LaterboxYouTubeTranscriptDataSource(
                         socketWaitMs = warmOutcome.socketWaitMs.takeIf { it > 0L },
                         extractMs = warmOutcome.extractMs.takeIf { it > 0L },
                         jsChallengesSolved = warmOutcome.jsChallengesSolved.takeIf { it > 0 },
-                        heartbeatCount = warmOutcome.heartbeatCount.takeIf { it > 0 }
+                        heartbeatCount = warmOutcome.heartbeatCount.takeIf { it > 0 },
+                        lastStage = warmOutcome.lastStage,
+                        lastEvent = warmOutcome.lastEvent,
+                        lastEventAgeMs = warmOutcome.lastEventAgeMs,
+                        lastWarning = warmOutcome.lastWarning,
+                        warningsCount = warmOutcome.warningsCount.takeIf { it > 0 },
+                        recentDebugLogs = warmOutcome.debugLogs,
+                        deadlineExtendedMs = warmOutcome.deadlineExtendedMs.takeIf { it > 0L }
                     )
                 }
                 is WarmExecuteOutcome.MechanismFailure -> {
@@ -859,10 +1033,17 @@ class LaterboxYouTubeTranscriptDataSource(
                     warmJsChallenges = warmOutcome.jsChallengesSolved.takeIf { it > 0 }
                     warmHeartbeats = warmOutcome.heartbeatCount.takeIf { it > 0 }
                     warmClients = warmOutcome.effectiveClients
+                    warmLastStage = warmOutcome.lastStage
+                    warmLastEvent = warmOutcome.lastEvent
+                    warmLastEventAgeMs = warmOutcome.lastEventAgeMs
+                    warmLastWarning = warmOutcome.lastWarning
+                    warmWarningsCount = warmOutcome.warningsCount.takeIf { it > 0 }
+                    warmRecentLogs = warmOutcome.debugLogs
+                    warmDeadlineExtendedMs = warmOutcome.deadlineExtendedMs.takeIf { it > 0L }
 
                     if (!shouldFallbackToStandard(warmOutcome.reason)) {
-                        // Execution already ran or stalled inside the warm daemon (SOCKET_TIMEOUT / OVERALL_DEADLINE_TIMEOUT):
-                        // Do NOT burn another 25-35s running an identical slow process fallback.
+                        // Execution already ran or stalled inside the warm daemon (DAEMON_INACTIVITY_TIMEOUT / OVERALL_DEADLINE_TIMEOUT):
+                        // Do NOT burn another 60s running an identical slow process fallback.
                         throw YtDlpExecutionException(
                             message = warmOutcome.detail,
                             cause = warmOutcome.cause ?: SocketTimeoutException(warmOutcome.detail),
@@ -876,7 +1057,14 @@ class LaterboxYouTubeTranscriptDataSource(
                             socketWaitMs = warmSocketWaitMs,
                             extractMs = warmExtractMs,
                             jsChallengesSolved = warmJsChallenges,
-                            heartbeatCount = warmHeartbeats
+                            heartbeatCount = warmHeartbeats,
+                            lastStage = warmLastStage,
+                            lastEvent = warmLastEvent,
+                            lastEventAgeMs = warmLastEventAgeMs,
+                            lastWarning = warmLastWarning,
+                            warningsCount = warmWarningsCount,
+                            recentDebugLogs = warmRecentLogs,
+                            deadlineExtendedMs = warmDeadlineExtendedMs
                         )
                     }
 
@@ -931,7 +1119,14 @@ class LaterboxYouTubeTranscriptDataSource(
                 socketWaitMs = warmSocketWaitMs,
                 extractMs = warmExtractMs,
                 jsChallengesSolved = warmJsChallenges,
-                heartbeatCount = warmHeartbeats
+                heartbeatCount = warmHeartbeats,
+                lastStage = warmLastStage,
+                lastEvent = warmLastEvent,
+                lastEventAgeMs = warmLastEventAgeMs,
+                lastWarning = warmLastWarning,
+                warningsCount = warmWarningsCount,
+                recentDebugLogs = warmRecentLogs,
+                deadlineExtendedMs = warmDeadlineExtendedMs
             )
         } catch (e: Exception) {
             throw YtDlpExecutionException(
@@ -947,7 +1142,14 @@ class LaterboxYouTubeTranscriptDataSource(
                 socketWaitMs = warmSocketWaitMs,
                 extractMs = warmExtractMs,
                 jsChallengesSolved = warmJsChallenges,
-                heartbeatCount = warmHeartbeats
+                heartbeatCount = warmHeartbeats,
+                lastStage = warmLastStage,
+                lastEvent = warmLastEvent,
+                lastEventAgeMs = warmLastEventAgeMs,
+                lastWarning = warmLastWarning,
+                warningsCount = warmWarningsCount,
+                recentDebugLogs = warmRecentLogs,
+                deadlineExtendedMs = warmDeadlineExtendedMs
             )
         }
 
@@ -968,7 +1170,14 @@ class LaterboxYouTubeTranscriptDataSource(
                 socketWaitMs = warmSocketWaitMs,
                 extractMs = warmExtractMs,
                 jsChallengesSolved = warmJsChallenges,
-                heartbeatCount = warmHeartbeats
+                heartbeatCount = warmHeartbeats,
+                lastStage = warmLastStage,
+                lastEvent = warmLastEvent,
+                lastEventAgeMs = warmLastEventAgeMs,
+                lastWarning = warmLastWarning,
+                warningsCount = warmWarningsCount,
+                recentDebugLogs = warmRecentLogs,
+                deadlineExtendedMs = warmDeadlineExtendedMs
             )
         }
         return JsonExecutionOutput(
@@ -984,7 +1193,14 @@ class LaterboxYouTubeTranscriptDataSource(
             socketWaitMs = warmSocketWaitMs,
             extractMs = warmExtractMs,
             jsChallengesSolved = warmJsChallenges,
-            heartbeatCount = warmHeartbeats
+            heartbeatCount = warmHeartbeats,
+            lastStage = warmLastStage,
+            lastEvent = warmLastEvent,
+            lastEventAgeMs = warmLastEventAgeMs,
+            lastWarning = warmLastWarning,
+            warningsCount = warmWarningsCount,
+            recentDebugLogs = warmRecentLogs,
+            deadlineExtendedMs = warmDeadlineExtendedMs
         )
     }
 
@@ -1071,6 +1287,7 @@ class LaterboxYouTubeTranscriptDataSource(
                     ytDlpVersion = currentYtDlpVersion(),
                     playerClient = playerClient,
                     errorCategory = VideoTranscriptStatus.EXTRACTION_ERROR,
+                    failureClassification = TranscriptFailureClassification.PLAYER_CLIENT_FAILURE,
                     sanitizedDetail = "Malformed JSON metadata returned by extractor."
                 )
             )
@@ -1333,7 +1550,7 @@ class LaterboxYouTubeTranscriptDataSource(
                             startedAtMillis = startedAt,
                             elapsedMs = System.currentTimeMillis() - startedAt,
                             executionEngine = "watch_html",
-                            failureClassification = "http_429_rate_limit"
+                            failureClassification = TranscriptFailureClassification.YOUTUBE_HTTP_429
                         )
                     )
                 }
@@ -1351,11 +1568,16 @@ class LaterboxYouTubeTranscriptDataSource(
                             startedAtMillis = startedAt,
                             elapsedMs = System.currentTimeMillis() - startedAt,
                             executionEngine = "watch_html",
-                            failureClassification = "auth_or_access_error"
+                            failureClassification = TranscriptFailureClassification.YOUTUBE_HTTP_403
                         )
                     )
                 }
                 if (!response.isSuccessful) {
+                    val cls = if (response.code in 500..599) {
+                        TranscriptFailureClassification.YOUTUBE_HTTP_5XX
+                    } else {
+                        TranscriptFailureClassification.PLAYER_CLIENT_FAILURE
+                    }
                     return VideoInfoFetchResult.Failed(
                         status = VideoTranscriptStatus.NETWORK_ERROR,
                         message = "Failed to load YouTube page (HTTP ${response.code}).",
@@ -1370,13 +1592,13 @@ class LaterboxYouTubeTranscriptDataSource(
                             startedAtMillis = startedAt,
                             elapsedMs = System.currentTimeMillis() - startedAt,
                             executionEngine = "watch_html",
-                            failureClassification = "network_error"
+                            failureClassification = cls
                         )
                     )
                 }
 
                 val html = response.body?.string().orEmpty()
-                parseWatchHtmlPlayerResponse(videoId, canonicalUrl, html)
+                parseWatchHtmlPlayerResponse(videoId, canonicalUrl, html, startedAt)
             }
         } catch (ce: CancellationException) {
             throw ce
@@ -1394,7 +1616,7 @@ class LaterboxYouTubeTranscriptDataSource(
                     startedAtMillis = startedAt,
                     elapsedMs = System.currentTimeMillis() - startedAt,
                     executionEngine = "watch_html",
-                    failureClassification = "network_timeout",
+                    failureClassification = TranscriptFailureClassification.YT_DLP_NETWORK_TIMEOUT,
                     sanitizedDetail = TranscriptRedactor.sanitize(ste.message)
                 )
             )
@@ -1412,7 +1634,7 @@ class LaterboxYouTubeTranscriptDataSource(
                     startedAtMillis = startedAt,
                     elapsedMs = System.currentTimeMillis() - startedAt,
                     executionEngine = "watch_html",
-                    failureClassification = "network_error",
+                    failureClassification = TranscriptFailureClassification.YT_DLP_NETWORK_TIMEOUT,
                     sanitizedDetail = TranscriptRedactor.sanitize(e.message)
                 )
             )
@@ -1422,13 +1644,25 @@ class LaterboxYouTubeTranscriptDataSource(
     internal fun parseWatchHtmlPlayerResponse(
         videoId: String,
         canonicalUrl: String,
-        html: String
+        html: String,
+        startedAtMillis: Long? = null
     ): VideoInfoFetchResult {
         val jsonStr = extractPlayerResponseJson(html)
             ?: return VideoInfoFetchResult.Failed(
                 status = VideoTranscriptStatus.EXTRACTION_ERROR,
                 message = "Could not extract video player metadata from YouTube page.",
-                retryable = true
+                retryable = true,
+                diagnosticInfo = TranscriptDiagnosticInfo(
+                    videoId = videoId,
+                    stage = "watch_html",
+                    playerClient = "html_fallback",
+                    errorCategory = VideoTranscriptStatus.EXTRACTION_ERROR,
+                    startedAtMillis = startedAtMillis,
+                    elapsedMs = startedAtMillis?.let { System.currentTimeMillis() - it },
+                    executionEngine = "watch_html",
+                    failureClassification = TranscriptFailureClassification.PLAYER_CLIENT_FAILURE,
+                    sanitizedDetail = "Missing ytInitialPlayerResponse in watch HTML."
+                )
             )
 
         val root = try {
@@ -1437,7 +1671,18 @@ class LaterboxYouTubeTranscriptDataSource(
             return VideoInfoFetchResult.Failed(
                 status = VideoTranscriptStatus.EXTRACTION_ERROR,
                 message = "Malformed player metadata from YouTube.",
-                retryable = true
+                retryable = true,
+                diagnosticInfo = TranscriptDiagnosticInfo(
+                    videoId = videoId,
+                    stage = "watch_html",
+                    playerClient = "html_fallback",
+                    errorCategory = VideoTranscriptStatus.EXTRACTION_ERROR,
+                    startedAtMillis = startedAtMillis,
+                    elapsedMs = startedAtMillis?.let { System.currentTimeMillis() - it },
+                    executionEngine = "watch_html",
+                    failureClassification = TranscriptFailureClassification.PLAYER_CLIENT_FAILURE,
+                    sanitizedDetail = "Malformed ytInitialPlayerResponse JSON."
+                )
             )
         }
 
@@ -1445,16 +1690,39 @@ class LaterboxYouTubeTranscriptDataSource(
         val playStatus = playability?.optString("status").orEmpty()
         if (playStatus in setOf("ERROR", "UNPLAYABLE", "LOGIN_REQUIRED")) {
             val reason = playability?.optString("reason").orEmpty().ifBlank { "Video is unavailable ($playStatus)" }
+            val lowerReason = reason.lowercase()
             val mappedStatus = when {
                 playStatus == "LOGIN_REQUIRED" -> VideoTranscriptStatus.ACCESS_ERROR
-                reason.contains("private", ignoreCase = true) ||
-                    reason.contains("members", ignoreCase = true) ||
-                    reason.contains("age", ignoreCase = true) ||
-                    reason.contains("bot", ignoreCase = true) ||
-                    reason.contains("sign in", ignoreCase = true) -> VideoTranscriptStatus.ACCESS_ERROR
+                lowerReason.contains("private") ||
+                    lowerReason.contains("members") ||
+                    lowerReason.contains("age") ||
+                    lowerReason.contains("bot") ||
+                    lowerReason.contains("sign in") -> VideoTranscriptStatus.ACCESS_ERROR
                 else -> VideoTranscriptStatus.UNAVAILABLE
             }
-            return VideoInfoFetchResult.Failed(mappedStatus, reason, retryable = false)
+            val cls = when {
+                playStatus == "LOGIN_REQUIRED" || lowerReason.contains("bot") || lowerReason.contains("sign in") ->
+                    TranscriptFailureClassification.YOUTUBE_VERIFICATION_REQUIRED
+                mappedStatus == VideoTranscriptStatus.ACCESS_ERROR ->
+                    TranscriptFailureClassification.YOUTUBE_HTTP_403
+                else -> TranscriptFailureClassification.VIDEO_UNAVAILABLE
+            }
+            return VideoInfoFetchResult.Failed(
+                status = mappedStatus,
+                message = reason,
+                retryable = false,
+                diagnosticInfo = TranscriptDiagnosticInfo(
+                    videoId = videoId,
+                    stage = "watch_html",
+                    playerClient = "html_fallback",
+                    errorCategory = mappedStatus,
+                    startedAtMillis = startedAtMillis,
+                    elapsedMs = startedAtMillis?.let { System.currentTimeMillis() - it },
+                    executionEngine = "watch_html",
+                    failureClassification = cls,
+                    sanitizedDetail = TranscriptRedactor.sanitize(reason)
+                )
+            )
         }
 
         val details = root.optJSONObject("videoDetails")
@@ -1559,6 +1827,41 @@ class LaterboxYouTubeTranscriptDataSource(
         return null
     }
 
+    private fun formatActivityContext(lastStage: String?, lastEventAgeMs: Long?): String {
+        val parts = buildList {
+            lastStage?.takeIf { it.isNotBlank() }?.let { add("stage: $it") }
+            lastEventAgeMs?.let { add("last activity ${(it / 1000L)}s ago") }
+        }
+        return if (parts.isEmpty()) "" else " (${parts.joinToString(", ")})"
+    }
+
+    private fun formatTimeoutMessage(
+        classification: String,
+        lastStage: String? = null,
+        lastEventAgeMs: Long? = null,
+        budgetMs: Long? = null
+    ): String {
+        val ctx = formatActivityContext(lastStage, lastEventAgeMs)
+        val budgetSecs = budgetMs?.let { (it / 1000L).coerceAtLeast(1L) }
+        return when (classification) {
+            TranscriptFailureClassification.JS_CHALLENGE_TIMEOUT ->
+                "YouTube player challenge did not complete within the extraction timeout$ctx."
+            TranscriptFailureClassification.METADATA_OPERATION_DEADLINE ->
+                if (budgetSecs != null) {
+                    "YouTube metadata extraction stayed active$ctx but did not complete within ${budgetSecs}s."
+                } else {
+                    "YouTube metadata extraction stayed active$ctx but exceeded its time budget."
+                }
+            TranscriptFailureClassification.DAEMON_INACTIVITY_TIMEOUT ->
+                "Local extractor became unresponsive while retrieving YouTube metadata$ctx."
+            TranscriptFailureClassification.DAEMON_TRANSPORT_FAILURE ->
+                "Local extractor daemon failed to communicate; fallback extraction did not complete."
+            TranscriptFailureClassification.YT_DLP_NETWORK_TIMEOUT ->
+                "Timed out waiting for a YouTube network response$ctx."
+            else -> "Timed out while retrieving video metadata from YouTube$ctx."
+        }
+    }
+
     private fun mapVideoException(
         exception: Exception,
         videoId: String,
@@ -1579,6 +1882,7 @@ class LaterboxYouTubeTranscriptDataSource(
             val causeEx = exception.cause as? Exception
             val isTimeout = causeEx is InternalTimeoutException ||
                 causeEx is SocketTimeoutException ||
+                exception.warmFailureReason == WarmFailureReason.DAEMON_INACTIVITY_TIMEOUT ||
                 exception.warmFailureReason == WarmFailureReason.SOCKET_TIMEOUT ||
                 exception.warmFailureReason == WarmFailureReason.OVERALL_DEADLINE_TIMEOUT
 
@@ -1592,27 +1896,43 @@ class LaterboxYouTubeTranscriptDataSource(
             if (isTimeout) {
                 val detail = TranscriptRedactor.sanitize(exception.message ?: "Request timed out", 220)
                 val lowerDetail = (exception.message ?: "").lowercase()
+                val isWarmTransportReason = exception.warmFailureReason in setOf(
+                    WarmFailureReason.STARTUP_FAILED,
+                    WarmFailureReason.HANDSHAKE_FAILED,
+                    WarmFailureReason.HANDSHAKE_TIMEOUT,
+                    WarmFailureReason.SOCKET_CONNECT_FAILED,
+                    WarmFailureReason.PREMATURE_EOF,
+                    WarmFailureReason.PROTOCOL_MISMATCH
+                )
                 val classification = when {
                     (exception.jsChallengesSolved ?: 0) > 0 ||
+                        exception.lastStage == "js_challenge" ||
+                        exception.lastStage == "downloading_player_js" ||
                         lowerDetail.contains("solving js challenge") ||
-                        lowerDetail.contains("js challenge") -> "js_challenge_stalled"
-                    exception.warmFailureReason == WarmFailureReason.OVERALL_DEADLINE_TIMEOUT &&
-                        !exception.fallbackAttempted -> "warm_daemon_overall_timeout"
-                    exception.warmFailureReason == WarmFailureReason.SOCKET_TIMEOUT &&
-                        !exception.fallbackAttempted -> "warm_daemon_socket_timeout"
-                    exception.warmFailureReason == WarmFailureReason.HANDSHAKE_TIMEOUT &&
-                        exception.fallbackAttempted && exception.fallbackResult == "timeout" ->
-                        "warm_daemon_handshake_timeout->standard_process_timeout"
-                    exception.warmFailureReason == WarmFailureReason.PREMATURE_EOF &&
-                        exception.fallbackAttempted && exception.fallbackResult == "timeout" ->
-                        "warm_daemon_premature_eof->standard_process_timeout"
-                    exception.fallbackAttempted && exception.fallbackResult == "timeout" ->
-                        "standard_process_timeout"
-                    else -> "standard_process_timeout"
+                        lowerDetail.contains("js challenge") ->
+                        TranscriptFailureClassification.JS_CHALLENGE_TIMEOUT
+                    isWarmTransportReason ->
+                        TranscriptFailureClassification.DAEMON_TRANSPORT_FAILURE
+                    exception.warmFailureReason == WarmFailureReason.OVERALL_DEADLINE_TIMEOUT ->
+                        TranscriptFailureClassification.METADATA_OPERATION_DEADLINE
+                    exception.warmFailureReason == WarmFailureReason.DAEMON_INACTIVITY_TIMEOUT ||
+                        exception.warmFailureReason == WarmFailureReason.SOCKET_TIMEOUT ->
+                        TranscriptFailureClassification.DAEMON_INACTIVITY_TIMEOUT
+                    causeEx is SocketTimeoutException ->
+                        TranscriptFailureClassification.YT_DLP_NETWORK_TIMEOUT
+                    causeEx is InternalTimeoutException ->
+                        TranscriptFailureClassification.METADATA_OPERATION_DEADLINE
+                    else -> TranscriptFailureClassification.YT_DLP_NETWORK_TIMEOUT
                 }
+                val effectiveBudgetMs = timeoutMs?.let { it + (exception.deadlineExtendedMs ?: 0L) }
                 return VideoInfoFetchResult.Failed(
                     status = VideoTranscriptStatus.TIMEOUT,
-                    message = "Timed out while retrieving video metadata from YouTube.",
+                    message = formatTimeoutMessage(
+                        classification = classification,
+                        lastStage = exception.lastStage,
+                        lastEventAgeMs = exception.lastEventAgeMs,
+                        budgetMs = effectiveBudgetMs
+                    ),
                     retryable = true,
                     diagnosticInfo = TranscriptDiagnosticInfo(
                         videoId = videoId,
@@ -1640,7 +1960,14 @@ class LaterboxYouTubeTranscriptDataSource(
                         socketWaitMs = exception.socketWaitMs,
                         extractMs = exception.extractMs,
                         jsChallengesSolved = exception.jsChallengesSolved,
-                        heartbeatCount = exception.heartbeatCount
+                        heartbeatCount = exception.heartbeatCount,
+                        lastKnownStage = exception.lastStage,
+                        lastMeaningfulEvent = exception.lastEvent,
+                        lastMeaningfulActivityAgeMs = exception.lastEventAgeMs,
+                        recentDebugLogs = exception.recentDebugLogs,
+                        warningsCount = exception.warningsCount,
+                        lastWarning = exception.lastWarning,
+                        deadlineExtendedMs = exception.deadlineExtendedMs
                     )
                 )
             }
@@ -1667,15 +1994,27 @@ class LaterboxYouTubeTranscriptDataSource(
                 socketWaitMs = exception.socketWaitMs,
                 extractMs = exception.extractMs,
                 jsChallengesSolved = exception.jsChallengesSolved,
-                heartbeatCount = exception.heartbeatCount
+                heartbeatCount = exception.heartbeatCount,
+                lastStage = exception.lastStage,
+                lastEvent = exception.lastEvent,
+                lastEventAgeMs = exception.lastEventAgeMs,
+                recentDebugLogs = exception.recentDebugLogs,
+                warningsCount = exception.warningsCount,
+                lastWarning = exception.lastWarning,
+                deadlineExtendedMs = exception.deadlineExtendedMs
             )
         }
 
         if (exception is InternalTimeoutException || exception is SocketTimeoutException) {
             val sanitized = TranscriptRedactor.sanitize(exception.message ?: "Request timed out", 200)
+            val classification = if (exception is SocketTimeoutException) {
+                TranscriptFailureClassification.YT_DLP_NETWORK_TIMEOUT
+            } else {
+                TranscriptFailureClassification.METADATA_OPERATION_DEADLINE
+            }
             return VideoInfoFetchResult.Failed(
                 status = VideoTranscriptStatus.TIMEOUT,
-                message = "Timed out while retrieving video metadata from YouTube.",
+                message = formatTimeoutMessage(classification = classification, budgetMs = timeoutMs),
                 retryable = true,
                 diagnosticInfo = TranscriptDiagnosticInfo(
                     videoId = videoId,
@@ -1692,7 +2031,7 @@ class LaterboxYouTubeTranscriptDataSource(
                     warmDaemonHealthyAtStart = warmDaemonHealthyAtStart,
                     fallbackAttempted = fallbackAttempted,
                     fallbackResult = fallbackResult,
-                    failureClassification = if (exception is SocketTimeoutException) "network_timeout" else "standard_process_timeout",
+                    failureClassification = classification,
                     quickJsIdentity = qjsInfo?.identity,
                     quickJsVersion = qjsInfo?.version,
                     ejsSolverAvailable = ejsInfo?.isAvailable,
@@ -1736,7 +2075,14 @@ class LaterboxYouTubeTranscriptDataSource(
         socketWaitMs: Long? = null,
         extractMs: Long? = null,
         jsChallengesSolved: Int? = null,
-        heartbeatCount: Int? = null
+        heartbeatCount: Int? = null,
+        lastStage: String? = null,
+        lastEvent: String? = null,
+        lastEventAgeMs: Long? = null,
+        recentDebugLogs: List<String> = emptyList(),
+        warningsCount: Int? = null,
+        lastWarning: String? = null,
+        deadlineExtendedMs: Long? = null
     ): VideoInfoFetchResult.Failed {
         val sanitized = TranscriptRedactor.sanitize(rawError, 220)
         val lower = rawError.lowercase()
@@ -1754,12 +2100,40 @@ class LaterboxYouTubeTranscriptDataSource(
             lower.contains("challenge solver") ||
             (lower.contains("ejs") && (lower.contains("missing") || lower.contains("failed") || lower.contains("error") || ejsInfo?.isAvailable == false))
 
+        val isWarmTransportReason = warmFailureReason in setOf(
+            WarmFailureReason.STARTUP_FAILED,
+            WarmFailureReason.HANDSHAKE_FAILED,
+            WarmFailureReason.HANDSHAKE_TIMEOUT,
+            WarmFailureReason.SOCKET_CONNECT_FAILED,
+            WarmFailureReason.PREMATURE_EOF,
+            WarmFailureReason.PROTOCOL_MISMATCH
+        )
+
         val (status, message, retryable) = when {
-            lower.contains("timed out") || lower.contains("timeout") -> Triple(
-                VideoTranscriptStatus.TIMEOUT,
-                "Timed out while retrieving video metadata from YouTube.",
-                true
-            )
+            lower.contains("timed out") || lower.contains("timeout") -> {
+                val timeoutCls = when {
+                    (jsChallengesSolved ?: 0) > 0 || lastStage == "js_challenge" || lower.contains("js challenge") ->
+                        TranscriptFailureClassification.JS_CHALLENGE_TIMEOUT
+                    warmFailureReason == WarmFailureReason.OVERALL_DEADLINE_TIMEOUT ->
+                        TranscriptFailureClassification.METADATA_OPERATION_DEADLINE
+                    warmFailureReason == WarmFailureReason.DAEMON_INACTIVITY_TIMEOUT ||
+                        warmFailureReason == WarmFailureReason.SOCKET_TIMEOUT ->
+                        TranscriptFailureClassification.DAEMON_INACTIVITY_TIMEOUT
+                    isWarmTransportReason ->
+                        TranscriptFailureClassification.DAEMON_TRANSPORT_FAILURE
+                    else -> TranscriptFailureClassification.YT_DLP_NETWORK_TIMEOUT
+                }
+                Triple(
+                    VideoTranscriptStatus.TIMEOUT,
+                    formatTimeoutMessage(
+                        classification = timeoutCls,
+                        lastStage = lastStage,
+                        lastEventAgeMs = lastEventAgeMs,
+                        budgetMs = timeoutMs?.let { it + (deadlineExtendedMs ?: 0L) }
+                    ),
+                    true
+                )
+            }
             lower.contains("429") || lower.contains("too many requests") || lower.contains("rate limit") -> Triple(
                 VideoTranscriptStatus.RATE_LIMITED,
                 "YouTube temporarily rate-limited requests (HTTP 429). Retry shortly.",
@@ -1823,39 +2197,53 @@ class LaterboxYouTubeTranscriptDataSource(
             )
         }
 
-        val effectiveHttpCode = httpCode ?: if (status == VideoTranscriptStatus.RATE_LIMITED) 429 else null
+        val effectiveHttpCode = httpCode ?: when {
+            status == VideoTranscriptStatus.RATE_LIMITED -> 429
+            lower.contains("403") -> 403
+            lower.contains("503") -> 503
+            lower.contains("502") -> 502
+            lower.contains("500") -> 500
+            lower.contains("504") -> 504
+            else -> null
+        }
         val classification = when (status) {
             VideoTranscriptStatus.TIMEOUT -> when {
-                (jsChallengesSolved ?: 0) > 0 || lower.contains("js challenge") -> "js_challenge_stalled"
-                warmFailureReason == WarmFailureReason.OVERALL_DEADLINE_TIMEOUT && !fallbackAttempted ->
-                    "warm_daemon_overall_timeout"
-                warmFailureReason == WarmFailureReason.SOCKET_TIMEOUT && !fallbackAttempted ->
-                    "warm_daemon_socket_timeout"
-                executionEngine == "watch_html" -> "network_timeout"
-                else -> "standard_process_timeout"
+                (jsChallengesSolved ?: 0) > 0 || lastStage == "js_challenge" || lower.contains("js challenge") ->
+                    TranscriptFailureClassification.JS_CHALLENGE_TIMEOUT
+                warmFailureReason == WarmFailureReason.OVERALL_DEADLINE_TIMEOUT ->
+                    TranscriptFailureClassification.METADATA_OPERATION_DEADLINE
+                warmFailureReason == WarmFailureReason.DAEMON_INACTIVITY_TIMEOUT ||
+                    warmFailureReason == WarmFailureReason.SOCKET_TIMEOUT ->
+                    TranscriptFailureClassification.DAEMON_INACTIVITY_TIMEOUT
+                isWarmTransportReason ->
+                    TranscriptFailureClassification.DAEMON_TRANSPORT_FAILURE
+                else -> TranscriptFailureClassification.YT_DLP_NETWORK_TIMEOUT
             }
-            VideoTranscriptStatus.RATE_LIMITED -> "http_429_rate_limit"
-            VideoTranscriptStatus.ACCESS_ERROR -> {
-                if (lower.contains("po token") || lower.contains("not a bot") ||
-                    lower.contains("confirm you're not") || lower.contains("confirm you’re not")
-                ) {
-                    "verification_or_po_token"
-                } else {
-                    "auth_or_access_error"
-                }
+            VideoTranscriptStatus.RATE_LIMITED -> TranscriptFailureClassification.YOUTUBE_HTTP_429
+            VideoTranscriptStatus.ACCESS_ERROR -> when {
+                lower.contains("po token") -> TranscriptFailureClassification.PO_TOKEN_REQUIRED
+                lower.contains("not a bot") ||
+                    lower.contains("confirm you're not") ||
+                    lower.contains("confirm you’re not") ||
+                    lower.contains("sign in to confirm") ->
+                    TranscriptFailureClassification.YOUTUBE_VERIFICATION_REQUIRED
+                else -> TranscriptFailureClassification.YOUTUBE_HTTP_403
             }
-            VideoTranscriptStatus.UNAVAILABLE -> "video_unavailable"
-            VideoTranscriptStatus.NETWORK_ERROR -> "network_error"
+            VideoTranscriptStatus.UNAVAILABLE -> TranscriptFailureClassification.VIDEO_UNAVAILABLE
+            VideoTranscriptStatus.NETWORK_ERROR -> when {
+                effectiveHttpCode in 500..599 -> TranscriptFailureClassification.YOUTUBE_HTTP_5XX
+                else -> TranscriptFailureClassification.YT_DLP_NETWORK_TIMEOUT
+            }
             VideoTranscriptStatus.EXTRACTION_ERROR -> when {
-                isQuickJsError -> "quickjs_incompatible_or_missing"
-                isEjsError -> "ejs_missing_or_failed"
-                (jsChallengesSolved ?: 0) > 0 || lower.contains("js challenge") -> "js_challenge_stalled"
-                warmFailureReason == WarmFailureReason.STARTUP_FAILED -> "warm_daemon_startup_failed"
-                warmFailureReason == WarmFailureReason.HANDSHAKE_TIMEOUT -> "warm_daemon_handshake_timeout"
-                warmFailureReason == WarmFailureReason.PREMATURE_EOF -> "warm_daemon_premature_eof"
-                else -> "extraction_error"
+                isQuickJsError || isEjsError || (jsChallengesSolved ?: 0) > 0 || lower.contains("js challenge") ->
+                    TranscriptFailureClassification.JS_CHALLENGE_TIMEOUT
+                isWarmTransportReason ->
+                    TranscriptFailureClassification.DAEMON_TRANSPORT_FAILURE
+                else -> TranscriptFailureClassification.PLAYER_CLIENT_FAILURE
             }
-            else -> status.name.lowercase()
+            VideoTranscriptStatus.NO_CAPTIONS -> TranscriptFailureClassification.CAPTION_TRACKS_MISSING
+            VideoTranscriptStatus.CANCELLED -> TranscriptFailureClassification.USER_CANCELLED
+            VideoTranscriptStatus.SUCCESS -> TranscriptFailureClassification.PLAYER_CLIENT_FAILURE
         }
 
         return VideoInfoFetchResult.Failed(
@@ -1889,7 +2277,14 @@ class LaterboxYouTubeTranscriptDataSource(
                 socketWaitMs = socketWaitMs,
                 extractMs = extractMs,
                 jsChallengesSolved = jsChallengesSolved,
-                heartbeatCount = heartbeatCount
+                heartbeatCount = heartbeatCount,
+                lastKnownStage = lastStage,
+                lastMeaningfulEvent = lastEvent,
+                lastMeaningfulActivityAgeMs = lastEventAgeMs,
+                recentDebugLogs = recentDebugLogs,
+                warningsCount = warningsCount,
+                lastWarning = lastWarning,
+                deadlineExtendedMs = deadlineExtendedMs
             )
         )
     }
@@ -1944,9 +2339,10 @@ class LaterboxYouTubeTranscriptDataSource(
 
     companion object {
         const val PLAYLIST_PAGE_SIZE = 50
-        const val VIDEO_METADATA_TIMEOUT_MS = 25_000L
-        const val NATIVE_SUBTITLE_TIMEOUT_MS = 35_000L
-        const val PLAYLIST_METADATA_TIMEOUT_MS = 35_000L
+        const val VIDEO_METADATA_TIMEOUT_MS = 60_000L
+        const val VIDEO_METADATA_MAX_JS_CHALLENGE_TIMEOUT_MS = 90_000L
+        const val NATIVE_SUBTITLE_TIMEOUT_MS = 45_000L
+        const val PLAYLIST_METADATA_TIMEOUT_MS = 45_000L
 
         fun defaultHttpClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)

@@ -23,6 +23,26 @@ enum class VideoTranscriptStatus(val displayLabel: String) {
 }
 
 @Keep
+object TranscriptFailureClassification {
+    const val DAEMON_TRANSPORT_FAILURE = "DAEMON_TRANSPORT_FAILURE"
+    const val DAEMON_INACTIVITY_TIMEOUT = "DAEMON_INACTIVITY_TIMEOUT"
+    const val METADATA_OPERATION_DEADLINE = "METADATA_OPERATION_DEADLINE"
+    const val YT_DLP_NETWORK_TIMEOUT = "YT_DLP_NETWORK_TIMEOUT"
+    const val YOUTUBE_HTTP_403 = "YOUTUBE_HTTP_403"
+    const val YOUTUBE_HTTP_429 = "YOUTUBE_HTTP_429"
+    const val YOUTUBE_HTTP_5XX = "YOUTUBE_HTTP_5XX"
+    const val PLAYER_CLIENT_FAILURE = "PLAYER_CLIENT_FAILURE"
+    const val JS_CHALLENGE_TIMEOUT = "JS_CHALLENGE_TIMEOUT"
+    const val PO_TOKEN_REQUIRED = "PO_TOKEN_REQUIRED"
+    const val YOUTUBE_VERIFICATION_REQUIRED = "YOUTUBE_VERIFICATION_REQUIRED"
+    const val CAPTION_TRACKS_MISSING = "CAPTION_TRACKS_MISSING"
+    const val CAPTION_DOWNLOAD_FAILURE = "CAPTION_DOWNLOAD_FAILURE"
+    const val MALFORMED_CAPTION_DATA = "MALFORMED_CAPTION_DATA"
+    const val VIDEO_UNAVAILABLE = "VIDEO_UNAVAILABLE"
+    const val USER_CANCELLED = "USER_CANCELLED"
+}
+
+@Keep
 data class TranscriptDiagnosticInfo(
     val videoId: String,
     val stage: String,
@@ -54,7 +74,17 @@ data class TranscriptDiagnosticInfo(
     val socketWaitMs: Long? = null,
     val extractMs: Long? = null,
     val jsChallengesSolved: Int? = null,
-    val heartbeatCount: Int? = null
+    val heartbeatCount: Int? = null,
+    val lastKnownStage: String? = null,
+    val lastMeaningfulEvent: String? = null,
+    val lastMeaningfulActivityAgeMs: Long? = null,
+    val recentDebugLogs: List<String> = emptyList(),
+    val warningsCount: Int? = null,
+    val lastWarning: String? = null,
+    val deadlineExtendedMs: Long? = null,
+    val primaryRouteOutcome: String? = null,
+    val watchHtmlOutcome: String? = null,
+    val recoveryRouteOutcome: String? = null
 )
 
 data class TranscriptSegment(
