@@ -35,6 +35,9 @@ interface AppContainer {
     val laterboxContextEngine: LaterboxContextEngine
     val contextualNotificationEngine: ContextualNotificationEngine
     val speechCoordinator: com.laterbox.app.ai.speech.SpeechTranscriptionCoordinator
+    val youTubeTranscriptDataSource: com.laterbox.app.transcript.data.YouTubeTranscriptDataSource
+    val youTubeTranscriptExtractor: com.laterbox.app.transcript.data.YouTubeTranscriptExtractor
+    val transcriptExportManager: com.laterbox.app.transcript.export.TranscriptExportManager
 }
 
 class DefaultAppContainer(private val context: Context) : AppContainer {
@@ -190,5 +193,25 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             listOf(directAdapter, spotifyAdapter, xAdapter, ytDlpAdapter, metadataAdapter)
         )
         com.laterbox.app.media.domain.adapter.PlatformResolver(registry)
+    }
+
+    override val youTubeTranscriptDataSource: com.laterbox.app.transcript.data.YouTubeTranscriptDataSource by lazy {
+        com.laterbox.app.transcript.data.LaterboxYouTubeTranscriptDataSource(
+            appContext = context.applicationContext,
+            runtimeManager = ytDlpRuntimeManager,
+            warmServer = warmYtDlpServer
+        )
+    }
+
+    override val youTubeTranscriptExtractor: com.laterbox.app.transcript.data.YouTubeTranscriptExtractor by lazy {
+        com.laterbox.app.transcript.data.YouTubeTranscriptExtractor(
+            dataSource = youTubeTranscriptDataSource
+        )
+    }
+
+    override val transcriptExportManager: com.laterbox.app.transcript.export.TranscriptExportManager by lazy {
+        com.laterbox.app.transcript.export.TranscriptExportManager(
+            context = context.applicationContext
+        )
     }
 }

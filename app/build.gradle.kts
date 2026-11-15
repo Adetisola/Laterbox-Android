@@ -43,8 +43,8 @@ android {
         applicationId = "com.laterbox.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = System.getenv("VERSION_CODE")?.toIntOrNull() ?: 39
-        versionName = System.getenv("VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "1.0.39"
+        versionCode = System.getenv("VERSION_CODE")?.toIntOrNull() ?: 40
+        versionName = System.getenv("VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "1.0.40"
 
         val embeddedKey = resolveGeminiApiKey(project)
         buildConfigField("String", "EMBEDDED_GEMINI_API_KEY", "\"$embeddedKey\"")

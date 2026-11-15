@@ -96,7 +96,8 @@ fun SavedItemDetailSheet(
     onOverrideCellular: (String) -> Unit = {},
     onCancelTask: (String) -> Unit = {},
     onDismissTask: (String) -> Unit = {},
-    onDeleteWithFiles: (Boolean) -> Unit = {}
+    onDeleteWithFiles: (Boolean) -> Unit = {},
+    onExtractTranscript: () -> Unit = {}
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -641,6 +642,14 @@ fun SavedItemDetailSheet(
 
             Spacer(modifier = Modifier.height(spacing.md))
 
+            if (com.laterbox.app.transcript.domain.YouTubeUrlParser.isYouTubeUrl(link.originalUrl)) {
+                YouTubeTranscriptDetailCard(
+                    url = link.originalUrl,
+                    onExtractTranscript = onExtractTranscript
+                )
+                Spacer(modifier = Modifier.height(spacing.md))
+            }
+
             com.laterbox.app.media.ui.linkdetail.MediaSection(
                 linkUrl = link.originalUrl,
                 assets = uiState.assets,
@@ -824,6 +833,50 @@ private fun ReminderDetailChip(
                 text = label,
                 style = typography.metaText.copy(fontSize = 12.sp),
                 color = colors.textPrimary
+            )
+        }
+    }
+}
+
+@Composable
+internal fun YouTubeTranscriptDetailCard(
+    url: String,
+    onExtractTranscript: () -> Unit
+) {
+    val colors = LaterboxTheme.colors
+    val typography = LaterboxTheme.typography
+    val spacing = LaterboxTheme.spacing
+    val isPlaylistUrl = com.laterbox.app.transcript.domain.YouTubeUrlParser.isPlaylistUrl(url)
+
+    com.laterbox.app.ui.components.LaterboxCard(
+        variant = com.laterbox.app.ui.components.LaterboxCardVariant.SECONDARY
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(spacing.md),
+            verticalArrangement = Arrangement.spacedBy(spacing.sm)
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "YouTube Transcripts",
+                    style = typography.cardTitle,
+                    color = colors.textPrimary
+                )
+                Text(
+                    text = if (isPlaylistUrl) {
+                        "Extract captions for all playlist videos and export as MD, TXT, or PDF"
+                    } else {
+                        "Extract verbatim captions and export as MD, TXT, or PDF"
+                    },
+                    style = typography.metaText,
+                    color = colors.textSecondary
+                )
+            }
+            com.laterbox.app.ui.components.LaterboxSecondaryButton(
+                text = "Extract Transcript",
+                onClick = onExtractTranscript,
+                modifier = Modifier.fillMaxWidth()
             )
         }
     }

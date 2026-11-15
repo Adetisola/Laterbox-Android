@@ -86,6 +86,14 @@ object AppViewModelProvider {
                 speech = app.container.speechCoordinator
             )
         }
+        initializer {
+            val app = laterboxApplication()
+            com.laterbox.app.transcript.ui.YouTubeTranscriptViewModel(
+                extractor = app.container.youTubeTranscriptExtractor,
+                exportManager = app.container.transcriptExportManager,
+                userPreferencesRepository = app.container.userPreferencesRepository
+            )
+        }
     }
 }
 

@@ -132,6 +132,7 @@ fun LaterboxApp(
     val notificationHistoryViewModel: com.laterbox.app.ui.notifications.NotificationHistoryViewModel = viewModel(factory = AppViewModelProvider.Factory)
     val downloadsViewModel: com.laterbox.app.media.ui.downloads.DownloadsViewModel = viewModel(factory = AppViewModelProvider.Factory)
     val chatViewModel: ChatViewModel = viewModel(factory = AppViewModelProvider.Factory)
+    val youTubeTranscriptViewModel: com.laterbox.app.transcript.ui.YouTubeTranscriptViewModel = viewModel(factory = AppViewModelProvider.Factory)
 
     // Current route & shared state observation
     val navBackStackEntry by navController.currentBackStackEntryAsState()
@@ -1177,12 +1178,43 @@ fun LaterboxApp(
                 selectedLinkForDetails?.let { inboxViewModel.onLinkOpened(it.id) }
             },
             onRetryMetadata = savedItemDetailViewModel::onRetryMetadata,
+            onExtractTranscript = {
+                selectedLinkForDetails?.originalUrl?.let { url ->
+                    haptics.tick()
+                    youTubeTranscriptViewModel.openForUrl(url)
+                }
+            },
             onDismissRequest = {
                 coroutineScope.launch {
                     detailSheetState.hide()
                     selectedLinkForDetails = null
                 }
             }
+        )
+    }
+
+    // YouTube Transcript Extraction & Multi-Format Export Sheet
+    val transcriptUiState by youTubeTranscriptViewModel.uiState.collectAsState()
+    if (transcriptUiState.isSheetVisible) {
+        val transcriptSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        com.laterbox.app.transcript.ui.YouTubeTranscriptSheet(
+            uiState = transcriptUiState,
+            onChooseTarget = youTubeTranscriptViewModel::chooseTargetAndExtract,
+            onCancelExtraction = youTubeTranscriptViewModel::cancelExtraction,
+            onRetryExtraction = youTubeTranscriptViewModel::retryExtraction,
+            onToggleFormat = youTubeTranscriptViewModel::toggleFormat,
+            onSetSelectAllFormats = youTubeTranscriptViewModel::setSelectAllFormats,
+            hasWritableSafFolder = youTubeTranscriptViewModel::hasWritableConfiguredSafFolder,
+            onExportToSafTree = youTubeTranscriptViewModel::exportToSafTree,
+            onExportToDownloads = youTubeTranscriptViewModel::exportToDownloadsFolder,
+            onDestinationPickerCancelled = youTubeTranscriptViewModel::notifyDestinationPickerCancelled,
+            onDismiss = {
+                coroutineScope.launch {
+                    transcriptSheetState.hide()
+                    youTubeTranscriptViewModel.dismissSheet()
+                }
+            },
+            sheetState = transcriptSheetState
         )
     }
 
