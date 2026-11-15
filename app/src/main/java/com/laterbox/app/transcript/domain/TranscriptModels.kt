@@ -1,11 +1,15 @@
 package com.laterbox.app.transcript.domain
 
+import androidx.annotation.Keep
+
+@Keep
 enum class CaptionType(val displayLabel: String) {
     MANUAL("Manual"),
     AUTOMATIC("Automatic"),
     UNKNOWN("Unknown")
 }
 
+@Keep
 enum class VideoTranscriptStatus(val displayLabel: String) {
     SUCCESS("Successful"),
     NO_CAPTIONS("Transcript unavailable"),
@@ -18,6 +22,7 @@ enum class VideoTranscriptStatus(val displayLabel: String) {
     CANCELLED("Cancelled")
 }
 
+@Keep
 data class TranscriptDiagnosticInfo(
     val videoId: String,
     val stage: String,
@@ -38,7 +43,18 @@ data class TranscriptDiagnosticInfo(
     val fallbackAttempted: Boolean = false,
     val fallbackResult: String? = null,
     val failureClassification: String? = null,
-    val retryReasons: List<String> = emptyList()
+    val retryReasons: List<String> = emptyList(),
+    val effectivePlayerClient: String? = null,
+    val quickJsVersion: String? = null,
+    val quickJsIdentity: String? = null,
+    val ejsSolverAvailable: Boolean? = null,
+    val ejsSolverVersion: String? = null,
+    val isPlayerCachePatched: Boolean? = null,
+    val daemonStartupMs: Long? = null,
+    val socketWaitMs: Long? = null,
+    val extractMs: Long? = null,
+    val jsChallengesSolved: Int? = null,
+    val heartbeatCount: Int? = null
 )
 
 data class TranscriptSegment(

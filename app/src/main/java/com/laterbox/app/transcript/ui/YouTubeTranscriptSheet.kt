@@ -1106,7 +1106,25 @@ private fun DiagnosticDetailsBox(diag: TranscriptDiagnosticInfo) {
         diag.failureClassification?.let { appendLine("Classification: $it") }
         diag.executionEngine?.let { appendLine("Engine: $it") }
         diag.ytDlpVersion?.let { appendLine("Extractor: yt-dlp $it") }
-        diag.playerClient?.let { appendLine("Client: $it") }
+        diag.playerClient?.let {
+            val eff = diag.effectivePlayerClient?.takeIf { e -> e.isNotBlank() && e != it }
+            if (eff != null) {
+                appendLine("Client: $it (effective: $eff)")
+            } else {
+                appendLine("Client: $it")
+            }
+        } ?: diag.effectivePlayerClient?.let { appendLine("Effective client: $it") }
+        if (!diag.quickJsIdentity.isNullOrBlank() || !diag.quickJsVersion.isNullOrBlank()) {
+            val qjsId = diag.quickJsIdentity ?: "quickjs"
+            val qjsVer = diag.quickJsVersion ?: "unknown"
+            appendLine("QuickJS: $qjsId $qjsVer")
+        }
+        if (diag.ejsSolverAvailable != null || !diag.ejsSolverVersion.isNullOrBlank() || diag.isPlayerCachePatched != null) {
+            val ejsState = if (diag.ejsSolverAvailable == true) "available" else "unavailable"
+            val ejsVer = diag.ejsSolverVersion?.let { " $it" }.orEmpty()
+            val cacheStr = diag.isPlayerCachePatched?.let { ", playerCachePatched=$it" }.orEmpty()
+            appendLine("EJS solver: $ejsState$ejsVer$cacheStr")
+        }
         if (diag.attemptNumber > 1) appendLine("Attempt: #${diag.attemptNumber}")
         if (diag.retryCount > 0) appendLine("Retries: ${diag.retryCount}")
         if (diag.retryReasons.isNotEmpty()) appendLine("Retry reasons: ${diag.retryReasons.joinToString()}")
@@ -1115,6 +1133,11 @@ private fun DiagnosticDetailsBox(diag: TranscriptDiagnosticInfo) {
             val resultPart = diag.fallbackResult?.let { " ($it)" }.orEmpty()
             appendLine("Standard fallback attempted: true$resultPart")
         }
+        diag.daemonStartupMs?.let { appendLine("Daemon startup: ${it}ms") }
+        diag.socketWaitMs?.let { appendLine("Socket wait: ${it}ms") }
+        diag.extractMs?.let { appendLine("Extract execution: ${it}ms") }
+        diag.jsChallengesSolved?.takeIf { it > 0 }?.let { appendLine("JS challenges solved: $it") }
+        diag.heartbeatCount?.takeIf { it > 0 }?.let { appendLine("Heartbeats received: $it") }
         diag.timeoutMs?.let { appendLine("Timeout budget: ${it}ms") }
         diag.elapsedMs?.let { appendLine("Elapsed: ${it}ms") }
         diag.httpStatusCode?.let { appendLine("HTTP status: $it") }

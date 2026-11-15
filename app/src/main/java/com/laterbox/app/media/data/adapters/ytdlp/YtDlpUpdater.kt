@@ -84,17 +84,33 @@ class YtDlpUpdater(
                     return@withContext Result.success(currentVersion)
                 }
 
-                // 3. Unpack, patch player cache, and validate new script
+                // 3. Unpack, patch player cache, and validate new script + EJS solver
+                var ejsStatus: YtDlpOptimizer.EjsSolverStatus? = null
                 if (!android.os.Build.FINGERPRINT.equals("robolectric", ignoreCase = true)) {
                     val optResult = YtDlpOptimizer.ensureOptimized(appContext, forceReextract = true)
                     Log.i(tag, "Post-update optimization status: isOptimized=${optResult.isOptimized}, patched=${optResult.isPlayerCachePatched}")
                     if (!optResult.isOptimized) {
                         throw IllegalStateException("Post-update optimization failed: ${optResult.error ?: "unpacked validation failed"}")
                     }
+                    val targetCheck = optResult.activePath ?: ytdlBin
+                    ejsStatus = YtDlpOptimizer.inspectEjsSolver(targetCheck)
+                    if (!ejsStatus.isAvailable) {
+                        throw IllegalStateException("Updated yt-dlp lacks required yt_dlp_ejs solver scripts (${ejsStatus.detail}).")
+                    }
+                }
+
+                val qjsInfo = QuickJsHelper.inspectQuickJsRuntime(appContext, forceRefresh = true)
+                if (qjsInfo.isAvailable && !qjsInfo.isCompatible) {
+                    Log.w(tag, "QuickJS runtime ${qjsInfo.identity} ${qjsInfo.version} is below yt-dlp minimum recommended version.")
                 }
 
                 val detectedPython = pythonInfo.versionString
-                Log.i(tag, "Validating updated yt-dlp against bundled Python interpreter ($detectedPython)...")
+                Log.i(
+                    tag,
+                    "Validating updated yt-dlp against Python $detectedPython, " +
+                        "QuickJS ${qjsInfo.identity}:${qjsInfo.version}, " +
+                        "EJS ${ejsStatus?.version ?: "unknown"}..."
+                )
 
                 var probeSuccess = false
                 val probeRequest = com.yausername.youtubedl_android.YoutubeDLRequest(emptyList()).apply {

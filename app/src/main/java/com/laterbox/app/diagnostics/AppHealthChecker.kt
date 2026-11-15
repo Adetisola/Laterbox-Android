@@ -51,15 +51,21 @@ data class AppHealthReport(
     val notificationsEnabled: Boolean,
     val exactAlarmsAllowed: Boolean,
     val issues: List<AppHealthIssue>,
-    val overallStatus: AppHealthStatus
+    val overallStatus: AppHealthStatus,
+    val quickJsIdentity: String? = null,
+    val quickJsVersion: String? = null,
+    val ejsVersion: String? = null
 ) {
     fun availableStorageMb(): Long = availableStorageBytes / (1024L * 1024L)
 
     fun toHumanSummary(): String = buildString {
         appendLine("Laterbox App Health: ${overallStatus.name.replace('_', ' ')}")
-        appendLine("- yt-dlp engine: $ytDlpStateLabel${ytDlpVersion?.let { " (v$it)" } ?: ""}")
+        appendLine("- yt-dlp engine: $ytDlpStateLabel${ytDlpVersion?.let { " (v$it)" } ?: ""}${ejsVersion?.let { " [EJS v$it]" } ?: ""}")
         appendLine("- FFmpeg merger: $ffmpegStateLabel")
-        appendLine("- QuickJS runtime: ${if (quickJsAvailable) "Available" else "Missing"}")
+        val qjsSuffix = if (quickJsAvailable && !quickJsVersion.isNullOrBlank() && quickJsVersion != "unknown") {
+            " (${quickJsIdentity ?: "quickjs"} $quickJsVersion)"
+        } else ""
+        appendLine("- QuickJS runtime: ${if (quickJsAvailable) "Available$qjsSuffix" else "Missing"}")
         appendLine("- Network: ${when { isNetworkValidated -> "Connected & validated"; isNetworkConnected -> "Connected (unvalidated)"; else -> "Offline" }}")
         appendLine("- Free internal storage: ${availableStorageMb()} MB")
         appendLine("- Notifications permission: ${if (notificationsEnabled) "Enabled" else "Disabled"}")
@@ -99,7 +105,9 @@ class AppHealthChecker(
             is YtDlpInitState.Initialized -> ytDlpState.version ?: prefs.ytDlpVersion.ifBlank { null }
             else -> prefs.ytDlpVersion.ifBlank { null }
         }
+        val quickJsInfo = try { QuickJsHelper.inspectQuickJsRuntime(appContext) } catch (_: Throwable) { null }
         val quickJsAvailable = overrideQuickJsAvailable ?: (QuickJsHelper.getQuickJsExecutable(appContext) != null)
+        val diagReport = try { runtimeManager.captureDiagnosticReport() } catch (_: Throwable) { null }
         val failedInspections = try {
             database.mediaInspectionDao().countFailedOrNeedsAuth()
         } catch (_: Throwable) { 0 }
@@ -158,7 +166,10 @@ class AppHealthChecker(
             notificationsEnabled = notificationsEnabled,
             exactAlarmsAllowed = exactAlarmsAllowed,
             issues = issues,
-            overallStatus = overall
+            overallStatus = overall,
+            quickJsIdentity = quickJsInfo?.identity?.takeIf { it != "missing" && it != "unknown" },
+            quickJsVersion = quickJsInfo?.version?.takeIf { it != "unknown" },
+            ejsVersion = diagReport?.ejsSolverVersion
         )
     }
 

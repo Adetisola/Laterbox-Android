@@ -114,7 +114,13 @@ data class YtDlpDiagnosticReport(
     val ffmpegStateSummary: String,
     val lastExceptionCategory: YtDlpInitFailureCategory?,
     val lastExceptionMessage: String?,
-    val lastExceptionStackTrace: String?
+    val lastExceptionStackTrace: String?,
+    val quickJsIdentity: String = "unknown",
+    val quickJsVersion: String = "unknown",
+    val isQuickJsCompatible: Boolean = false,
+    val ejsSolverAvailable: Boolean = false,
+    val ejsSolverVersion: String? = null,
+    val isPlayerCachePatched: Boolean = false
 ) {
     fun toFormattedString(): String {
         val sb = StringBuilder()
@@ -145,6 +151,8 @@ data class YtDlpDiagnosticReport(
             }
         }
         sb.appendLine("yt-dlp Engine State: $ytDlpStateSummary (Version: ${ytDlpVersion ?: "unknown"}, Python: $pythonVersion, Compatible: $isPythonCompatible)")
+        sb.appendLine("QuickJS Runtime: $quickJsIdentity (Version: $quickJsVersion, Compatible: $isQuickJsCompatible)")
+        sb.appendLine("EJS Solver: available=$ejsSolverAvailable (Version: ${ejsSolverVersion ?: "unknown"}, PreprocessedPlayerCachePatched: $isPlayerCachePatched)")
         sb.appendLine("FFmpeg Engine State: $ffmpegStateSummary")
         if (lastExceptionCategory != null) {
             sb.appendLine("\n--- Last Initialization Error ---")
@@ -240,7 +248,14 @@ class YtDlpRuntimeManager(
                 // 4. One-time extraction & player cache optimization
                 if (!Build.FINGERPRINT.equals("robolectric", ignoreCase = true)) {
                     val optResult = YtDlpOptimizer.ensureOptimized(appContext)
-                    Log.i(tag, "yt-dlp optimization status: isOptimized=${optResult.isOptimized}, patched=${optResult.isPlayerCachePatched}, fallback=${optResult.fallbackToArchive}")
+                    val qjsInfo = QuickJsHelper.inspectQuickJsRuntime(appContext)
+                    val ejsInfo = optResult.activePath?.let { YtDlpOptimizer.inspectEjsSolver(it) }
+                    Log.i(
+                        tag,
+                        "yt-dlp optimization status: isOptimized=${optResult.isOptimized}, patched=${optResult.isPlayerCachePatched}, " +
+                            "fallback=${optResult.fallbackToArchive}, quickjs=${qjsInfo.identity}:${qjsInfo.version}(compat=${qjsInfo.isCompatible}), " +
+                            "ejs=${ejsInfo?.version ?: "missing"}(avail=${ejsInfo?.isAvailable ?: false})"
+                    )
                 }
 
                 // 5. Verify Python compatibility and probe version
@@ -524,6 +539,12 @@ class YtDlpRuntimeManager(
         }
 
         val pythonInfo = inspectPythonInterpreter()
+        val quickJsInfo = QuickJsHelper.inspectQuickJsRuntime(appContext)
+        val activeYtDlp = YtDlpOptimizer.getYtDlpBinaryPath()
+            ?: noBackup?.let { File(it, "yt-dlp/yt-dlp") }
+        val ejsInfo = if (activeYtDlp != null && activeYtDlp.exists()) {
+            YtDlpOptimizer.inspectEjsSolver(activeYtDlp)
+        } else null
 
         return YtDlpDiagnosticReport(
             androidRelease = Build.VERSION.RELEASE ?: "unknown",
@@ -546,7 +567,13 @@ class YtDlpRuntimeManager(
             ffmpegStateSummary = _ffmpegState.value.name,
             lastExceptionCategory = lastRecordedException?.category,
             lastExceptionMessage = lastRecordedException?.message,
-            lastExceptionStackTrace = stackTrace
+            lastExceptionStackTrace = stackTrace,
+            quickJsIdentity = quickJsInfo.identity,
+            quickJsVersion = quickJsInfo.version,
+            isQuickJsCompatible = quickJsInfo.isCompatible,
+            ejsSolverAvailable = ejsInfo?.isAvailable ?: false,
+            ejsSolverVersion = ejsInfo?.version,
+            isPlayerCachePatched = ejsInfo?.isPlayerCachePatched ?: false
         )
     }
 

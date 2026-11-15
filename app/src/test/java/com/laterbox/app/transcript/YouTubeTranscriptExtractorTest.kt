@@ -6,6 +6,7 @@ import com.laterbox.app.transcript.domain.CaptionType
 import com.laterbox.app.transcript.domain.FetchedVideoInfo
 import com.laterbox.app.transcript.domain.PlaylistEntrySummary
 import com.laterbox.app.transcript.domain.PlaylistResolution
+import com.laterbox.app.transcript.domain.TranscriptDiagnosticInfo
 import com.laterbox.app.transcript.domain.TranscriptExtractionProgress
 import com.laterbox.app.transcript.domain.TranscriptExtractionStage
 import com.laterbox.app.transcript.domain.TranscriptTargetPreference
@@ -658,14 +659,14 @@ class YouTubeTranscriptExtractorTest {
     }
 
     @Test
-    fun dataSource_warmTimeoutAndEof_fallbackToStandardProcessWithUniqueStdIdAndSucceed() = runTest {
+    fun dataSource_warmSocketTimeoutDoesNotFallback_whilePrematureEofFallsBackWithStdIdAndSucceeds() = runTest {
         val context = RuntimeEnvironment.getApplication()
         val userPrefs = com.laterbox.app.data.preferences.UserPreferencesRepository(context)
         userPrefs.setFastEngineEnabled(true)
 
         val serverSocket = java.net.ServerSocket(0, 10, java.net.InetAddress.getByName("127.0.0.1"))
         val token = "tok_ds_test"
-        val mode = java.util.concurrent.atomic.AtomicInteger(0) // 0 = timeout, 1 = premature EOF
+        val mode = java.util.concurrent.atomic.AtomicInteger(0) // 0 = socket timeout, 1 = premature EOF
         val dummyYtdlp = java.io.File(context.cacheDir, "ds_fake_ytdlp").apply { writeText("x") }
 
         val stdoutPipe = java.io.PipedOutputStream()
@@ -742,8 +743,12 @@ class YouTubeTranscriptExtractorTest {
 
         try {
             val res1 = dataSource.fetchVideoInfo("v1", "https://www.youtube.com/watch?v=v1", "proc_v1")
-            assertTrue("Warm socket timeout must fall back to standard process and succeed, got $res1", res1 is VideoInfoFetchResult.Success)
-            assertTrue(observedStdIds.contains("proc_v1_std"))
+            assertTrue("Warm socket timeout must NOT burn standard fallback budget, got $res1", res1 is VideoInfoFetchResult.Failed)
+            val failed1 = res1 as VideoInfoFetchResult.Failed
+            assertEquals(VideoTranscriptStatus.TIMEOUT, failed1.status)
+            assertEquals("warm_daemon_socket_timeout", failed1.diagnosticInfo?.failureClassification)
+            assertEquals(false, failed1.diagnosticInfo?.fallbackAttempted)
+            assertFalse(observedStdIds.contains("proc_v1_std"))
 
             mode.set(1)
             val res2 = dataSource.fetchVideoInfo("v2", "https://www.youtube.com/watch?v=v2", "proc_v2")
@@ -757,7 +762,7 @@ class YouTubeTranscriptExtractorTest {
     }
 
     @Test
-    fun dataSource_warmAuthoritativeErrorDoesNotFallback_andWarmDoubleTimeoutRecordsFallbackDiagnostics() = runTest {
+    fun dataSource_warmAuthoritativeErrorAndSocketTimeoutDoNotFallback_whileHandshakeTimeoutFallbackRecordsDiagnostics() = runTest {
         val context = RuntimeEnvironment.getApplication()
         val userPrefs = com.laterbox.app.data.preferences.UserPreferencesRepository(context)
         userPrefs.setFastEngineEnabled(true)
@@ -766,7 +771,7 @@ class YouTubeTranscriptExtractorTest {
         server.start()
         val ss = java.net.ServerSocket(0, 10, java.net.InetAddress.getByName("127.0.0.1"))
         val token = "tok_err_test"
-        val mode = java.util.concurrent.atomic.AtomicInteger(0) // 0 = ExtractorError(Private), 1 = SocketTimeout
+        val mode = java.util.concurrent.atomic.AtomicInteger(0) // 0 = ExtractorError(Private), 1 = SocketTimeout, 2 = HandshakeTimeout
         val dummyYtdlp = java.io.File(context.cacheDir, "err_fake_ytdlp").apply { writeText("x") }
 
         val stdoutPipe = java.io.PipedOutputStream()
@@ -822,12 +827,31 @@ class YouTubeTranscriptExtractorTest {
             override fun waitFor(): Int = 0
         }
 
+        val hungProc = object : Process() {
+            private val hAlive = java.util.concurrent.atomic.AtomicBoolean(true)
+            private val emptyOut = java.io.PipedInputStream(java.io.PipedOutputStream())
+            override fun isAlive(): Boolean = hAlive.get()
+            override fun destroy() { destroyForcibly() }
+            override fun destroyForcibly(): Process {
+                hAlive.set(false)
+                try { emptyOut.close() } catch (_: Throwable) {}
+                return this
+            }
+            override fun exitValue(): Int = 0
+            override fun getErrorStream(): java.io.InputStream = java.io.ByteArrayInputStream(ByteArray(0))
+            override fun getInputStream(): java.io.InputStream = emptyOut
+            override fun getOutputStream(): java.io.OutputStream = java.io.ByteArrayOutputStream()
+            override fun waitFor(): Int = 0
+        }
+
         val warmServer = com.laterbox.app.media.data.adapters.ytdlp.WarmYtDlpServer(
             appContext = context,
             userPreferencesRepository = userPrefs,
-            handshakeTimeoutMs = 1500L,
+            handshakeTimeoutMs = 200L,
             runtimeEnvProvider = { com.laterbox.app.media.data.adapters.ytdlp.DaemonRuntimeEnv(dummyYtdlp, dummyYtdlp) },
-            processLauncher = { _, _ -> fakeProc }
+            processLauncher = { _, _ ->
+                if (mode.get() == 2) hungProc else fakeProc
+            }
         )
 
         val httpClient = okhttp3.OkHttpClient.Builder()
@@ -862,23 +886,37 @@ class YouTubeTranscriptExtractorTest {
             assertEquals("Authoritative warm extractor error must NOT fall back to standard process", 0, stdExecutions)
             assertEquals(false, privFailed.diagnosticInfo?.fallbackAttempted)
 
-            // 2. Warm socket timeout + standard process timeout -> rich combined failureClassification
+            // 2. Warm socket timeout must NOT fall back to standard process
             mode.set(1)
             server.enqueue(MockResponse().setResponseCode(503).setBody("unavailable"))
-            val doubleToRes = dataSource.fetchVideoInfo("to1", "https://www.youtube.com/watch?v=to1", "p_to")
-            assertTrue(doubleToRes is VideoInfoFetchResult.Failed)
-            val doubleFailed = doubleToRes as VideoInfoFetchResult.Failed
-            assertEquals(VideoTranscriptStatus.TIMEOUT, doubleFailed.status)
+            val warmSockTo = dataSource.fetchVideoInfo("to1", "https://www.youtube.com/watch?v=to1", "p_to")
+            assertTrue(warmSockTo is VideoInfoFetchResult.Failed)
+            val warmSockFailed = warmSockTo as VideoInfoFetchResult.Failed
+            assertEquals(VideoTranscriptStatus.TIMEOUT, warmSockFailed.status)
+            assertEquals(0, stdExecutions)
+            assertEquals(false, warmSockFailed.diagnosticInfo?.fallbackAttempted)
+            assertEquals("not_attempted", warmSockFailed.diagnosticInfo?.fallbackResult)
+            assertEquals("warm_daemon", warmSockFailed.diagnosticInfo?.executionEngine)
+            assertEquals("warm_daemon_socket_timeout", warmSockFailed.diagnosticInfo?.failureClassification)
+
+            // 3. Handshake timeout MUST fall back to standard process and record combined classification when standard also times out
+            mode.set(2)
+            server.enqueue(MockResponse().setResponseCode(503).setBody("unavailable"))
+            val hsToRes = dataSource.fetchVideoInfo("to2", "https://www.youtube.com/watch?v=to2", "p_hs_to")
+            assertTrue(hsToRes is VideoInfoFetchResult.Failed)
+            val hsFailed = hsToRes as VideoInfoFetchResult.Failed
+            assertEquals(VideoTranscriptStatus.TIMEOUT, hsFailed.status)
             assertEquals(1, stdExecutions)
-            val diag = doubleFailed.diagnosticInfo
+            val diag = hsFailed.diagnosticInfo
             assertNotNull(diag)
             assertEquals(true, diag!!.fallbackAttempted)
             assertEquals("timeout", diag.fallbackResult)
             assertEquals("warm_daemon->standard_process", diag.executionEngine)
-            assertEquals("warm_daemon_timeout->standard_process_timeout", diag.failureClassification)
+            assertEquals("warm_daemon_handshake_timeout->standard_process_timeout", diag.failureClassification)
         } finally {
             alive.set(false)
             warmServer.shutdown()
+            hungProc.destroyForcibly()
             try { ss.close() } catch (_: Throwable) {}
             server.shutdown()
         }
@@ -1200,6 +1238,148 @@ class YouTubeTranscriptExtractorTest {
         assertEquals((1..27).map { "v$it" }, finalDoc.entries.map { it.videoId })
         assertEquals("Verbatim caption for episode 1.", finalDoc.entries[0].paragraphs.single().text)
         assertEquals("Verbatim caption for episode 27.", finalDoc.entries[26].paragraphs.single().text)
+    }
+
+    @Test
+    fun dataSource_buildPrimaryVideoMetadataOptions_usesJslessFastPathWithoutJsRuntimes() {
+        val context = RuntimeEnvironment.getApplication()
+        val ds = LaterboxYouTubeTranscriptDataSource(context, YtDlpRuntimeManager(context))
+        val opts = ds.buildPrimaryVideoMetadataOptions()
+
+        assertTrue(opts.contains("--dump-single-json"))
+        assertTrue(opts.contains("--no-playlist"))
+        assertTrue(opts.contains("--skip-download"))
+        assertTrue(opts.contains("--socket-timeout=15"))
+        assertTrue(opts.any { it.contains("player_skip=js;skip=dash,hls,translated_subs") })
+        assertFalse(opts.any { it.startsWith("--js-runtimes") })
+    }
+
+    @Test
+    fun dataSource_cancelProcess_stdIdDoesNotDestroyWarmDaemon() {
+        val context = RuntimeEnvironment.getApplication()
+        val userPrefs = com.laterbox.app.data.preferences.UserPreferencesRepository(context)
+        val warmServer = com.laterbox.app.media.data.adapters.ytdlp.WarmYtDlpServer(context, userPrefs)
+
+        val procField = com.laterbox.app.media.data.adapters.ytdlp.WarmYtDlpServer::class.java.getDeclaredField("daemonProcess")
+        procField.isAccessible = true
+        var warmDestroyed = false
+        val mockWarmProc = object : Process() {
+            override fun destroy() {}
+            override fun destroyForcibly(): Process {
+                warmDestroyed = true
+                return this
+            }
+            override fun exitValue(): Int = 0
+            override fun getErrorStream(): java.io.InputStream = java.io.ByteArrayInputStream(ByteArray(0))
+            override fun getInputStream(): java.io.InputStream = java.io.ByteArrayInputStream(ByteArray(0))
+            override fun getOutputStream(): java.io.OutputStream = java.io.ByteArrayOutputStream()
+            override fun waitFor(): Int = 0
+        }
+        procField.set(warmServer, mockWarmProc)
+
+        val ds = LaterboxYouTubeTranscriptDataSource(context, YtDlpRuntimeManager(context), warmServer = warmServer)
+        ds.cancelProcess("proc_1_std")
+
+        assertFalse("Cancelling a *_std process must NEVER destroy the warm daemon", warmDestroyed)
+    }
+
+    @Test
+    fun describeTranscriptExceptionType_neverReturnsSingleLetterObfuscatedName() {
+        assertEquals("InternalTimeoutException", describeTranscriptExceptionType(InternalTimeoutException(15_000L)))
+        assertEquals("SocketTimeoutException", describeTranscriptExceptionType(java.net.SocketTimeoutException("read timed out")))
+        assertEquals("HttpStatusException", describeTranscriptExceptionType(HttpStatusException(429, "Too many")))
+        assertEquals("YoutubeDLCanceledException", describeTranscriptExceptionType(com.yausername.youtubedl_android.YoutubeDL.CanceledException()))
+        assertEquals(
+            "YtDlpExecutionException",
+            describeTranscriptExceptionType(
+                LaterboxYouTubeTranscriptDataSource.YtDlpExecutionException("boom", executionEngine = "warm_daemon")
+            )
+        )
+        // Anonymous subclass has length-0 simpleName -> fallback "ExtractionException"
+        val anon = object : RuntimeException("oops") {}
+        val mappedAnon = describeTranscriptExceptionType(anon)
+        assertNotNull(mappedAnon)
+        assertTrue(mappedAnon!!.length >= 3)
+    }
+
+    @Test
+    fun extractor_isRetryableMetadataFailure_excludesTimeoutsQuickJsEjsAndPoToken() {
+        val ds = object : YouTubeTranscriptDataSource {
+            override suspend fun fetchVideoInfo(videoId: String, videoUrl: String, processId: String) =
+                VideoInfoFetchResult.Failed(VideoTranscriptStatus.UNAVAILABLE, "unused")
+            override suspend fun fetchPlaylistEntries(
+                playlistId: String,
+                playlistUrl: String,
+                processId: String,
+                onPageLoaded: suspend (Int, Int?) -> Unit
+            ) = PlaylistFetchResult.Failed(VideoTranscriptStatus.UNAVAILABLE, "unused")
+            override suspend fun fetchCaptionPayload(url: String) = Result.failure<String>(IllegalStateException())
+            override fun cancelProcess(processId: String) {}
+        }
+        val extractor = YouTubeTranscriptExtractor(dataSource = ds)
+
+        val nonRetryable = listOf(
+            "warm_daemon_socket_timeout",
+            "warm_daemon_overall_timeout",
+            "standard_process_timeout",
+            "quickjs_incompatible_or_missing",
+            "ejs_missing_or_failed",
+            "js_challenge_stalled",
+            "verification_or_po_token",
+            "auth_or_access_error",
+            "video_unavailable"
+        )
+        for (cls in nonRetryable) {
+            val failed = VideoInfoFetchResult.Failed(
+                status = VideoTranscriptStatus.TIMEOUT,
+                message = "Failed",
+                retryable = true,
+                diagnosticInfo = TranscriptDiagnosticInfo(
+                    videoId = "v",
+                    stage = "video_metadata",
+                    errorCategory = VideoTranscriptStatus.TIMEOUT,
+                    failureClassification = cls
+                )
+            )
+            assertFalse("Expected $cls to NOT be automatically retried", extractor.isRetryableMetadataFailure(failed))
+        }
+
+        val transient = VideoInfoFetchResult.Failed(
+            status = VideoTranscriptStatus.NETWORK_ERROR,
+            message = "Connection reset by peer",
+            retryable = true,
+            diagnosticInfo = TranscriptDiagnosticInfo(
+                videoId = "v",
+                stage = "video_metadata",
+                errorCategory = VideoTranscriptStatus.NETWORK_ERROR,
+                failureClassification = "network_error"
+            )
+        )
+        assertTrue(extractor.isRetryableMetadataFailure(transient))
+    }
+
+    @Test
+    fun dataSource_parseYtDlpVideoJson_populatesEffectivePlayerClientFromLaterboxClients() {
+        val context = RuntimeEnvironment.getApplication()
+        val ds = LaterboxYouTubeTranscriptDataSource(context, YtDlpRuntimeManager(context))
+        val json = """
+            {
+              "id": "0GMQRCnOQmo",
+              "title": "Sample Video",
+              "_laterbox_clients": ["android_vr", "tv"],
+              "subtitles": {"en": [{"ext": "vtt", "url": "https://cap.test/sub.vtt"}]}
+            }
+        """.trimIndent()
+
+        val result = ds.parseYtDlpVideoJson(
+            fallbackVideoId = "0GMQRCnOQmo",
+            canonicalUrl = "https://www.youtube.com/watch?v=0GMQRCnOQmo",
+            jsonStr = json,
+            playerClient = "default",
+            effectiveClients = listOf("tv")
+        ) as VideoInfoFetchResult.Success
+
+        assertEquals("tv,android_vr", result.info.playerClientUsed)
     }
 }
 

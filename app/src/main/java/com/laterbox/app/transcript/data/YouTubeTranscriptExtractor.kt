@@ -687,7 +687,7 @@ class YouTubeTranscriptExtractor(
                 playlistPosition = position,
                 ytDlpVersion = dataSource.currentYtDlpVersion(),
                 errorCategory = status,
-                exceptionType = t.javaClass.simpleName,
+                exceptionType = describeTranscriptExceptionType(t),
                 httpStatusCode = (t as? HttpStatusException)?.code,
                 sanitizedDetail = msg,
                 failureClassification = when (status) {
@@ -792,6 +792,7 @@ class YouTubeTranscriptExtractor(
                 playlistPosition = position,
                 ytDlpVersion = dataSource.currentYtDlpVersion(),
                 playerClient = info.playerClientUsed,
+                effectivePlayerClient = info.playerClientUsed,
                 errorCategory = VideoTranscriptStatus.EXTRACTION_ERROR,
                 startedAtMillis = startedAt,
                 elapsedMs = clock() - startedAt,
@@ -934,8 +935,9 @@ class YouTubeTranscriptExtractor(
             playlistPosition = position,
             ytDlpVersion = dataSource.currentYtDlpVersion(),
             playerClient = info.playerClientUsed,
+            effectivePlayerClient = info.playerClientUsed,
             errorCategory = status,
-            exceptionType = lastFetchError?.javaClass?.simpleName,
+            exceptionType = describeTranscriptExceptionType(lastFetchError),
             httpStatusCode = (lastFetchError as? HttpStatusException)?.code,
             startedAtMillis = startedAt,
             elapsedMs = clock() - startedAt,
@@ -1028,6 +1030,11 @@ class YouTubeTranscriptExtractor(
     internal fun isRetryableMetadataFailure(failed: VideoInfoFetchResult.Failed): Boolean {
         if (!failed.retryable) return false
         if (failed.status !in RETRYABLE_METADATA_STATUSES) return false
+
+        val classification = failed.diagnosticInfo?.failureClassification
+        if (classification != null && classification in NON_RETRYABLE_CLASSIFICATIONS) {
+            return false
+        }
 
         val lower = failed.message.lowercase()
         val detailLower = failed.diagnosticInfo?.sanitizedDetail?.lowercase().orEmpty()
@@ -1122,10 +1129,13 @@ class YouTubeTranscriptExtractor(
                     "class=${diag.failureClassification ?: "-"} engine=${diag.executionEngine ?: "-"} " +
                     "warmHealthy=${diag.warmDaemonHealthyAtStart ?: "-"} " +
                     "fallback=${if (diag.fallbackAttempted) (diag.fallbackResult ?: "yes") else "no"} " +
-                    "client=${diag.playerClient ?: "-"} ytdlp=${diag.ytDlpVersion ?: "-"} " +
+                    "client=${diag.playerClient ?: "-"} effClient=${diag.effectivePlayerClient ?: "-"} " +
+                    "ytdlp=${diag.ytDlpVersion ?: "-"} qjs=${diag.quickJsIdentity ?: "-"}/${diag.quickJsVersion ?: "-"} " +
+                    "ejs=${diag.ejsSolverAvailable ?: "-"} " +
                     "http=${diag.httpStatusCode ?: "-"} ex=${diag.exceptionType ?: "-"} " +
                     "attempt=${diag.attemptNumber} retries=${diag.retryCount} " +
                     "timeoutMs=${diag.timeoutMs ?: "-"} elapsedMs=${diag.elapsedMs ?: "-"} " +
+                    "hb=${diag.heartbeatCount ?: "-"} jsCh=${diag.jsChallengesSolved ?: "-"} " +
                     "detail=${diag.sanitizedDetail ?: "-"}"
             )
         } catch (_: Throwable) {
@@ -1164,6 +1174,18 @@ class YouTubeTranscriptExtractor(
             VideoTranscriptStatus.NETWORK_ERROR,
             VideoTranscriptStatus.RATE_LIMITED,
             VideoTranscriptStatus.EXTRACTION_ERROR
+        )
+
+        private val NON_RETRYABLE_CLASSIFICATIONS = setOf(
+            "warm_daemon_socket_timeout",
+            "warm_daemon_overall_timeout",
+            "standard_process_timeout",
+            "quickjs_incompatible_or_missing",
+            "ejs_missing_or_failed",
+            "js_challenge_stalled",
+            "verification_or_po_token",
+            "auth_or_access_error",
+            "video_unavailable"
         )
 
         private val NON_RETRYABLE_KEYWORDS = listOf(

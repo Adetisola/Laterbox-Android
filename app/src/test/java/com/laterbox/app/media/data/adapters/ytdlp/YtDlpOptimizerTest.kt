@@ -293,4 +293,97 @@ class YtDlpOptimizerTest {
             assertTrue(res.isPlayerCachePatched)
         }
     }
+
+    @Test
+    fun ensureOptimized_missingPlayerCacheFlag_keepsOptimizedWithPatchFalse() = runTest {
+        val noBackup = context.noBackupFilesDir ?: File(context.filesDir, "no_backup").apply { mkdirs() }
+        val archiveFile = File(noBackup, "youtubedl-android/yt-dlp/yt-dlp")
+        archiveFile.parentFile?.mkdirs()
+        ZipOutputStream(FileOutputStream(archiveFile)).use { zos ->
+            zos.putNextEntry(ZipEntry("__main__.py"))
+            zos.write("print('yt-dlp')".toByteArray())
+            zos.closeEntry()
+            zos.putNextEntry(ZipEntry("yt_dlp/__init__.py"))
+            zos.write("# init".toByteArray())
+            zos.closeEntry()
+            zos.putNextEntry(ZipEntry("yt_dlp/YoutubeDL.py"))
+            zos.write("class YoutubeDL: pass".toByteArray())
+            zos.closeEntry()
+            zos.putNextEntry(ZipEntry(YtDlpOptimizer.EJS_RELATIVE_PATH))
+            zos.write("class EJS:\n    pass\n".toByteArray())
+            zos.closeEntry()
+        }
+
+        val result = YtDlpOptimizer.ensureOptimized(context, forceReextract = true)
+
+        assertTrue("Optimization must stay active even if upstream removes _ENABLE_PREPROCESSED_PLAYER_CACHE", result.isOptimized)
+        assertFalse(result.fallbackToArchive)
+        assertFalse(result.isPlayerCachePatched)
+    }
+
+    @Test
+    fun inspectEjsSolver_detectsVersionAndSolversFromDirAndZip() {
+        val dir = File(testWorkDir, "ejs_unpacked").apply { mkdirs() }
+        File(dir, YtDlpOptimizer.EJS_VERSION_RELATIVE_PATH).apply {
+            parentFile?.mkdirs()
+            writeText("__version__ = '0.8.0'\n")
+        }
+        File(dir, YtDlpOptimizer.EJS_CORE_SOLVER_PATH).apply {
+            parentFile?.mkdirs()
+            writeText("// core")
+        }
+        File(dir, YtDlpOptimizer.EJS_LIB_SOLVER_PATH).apply {
+            parentFile?.mkdirs()
+            writeText("// lib")
+        }
+        File(dir, YtDlpOptimizer.EJS_RELATIVE_PATH).apply {
+            parentFile?.mkdirs()
+            writeText("_ENABLE_PREPROCESSED_PLAYER_CACHE = True\n")
+        }
+
+        val dirStatus = YtDlpOptimizer.inspectEjsSolver(dir)
+        assertTrue(dirStatus.isAvailable)
+        assertEquals("0.8.0", dirStatus.version)
+        assertTrue(dirStatus.hasCoreSolver)
+        assertTrue(dirStatus.hasLibSolver)
+        assertTrue(dirStatus.isPlayerCachePatched)
+
+        val zip = File(testWorkDir, "ejs_archive.zip")
+        ZipOutputStream(FileOutputStream(zip)).use { zos ->
+            listOf(
+                YtDlpOptimizer.EJS_VERSION_RELATIVE_PATH to "__version__ = '0.8.1'\n",
+                YtDlpOptimizer.EJS_CORE_SOLVER_PATH to "// core",
+                YtDlpOptimizer.EJS_LIB_SOLVER_PATH to "// lib"
+            ).forEach { (path, body) ->
+                zos.putNextEntry(ZipEntry(path))
+                zos.write(body.toByteArray())
+                zos.closeEntry()
+            }
+        }
+        val zipStatus = YtDlpOptimizer.inspectEjsSolver(zip)
+        assertTrue(zipStatus.isAvailable)
+        assertEquals("0.8.1", zipStatus.version)
+        assertTrue(zipStatus.hasCoreSolver)
+        assertTrue(zipStatus.hasLibSolver)
+    }
+
+    @Test
+    fun quickJsHelper_parseHelpOutput_identifiesBellardAndNgCompatibility() {
+        val modernBellard = QuickJsHelper.parseHelpOutput("QuickJS version 2025-04-26\nusage: qjs [options]")
+        assertEquals("quickjs", modernBellard.identity)
+        assertEquals("2025-04-26", modernBellard.version)
+        assertTrue(modernBellard.isCompatible)
+        assertTrue(modernBellard.meetsRecommendedBaseline)
+
+        val oldBellard = QuickJsHelper.parseHelpOutput("QuickJS version 2021-03-27\nusage: qjs")
+        assertEquals("quickjs", oldBellard.identity)
+        assertEquals("2021-03-27", oldBellard.version)
+        assertFalse(oldBellard.isCompatible)
+
+        val modernNg = QuickJsHelper.parseHelpOutput("QuickJS-ng version 0.12.0\nusage: qjs")
+        assertEquals("quickjs-ng", modernNg.identity)
+        assertEquals("0.12.0", modernNg.version)
+        assertTrue(modernNg.isCompatible)
+        assertTrue(modernNg.meetsRecommendedBaseline)
+    }
 }

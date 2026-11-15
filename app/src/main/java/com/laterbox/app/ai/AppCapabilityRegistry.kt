@@ -8,6 +8,7 @@ data class CapabilitySnapshot(
     val ytDlpState: String = "NOT_INITIALIZED",
     val ytDlpVersion: String? = null,
     val quickJsReady: Boolean = false,
+    val quickJsVersion: String? = null,
     val ffmpegState: String = "NOT_INITIALIZED",
     val youtubeTranscriptsReady: Boolean = true,
     val supportedTranscriptFormats: List<String> = listOf(
@@ -65,7 +66,8 @@ object AppCapabilityRegistry {
         }
         appendLine("- YouTube Transcript Extraction (single video & playlist captions): $transcriptEngineNote")
         appendLine("- yt-dlp engine: ${snapshot.ytDlpState}${snapshot.ytDlpVersion?.let { " (v$it)" } ?: ""}")
-        appendLine("- QuickJS runtime: ${if (snapshot.quickJsReady) "Available" else "Unavailable"}")
+        val qjsVer = snapshot.quickJsVersion?.takeIf { it.isNotBlank() && it != "unknown" }?.let { " ($it)" }.orEmpty()
+        appendLine("- QuickJS runtime: ${if (snapshot.quickJsReady) "Available$qjsVer" else "Unavailable"}")
         appendLine("- FFmpeg merger: ${snapshot.ffmpegState}")
         appendLine("- Supported transcript export formats: ${snapshot.supportedTranscriptFormats.joinToString(", ")}")
         appendLine("- Transcript clipboard copy (single video & playlist Copy All): ${if (snapshot.transcriptClipboardCopySupported) "Supported" else "Unavailable"}")

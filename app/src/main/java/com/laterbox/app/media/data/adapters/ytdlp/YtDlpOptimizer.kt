@@ -35,6 +35,9 @@ object YtDlpOptimizer {
 
     private const val TAG = "YtDlpOptimizer"
     const val EJS_RELATIVE_PATH = "yt_dlp/extractor/youtube/jsc/_builtin/ejs.py"
+    const val EJS_VERSION_RELATIVE_PATH = "yt_dlp_ejs/_version.py"
+    const val EJS_CORE_SOLVER_PATH = "yt_dlp_ejs/yt/solver/core.min.js"
+    const val EJS_LIB_SOLVER_PATH = "yt_dlp_ejs/yt/solver/lib.min.js"
     const val COMPAT_RELATIVE_PATH = "yt_dlp/compat/__init__.py"
     const val PREPROCESSED_CACHE_FLAG = "_ENABLE_PREPROCESSED_PLAYER_CACHE = False"
     const val PREPROCESSED_CACHE_FLAG_PATCHED = "_ENABLE_PREPROCESSED_PLAYER_CACHE = True"
@@ -48,6 +51,16 @@ object YtDlpOptimizer {
         data class ShebangZip(val zipOffset: Long) : ArchiveFormat()
         object Invalid : ArchiveFormat()
     }
+
+    @androidx.annotation.Keep
+    data class EjsSolverStatus(
+        val isAvailable: Boolean,
+        val version: String?,
+        val hasCoreSolver: Boolean,
+        val hasLibSolver: Boolean,
+        val isPlayerCachePatched: Boolean,
+        val detail: String? = null
+    )
 
     data class OptimizationResult(
         val isOptimized: Boolean,
@@ -294,6 +307,118 @@ object YtDlpOptimizer {
     }
 
     /**
+     * Inspects bundled/updated yt_dlp_ejs solver scripts and preprocessed player cache flag.
+     */
+    fun inspectEjsSolver(ytdlpDirOrArchive: File): EjsSolverStatus {
+        return try {
+            if (!ytdlpDirOrArchive.exists()) {
+                return EjsSolverStatus(
+                    isAvailable = false,
+                    version = null,
+                    hasCoreSolver = false,
+                    hasLibSolver = false,
+                    isPlayerCachePatched = false,
+                    detail = "yt-dlp target does not exist"
+                )
+            }
+
+            if (ytdlpDirOrArchive.isDirectory) {
+                val core = File(ytdlpDirOrArchive, EJS_CORE_SOLVER_PATH)
+                val lib = File(ytdlpDirOrArchive, EJS_LIB_SOLVER_PATH)
+                val versionFile = File(ytdlpDirOrArchive, EJS_VERSION_RELATIVE_PATH)
+                val ejsFile = File(ytdlpDirOrArchive, EJS_RELATIVE_PATH)
+
+                val hasCore = core.exists() && core.length() > 0L
+                val hasLib = lib.exists() && lib.length() > 0L
+                val version = if (versionFile.exists()) parseEjsVersionText(versionFile.readText()) else null
+                val isPatched = ejsFile.exists() && ejsFile.readText().contains(PREPROCESSED_CACHE_FLAG_PATCHED)
+                val available = hasCore && hasLib
+
+                EjsSolverStatus(
+                    isAvailable = available,
+                    version = version,
+                    hasCoreSolver = hasCore,
+                    hasLibSolver = hasLib,
+                    isPlayerCachePatched = isPatched,
+                    detail = if (available) {
+                        "yt_dlp_ejs ${version ?: "present"} (core+lib)"
+                    } else {
+                        "Missing EJS solver bundles (core=$hasCore, lib=$hasLib)"
+                    }
+                )
+            } else {
+                val offset = findZipOffset(ytdlpDirOrArchive)
+                if (offset < 0L) {
+                    return EjsSolverStatus(
+                        isAvailable = false,
+                        version = null,
+                        hasCoreSolver = false,
+                        hasLibSolver = false,
+                        isPlayerCachePatched = false,
+                        detail = "Invalid yt-dlp archive"
+                    )
+                }
+                var hasCore = false
+                var hasLib = false
+                var version: String? = null
+                var isPatched = false
+
+                BufferedInputStream(FileInputStream(ytdlpDirOrArchive)).use { bis ->
+                    if (offset > 0L) {
+                        var skipped = 0L
+                        while (skipped < offset) {
+                            val s = bis.skip(offset - skipped)
+                            if (s <= 0L) break
+                            skipped += s
+                        }
+                    }
+                    ZipInputStream(bis).use { zis ->
+                        var entry = zis.nextEntry
+                        while (entry != null) {
+                            when (entry.name) {
+                                EJS_CORE_SOLVER_PATH -> hasCore = true
+                                EJS_LIB_SOLVER_PATH -> hasLib = true
+                                EJS_VERSION_RELATIVE_PATH -> version = parseEjsVersionText(zis.bufferedReader().readText())
+                                EJS_RELATIVE_PATH -> isPatched = zis.bufferedReader().readText().contains(PREPROCESSED_CACHE_FLAG_PATCHED)
+                            }
+                            zis.closeEntry()
+                            entry = zis.nextEntry
+                        }
+                    }
+                }
+                val available = hasCore && hasLib
+                EjsSolverStatus(
+                    isAvailable = available,
+                    version = version,
+                    hasCoreSolver = hasCore,
+                    hasLibSolver = hasLib,
+                    isPlayerCachePatched = isPatched,
+                    detail = if (available) {
+                        "yt_dlp_ejs ${version ?: "present"} (archive)"
+                    } else {
+                        "Missing EJS solver bundles in archive (core=$hasCore, lib=$hasLib)"
+                    }
+                )
+            }
+        } catch (t: Throwable) {
+            EjsSolverStatus(
+                isAvailable = false,
+                version = null,
+                hasCoreSolver = false,
+                hasLibSolver = false,
+                isPlayerCachePatched = false,
+                detail = t.message ?: "EJS inspection failed"
+            )
+        }
+    }
+
+    private fun parseEjsVersionText(text: String): String? {
+        return Regex("""__version__\s*=\s*(?:version\s*=\s*)?['"]([^'"]+)['"]""")
+            .find(text)?.groupValues?.getOrNull(1)
+            ?: Regex("""version\s*=\s*['"]([^'"]+)['"]""").find(text)?.groupValues?.getOrNull(1)
+    }
+
+    /**
      * Ensures the installed yt-dlp archive (conventional ZIP or shebang zipapp) is unpacked
      * into a versioned directory, integrity-verified, patched with preprocessed player caching,
      * safely activated, and confirmed active in YoutubeDL.
@@ -335,11 +460,11 @@ object YtDlpOptimizer {
                 val isActivated = setYtDlpBinaryPath(targetVersionDir)
                 val activeVerified = getYtDlpBinaryPath()?.canonicalPath == targetVersionDir.canonicalPath
 
-                if (isActivated && activeVerified && isPatched) {
+                if (isActivated && activeVerified) {
                     return@withContext OptimizationResult(
                         isOptimized = true,
                         activePath = targetVersionDir,
-                        isPlayerCachePatched = true,
+                        isPlayerCachePatched = isPatched,
                         fallbackToArchive = false,
                         version = version
                     )
@@ -374,7 +499,7 @@ object YtDlpOptimizer {
 
                 val patched = patchPreprocessedPlayerCache(tempDir)
                 if (!patched) {
-                    throw IllegalStateException("Required EJS preprocessed player cache patching failed")
+                    Log.w(TAG, "Preprocessed player cache flag was not patched cleanly; continuing with unpacked directory optimization.")
                 }
 
                 // Preserve previous valid directory until replacement has been successfully activated
@@ -412,11 +537,11 @@ object YtDlpOptimizer {
                     }
                 }
 
-                Log.i(TAG, "yt-dlp extraction and optimization complete: $version at ${targetVersionDir.absolutePath}")
+                Log.i(TAG, "yt-dlp extraction and optimization complete: $version at ${targetVersionDir.absolutePath} (playerCachePatched=$patched)")
                 OptimizationResult(
                     isOptimized = true,
                     activePath = targetVersionDir,
-                    isPlayerCachePatched = true,
+                    isPlayerCachePatched = patched,
                     fallbackToArchive = false,
                     version = version
                 )

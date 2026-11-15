@@ -240,11 +240,10 @@ class WarmYtDlpServerTest {
     }
 
     @Test
-    fun cancel_forciblyDestroysDaemonProcessAndResetsState() {
+    fun cancel_untrackedIdIsNoOp_andDoesNotDestroyDaemonProcess() {
         val userPrefs = UserPreferencesRepository(context)
         val server = WarmYtDlpServer(context, userPrefs)
 
-        // Reflection to inject a mock process
         val procField = WarmYtDlpServer::class.java.getDeclaredField("daemonProcess")
         procField.isAccessible = true
 
@@ -265,8 +264,9 @@ class WarmYtDlpServerTest {
         procField.set(server, mockProcess)
 
         server.cancel("test_process_id")
+        server.cancel("proc_1_std")
 
-        assertTrue("cancel(processId) must forcibly destroy the daemon process", destroyedForcibly)
+        assertFalse("cancel(untrackedProcessId) must be a strict no-op and NOT kill warm daemon", destroyedForcibly)
     }
 
     @Test
@@ -513,6 +513,144 @@ class WarmYtDlpServerTest {
             currentSig.set(2)
             assertTrue(server.executeDetailed("https://youtu.be/3", emptyList(), "sig_3", 2000L) is WarmExecuteOutcome.Success)
             assertEquals(2, launchCount.get())
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun executeDetailed_streamingHeartbeatsKeepSocketAliveAndPopulateMetadata() = runTest {
+        val userPrefs = UserPreferencesRepository(context)
+        userPrefs.setFastEngineEnabled(true)
+        var capturedCompactFlag: Boolean? = null
+
+        val server = WarmYtDlpServer(
+            appContext = context,
+            userPreferencesRepository = userPrefs,
+            handshakeTimeoutMs = 1000L,
+            runtimeEnvProvider = { testRuntimeEnv() },
+            processLauncher = { _, _ ->
+                FakeDaemonProcess { req, _, writer ->
+                    val id = req.optString("id")
+                    capturedCompactFlag = req.optBoolean("transcript_compact", false)
+                    Thread.sleep(600L)
+                    writer.println(JSONObject().put("id", id).put("type", "heartbeat").put("elapsed_ms", 600).toString())
+                    Thread.sleep(600L)
+                    writer.println(JSONObject().put("id", id).put("type", "heartbeat").put("elapsed_ms", 1200).toString())
+                    Thread.sleep(200L)
+                    writer.println(
+                        JSONObject()
+                            .put("id", id)
+                            .put("success", true)
+                            .put("elapsed_ms", 1400L)
+                            .put("js_challenges", 2)
+                            .put("effective_clients", org.json.JSONArray(listOf("android_vr", "tv")))
+                            .put("output", """{"id":"hb1","title":"Heartbeat OK"}""")
+                            .toString()
+                    )
+                }
+            },
+            inactivityTimeoutMs = 1000L
+        )
+
+        try {
+            val outcome = server.executeDetailed(
+                url = "https://youtu.be/hb1",
+                options = listOf("--dump-single-json"),
+                processId = "req_hb",
+                timeoutMs = 3500L,
+                compactTranscript = true
+            )
+            assertTrue("Heartbeats should keep socket alive beyond 1000ms inactivity window, got $outcome", outcome is WarmExecuteOutcome.Success)
+            val ok = outcome as WarmExecuteOutcome.Success
+            assertEquals(true, capturedCompactFlag)
+            assertEquals(2, ok.heartbeatCount)
+            assertEquals(2, ok.jsChallengesSolved)
+            assertEquals(listOf("android_vr", "tv"), ok.effectiveClients)
+            assertEquals(1400L, ok.extractMs)
+            assertTrue(ok.output.contains("Heartbeat OK"))
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun executeDetailed_continuousHeartbeatsPastOverallDeadline_returnsOverallDeadlineTimeout() = runTest {
+        val userPrefs = UserPreferencesRepository(context)
+        userPrefs.setFastEngineEnabled(true)
+
+        val server = WarmYtDlpServer(
+            appContext = context,
+            userPreferencesRepository = userPrefs,
+            handshakeTimeoutMs = 1000L,
+            runtimeEnvProvider = { testRuntimeEnv() },
+            processLauncher = { _, _ ->
+                FakeDaemonProcess { req, _, writer ->
+                    val id = req.optString("id")
+                    repeat(8) { idx ->
+                        Thread.sleep(250L)
+                        writer.println(JSONObject().put("id", id).put("type", "heartbeat").put("elapsed_ms", (idx + 1) * 250).toString())
+                    }
+                }
+            },
+            inactivityTimeoutMs = 1000L
+        )
+
+        try {
+            val outcome = server.executeDetailed("https://youtu.be/dl", listOf("--dump-single-json"), "req_dl", 1200L)
+            assertTrue("Expected MechanismFailure, got $outcome", outcome is WarmExecuteOutcome.MechanismFailure)
+            val fail = outcome as WarmExecuteOutcome.MechanismFailure
+            assertEquals(WarmFailureReason.OVERALL_DEADLINE_TIMEOUT, fail.reason)
+            assertTrue("Expected heartbeatCount > 0 before deadline", fail.heartbeatCount > 0)
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun executeDetailed_socketTimeoutWithActiveSibling_doesNotDestroySiblingDaemon() = runTest {
+        val userPrefs = UserPreferencesRepository(context)
+        userPrefs.setFastEngineEnabled(true)
+        val bothStarted = CountDownLatch(2)
+        val allowBFinish = CountDownLatch(1)
+        var proc: FakeDaemonProcess? = null
+
+        val server = WarmYtDlpServer(
+            appContext = context,
+            userPreferencesRepository = userPrefs,
+            handshakeTimeoutMs = 1000L,
+            runtimeEnvProvider = { testRuntimeEnv() },
+            processLauncher = { _, _ ->
+                FakeDaemonProcess { req, _, writer ->
+                    val id = req.optString("id")
+                    bothStarted.countDown()
+                    if (id == "req_slow") {
+                        Thread.sleep(2500L) // Exceeds 1000ms timeout
+                    } else if (id == "req_fast_after") {
+                        allowBFinish.await(3, TimeUnit.SECONDS)
+                        writer.println(JSONObject().put("id", id).put("success", true).put("output", """{"id":"B_ok"}""").toString())
+                    }
+                }.also { proc = it }
+            }
+        )
+
+        try {
+            val slowJob = async(Dispatchers.IO) {
+                server.executeDetailed("https://youtu.be/slow", emptyList(), "req_slow", 1000L)
+            }
+            val siblingJob = async(Dispatchers.IO) {
+                server.executeDetailed("https://youtu.be/sib", emptyList(), "req_fast_after", 4000L)
+            }
+
+            assertTrue(bothStarted.await(2, TimeUnit.SECONDS))
+            val slowOutcome = slowJob.await()
+            assertTrue(slowOutcome is WarmExecuteOutcome.MechanismFailure)
+            assertEquals(WarmFailureReason.SOCKET_TIMEOUT, (slowOutcome as WarmExecuteOutcome.MechanismFailure).reason)
+            assertFalse("Sibling request still active so daemon process must NOT be forcibly destroyed", proc?.forciblyDestroyed?.get() == true)
+
+            allowBFinish.countDown()
+            val siblingOutcome = siblingJob.await()
+            assertTrue("Sibling request must succeed after sibling socket timeout", siblingOutcome is WarmExecuteOutcome.Success)
         } finally {
             server.shutdown()
         }

@@ -89,13 +89,17 @@ class LaterboxContextEngine(
             is YtDlpInitState.Initialized -> ytDlpState.version ?: prefs.ytDlpVersion.ifBlank { null }
             else -> prefs.ytDlpVersion.ifBlank { null }
         }
-        val quickJsReady = appContext?.let {
+        val quickJsInfo = appContext?.let {
             try {
-                QuickJsHelper.getQuickJsExecutable(it) != null
+                QuickJsHelper.inspectQuickJsRuntime(it)
             } catch (_: Throwable) {
-                false
+                null
             }
-        } ?: false
+        }
+        val quickJsReady = quickJsInfo?.isAvailable ?: false
+        val quickJsVersion = quickJsInfo?.version?.takeIf { it != "unknown" }?.let { ver ->
+            if (!quickJsInfo.identity.isNullOrBlank() && quickJsInfo.identity != "unknown") "${quickJsInfo.identity} $ver" else ver
+        }
         val exportFolderWritable = if (!prefs.customExportDirectoryUri.isNullOrBlank() && appContext != null) {
             try {
                 val tree = DocumentFile.fromTreeUri(appContext, Uri.parse(prefs.customExportDirectoryUri))
@@ -110,6 +114,7 @@ class LaterboxContextEngine(
             ytDlpState = ytDlpState?.name ?: "NOT_INITIALIZED",
             ytDlpVersion = ytDlpVersion,
             quickJsReady = quickJsReady,
+            quickJsVersion = quickJsVersion,
             ffmpegState = ffmpegState?.name ?: "NOT_INITIALIZED",
             youtubeTranscriptsReady = ytDlpState !is YtDlpInitState.Failed,
             storedDocumentCount = storedDocumentCount,
