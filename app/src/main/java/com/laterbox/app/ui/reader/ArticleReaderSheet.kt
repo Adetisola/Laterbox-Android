@@ -1,6 +1,7 @@
 package com.laterbox.app.ui.reader
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -73,10 +75,7 @@ fun ArticleReaderSheet(
     onDismissRequest: () -> Unit
 ) {
     val colors = LaterboxTheme.colors
-    val typography = LaterboxTheme.typography
     val spacing = LaterboxTheme.spacing
-    val context = LocalContext.current
-    val effectiveScale = fontScale.coerceIn(0.8f, 1.3f)
 
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
@@ -95,14 +94,49 @@ fun ArticleReaderSheet(
             )
         }
     ) {
-        Column(
+        ArticleReaderContent(
+            link = link,
+            uiState = uiState,
+            fontScale = fontScale,
+            onRefresh = onRefresh,
+            onOpenOriginal = onOpenOriginal,
+            onMarkReadAndArchive = onMarkReadAndArchive,
+            onDismissRequest = onDismissRequest,
+            showTopBar = true,
             modifier = Modifier
                 .fillMaxWidth()
                 .fillMaxHeight(0.94f)
                 .navigationBarsPadding()
                 .testTag("article_reader_sheet")
-        ) {
-            // Sticky Reader Top Bar
+        )
+    }
+}
+
+@Composable
+fun ArticleReaderContent(
+    link: SavedLink,
+    uiState: ArticleReaderUiState,
+    fontScale: Float,
+    onRefresh: () -> Unit,
+    onOpenOriginal: () -> Unit,
+    onMarkReadAndArchive: () -> Unit,
+    modifier: Modifier = Modifier,
+    scrollState: ScrollState = rememberScrollState(),
+    showTopBar: Boolean = true,
+    onDismissRequest: () -> Unit = {}
+) {
+    val colors = LaterboxTheme.colors
+    val typography = LaterboxTheme.typography
+    val spacing = LaterboxTheme.spacing
+    val context = LocalContext.current
+    val effectiveScale = fontScale.coerceIn(0.8f, 1.3f)
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .testTag("article_reader_content")
+    ) {
+        if (showTopBar) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -151,7 +185,8 @@ fun ArticleReaderSheet(
                     LaterboxIconButton(
                         iconRes = LaterboxIcons.Refresh,
                         contentDescription = "Refresh reader view",
-                        onClick = onRefresh
+                        onClick = onRefresh,
+                        modifier = Modifier.testTag("reader_refresh_button")
                     )
 
                     LaterboxIconButton(
@@ -163,276 +198,296 @@ fun ArticleReaderSheet(
             }
 
             HorizontalDivider(color = colors.borderSubtle.copy(alpha = 0.6f))
+        }
 
-            when (uiState) {
-                is ArticleReaderUiState.Loading -> {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                            .padding(spacing.xl),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(spacing.md)
-                        ) {
-                            CircularProgressIndicator(color = colors.accentPrimary)
-                            Text(
-                                text = "Preparing clean reader view…",
-                                style = typography.bodySecondary,
-                                color = colors.textSecondary
-                            )
-                            LaterboxSecondaryButton(
-                                text = "Open Original Instead ↗",
-                                onClick = onOpenOriginal
-                            )
-                        }
-                    }
-                }
-
-                is ArticleReaderUiState.Error -> {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                            .padding(spacing.xl),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(spacing.md)
-                        ) {
-                            Text(
-                                text = "Reader mode unavailable",
-                                style = typography.editorialTitle,
-                                color = colors.textPrimary
-                            )
-                            Text(
-                                text = uiState.message,
-                                style = typography.bodySecondary,
-                                color = colors.textSecondary
-                            )
-                            Spacer(modifier = Modifier.height(spacing.xs))
-                            LaterboxPrimaryButton(
-                                text = "Open Original in Browser ↗",
-                                onClick = onOpenOriginal,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            LaterboxSecondaryButton(
-                                text = "Retry Reader Extraction",
-                                onClick = onRefresh,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
-                    }
-                }
-
-                is ArticleReaderUiState.Loaded -> {
-                    val article = uiState.article
+        when (uiState) {
+            is ArticleReaderUiState.Loading -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(spacing.xl)
+                        .testTag("reader_loading_state"),
+                    contentAlignment = Alignment.Center
+                ) {
                     Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                            .verticalScroll(rememberScrollState())
-                            .padding(horizontal = spacing.lg, vertical = spacing.base)
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(spacing.md)
+                    ) {
+                        CircularProgressIndicator(color = colors.accentPrimary)
+                        Text(
+                            text = "Preparing clean reader view…",
+                            style = typography.bodySecondary,
+                            color = colors.textSecondary
+                        )
+                        LaterboxSecondaryButton(
+                            text = "Open Original Instead ↗",
+                            onClick = onOpenOriginal
+                        )
+                    }
+                }
+            }
+
+            is ArticleReaderUiState.Error -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(spacing.xl)
+                        .testTag("reader_error_state"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(spacing.md)
                     ) {
                         Text(
-                            text = article.title,
-                            style = typography.editorialTitle.copy(
-                                fontSize = (24f * effectiveScale).sp,
-                                lineHeight = (31f * effectiveScale).sp
-                            ),
+                            text = "Reader mode unavailable",
+                            style = typography.editorialTitle,
                             color = colors.textPrimary
                         )
-
-                        val bylineParts = listOfNotNull(
-                            article.byline,
-                            article.siteName?.takeIf { !it.equals(article.byline, ignoreCase = true) },
-                            "${article.wordCount} words"
+                        Text(
+                            text = uiState.message,
+                            style = typography.bodySecondary,
+                            color = colors.textSecondary
                         )
-                        if (bylineParts.isNotEmpty()) {
-                            Spacer(modifier = Modifier.height(spacing.xs))
+                        Spacer(modifier = Modifier.height(spacing.xs))
+                        LaterboxPrimaryButton(
+                            text = "Open Original in Browser ↗",
+                            onClick = onOpenOriginal,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        LaterboxSecondaryButton(
+                            text = "Retry Reader Extraction",
+                            onClick = onRefresh,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            }
+
+            is ArticleReaderUiState.Loaded -> {
+                val article = uiState.article
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .verticalScroll(scrollState)
+                        .padding(horizontal = spacing.lg, vertical = spacing.base)
+                        .testTag("reader_loaded_scroll")
+                ) {
+                    if (!showTopBar) {
+                        val cacheLabel = if (article.fromCache) " · Cached offline" else ""
+                        Text(
+                            text = "${article.estimatedReadMinutes} min read$cacheLabel",
+                            style = typography.metaText.copy(
+                                fontSize = (12f * effectiveScale).sp,
+                                fontWeight = FontWeight.SemiBold
+                            ),
+                            color = colors.accentPrimary
+                        )
+                        Spacer(modifier = Modifier.height(spacing.xs))
+                    }
+
+                    Text(
+                        text = article.title,
+                        style = typography.editorialTitle.copy(
+                            fontSize = (24f * effectiveScale).sp,
+                            lineHeight = (31f * effectiveScale).sp
+                        ),
+                        color = colors.textPrimary
+                    )
+
+                    val bylineParts = listOfNotNull(
+                        article.byline,
+                        article.siteName?.takeIf { !it.equals(article.byline, ignoreCase = true) },
+                        "${article.wordCount} words"
+                    )
+                    if (bylineParts.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(spacing.xs))
+                        Text(
+                            text = bylineParts.joinToString(" · "),
+                            style = typography.metaText.copy(fontSize = (12f * effectiveScale).sp),
+                            color = colors.textSecondary
+                        )
+                    }
+
+                    if (!link.personalNote.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.height(spacing.md))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(LaterboxShapeTokens.Card)
+                                .background(colors.accentContainer.copy(alpha = 0.45f))
+                                .border(spacing.hairline, colors.accentPrimary.copy(alpha = 0.25f), LaterboxShapeTokens.Card)
+                                .padding(spacing.md)
+                        ) {
                             Text(
-                                text = bylineParts.joinToString(" · "),
-                                style = typography.metaText.copy(fontSize = (12f * effectiveScale).sp),
-                                color = colors.textSecondary
+                                text = "Your note: ${link.personalNote}",
+                                style = typography.bodySecondary.copy(
+                                    fontSize = (14f * effectiveScale).sp,
+                                    fontStyle = FontStyle.Italic
+                                ),
+                                color = colors.textPrimary
                             )
                         }
+                    }
 
-                        if (!link.personalNote.isNullOrBlank()) {
-                            Spacer(modifier = Modifier.height(spacing.md))
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(LaterboxShapeTokens.Card)
-                                    .background(colors.accentContainer.copy(alpha = 0.45f))
-                                    .border(spacing.hairline, colors.accentPrimary.copy(alpha = 0.25f), LaterboxShapeTokens.Card)
-                                    .padding(spacing.md)
-                            ) {
+                    val heroUrl = article.leadImageUrl ?: link.previewImageUrl
+                    if (!heroUrl.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.height(spacing.md))
+                        AsyncImage(
+                            model = ImageRequest.Builder(context)
+                                .data(heroUrl)
+                                .crossfade(true)
+                                .build(),
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 220.dp)
+                                .clip(LaterboxShapeTokens.Card)
+                                .background(colors.surfaceSecondary)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(spacing.lg))
+
+                    article.blocks.forEach { block ->
+                        when (block) {
+                            is ArticleBlock.Heading -> {
+                                Spacer(modifier = Modifier.height(spacing.md))
+                                val size = if (block.level <= 2) 19f else 17f
                                 Text(
-                                    text = "Your note: ${link.personalNote}",
-                                    style = typography.bodySecondary.copy(
-                                        fontSize = (14f * effectiveScale).sp,
-                                        fontStyle = FontStyle.Italic
+                                    text = block.text,
+                                    style = typography.cardTitle.copy(
+                                        fontSize = (size * effectiveScale).sp,
+                                        lineHeight = ((size + 6f) * effectiveScale).sp,
+                                        fontWeight = FontWeight.Bold
                                     ),
                                     color = colors.textPrimary
                                 )
+                                Spacer(modifier = Modifier.height(spacing.xs))
                             }
-                        }
 
-                        val heroUrl = article.leadImageUrl ?: link.previewImageUrl
-                        if (!heroUrl.isNullOrBlank()) {
-                            Spacer(modifier = Modifier.height(spacing.md))
-                            AsyncImage(
-                                model = ImageRequest.Builder(context)
-                                    .data(heroUrl)
-                                    .crossfade(true)
-                                    .build(),
-                                contentDescription = null,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(max = 220.dp)
-                                    .clip(LaterboxShapeTokens.Card)
-                                    .background(colors.surfaceSecondary)
-                            )
-                        }
+                            is ArticleBlock.Paragraph -> {
+                                Text(
+                                    text = block.text,
+                                    style = typography.bodyPrimary.copy(
+                                        fontSize = (16f * effectiveScale).sp,
+                                        lineHeight = (26f * effectiveScale).sp
+                                    ),
+                                    color = colors.textPrimary
+                                )
+                                Spacer(modifier = Modifier.height(spacing.md))
+                            }
 
-                        Spacer(modifier = Modifier.height(spacing.lg))
-
-                        article.blocks.forEach { block ->
-                            when (block) {
-                                is ArticleBlock.Heading -> {
-                                    Spacer(modifier = Modifier.height(spacing.md))
-                                    val size = if (block.level <= 2) 19f else 17f
-                                    Text(
-                                        text = block.text,
-                                        style = typography.cardTitle.copy(
-                                            fontSize = (size * effectiveScale).sp,
-                                            lineHeight = ((size + 6f) * effectiveScale).sp,
-                                            fontWeight = FontWeight.Bold
-                                        ),
-                                        color = colors.textPrimary
+                            is ArticleBlock.Quote -> {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = spacing.xs)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(colors.surfaceSecondary.copy(alpha = 0.7f))
+                                        .padding(spacing.md),
+                                    verticalAlignment = Alignment.Top
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .width(3.dp)
+                                            .height(22.dp)
+                                            .background(colors.accentPrimary)
                                     )
-                                    Spacer(modifier = Modifier.height(spacing.xs))
-                                }
-
-                                is ArticleBlock.Paragraph -> {
+                                    Spacer(modifier = Modifier.width(spacing.sm))
                                     Text(
                                         text = block.text,
                                         style = typography.bodyPrimary.copy(
-                                            fontSize = (16f * effectiveScale).sp,
-                                            lineHeight = (26f * effectiveScale).sp
+                                            fontSize = (15.5f * effectiveScale).sp,
+                                            lineHeight = (24f * effectiveScale).sp,
+                                            fontStyle = FontStyle.Italic
+                                        ),
+                                        color = colors.textSecondary
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(spacing.sm))
+                            }
+
+                            is ArticleBlock.BulletItem -> {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(start = spacing.sm, bottom = spacing.sm),
+                                    verticalAlignment = Alignment.Top
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .padding(top = (9f * effectiveScale).dp)
+                                            .size(6.dp)
+                                            .clip(CircleShape)
+                                            .background(colors.accentPrimary)
+                                    )
+                                    Spacer(modifier = Modifier.width(spacing.sm))
+                                    Text(
+                                        text = block.text,
+                                        style = typography.bodyPrimary.copy(
+                                            fontSize = (15.5f * effectiveScale).sp,
+                                            lineHeight = (24f * effectiveScale).sp
                                         ),
                                         color = colors.textPrimary
                                     )
-                                    Spacer(modifier = Modifier.height(spacing.md))
-                                }
-
-                                is ArticleBlock.Quote -> {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(vertical = spacing.xs)
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(colors.surfaceSecondary.copy(alpha = 0.7f))
-                                            .padding(spacing.md),
-                                        verticalAlignment = Alignment.Top
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .width(3.dp)
-                                                .height(22.dp)
-                                                .background(colors.accentPrimary)
-                                        )
-                                        Spacer(modifier = Modifier.width(spacing.sm))
-                                        Text(
-                                            text = block.text,
-                                            style = typography.bodyPrimary.copy(
-                                                fontSize = (15.5f * effectiveScale).sp,
-                                                lineHeight = (24f * effectiveScale).sp,
-                                                fontStyle = FontStyle.Italic
-                                            ),
-                                            color = colors.textSecondary
-                                        )
-                                    }
-                                    Spacer(modifier = Modifier.height(spacing.sm))
-                                }
-
-                                is ArticleBlock.BulletItem -> {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(start = spacing.sm, bottom = spacing.sm),
-                                        verticalAlignment = Alignment.Top
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .padding(top = (9f * effectiveScale).dp)
-                                                .size(6.dp)
-                                                .clip(CircleShape)
-                                                .background(colors.accentPrimary)
-                                        )
-                                        Spacer(modifier = Modifier.width(spacing.sm))
-                                        Text(
-                                            text = block.text,
-                                            style = typography.bodyPrimary.copy(
-                                                fontSize = (15.5f * effectiveScale).sp,
-                                                lineHeight = (24f * effectiveScale).sp
-                                            ),
-                                            color = colors.textPrimary
-                                        )
-                                    }
-                                }
-
-                                is ArticleBlock.CodeBlock -> {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(vertical = spacing.xs)
-                                            .clip(LaterboxShapeTokens.Card)
-                                            .background(colors.surfaceSecondary)
-                                            .border(spacing.hairline, colors.borderSubtle, LaterboxShapeTokens.Card)
-                                            .horizontalScroll(rememberScrollState())
-                                            .padding(spacing.md)
-                                    ) {
-                                        Text(
-                                            text = block.text,
-                                            style = typography.codeText.copy(
-                                                fontSize = (13f * effectiveScale).sp,
-                                                lineHeight = (19f * effectiveScale).sp
-                                            ),
-                                            color = colors.textPrimary
-                                        )
-                                    }
-                                    Spacer(modifier = Modifier.height(spacing.sm))
                                 }
                             }
+
+                            is ArticleBlock.CodeBlock -> {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = spacing.xs)
+                                        .clip(LaterboxShapeTokens.Card)
+                                        .background(colors.surfaceSecondary)
+                                        .border(spacing.hairline, colors.borderSubtle, LaterboxShapeTokens.Card)
+                                        .horizontalScroll(rememberScrollState())
+                                        .padding(spacing.md)
+                                ) {
+                                    Text(
+                                        text = block.text,
+                                        style = typography.codeText.copy(
+                                            fontSize = (13f * effectiveScale).sp,
+                                            lineHeight = (19f * effectiveScale).sp
+                                        ),
+                                        color = colors.textPrimary
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(spacing.sm))
+                            }
                         }
-
-                        Spacer(modifier = Modifier.height(spacing.xl))
                     }
 
-                    HorizontalDivider(color = colors.borderSubtle.copy(alpha = 0.6f))
-                    Row(
+                    Spacer(modifier = Modifier.height(spacing.xl))
+                }
+
+                HorizontalDivider(color = colors.borderSubtle.copy(alpha = 0.6f))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(colors.surfaceElevated)
+                        .padding(horizontal = spacing.base, vertical = spacing.sm),
+                    horizontalArrangement = Arrangement.spacedBy(spacing.sm)
+                ) {
+                    LaterboxSecondaryButton(
+                        text = "Open Web ↗",
+                        onClick = onOpenOriginal,
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .background(colors.surfaceElevated)
-                            .padding(horizontal = spacing.base, vertical = spacing.sm),
-                        horizontalArrangement = Arrangement.spacedBy(spacing.sm)
-                    ) {
-                        LaterboxSecondaryButton(
-                            text = "Open Web ↗",
-                            onClick = onOpenOriginal,
-                            modifier = Modifier.weight(1f)
-                        )
-                        LaterboxPrimaryButton(
-                            text = if (link.isArchived) "Done" else "Read & Archive",
-                            onClick = onMarkReadAndArchive,
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
+                            .weight(1f)
+                            .testTag("reader_open_web_button")
+                    )
+                    LaterboxPrimaryButton(
+                        text = if (link.isArchived) "Done" else "Read & Archive",
+                        onClick = onMarkReadAndArchive,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("reader_read_archive_button")
+                    )
                 }
             }
         }

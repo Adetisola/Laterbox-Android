@@ -1,5 +1,7 @@
 # 01 — Comprehensive Product Audit (Phases 1 & 2)
 
+> **Historical Baseline Note**: This audit reflects the pre-overhaul codebase snapshot prior to the `v1.0.46`–`v1.0.48` overhaul passes. Items such as the handset bottom navigation bar (`LaterboxBottomBar`), in-app article reader (`ArticleReaderContent` unified inside `SavedItemDetailSheet`), contextual notification permission priming, offline Smart Digest copy fallback, and interactive onboarding have since been implemented on `main`. Always verify claims against the live codebase.
+
 ## Phase 1: Understanding LaterBox as Implemented
 
 ### 1.1 Technology Stack & Architecture Overview

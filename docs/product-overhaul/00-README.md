@@ -4,6 +4,14 @@ Welcome to the comprehensive product strategy, UX overhaul, retention architectu
 
 This documentation suite was produced following a full end-to-end codebase inspection (`160+` production Kotlin files, `77` test suites, Room database schema v11, Jetpack Compose UI, `yt-dlp`/`FFmpeg`/`QuickJS` media engine, YouTube transcript pipeline, and Gemini AI assistant) combined with source-grounded principles from the **Growth Design Intelligence** (*Grow Your Business With Design* 27-video library by Tim Gabe).
 
+> **Historical Baseline & Implementation Status (Updated through v1.0.48)**:
+> This audit captures the pre-overhaul codebase baseline. Several core recommendations documented below have since been **implemented on `main`** (`v1.0.46`–`v1.0.48`):
+> - Handset [`LaterboxBottomBar`](file:///home/antigravity/Adetisola/Laterbox/app/src/main/java/com/laterbox/app/ui/components/LaterboxBottomBar.kt) is now active alongside [`InboxActionDock`](file:///home/antigravity/Adetisola/Laterbox/app/src/main/java/com/laterbox/app/ui/components/InboxActionDock.kt) and expandable [`FloatingChatComposer`](file:///home/antigravity/Adetisola/Laterbox/app/src/main/java/com/laterbox/app/ui/components/FloatingChatComposer.kt).
+> - In-app distraction-free article reading ([`ArticleReaderContent`](file:///home/antigravity/Adetisola/Laterbox/app/src/main/java/com/laterbox/app/ui/reader/ArticleReaderSheet.kt)) is live and unified inside [`SavedItemDetailSheet`](file:///home/antigravity/Adetisola/Laterbox/app/src/main/java/com/laterbox/app/ui/sheets/SavedItemDetailSheet.kt) (`Details | Reader` segmented control + horizontal pager).
+> - Contextual `POST_NOTIFICATIONS` permission priming and offline [`PlainReminderCopy`](file:///home/antigravity/Adetisola/Laterbox/app/src/main/java/com/laterbox/app/ai/SmartReminderCopy.kt) fallbacks for Smart Digests are implemented.
+> - Interactive value-first onboarding with starter showcase items is implemented in [`OnboardingSheet`](file:///home/antigravity/Adetisola/Laterbox/app/src/main/java/com/laterbox/app/ui/onboarding/OnboardingSheet.kt).
+> Refer directly to the current Kotlin sources rather than this baseline snapshot for live runtime behavior.
+
 ---
 
 ## Documentation Index

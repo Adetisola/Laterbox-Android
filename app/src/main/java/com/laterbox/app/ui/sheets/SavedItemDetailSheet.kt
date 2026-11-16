@@ -5,6 +5,8 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -15,40 +17,50 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.SheetState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
@@ -58,10 +70,9 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.material3.Surface
 import com.laterbox.app.domain.model.ContentType
 import com.laterbox.app.domain.model.MetadataStatus
+import com.laterbox.app.domain.model.SavedLink
 import com.laterbox.app.media.domain.model.MediaType
 import com.laterbox.app.transcript.domain.YouTubeUrlParser
 import com.laterbox.app.ui.components.ContentTypeBadge
@@ -75,7 +86,19 @@ import com.laterbox.app.ui.components.LaterboxPrimaryButton
 import com.laterbox.app.ui.components.LaterboxSecondaryButton
 import com.laterbox.app.ui.components.LaterboxShapeTokens
 import com.laterbox.app.ui.components.LinkQuickActionsMenu
+import com.laterbox.app.ui.reader.ArticleReaderContent
+import com.laterbox.app.ui.reader.ArticleReaderUiState
 import com.laterbox.app.ui.theme.LaterboxTheme
+import kotlinx.coroutines.launch
+
+enum class DetailSheetTab {
+    DETAILS,
+    READER
+}
+
+fun SavedLink.isReaderEligible(): Boolean =
+    contentType in setOf(ContentType.ARTICLE, ContentType.WEBSITE, ContentType.DISCUSSION) &&
+        !YouTubeUrlParser.isYouTubeUrl(originalUrl)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -108,21 +131,30 @@ fun SavedItemDetailSheet(
     onDeleteWithFiles: (Boolean) -> Unit = {},
     onExtractTranscript: () -> Unit = {},
     onReadInLaterbox: (() -> Unit)? = null,
-    onOpenOfflineMedia: (() -> Unit)? = null
+    onOpenOfflineMedia: (() -> Unit)? = null,
+    initialTab: DetailSheetTab = DetailSheetTab.DETAILS,
+    sessionKey: Any = 0L,
+    readerUiState: ArticleReaderUiState = ArticleReaderUiState.Loading,
+    fontScale: Float = 1.0f,
+    onRefreshReader: () -> Unit = {},
+    onMarkReadAndArchive: (() -> Unit)? = null,
+    onTabChanged: (DetailSheetTab) -> Unit = {}
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
     val spacing = LaterboxTheme.spacing
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val focusManager = LocalFocusManager.current
     val link = uiState.link ?: return
 
-    var showDeleteConfirm by remember { mutableStateOf(false) }
-    var showMoreMenu by remember { mutableStateOf(false) }
-    var isDescriptionExpanded by remember { mutableStateOf(false) }
-    var isEditExpanded by rememberSaveable(link.id) { mutableStateOf(false) }
-    var showCreateCollectionDialog by remember { mutableStateOf(false) }
-    var showCustomReminderPicker by remember { mutableStateOf(false) }
-    var showNotifPermissionWarning by remember {
+    var showDeleteConfirm by remember(link.id, sessionKey) { mutableStateOf(false) }
+    var showMoreMenu by remember(link.id, sessionKey) { mutableStateOf(false) }
+    var isDescriptionExpanded by remember(link.id, sessionKey) { mutableStateOf(false) }
+    var isEditExpanded by rememberSaveable(link.id, sessionKey) { mutableStateOf(false) }
+    var showCreateCollectionDialog by remember(link.id, sessionKey) { mutableStateOf(false) }
+    var showCustomReminderPicker by remember(link.id, sessionKey) { mutableStateOf(false) }
+    var showNotifPermissionWarning by remember(link.id, sessionKey) {
         mutableStateOf(
             link.reminderAt != null &&
                 !com.laterbox.app.ui.util.NotificationPermissionHelper.isNotificationPermissionGranted(context)
@@ -143,15 +175,65 @@ fun SavedItemDetailSheet(
         it.mediaType in listOf(MediaType.VIDEO, MediaType.AUDIO, MediaType.IMAGE)
     }
     val isYouTube = YouTubeUrlParser.isYouTubeUrl(link.originalUrl)
-    val canReadInApp = onReadInLaterbox != null &&
-        link.contentType in setOf(ContentType.ARTICLE, ContentType.WEBSITE, ContentType.DISCUSSION) &&
-        !isYouTube
+    val isReaderEligible = link.isReaderEligible()
+    val canReadInApp = isReaderEligible
+
+    val detailsScrollState = rememberSaveable(link.id, sessionKey, saver = ScrollState.Saver) {
+        ScrollState(0)
+    }
+    val readerScrollState = rememberSaveable(link.id, sessionKey, saver = ScrollState.Saver) {
+        ScrollState(0)
+    }
+
+    val initialPage = if (isReaderEligible && initialTab == DetailSheetTab.READER) 1 else 0
+    val pagerState = rememberPagerState(
+        initialPage = initialPage,
+        pageCount = { if (isReaderEligible) 2 else 1 }
+    )
+
+    LaunchedEffect(sessionKey, link.id, initialTab, isReaderEligible) {
+        val targetPage = if (isReaderEligible && initialTab == DetailSheetTab.READER) 1 else 0
+        if (pagerState.currentPage != targetPage) {
+            pagerState.scrollToPage(targetPage)
+        }
+    }
+
+    val activeTab = if (isReaderEligible && pagerState.currentPage == 1) {
+        DetailSheetTab.READER
+    } else {
+        DetailSheetTab.DETAILS
+    }
+
+    LaunchedEffect(pagerState.settledPage, isReaderEligible) {
+        val settledTab = if (isReaderEligible && pagerState.settledPage == 1) {
+            DetailSheetTab.READER
+        } else {
+            DetailSheetTab.DETAILS
+        }
+        if (settledTab == DetailSheetTab.READER) {
+            focusManager.clearFocus()
+        }
+        onTabChanged(settledTab)
+    }
+
+    val switchToTab: (DetailSheetTab) -> Unit = { targetTab ->
+        if (isReaderEligible) {
+            if (targetTab == DetailSheetTab.READER) {
+                focusManager.clearFocus()
+            }
+            onTabChanged(targetTab)
+            val targetPage = if (targetTab == DetailSheetTab.READER) 1 else 0
+            coroutineScope.launch {
+                pagerState.animateScrollToPage(targetPage)
+            }
+        }
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
         sheetState = sheetState,
         shape = LaterboxTheme.shapes.Sheet,
-        containerColor = colors.surfaceElevated,
+        containerColor = if (activeTab == DetailSheetTab.READER) colors.backgroundPrimary else colors.surfaceElevated,
         contentColor = colors.textPrimary,
         tonalElevation = LaterboxTheme.elevations.sheet,
         dragHandle = {
@@ -167,13 +249,16 @@ fun SavedItemDetailSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = spacing.base)
-                .padding(bottom = spacing.xl)
-                .verticalScroll(rememberScrollState())
+                .then(if (isReaderEligible) Modifier.fillMaxHeight(0.94f) else Modifier)
+                .navigationBarsPadding()
+                .testTag("saved_item_detail_sheet")
         ) {
-            // Header: Domain, ContentType on Left; More (⋮) and Close (×) on Right
+            // Sticky Header: Domain, ContentType, and Top Controls
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = spacing.base)
+                    .padding(bottom = spacing.xs),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -209,17 +294,28 @@ fun SavedItemDetailSheet(
                     }
                 }
 
-                // Action buttons: More Menu (⋮) & Close (×)
+                // Action buttons: Refresh (Reader only), More Menu (⋮) & Close (×)
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(spacing.xs)
                 ) {
+                    if (isReaderEligible && activeTab == DetailSheetTab.READER) {
+                        LaterboxIconButton(
+                            iconRes = LaterboxIcons.Refresh,
+                            contentDescription = "Refresh reader view",
+                            tint = colors.textPrimary,
+                            onClick = onRefreshReader,
+                            modifier = Modifier.testTag("reader_refresh_button")
+                        )
+                    }
+
                     Box {
                         LaterboxIconButton(
                             iconRes = LaterboxIcons.MoreVertical,
                             contentDescription = "More actions",
                             tint = colors.textPrimary,
-                            onClick = { showMoreMenu = true }
+                            onClick = { showMoreMenu = true },
+                            modifier = Modifier.testTag("detail_sheet_more_button")
                         )
 
                         LinkQuickActionsMenu(
@@ -249,12 +345,60 @@ fun SavedItemDetailSheet(
                         iconRes = LaterboxIcons.Close,
                         contentDescription = "Close details",
                         tint = colors.textPrimary,
-                        onClick = onDismissRequest
+                        onClick = onDismissRequest,
+                        modifier = Modifier.testTag("detail_sheet_close_button")
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.height(spacing.sm))
+            // Subtle sticky Details | Reader segmented control (only for reader-eligible content)
+            if (isReaderEligible) {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = colors.surfaceSecondary,
+                    border = BorderStroke(spacing.hairline, colors.borderSubtle),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = spacing.base)
+                        .padding(bottom = spacing.sm)
+                        .testTag("detail_reader_tab_switcher")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(3.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        DetailSheetTabButton(
+                            label = "Details",
+                            selected = activeTab == DetailSheetTab.DETAILS,
+                            onClick = { switchToTab(DetailSheetTab.DETAILS) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("detail_tab_details")
+                        )
+                        DetailSheetTabButton(
+                            label = "Reader",
+                            selected = activeTab == DetailSheetTab.READER,
+                            onClick = { switchToTab(DetailSheetTab.READER) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("detail_tab_reader")
+                        )
+                    }
+                }
+            }
+
+            HorizontalDivider(color = colors.borderSubtle.copy(alpha = 0.5f))
+
+            val renderDetailsBody: @Composable (Modifier) -> Unit = { bodyModifier ->
+                Column(
+                    modifier = bodyModifier
+                        .verticalScroll(detailsScrollState)
+                        .padding(horizontal = spacing.base)
+                        .padding(top = spacing.md, bottom = spacing.xl)
+                        .testTag("detail_hub_scroll")
+                ) {
 
             // 1. Editorial Headline & Relative Timestamp
             Text(
@@ -301,7 +445,10 @@ fun SavedItemDetailSheet(
                     if (canReadInApp) {
                         LaterboxSecondaryButton(
                             text = "Read in Laterbox",
-                            onClick = { onReadInLaterbox?.invoke() },
+                            onClick = {
+                                onReadInLaterbox?.invoke()
+                                switchToTab(DetailSheetTab.READER)
+                            },
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -318,7 +465,10 @@ fun SavedItemDetailSheet(
                 ) {
                     LaterboxPrimaryButton(
                         text = "Read in Laterbox",
-                        onClick = { onReadInLaterbox?.invoke() },
+                        onClick = {
+                            onReadInLaterbox?.invoke()
+                            switchToTab(DetailSheetTab.READER)
+                        },
                         modifier = Modifier.weight(1f)
                     )
                     LaterboxSecondaryButton(
@@ -810,13 +960,16 @@ fun SavedItemDetailSheet(
                         .height(36.dp),
                     contentAlignment = Alignment.CenterStart
                 ) {
-                    BasicTextField(
-                        value = link.originalUrl,
-                        onValueChange = {},
-                        readOnly = true,
-                        singleLine = true,
-                        textStyle = typography.codeText.copy(fontSize = 12.sp, color = colors.textPrimary),
-                        modifier = Modifier.fillMaxWidth()
+                    Text(
+                        text = link.originalUrl,
+                        style = typography.codeText.copy(fontSize = 12.sp),
+                        color = colors.textPrimary,
+                        maxLines = 1,
+                        softWrap = false,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(end = 28.dp)
                     )
 
                     Box(
@@ -846,7 +999,50 @@ fun SavedItemDetailSheet(
                     }
                 )
             }
-        }
+                }
+            }
+
+            if (isReaderEligible) {
+                HorizontalPager(
+                    state = pagerState,
+                    beyondViewportPageCount = 1,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .testTag("detail_reader_pager")
+                ) { page ->
+                    if (page == 0) {
+                        renderDetailsBody(
+                            Modifier
+                                .fillMaxSize()
+                                .focusProperties { canFocus = activeTab == DetailSheetTab.DETAILS }
+                        )
+                    } else {
+                        ArticleReaderContent(
+                            link = link,
+                            uiState = readerUiState,
+                            fontScale = fontScale,
+                            scrollState = readerScrollState,
+                            showTopBar = false,
+                            onRefresh = onRefreshReader,
+                            onOpenOriginal = { onQuickOpen(link.originalUrl) },
+                            onMarkReadAndArchive = {
+                                if (onMarkReadAndArchive != null) {
+                                    onMarkReadAndArchive()
+                                } else {
+                                    if (!link.isRead) onToggleRead()
+                                    if (!link.isArchived) onToggleArchive() else onDismissRequest()
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .focusProperties { canFocus = activeTab == DetailSheetTab.READER }
+                        )
+                    }
+                }
+            } else {
+                renderDetailsBody(Modifier.fillMaxWidth())
+            }
 
         // New Collection inline creation dialog
         if (showCreateCollectionDialog) {
@@ -925,6 +1121,7 @@ fun SavedItemDetailSheet(
                     showCustomReminderPicker = false
                 }
             )
+        }
         }
     }
 }
@@ -1060,3 +1257,48 @@ internal fun YouTubeTranscriptDetailCard(
         }
     }
 }
+
+@Composable
+private fun DetailSheetTabButton(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val colors = LaterboxTheme.colors
+    val typography = LaterboxTheme.typography
+
+    Surface(
+        shape = RoundedCornerShape(11.dp),
+        color = if (selected) colors.surfaceElevated else Color.Transparent,
+        tonalElevation = if (selected) 1.dp else 0.dp,
+        shadowElevation = if (selected) 1.dp else 0.dp,
+        modifier = modifier
+            .heightIn(min = 40.dp)
+            .clip(RoundedCornerShape(11.dp))
+            .selectable(
+                selected = selected,
+                role = Role.Tab,
+                onClick = onClick
+            )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = label,
+                style = typography.uiMedium.copy(
+                    fontSize = 13.sp,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+                ),
+                color = if (selected) colors.textPrimary else colors.textSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+

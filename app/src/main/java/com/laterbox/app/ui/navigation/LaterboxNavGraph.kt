@@ -12,6 +12,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,6 +24,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
@@ -34,9 +36,14 @@ import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
@@ -88,11 +95,9 @@ import androidx.navigation.navArgument
 import com.laterbox.app.ai.ChatAction
 import com.laterbox.app.data.preferences.CardTapAction
 import com.laterbox.app.data.reader.ArticleContentExtractor
-import com.laterbox.app.domain.model.ContentType
 import com.laterbox.app.domain.model.SavedLink
 import com.laterbox.app.media.domain.model.DownloadState
 import com.laterbox.app.media.ui.downloads.DownloadsTab
-import com.laterbox.app.transcript.domain.YouTubeUrlParser
 import com.laterbox.app.ui.AppViewModelProvider
 import com.laterbox.app.ui.archive.ArchiveScreen
 import com.laterbox.app.ui.archive.ArchiveViewModel
@@ -104,7 +109,6 @@ import com.laterbox.app.ui.collections.CollectionsScreen
 import com.laterbox.app.ui.collections.CollectionsViewModel
 import com.laterbox.app.ai.speech.SpeechStatus
 import com.laterbox.app.ui.components.BottomBarDestination
-import com.laterbox.app.ui.components.ComposerInsetHost
 import com.laterbox.app.ui.components.FloatingChatComposer
 import com.laterbox.app.ui.components.InboxActionDock
 import com.laterbox.app.ui.components.LaterboxBottomBar
@@ -115,14 +119,15 @@ import com.laterbox.app.ui.components.LaterboxPersistentSidePanel
 import com.laterbox.app.ui.components.sectionForRoute
 import com.laterbox.app.ui.inbox.InboxScreen
 import com.laterbox.app.ui.inbox.InboxViewModel
-import com.laterbox.app.ui.reader.ArticleReaderSheet
 import com.laterbox.app.ui.reader.ArticleReaderUiState
 import com.laterbox.app.ui.settings.SettingsScreen
 import com.laterbox.app.ui.settings.SettingsViewModel
+import com.laterbox.app.ui.sheets.DetailSheetTab
 import com.laterbox.app.ui.sheets.SaveLinkBottomSheet
 import com.laterbox.app.ui.sheets.SaveLinkViewModel
 import com.laterbox.app.ui.sheets.SavedItemDetailSheet
 import com.laterbox.app.ui.sheets.SavedItemDetailViewModel
+import com.laterbox.app.ui.sheets.isReaderEligible
 import com.laterbox.app.ui.theme.LaterboxMotion
 import com.laterbox.app.ui.theme.LaterboxTheme
 import com.laterbox.app.ui.theme.rememberReducedMotion
@@ -183,8 +188,16 @@ fun LaterboxApp(
     val inboxListState = rememberLazyListState()
     var inboxComposerText by rememberSaveable { mutableStateOf("") }
     var isInboxComposerExpanded by rememberSaveable { mutableStateOf(false) }
-    var inboxComposerHeightPx by remember { mutableIntStateOf(0) }
+    var inboxOverlayHeightPx by remember { mutableIntStateOf(0) }
     var bottomBarHeightPx by remember { mutableIntStateOf(0) }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    val collapseInboxComposer: () -> Unit = {
+        focusManager.clearFocus()
+        keyboardController?.hide()
+        isInboxComposerExpanded = false
+    }
 
     val snackbarHostState = remember { SnackbarHostState() }
     var pendingAudioConsentTarget by remember { mutableStateOf<String?>(null) }
@@ -196,7 +209,7 @@ fun LaterboxApp(
 
     LaunchedEffect(preferences.assistantEnabled) {
         if (!preferences.assistantEnabled) {
-            isInboxComposerExpanded = false
+            collapseInboxComposer()
         }
     }
 
@@ -279,16 +292,37 @@ fun LaterboxApp(
     // Modal sheet states
     var showSaveSheet by remember { mutableStateOf(false) }
     var selectedLinkForDetails by remember { mutableStateOf<SavedLink?>(null) }
-    var activeReaderLink by remember { mutableStateOf<SavedLink?>(null) }
+    var detailSheetInitialTab by remember { mutableStateOf(DetailSheetTab.DETAILS) }
+    var detailSheetSessionNonce by remember { mutableIntStateOf(0) }
+    var detailSheetActiveTab by remember { mutableStateOf(DetailSheetTab.DETAILS) }
+    var hasEnteredReaderInSession by remember { mutableStateOf(false) }
+    var readerMetricRecordedInSession by remember { mutableStateOf(false) }
     var readerUiState by remember { mutableStateOf<ArticleReaderUiState>(ArticleReaderUiState.Loading) }
     var readerRefreshNonce by remember { mutableIntStateOf(0) }
     var activeViewerAsset by remember { mutableStateOf<com.laterbox.app.media.domain.model.MediaAsset?>(null) }
     val saveSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val detailSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val readerSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    LaunchedEffect(activeReaderLink?.id, readerRefreshNonce) {
-        val link = activeReaderLink ?: return@LaunchedEffect
+    val openUnifiedDetailSheet: (SavedLink, DetailSheetTab) -> Unit = { link, requestedTab ->
+        val effectiveTab = if (requestedTab == DetailSheetTab.READER && link.isReaderEligible()) {
+            DetailSheetTab.READER
+        } else {
+            DetailSheetTab.DETAILS
+        }
+        savedItemDetailViewModel.setLink(link)
+        detailSheetSessionNonce += 1
+        detailSheetInitialTab = effectiveTab
+        detailSheetActiveTab = effectiveTab
+        readerRefreshNonce = 0
+        readerUiState = ArticleReaderUiState.Loading
+        hasEnteredReaderInSession = (effectiveTab == DetailSheetTab.READER)
+        readerMetricRecordedInSession = false
+        selectedLinkForDetails = link
+    }
+
+    LaunchedEffect(selectedLinkForDetails?.id, hasEnteredReaderInSession, readerRefreshNonce) {
+        val link = selectedLinkForDetails ?: return@LaunchedEffect
+        if (!hasEnteredReaderInSession || !link.isReaderEligible()) return@LaunchedEffect
         readerUiState = ArticleReaderUiState.Loading
         val result = ArticleContentExtractor.fetchOrLoadCached(
             url = link.originalUrl,
@@ -306,14 +340,25 @@ fun LaterboxApp(
         )
     }
 
+    LaunchedEffect(selectedLinkForDetails?.id, detailSheetActiveTab, detailSheetSessionNonce) {
+        val link = selectedLinkForDetails ?: return@LaunchedEffect
+        if (detailSheetActiveTab == DetailSheetTab.READER && !readerMetricRecordedInSession && link.isReaderEligible()) {
+            readerMetricRecordedInSession = true
+            inboxViewModel.onLinkOpened(link.id)
+            (context.applicationContext as? LaterboxApplication)
+                ?.container
+                ?.userPreferencesRepository
+                ?.incrementReaderOpens()
+        }
+    }
+
     LaunchedEffect(initialOpenLinkId) {
         val targetId = initialOpenLinkId ?: return@LaunchedEffect
         val app = context.applicationContext as? LaterboxApplication
         try {
             val link = app?.container?.linkRepository?.getLinkById(targetId)?.first()
             if (link != null) {
-                savedItemDetailViewModel.setLink(link)
-                selectedLinkForDetails = link
+                openUnifiedDetailSheet(link, DetailSheetTab.DETAILS)
             }
         } catch (_: Exception) {}
         onClearOpenLinkId()
@@ -373,41 +418,15 @@ fun LaterboxApp(
         inboxViewModel.onLinkOpened(link.id)
     }
 
-    val openDetailSheet: (SavedLink) -> Unit = { link ->
-        savedItemDetailViewModel.setLink(link)
-        selectedLinkForDetails = link
-    }
-
-    val openReaderForLink: (SavedLink) -> Unit = { link ->
-        haptics.tick()
-        readerRefreshNonce = 0
-        readerUiState = ArticleReaderUiState.Loading
-        activeReaderLink = link
-        inboxViewModel.onLinkOpened(link.id)
-        coroutineScope.launch {
-            (context.applicationContext as? LaterboxApplication)
-                ?.container
-                ?.userPreferencesRepository
-                ?.incrementReaderOpens()
-        }
-    }
-
     val handleCardTap: (SavedLink) -> Unit = { link ->
         when (preferences.defaultCardTapAction) {
             CardTapAction.EXTERNAL_BROWSER -> handleOpenLink(link)
             CardTapAction.IN_APP_READER -> {
-                val canOpenReader = link.contentType in setOf(
-                    ContentType.ARTICLE,
-                    ContentType.WEBSITE,
-                    ContentType.DISCUSSION
-                ) && !YouTubeUrlParser.isYouTubeUrl(link.originalUrl)
-                if (canOpenReader) {
-                    openReaderForLink(link)
-                } else {
-                    openDetailSheet(link)
-                }
+                haptics.tick()
+                val initialTab = if (link.isReaderEligible()) DetailSheetTab.READER else DetailSheetTab.DETAILS
+                openUnifiedDetailSheet(link, initialTab)
             }
-            CardTapAction.DETAIL_HUB -> openDetailSheet(link)
+            CardTapAction.DETAIL_HUB -> openUnifiedDetailSheet(link, DetailSheetTab.DETAILS)
         }
     }
 
@@ -416,7 +435,7 @@ fun LaterboxApp(
         coroutineScope.launch { drawerState.close() }
     }
     BackHandler(enabled = currentRoute == LaterboxDestination.Inbox.route && isInboxComposerExpanded && !drawerState.isOpen) {
-        isInboxComposerExpanded = false
+        collapseInboxComposer()
     }
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
@@ -435,7 +454,7 @@ fun LaterboxApp(
             inboxUiState.hasCompletedOnboarding
 
         LaunchedEffect(isInboxOverlayVisible) {
-            if (!isInboxOverlayVisible) inboxComposerHeightPx = 0
+            if (!isInboxOverlayVisible) inboxOverlayHeightPx = 0
         }
 
         val closeDrawerIfNarrow: () -> Unit = {
@@ -507,11 +526,13 @@ fun LaterboxApp(
                 containerColor = colors.backgroundPrimary,
                 contentWindowInsets = WindowInsets.statusBars,
                 snackbarHost = {
-                    val inboxOverlayDp = with(density) { inboxComposerHeightPx.toDp() }
-                    val bottomBarDp = with(density) { bottomBarHeightPx.toDp() }
+                    val navBarBottomDp = with(density) { WindowInsets.navigationBars.getBottom(density).toDp() }
+                    val inboxOverlayDp = with(density) { inboxOverlayHeightPx.toDp() }
+                    val bottomBarAboveNavDp = (with(density) { bottomBarHeightPx.toDp() } - navBarBottomDp).coerceAtLeast(0.dp)
                     val snackbarBottomPad = when {
-                        isInboxOverlayVisible && inboxComposerHeightPx > 0 -> inboxOverlayDp + 8.dp
-                        showHandsetBottomBar && bottomBarHeightPx > 0 -> bottomBarDp + 8.dp
+                        isInboxOverlayVisible && inboxOverlayHeightPx > 0 ->
+                            inboxOverlayDp + (if (showHandsetBottomBar) bottomBarAboveNavDp else 0.dp) + 8.dp
+                        showHandsetBottomBar && bottomBarHeightPx > 0 -> bottomBarAboveNavDp + 8.dp
                         else -> 16.dp
                     }
                     Box(
@@ -719,7 +740,11 @@ fun LaterboxApp(
                                 onDismissClipboardSuggestion = inboxViewModel::dismissClipboardSuggestion,
                                 onMenuClick = openMenuHandler,
                                 listState = inboxListState,
-                                bottomComposerHeightPx = if (isInboxOverlayVisible) inboxComposerHeightPx else 0
+                                bottomComposerHeightPx = if (isInboxOverlayVisible) {
+                                    inboxOverlayHeightPx + (if (showHandsetBottomBar) bottomBarHeightPx else 0)
+                                } else {
+                                    0
+                                }
                             )
                         }
 
@@ -777,8 +802,7 @@ fun LaterboxApp(
                                                     app?.container?.linkRepository?.getLinkById(action.linkId)?.first()
                                                 } catch (_: Exception) { null }
                                                 if (link != null) {
-                                                    savedItemDetailViewModel.setLink(link)
-                                                    selectedLinkForDetails = link
+                                                    openUnifiedDetailSheet(link, DetailSheetTab.DETAILS)
                                                 } else {
                                                     snackbarHostState.showSnackbar("Saved link is no longer in your library.")
                                                 }
@@ -933,8 +957,7 @@ fun LaterboxApp(
                                         try {
                                             val link = app?.container?.linkRepository?.getLinkById(targetId)?.first()
                                             if (link != null) {
-                                                savedItemDetailViewModel.setLink(link)
-                                                selectedLinkForDetails = link
+                                                openUnifiedDetailSheet(link, DetailSheetTab.DETAILS)
                                             }
                                         } catch (_: Exception) {}
                                     }
@@ -1117,48 +1140,54 @@ fun LaterboxApp(
                         Column(
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
-                                .fillMaxWidth()
-                                .onSizeChanged { size ->
-                                    if (isInboxOverlayVisible) {
-                                        inboxComposerHeightPx = size.height
-                                    }
-                                },
+                                .fillMaxWidth(),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             if (isInboxOverlayVisible) {
-                                if (isInboxComposerExpanded && preferences.assistantEnabled) {
-                                    val composerContent: @Composable () -> Unit = {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .onSizeChanged { size ->
+                                            inboxOverlayHeightPx = size.height
+                                        }
+                                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                                ) {
+                                    if (isInboxComposerExpanded && preferences.assistantEnabled) {
                                         Column(
                                             modifier = Modifier.fillMaxWidth(),
-                                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                            verticalArrangement = Arrangement.spacedBy(2.dp)
                                         ) {
                                             Row(
                                                 modifier = Modifier.fillMaxWidth(),
                                                 horizontalArrangement = Arrangement.End
                                             ) {
-                                                Surface(
-                                                    onClick = { isInboxComposerExpanded = false },
-                                                    shape = RoundedCornerShape(16.dp),
-                                                    color = colors.surfaceElevated,
-                                                    border = BorderStroke(1.dp, colors.borderSubtle),
-                                                    shadowElevation = 2.dp
+                                                Box(
+                                                    modifier = Modifier
+                                                        .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                                                        .clip(CircleShape)
+                                                        .clickable(
+                                                            role = Role.Button,
+                                                            onClickLabel = "Hide assistant composer",
+                                                            onClick = collapseInboxComposer
+                                                        )
+                                                        .testTag("inbox_composer_hide_button"),
+                                                    contentAlignment = Alignment.Center
                                                 ) {
-                                                    Row(
-                                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                                        verticalAlignment = Alignment.CenterVertically
+                                                    Surface(
+                                                        shape = CircleShape,
+                                                        color = colors.surfaceElevated.copy(alpha = 0.94f),
+                                                        border = BorderStroke(1.dp, colors.borderSubtle),
+                                                        shadowElevation = 2.dp,
+                                                        modifier = Modifier.size(32.dp)
                                                     ) {
-                                                        Icon(
-                                                            painter = painterResource(id = LaterboxIcons.ChevronDown),
-                                                            contentDescription = "Collapse assistant bar",
-                                                            modifier = Modifier.size(14.dp),
-                                                            tint = colors.textSecondary
-                                                        )
-                                                        Spacer(modifier = Modifier.width(4.dp))
-                                                        Text(
-                                                            text = "Hide",
-                                                            style = LaterboxTheme.typography.metaText.copy(fontSize = 11.sp),
-                                                            color = colors.textSecondary
-                                                        )
+                                                        Box(contentAlignment = Alignment.Center) {
+                                                            Icon(
+                                                                painter = painterResource(id = LaterboxIcons.Close),
+                                                                contentDescription = "Hide assistant composer",
+                                                                modifier = Modifier.size(16.dp),
+                                                                tint = colors.textSecondary
+                                                            )
+                                                        }
                                                     }
                                                 }
                                             }
@@ -1170,7 +1199,7 @@ fun LaterboxApp(
                                                     if (prompt.isNotBlank()) {
                                                         haptics.tick()
                                                         inboxComposerText = ""
-                                                        isInboxComposerExpanded = false
+                                                        collapseInboxComposer()
                                                         navController.navigate(
                                                             LaterboxDestination.Chat.createRoute(initialPrompt = prompt)
                                                         )
@@ -1193,36 +1222,7 @@ fun LaterboxApp(
                                                 onDismissAudioConsent = { pendingAudioConsentTarget = null }
                                             )
                                         }
-                                    }
-
-                                    if (showHandsetBottomBar) {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 16.dp, vertical = 6.dp)
-                                        ) {
-                                            composerContent()
-                                        }
                                     } else {
-                                        ComposerInsetHost(horizontalPadding = 16.dp) {
-                                            composerContent()
-                                        }
-                                    }
-                                } else {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .then(
-                                                if (!showHandsetBottomBar) {
-                                                    Modifier.windowInsetsPadding(
-                                                        WindowInsets.navigationBars.only(WindowInsetsSides.Bottom)
-                                                    )
-                                                } else {
-                                                    Modifier
-                                                }
-                                            )
-                                            .padding(horizontal = 16.dp, vertical = 6.dp)
-                                    ) {
                                         InboxActionDock(
                                             assistantEnabled = preferences.assistantEnabled,
                                             onAskClick = {
@@ -1261,6 +1261,14 @@ fun LaterboxApp(
                                         }
                                     },
                                     modifier = Modifier.onSizeChanged { bottomBarHeightPx = it.height }
+                                )
+                            } else if (isInboxOverlayVisible) {
+                                Spacer(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .windowInsetsPadding(
+                                            WindowInsets.navigationBars.union(WindowInsets.ime).only(WindowInsetsSides.Bottom)
+                                        )
                                 )
                             }
                         }
@@ -1479,61 +1487,50 @@ fun LaterboxApp(
                 }
             },
             onReadInLaterbox = {
-                val targetLink = selectedLinkForDetails ?: return@SavedItemDetailSheet
-                coroutineScope.launch {
-                    detailSheetState.hide()
-                    selectedLinkForDetails = null
-                    openReaderForLink(targetLink)
-                }
+                haptics.tick()
             },
-            onDismissRequest = {
-                coroutineScope.launch {
-                    detailSheetState.hide()
-                    selectedLinkForDetails = null
-                }
-            }
-        )
-    }
-
-    // Distraction-Free In-App Article Reader Sheet
-    activeReaderLink?.let { readerLink ->
-        ArticleReaderSheet(
-            link = readerLink,
-            uiState = readerUiState,
+            initialTab = detailSheetInitialTab,
+            sessionKey = detailSheetSessionNonce,
+            readerUiState = readerUiState,
             fontScale = preferences.fontSizeScale.scaleFactor,
-            sheetState = readerSheetState,
-            onRefresh = { readerRefreshNonce += 1 },
-            onOpenOriginal = {
-                handleOpenLink(readerLink)
-            },
+            onRefreshReader = { readerRefreshNonce += 1 },
             onMarkReadAndArchive = {
-                haptics.confirm()
-                if (!readerLink.isRead) {
-                    inboxViewModel.onToggleRead(readerLink.id, false)
-                }
-                val wasArchived = readerLink.isArchived
-                if (!wasArchived) {
-                    inboxViewModel.onArchive(readerLink.id)
-                }
-                coroutineScope.launch {
-                    readerSheetState.hide()
-                    activeReaderLink = null
+                val activeLink = detailUiState.link ?: selectedLinkForDetails
+                if (activeLink != null) {
+                    haptics.confirm()
+                    if (!activeLink.isRead) {
+                        inboxViewModel.onToggleRead(activeLink.id, false)
+                    }
+                    val wasArchived = activeLink.isArchived
                     if (!wasArchived) {
-                        val result = snackbarHostState.showSnackbar(
-                            message = "Marked read & archived",
-                            actionLabel = "Undo",
-                            duration = SnackbarDuration.Short
-                        )
-                        if (result == SnackbarResult.ActionPerformed) {
-                            inboxViewModel.unarchive(readerLink.id)
+                        inboxViewModel.onArchive(activeLink.id)
+                    }
+                    coroutineScope.launch {
+                        detailSheetState.hide()
+                        selectedLinkForDetails = null
+                        if (!wasArchived) {
+                            val result = snackbarHostState.showSnackbar(
+                                message = "Marked read & archived",
+                                actionLabel = "Undo",
+                                duration = SnackbarDuration.Short
+                            )
+                            if (result == SnackbarResult.ActionPerformed) {
+                                inboxViewModel.unarchive(activeLink.id)
+                            }
                         }
                     }
                 }
             },
+            onTabChanged = { tab ->
+                detailSheetActiveTab = tab
+                if (tab == DetailSheetTab.READER && !hasEnteredReaderInSession) {
+                    hasEnteredReaderInSession = true
+                }
+            },
             onDismissRequest = {
                 coroutineScope.launch {
-                    readerSheetState.hide()
-                    activeReaderLink = null
+                    detailSheetState.hide()
+                    selectedLinkForDetails = null
                 }
             }
         )
