@@ -41,7 +41,8 @@ sealed class UpdateCheckResult {
  */
 object GitHubUpdateChecker {
 
-    private const val LATEST_RELEASE_URL = "https://api.github.com/repos/Adetisola/Laterbox/releases/latest"
+    private const val REPO_BASE_URL = "https://github.com/Adetisola/Laterbox/releases"
+    private const val LATEST_MANIFEST_URL = "$REPO_BASE_URL/latest/download/delta-manifest.json"
 
     data class ReleaseAsset(
         val name: String,
@@ -133,7 +134,7 @@ object GitHubUpdateChecker {
 
     suspend fun checkForUpdate(
         currentVersionName: String,
-        releasesUrl: String = LATEST_RELEASE_URL,
+        releasesUrl: String = LATEST_MANIFEST_URL,
         deviceSupportedAbis: Array<String> = Build.SUPPORTED_ABIS ?: emptyArray(),
         context: Context? = null
     ): UpdateCheckResult = withContext(Dispatchers.IO) {
@@ -144,8 +145,9 @@ object GitHubUpdateChecker {
                 requestMethod = "GET"
                 connectTimeout = 10_000
                 readTimeout = 10_000
-                setRequestProperty("Accept", "application/vnd.github.v3+json")
+                setRequestProperty("Accept", "application/json")
                 setRequestProperty("User-Agent", "Laterbox-App")
+                instanceFollowRedirects = true
             }
 
             val responseCode = connection.responseCode
@@ -153,7 +155,7 @@ object GitHubUpdateChecker {
                 return@withContext UpdateCheckResult.ApiError(404, "No published releases found on GitHub repository.")
             }
             if (responseCode == 403) {
-                return@withContext UpdateCheckResult.ApiError(403, "GitHub API rate limit exceeded. Please try again later.")
+                return@withContext UpdateCheckResult.ApiError(403, "GitHub rate limit exceeded. Please try again later.")
             }
             if (responseCode !in 200..299) {
                 return@withContext UpdateCheckResult.ApiError(responseCode, "GitHub server returned HTTP $responseCode")
@@ -164,6 +166,15 @@ object GitHubUpdateChecker {
                 JSONObject(responseText)
             } catch (e: Exception) {
                 return@withContext UpdateCheckResult.InvalidRelease("Could not parse release JSON from GitHub: ${e.message}")
+            }
+
+            if (root.has("targetVersion") && root.has("patches")) {
+                return@withContext parseFromDeltaManifest(
+                    responseText = responseText,
+                    currentVersionName = currentVersionName,
+                    deviceSupportedAbis = deviceSupportedAbis,
+                    context = context
+                )
             }
 
             val isDraft = root.optBoolean("draft", false)
@@ -259,5 +270,80 @@ object GitHubUpdateChecker {
         } finally {
             connection?.disconnect()
         }
+    }
+
+    private fun parseFromDeltaManifest(
+        responseText: String,
+        currentVersionName: String,
+        deviceSupportedAbis: Array<String>,
+        context: Context?
+    ): UpdateCheckResult {
+        val manifest = DeltaManifest.fromJson(responseText)
+            ?: return UpdateCheckResult.InvalidRelease("Could not parse delta-manifest.json from GitHub.")
+
+        val cleanVersion = AppUpdateInfo.cleanVersion(manifest.targetVersion)
+        if (cleanVersion.isBlank()) {
+            return UpdateCheckResult.InvalidRelease("delta-manifest.json is missing targetVersion.")
+        }
+
+        if (!AppUpdateInfo.isNewerVersion(cleanVersion, currentVersionName)) {
+            return UpdateCheckResult.UpToDate(currentVersionName)
+        }
+
+        val tag = "v$cleanVersion"
+        val downloadBase = "$REPO_BASE_URL/download/$tag"
+        val releasePageUrl = "$REPO_BASE_URL/tag/$tag"
+
+        val parsedAssets = manifest.patches
+            .filter { it.targetApkFilename.isNotBlank() }
+            .distinctBy { it.targetApkFilename }
+            .map { patch ->
+                ReleaseAsset(
+                    name = patch.targetApkFilename,
+                    downloadUrl = "$downloadBase/${patch.targetApkFilename}",
+                    size = patch.targetApkSize
+                )
+            }
+
+        val selected = selectBestApkAsset(parsedAssets, deviceSupportedAbis)
+            ?: return UpdateCheckResult.NoCompatibleApk(cleanVersion, deviceSupportedAbis.toList())
+
+        var deltaPatchInfo: DeltaPatchInfo? = null
+        if (context != null) {
+            try {
+                val installedSha = InstalledApkHelper.getInstalledApkSha256(context)
+                if (!installedSha.isNullOrBlank()) {
+                    val compatiblePatch = manifest.findCompatiblePatch(installedSha, deviceSupportedAbis)
+                    if (compatiblePatch != null && compatiblePatch.patchFilename.isNotBlank()) {
+                        deltaPatchInfo = compatiblePatch.copy(
+                            downloadUrl = "$downloadBase/${compatiblePatch.patchFilename}"
+                        )
+                        Log.i(
+                            "GitHubUpdateChecker",
+                            "Compatible delta patch selected: ${compatiblePatch.patchFilename} (${compatiblePatch.patchSize} bytes)"
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(
+                    "GitHubUpdateChecker",
+                    "Delta patch resolution encountered an error, falling back to full APK: ${e.message}"
+                )
+            }
+        }
+
+        val info = AppUpdateInfo(
+            versionName = cleanVersion,
+            releaseTitle = "Laterbox $tag",
+            releaseNotes = "",
+            downloadUrl = selected.asset.downloadUrl.ifBlank { releasePageUrl },
+            releasePageUrl = releasePageUrl,
+            apkSize = selected.asset.size,
+            isNewer = true,
+            targetAbiLabel = selected.targetAbiLabel,
+            assetName = selected.asset.name,
+            deltaPatch = deltaPatchInfo
+        )
+        return UpdateCheckResult.UpdateAvailable(info)
     }
 }
