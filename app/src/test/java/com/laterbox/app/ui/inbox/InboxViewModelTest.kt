@@ -544,6 +544,108 @@ class InboxViewModelTest {
         val afterDelete = linkRepository.inboxLinks.first()
         assertTrue("Deleted links should be empty", afterDelete.isEmpty())
     }
+
+    @Test
+    fun inboxViewModel_togglesViewModeAcrossAllThreeModes() = runTest {
+        val viewModel = createViewModel()
+
+        viewModel.uiState.test {
+            var state = awaitItem()
+            while (state.isLoading) {
+                state = awaitItem()
+            }
+            assertEquals(com.laterbox.app.data.preferences.InboxViewMode.HERO, state.viewMode)
+
+            viewModel.onToggleViewMode()
+            state = awaitItem()
+            while (state.viewMode != com.laterbox.app.data.preferences.InboxViewMode.COMPACT) {
+                state = awaitItem()
+            }
+
+            viewModel.onToggleViewMode()
+            state = awaitItem()
+            while (state.viewMode != com.laterbox.app.data.preferences.InboxViewMode.EDITORIAL) {
+                state = awaitItem()
+            }
+            assertEquals(com.laterbox.app.data.preferences.InboxViewMode.EDITORIAL, state.viewMode)
+
+            viewModel.onToggleViewMode()
+            state = awaitItem()
+            while (state.viewMode != com.laterbox.app.data.preferences.InboxViewMode.HERO) {
+                state = awaitItem()
+            }
+            assertEquals(com.laterbox.app.data.preferences.InboxViewMode.HERO, state.viewMode)
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun inboxViewModel_quickFiltersAndArchiveAllReadWithUndoWorkCorrectly() = runTest {
+        val viewModel = createViewModel()
+
+        val idUnread = linkRepository.saveLink(
+            originalUrl = "https://example.com/unread",
+            title = "Unread Scheduled Item",
+            reminderAt = System.currentTimeMillis() + 3_600_000L
+        )
+        val idRead = linkRepository.saveLink(
+            originalUrl = "https://example.com/read",
+            title = "Read Item"
+        )
+        linkRepository.setRead(idRead, true)
+
+        viewModel.uiState.test {
+            var state = awaitItem()
+            while (state.isLoading || state.links.size < 2 || state.readInboxCount != 1) {
+                state = awaitItem()
+            }
+            assertEquals(1, state.readInboxCount)
+
+            // Quick filter UNREAD
+            viewModel.onFilterQuickFilter(InboxQuickFilter.UNREAD)
+            state = awaitItem()
+            while (state.activeQuickFilter != InboxQuickFilter.UNREAD) {
+                state = awaitItem()
+            }
+            assertEquals(listOf(idUnread), state.links.map { it.id })
+
+            // Quick filter SCHEDULED
+            viewModel.onFilterQuickFilter(InboxQuickFilter.SCHEDULED)
+            state = awaitItem()
+            while (state.activeQuickFilter != InboxQuickFilter.SCHEDULED) {
+                state = awaitItem()
+            }
+            assertEquals(listOf(idUnread), state.links.map { it.id })
+
+            // Reset to ALL
+            viewModel.onFilterQuickFilter(InboxQuickFilter.ALL)
+            state = awaitItem()
+            while (state.activeQuickFilter != InboxQuickFilter.ALL || state.links.size != 2) {
+                state = awaitItem()
+            }
+
+            // Archive all read
+            var archivedIds: List<Long> = emptyList()
+            viewModel.onArchiveAllRead { archivedIds = it }.join()
+            state = awaitItem()
+            while (state.links.size != 1 || state.readInboxCount != 0) {
+                state = awaitItem()
+            }
+            assertEquals(listOf(idRead), archivedIds)
+            assertEquals(listOf(idUnread), state.links.map { it.id })
+
+            // Undo batch archive
+            viewModel.unarchiveBatch(archivedIds).join()
+            state = awaitItem()
+            while (state.links.size != 2 || state.readInboxCount != 1) {
+                state = awaitItem()
+            }
+            assertEquals(2, state.links.size)
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
 }
 
 

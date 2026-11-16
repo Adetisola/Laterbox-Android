@@ -71,7 +71,8 @@ object AppViewModelProvider {
                 appContext = app.applicationContext,
                 ytDlpUpdater = app.container.ytDlpUpdater,
                 ytDlpRuntimeManager = app.container.ytDlpRuntimeManager,
-                diagnosticsBuffer = app.container.diagnosticsBuffer
+                diagnosticsBuffer = app.container.diagnosticsBuffer,
+                database = app.container.database
             )
         }
         initializer {

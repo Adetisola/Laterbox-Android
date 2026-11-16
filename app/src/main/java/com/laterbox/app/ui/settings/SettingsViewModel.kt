@@ -8,7 +8,9 @@ import com.laterbox.app.ai.ReminderOrigin
 import com.laterbox.app.ai.SmartDigestEngine
 import com.laterbox.app.data.backup.BackupManager
 import com.laterbox.app.data.backup.BackupRestoreResult
+import com.laterbox.app.data.preferences.CardTapAction
 import com.laterbox.app.data.preferences.FontSizeScale
+import com.laterbox.app.data.preferences.InboxViewMode
 import com.laterbox.app.data.preferences.SmartReminderPersistence
 import com.laterbox.app.data.preferences.ThemeMode
 import com.laterbox.app.data.preferences.UserPreferences
@@ -35,7 +37,8 @@ class SettingsViewModel(
     private val appContext: Context? = null,
     private val ytDlpUpdater: com.laterbox.app.media.data.adapters.ytdlp.YtDlpUpdater? = null,
     private val ytDlpRuntimeManager: com.laterbox.app.media.data.adapters.ytdlp.YtDlpRuntimeManager? = null,
-    private val diagnosticsBuffer: com.laterbox.app.media.data.diagnostics.InspectionDiagnosticsBuffer? = null
+    private val diagnosticsBuffer: com.laterbox.app.media.data.diagnostics.InspectionDiagnosticsBuffer? = null,
+    private val database: com.laterbox.app.data.local.LaterboxDatabase? = null
 ) : ViewModel() {
 
     private val runtimeManager: com.laterbox.app.media.data.adapters.ytdlp.YtDlpRuntimeManager? =
@@ -62,6 +65,37 @@ class SettingsViewModel(
     private val _isUpdatingYtDlp = MutableStateFlow(false)
     val isUpdatingYtDlp: StateFlow<Boolean> = _isUpdatingYtDlp.asStateFlow()
 
+    private val _localMetrics = MutableStateFlow<com.laterbox.app.diagnostics.LocalLibraryMetrics?>(null)
+    val localMetrics: StateFlow<com.laterbox.app.diagnostics.LocalLibraryMetrics?> = _localMetrics.asStateFlow()
+
+    fun refreshLocalMetrics() {
+        viewModelScope.launch {
+            val prefs = userPreferencesRepository.userPreferencesFlow.first()
+            val db = database ?: (appContext?.applicationContext as? com.laterbox.app.LaterboxApplication)?.container?.database
+            _localMetrics.value = if (db != null) {
+                com.laterbox.app.diagnostics.ProductMetricsTracker.collectLocalMetrics(db, prefs)
+            } else {
+                com.laterbox.app.diagnostics.ProductMetricsTracker.computeMetrics(
+                    inboxCount = 0,
+                    inboxUnreadCount = 0,
+                    archivedCount = 0,
+                    totalReadCount = 0,
+                    activeScheduledReminders = 0,
+                    mediaAssetsCount = 0,
+                    estimatedStorageBytes = 0L,
+                    prefs = prefs
+                )
+            }
+        }
+    }
+
+    fun resetActivityCounters() {
+        viewModelScope.launch {
+            userPreferencesRepository.resetActivityCounters()
+            refreshLocalMetrics()
+        }
+    }
+
     fun setThemeMode(themeMode: ThemeMode) {
         viewModelScope.launch {
             userPreferencesRepository.setThemeMode(themeMode)
@@ -77,6 +111,18 @@ class SettingsViewModel(
     fun setAutoMarkAsRead(enabled: Boolean) {
         viewModelScope.launch {
             userPreferencesRepository.setAutoMarkAsRead(enabled)
+        }
+    }
+
+    fun setDefaultCardTapAction(action: CardTapAction) {
+        viewModelScope.launch {
+            userPreferencesRepository.setDefaultCardTapAction(action)
+        }
+    }
+
+    fun setInboxViewMode(mode: InboxViewMode) {
+        viewModelScope.launch {
+            userPreferencesRepository.setInboxViewMode(mode)
         }
     }
 

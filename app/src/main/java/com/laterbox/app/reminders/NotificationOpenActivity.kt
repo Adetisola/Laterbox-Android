@@ -44,6 +44,7 @@ class NotificationOpenActivity : Activity() {
                 try {
                     if (linkId > 0 && targetMode != MODE_OPEN_DESTINATION) {
                         container.linkRepository.setRead(linkId, true)
+                        container.userPreferencesRepository.incrementRemindersOpened()
                     }
                     if (notifRecordId > 0) {
                         container.notificationHistoryRepository.markAsRead(notifRecordId)

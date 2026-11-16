@@ -41,6 +41,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -48,22 +49,30 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import com.laterbox.app.domain.model.ContentType
 import com.laterbox.app.domain.model.MetadataStatus
+import com.laterbox.app.media.domain.model.MediaType
+import com.laterbox.app.transcript.domain.YouTubeUrlParser
 import com.laterbox.app.ui.components.ContentTypeBadge
 import com.laterbox.app.ui.components.CustomReminderPickerDialog
+import com.laterbox.app.ui.components.DateGrouper
 import com.laterbox.app.ui.components.FaviconImage
 import com.laterbox.app.ui.components.LaterboxConfirmDialog
 import com.laterbox.app.ui.components.LaterboxIconButton
 import com.laterbox.app.ui.components.LaterboxIcons
+import com.laterbox.app.ui.components.LaterboxPrimaryButton
+import com.laterbox.app.ui.components.LaterboxSecondaryButton
 import com.laterbox.app.ui.components.LaterboxShapeTokens
 import com.laterbox.app.ui.components.LinkQuickActionsMenu
 import com.laterbox.app.ui.theme.LaterboxTheme
@@ -97,7 +106,9 @@ fun SavedItemDetailSheet(
     onCancelTask: (String) -> Unit = {},
     onDismissTask: (String) -> Unit = {},
     onDeleteWithFiles: (Boolean) -> Unit = {},
-    onExtractTranscript: () -> Unit = {}
+    onExtractTranscript: () -> Unit = {},
+    onReadInLaterbox: (() -> Unit)? = null,
+    onOpenOfflineMedia: (() -> Unit)? = null
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -108,12 +119,33 @@ fun SavedItemDetailSheet(
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showMoreMenu by remember { mutableStateOf(false) }
     var isDescriptionExpanded by remember { mutableStateOf(false) }
+    var isEditExpanded by rememberSaveable(link.id) { mutableStateOf(false) }
     var showCreateCollectionDialog by remember { mutableStateOf(false) }
     var showCustomReminderPicker by remember { mutableStateOf(false) }
+    var showNotifPermissionWarning by remember {
+        mutableStateOf(
+            link.reminderAt != null &&
+                !com.laterbox.app.ui.util.NotificationPermissionHelper.isNotificationPermissionGranted(context)
+        )
+    }
 
-    val hasPendingEdits = uiState.editedTitle != link.title ||
-        uiState.editedNote != (link.personalNote ?: "") ||
+    val ensureNotificationPermission = com.laterbox.app.ui.util.rememberNotificationPermissionRequester(
+        onDenied = { showNotifPermissionWarning = true }
+    )
+
+    val hasTextEdits = uiState.editedTitle != link.title ||
+        uiState.editedNote != (link.personalNote ?: "")
+    val hasPendingEdits = hasTextEdits ||
         uiState.selectedCollectionIds != link.collectionIds.toSet()
+    val showEditFields = isEditExpanded || hasTextEdits
+
+    val playableAsset = uiState.assets.firstOrNull {
+        it.mediaType in listOf(MediaType.VIDEO, MediaType.AUDIO, MediaType.IMAGE)
+    }
+    val isYouTube = YouTubeUrlParser.isYouTubeUrl(link.originalUrl)
+    val canReadInApp = onReadInLaterbox != null &&
+        link.contentType in setOf(ContentType.ARTICLE, ContentType.WEBSITE, ContentType.DISCUSSION) &&
+        !isYouTube
 
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
@@ -158,14 +190,19 @@ fun SavedItemDetailSheet(
                     Text(
                         text = link.domain,
                         style = typography.uiMedium.copy(fontSize = 13.sp),
-                        color = colors.textSecondary
+                        color = colors.textSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
                     Spacer(modifier = Modifier.width(spacing.sm))
                     ContentTypeBadge(contentType = link.contentType)
-                    val isMediaReady = uiState.inspectionResult is com.laterbox.app.media.domain.model.InspectionResult.Available &&
-                        (uiState.inspectionResult as com.laterbox.app.media.domain.model.InspectionResult.Available).candidates.any {
-                            it.mediaType in listOf(com.laterbox.app.media.domain.model.MediaType.VIDEO, com.laterbox.app.media.domain.model.MediaType.AUDIO)
-                        }
+                    val isMediaReady = uiState.assets.isNotEmpty() || (
+                        uiState.inspectionResult is com.laterbox.app.media.domain.model.InspectionResult.Available &&
+                            (uiState.inspectionResult as com.laterbox.app.media.domain.model.InspectionResult.Available).candidates.any {
+                                it.mediaType in listOf(MediaType.VIDEO, MediaType.AUDIO)
+                            }
+                        )
                     if (isMediaReady) {
                         Spacer(modifier = Modifier.width(spacing.xs))
                         com.laterbox.app.ui.components.MediaReadyBadge()
@@ -219,42 +256,112 @@ fun SavedItemDetailSheet(
 
             Spacer(modifier = Modifier.height(spacing.sm))
 
-            // Quick Open ↗ button
-            Button(
-                onClick = { onQuickOpen(link.originalUrl) },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = colors.accentPrimary,
-                    contentColor = colors.surfaceElevated
-                ),
-                shape = LaterboxShapeTokens.Button,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(44.dp)
-            ) {
-                Text(
-                    text = "Open Link ↗",
-                    style = typography.uiMedium
-                )
+            // 1. Editorial Headline & Relative Timestamp
+            Text(
+                text = uiState.editedTitle.ifBlank { link.domain },
+                style = typography.editorialTitle.copy(fontSize = 21.sp, lineHeight = 28.sp),
+                color = colors.textPrimary,
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis
+            )
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            val statusLabel = when {
+                link.isArchived -> "Archived"
+                link.isRead -> "Read"
+                else -> "Unread"
             }
+            Text(
+                text = "Saved ${DateGrouper.formatRelativeTime(link.createdAt)} · $statusLabel",
+                style = typography.metaText,
+                color = colors.textSecondary
+            )
 
             Spacer(modifier = Modifier.height(spacing.md))
 
-            // Editable Title Field
-            OutlinedTextField(
-                value = uiState.editedTitle,
-                onValueChange = onTitleChange,
-                label = { Text("Title") },
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = colors.accentPrimary,
-                    unfocusedBorderColor = colors.borderSubtle,
-                    focusedTextColor = colors.textPrimary,
-                    unfocusedTextColor = colors.textPrimary
-                ),
-                modifier = Modifier.fillMaxWidth()
-            )
+            // 2. Primary Consumption CTA Bar
+            if (playableAsset != null) {
+                LaterboxPrimaryButton(
+                    text = if (playableAsset.mediaType == MediaType.IMAGE) "View Offline Image" else "▶ Play Offline",
+                    onClick = {
+                        if (onOpenOfflineMedia != null) {
+                            onOpenOfflineMedia()
+                        } else {
+                            onOpenMediaAsset(playableAsset)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(spacing.xs))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(spacing.xs)
+                ) {
+                    if (canReadInApp) {
+                        LaterboxSecondaryButton(
+                            text = "Read in Laterbox",
+                            onClick = { onReadInLaterbox?.invoke() },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    LaterboxSecondaryButton(
+                        text = "Open Web ↗",
+                        onClick = { onQuickOpen(link.originalUrl) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            } else if (canReadInApp) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(spacing.xs)
+                ) {
+                    LaterboxPrimaryButton(
+                        text = "Read in Laterbox",
+                        onClick = { onReadInLaterbox?.invoke() },
+                        modifier = Modifier.weight(1f)
+                    )
+                    LaterboxSecondaryButton(
+                        text = "Open Web ↗",
+                        onClick = { onQuickOpen(link.originalUrl) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            } else {
+                LaterboxPrimaryButton(
+                    text = "Open Web ↗",
+                    onClick = { onQuickOpen(link.originalUrl) },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
 
-            // Extracted description snippet with 2-line truncation and inline Read more / Show less
+            // 3. Above-the-fold Personal Note Callout & Description Summary
+            if (!showEditFields && uiState.editedNote.isNotBlank()) {
+                Spacer(modifier = Modifier.height(spacing.md))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(LaterboxShapeTokens.Card)
+                        .background(colors.accentContainer.copy(alpha = 0.45f))
+                        .border(spacing.hairline, colors.accentPrimary.copy(alpha = 0.25f), LaterboxShapeTokens.Card)
+                        .padding(spacing.md),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .width(3.dp)
+                            .height(20.dp)
+                            .background(colors.accentPrimary)
+                    )
+                    Spacer(modifier = Modifier.width(spacing.sm))
+                    Text(
+                        text = uiState.editedNote,
+                        style = typography.bodyPrimary.copy(fontStyle = FontStyle.Italic),
+                        color = colors.textPrimary
+                    )
+                }
+            }
+
             if (!link.description.isNullOrBlank()) {
                 Spacer(modifier = Modifier.height(spacing.sm))
                 Box(
@@ -290,71 +397,148 @@ fun SavedItemDetailSheet(
                 }
             }
 
-            Spacer(modifier = Modifier.height(spacing.sm))
+            Spacer(modifier = Modifier.height(spacing.md))
 
-            // Original Link box with clear label, single-line text selection, right end-fade, and copy button
-            Text(
-                text = "Original link",
-                style = typography.metaText,
-                color = colors.textSecondary
+            // 4. Above-the-fold YouTube Transcript & Offline Media Actions
+            if (isYouTube) {
+                YouTubeTranscriptDetailCard(
+                    url = link.originalUrl,
+                    onExtractTranscript = onExtractTranscript
+                )
+                Spacer(modifier = Modifier.height(spacing.md))
+            }
+
+            com.laterbox.app.media.ui.linkdetail.MediaSection(
+                linkUrl = link.originalUrl,
+                assets = uiState.assets,
+                activeTasks = uiState.activeTasks,
+                inspectionResult = uiState.inspectionResult,
+                isInspecting = uiState.isInspecting,
+                onInspectClick = onInspectMedia,
+                onRetryClick = onRetryInspection,
+                onCancelInspection = onCancelInspection,
+                onDownloadCandidate = onDownloadCandidate,
+                onOpenAsset = onOpenMediaAsset,
+                onExportAsset = onExportMediaAsset,
+                onDeleteAsset = onDeleteMediaAsset,
+                onOverrideCellular = onOverrideCellular,
+                onCancelTask = onCancelTask,
+                onDismissTask = onDismissTask
             )
-            Spacer(modifier = Modifier.height(spacing.xs))
+
+            Spacer(modifier = Modifier.height(spacing.md))
+
+            // 5. Collapsible Title & Personal Note Editor
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(LaterboxShapeTokens.Card)
                     .background(colors.surfaceSecondary)
                     .border(spacing.hairline, colors.borderSubtle, LaterboxShapeTokens.Card)
-                    .padding(start = spacing.md, top = 4.dp, bottom = 4.dp, end = 4.dp),
+                    .clickable(
+                        role = Role.Button,
+                        onClickLabel = if (showEditFields) "Hide title and note editor" else "Edit title and note"
+                    ) {
+                        isEditExpanded = !showEditFields
+                    }
+                    .padding(horizontal = spacing.md, vertical = 12.dp)
+                    .testTag("detail_edit_toggle"),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(36.dp),
-                    contentAlignment = Alignment.CenterStart
-                ) {
-                    BasicTextField(
-                        value = link.originalUrl,
-                        onValueChange = {},
-                        readOnly = true,
-                        singleLine = true,
-                        textStyle = typography.codeText.copy(fontSize = 12.sp, color = colors.textPrimary),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    // Right end-fade gradient overlay
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.CenterEnd)
-                            .width(36.dp)
-                            .fillMaxHeight()
-                            .background(
-                                Brush.horizontalGradient(
-                                    colors = listOf(
-                                        Color.Transparent,
-                                        colors.surfaceSecondary
-                                    )
-                                )
-                            )
-                    )
-                }
-
-                LaterboxIconButton(
-                    iconRes = LaterboxIcons.Copy,
-                    contentDescription = "Copy original link",
-                    tint = colors.textPrimary,
-                    onClick = {
-                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("URL", link.originalUrl))
-                        Toast.makeText(context, "URL copied to clipboard", Toast.LENGTH_SHORT).show()
-                    }
+                Text(
+                    text = if (showEditFields) "Hide Title & Note Editor" else "✎ Edit Title & Personal Note",
+                    style = typography.uiMedium,
+                    color = colors.accentPrimary
                 )
+                Icon(
+                    painter = painterResource(id = LaterboxIcons.ChevronDown),
+                    contentDescription = null,
+                    tint = colors.textSecondary,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+
+            if (showEditFields) {
+                Spacer(modifier = Modifier.height(spacing.sm))
+                OutlinedTextField(
+                    value = uiState.editedTitle,
+                    onValueChange = onTitleChange,
+                    label = { Text("Title") },
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = colors.accentPrimary,
+                        unfocusedBorderColor = colors.borderSubtle,
+                        focusedTextColor = colors.textPrimary,
+                        unfocusedTextColor = colors.textPrimary
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(spacing.sm))
+
+                val maxNoteLength = 500
+                val remainingChars = maxNoteLength - uiState.editedNote.length
+                OutlinedTextField(
+                    value = uiState.editedNote,
+                    onValueChange = {
+                        if (it.length <= maxNoteLength + 20) onNoteChange(it)
+                    },
+                    label = { Text("Personal Note") },
+                    placeholder = { Text("Add takeaways, quotes, or thoughts...") },
+                    minLines = 2,
+                    maxLines = 4,
+                    supportingText = if (remainingChars <= 50) {
+                        {
+                            Text(
+                                text = if (remainingChars >= 0) "$remainingChars characters remaining" else "Exceeded by ${-remainingChars} characters",
+                                color = if (remainingChars >= 0) colors.textTertiary else colors.statusDanger,
+                                style = typography.metaText
+                            )
+                        }
+                    } else null,
+                    isError = remainingChars < 0,
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = colors.accentPrimary,
+                        unfocusedBorderColor = colors.borderSubtle,
+                        focusedTextColor = colors.textPrimary,
+                        unfocusedTextColor = colors.textPrimary
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            // Save Edits Button (if any title, note, or collection edit is pending)
+            if (hasPendingEdits) {
+                Spacer(modifier = Modifier.height(spacing.sm))
+                Button(
+                    onClick = onSaveEdits,
+                    enabled = !uiState.isSaving,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = colors.accentPrimary,
+                        contentColor = colors.onAccentPrimary
+                    ),
+                    shape = LaterboxShapeTokens.Button,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = spacing.minTouchTarget)
+                ) {
+                    if (uiState.isSaving) {
+                        CircularProgressIndicator(
+                            color = colors.onAccentPrimary,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    } else {
+                        Text("Save Changes", style = typography.uiMedium)
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(spacing.md))
 
-            // Collection Section with toggle chips and trailing + creator
+            // 6. Collections Section with toggle chips and trailing + creator
             Text(
                 text = "Collection",
                 style = typography.metaText,
@@ -419,68 +603,7 @@ fun SavedItemDetailSheet(
 
             Spacer(modifier = Modifier.height(spacing.md))
 
-            // Editable Personal Note with approaching-limit reminder
-            val maxNoteLength = 500
-            val remainingChars = maxNoteLength - uiState.editedNote.length
-            OutlinedTextField(
-                value = uiState.editedNote,
-                onValueChange = {
-                    if (it.length <= maxNoteLength + 20) onNoteChange(it)
-                },
-                label = { Text("Personal Note") },
-                placeholder = { Text("Add takeaways, quotes, or thoughts...") },
-                minLines = 2,
-                maxLines = 4,
-                supportingText = if (remainingChars <= 50) {
-                    {
-                        Text(
-                            text = if (remainingChars >= 0) "$remainingChars characters remaining" else "Exceeded by ${-remainingChars} characters",
-                            color = if (remainingChars >= 0) colors.textTertiary else colors.statusDanger,
-                            style = typography.metaText
-                        )
-                    }
-                } else null,
-                isError = remainingChars < 0,
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = colors.accentPrimary,
-                    unfocusedBorderColor = colors.borderSubtle,
-                    focusedTextColor = colors.textPrimary,
-                    unfocusedTextColor = colors.textPrimary
-                ),
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            // Save Edits Button (if changed)
-            if (hasPendingEdits) {
-                Spacer(modifier = Modifier.height(spacing.sm))
-                Button(
-                    onClick = onSaveEdits,
-                    enabled = !uiState.isSaving,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = colors.surfaceSecondary,
-                        contentColor = colors.accentPrimary
-                    ),
-                    shape = LaterboxShapeTokens.Button,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = spacing.minTouchTarget)
-                ) {
-                    if (uiState.isSaving) {
-                        CircularProgressIndicator(
-                            color = colors.accentPrimary,
-                            strokeWidth = 2.dp,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    } else {
-                        Text("Save Changes", style = typography.uiMedium)
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(spacing.md))
-
-            // Reminder section
+            // 7. Reminder section
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -541,7 +664,10 @@ fun SavedItemDetailSheet(
                                     .clickable(
                                         role = Role.Button,
                                         onClickLabel = "Clear reminder",
-                                        onClick = { onSetReminder(null) }
+                                        onClick = {
+                                            showNotifPermissionWarning = false
+                                            onSetReminder(null)
+                                        }
                                     ),
                                 contentAlignment = Alignment.Center
                             ) {
@@ -561,21 +687,41 @@ fun SavedItemDetailSheet(
                 } else {
                     ReminderDetailChip(
                         label = "Tonight (8 PM)",
-                        onClick = { onSetReminder(tonightMillis) }
+                        onClick = {
+                            ensureNotificationPermission { onSetReminder(tonightMillis) }
+                        }
                     )
                     ReminderDetailChip(
                         label = "Tomorrow (9 AM)",
-                        onClick = { onSetReminder(tomorrowMillis) }
+                        onClick = {
+                            ensureNotificationPermission { onSetReminder(tomorrowMillis) }
+                        }
                     )
                     ReminderDetailChip(
                         label = "Weekend",
-                        onClick = { onSetReminder(weekendMillis) }
+                        onClick = {
+                            ensureNotificationPermission { onSetReminder(weekendMillis) }
+                        }
                     )
                     ReminderDetailChip(
                         label = "+ Custom…",
-                        onClick = { showCustomReminderPicker = true }
+                        onClick = {
+                            ensureNotificationPermission { showCustomReminderPicker = true }
+                        }
                     )
                 }
+            }
+
+            if (showNotifPermissionWarning && !com.laterbox.app.ui.util.NotificationPermissionHelper.isNotificationPermissionGranted(context)) {
+                Spacer(modifier = Modifier.height(spacing.xs))
+                com.laterbox.app.ui.components.LaterboxBanner(
+                    text = "Notifications are blocked. Reminder is saved, but won't alert you until notifications are enabled.",
+                    isWarning = true,
+                    actionText = "Settings",
+                    onActionClick = {
+                        com.laterbox.app.ui.util.NotificationPermissionHelper.openAppNotificationSettings(context)
+                    }
+                )
             }
 
             // Compact metadata status badge with inline retry
@@ -642,31 +788,64 @@ fun SavedItemDetailSheet(
 
             Spacer(modifier = Modifier.height(spacing.md))
 
-            if (com.laterbox.app.transcript.domain.YouTubeUrlParser.isYouTubeUrl(link.originalUrl)) {
-                YouTubeTranscriptDetailCard(
-                    url = link.originalUrl,
-                    onExtractTranscript = onExtractTranscript
-                )
-                Spacer(modifier = Modifier.height(spacing.md))
-            }
-
-            com.laterbox.app.media.ui.linkdetail.MediaSection(
-                linkUrl = link.originalUrl,
-                assets = uiState.assets,
-                activeTasks = uiState.activeTasks,
-                inspectionResult = uiState.inspectionResult,
-                isInspecting = uiState.isInspecting,
-                onInspectClick = onInspectMedia,
-                onRetryClick = onRetryInspection,
-                onCancelInspection = onCancelInspection,
-                onDownloadCandidate = onDownloadCandidate,
-                onOpenAsset = onOpenMediaAsset,
-                onExportAsset = onExportMediaAsset,
-                onDeleteAsset = onDeleteMediaAsset,
-                onOverrideCellular = onOverrideCellular,
-                onCancelTask = onCancelTask,
-                onDismissTask = onDismissTask
+            // 8. Original Link box with copy button
+            Text(
+                text = "Original link",
+                style = typography.metaText,
+                color = colors.textSecondary
             )
+            Spacer(modifier = Modifier.height(spacing.xs))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(LaterboxShapeTokens.Card)
+                    .background(colors.surfaceSecondary)
+                    .border(spacing.hairline, colors.borderSubtle, LaterboxShapeTokens.Card)
+                    .padding(start = spacing.md, top = 4.dp, bottom = 4.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(36.dp),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    BasicTextField(
+                        value = link.originalUrl,
+                        onValueChange = {},
+                        readOnly = true,
+                        singleLine = true,
+                        textStyle = typography.codeText.copy(fontSize = 12.sp, color = colors.textPrimary),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .width(36.dp)
+                            .fillMaxHeight()
+                            .background(
+                                Brush.horizontalGradient(
+                                    colors = listOf(
+                                        Color.Transparent,
+                                        colors.surfaceSecondary
+                                    )
+                                )
+                            )
+                    )
+                }
+
+                LaterboxIconButton(
+                    iconRes = LaterboxIcons.Copy,
+                    contentDescription = "Copy original link",
+                    tint = colors.textPrimary,
+                    onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("URL", link.originalUrl))
+                        Toast.makeText(context, "URL copied to clipboard", Toast.LENGTH_SHORT).show()
+                    }
+                )
+            }
         }
 
         // New Collection inline creation dialog

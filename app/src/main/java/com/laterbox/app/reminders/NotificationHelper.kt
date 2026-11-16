@@ -283,6 +283,9 @@ object NotificationHelper {
         }
 
         notificationManager.notify(notificationId, builder.build())
+        try {
+            app?.container?.userPreferencesRepository?.incrementRemindersDelivered()
+        } catch (_: Throwable) {}
         return true
     }
 

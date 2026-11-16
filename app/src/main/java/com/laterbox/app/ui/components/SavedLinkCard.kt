@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -209,6 +210,86 @@ fun SavedLinkCard(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
+                } else if (viewMode == InboxViewMode.EDITORIAL) {
+                    // Editorial Reading Mode: High-contrast serif headline + personal note accent + optional compact thumb
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = if (hasRenderableImage) LaterboxTheme.spacing.sm else 0.dp)
+                        ) {
+                            Text(
+                                text = link.title,
+                                style = LaterboxTheme.typography.editorialTitle.copy(
+                                    fontSize = 18.sp,
+                                    lineHeight = 24.sp
+                                ),
+                                color = LaterboxTheme.colors.textPrimary,
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis
+                            )
+
+                            val noteText = link.personalNote?.takeIf { it.isNotBlank() }
+                            val descText = link.description?.takeIf { it.isNotBlank() }
+                            if (noteText != null) {
+                                Spacer(modifier = Modifier.height(LaterboxTheme.spacing.xs))
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(LaterboxTheme.colors.surfaceSecondary.copy(alpha = 0.65f))
+                                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.Top
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .width(2.dp)
+                                            .height(16.dp)
+                                            .background(LaterboxTheme.colors.accentPrimary)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = noteText,
+                                        style = LaterboxTheme.typography.bodySecondary,
+                                        color = LaterboxTheme.colors.textSecondary,
+                                        fontStyle = FontStyle.Italic,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            } else if (descText != null) {
+                                Spacer(modifier = Modifier.height(LaterboxTheme.spacing.xs))
+                                Text(
+                                    text = descText,
+                                    style = LaterboxTheme.typography.bodySecondary,
+                                    color = LaterboxTheme.colors.textSecondary,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
+                        if (hasRenderableImage && compactImageRequest != null) {
+                            AsyncImage(
+                                model = compactImageRequest,
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                onError = { imageLoadFailed = true },
+                                modifier = Modifier
+                                    .size(56.dp)
+                                    .clip(LaterboxTheme.shapes.Thumbnail)
+                                    .background(LaterboxTheme.colors.surfaceSecondary)
+                                    .border(
+                                        width = LaterboxTheme.spacing.hairline,
+                                        color = LaterboxTheme.colors.borderSubtle,
+                                        shape = LaterboxTheme.shapes.Thumbnail
+                                    )
+                            )
+                        }
+                    }
                 } else if (hasRenderableImage && compactImageRequest != null) {
                     // Compact Mode Layout: Two-column asymmetrical (Title on left, 72dp thumbnail on right)
                     Row(
@@ -332,8 +413,14 @@ fun SavedLinkCard(
 
                     if (!link.collectionName.isNullOrBlank()) {
                         Spacer(modifier = Modifier.width(LaterboxTheme.spacing.xs))
+                        val extraCount = (link.collectionNames.size - 1).coerceAtLeast(0)
+                        val collectionLabel = if (extraCount > 0) {
+                            "· #${link.collectionName} +$extraCount"
+                        } else {
+                            "· #${link.collectionName}"
+                        }
                         Text(
-                            text = "· #${link.collectionName}",
+                            text = collectionLabel,
                             style = LaterboxTheme.typography.metadataMono,
                             color = LaterboxTheme.colors.accentPrimary,
                             maxLines = 1,
@@ -348,10 +435,10 @@ fun SavedLinkCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(LaterboxTheme.spacing.radiusSmall)
                 ) {
-                    // Direct "View ↗" text button with 12dp backdrop
+                    // Direct "View ↗" text button with accessible 48dp min width & 40dp min height
                     Box(
                         modifier = Modifier
-                            .height(LaterboxTheme.spacing.chipHeight)
+                            .sizeIn(minWidth = 48.dp, minHeight = 40.dp)
                             .clip(LaterboxTheme.shapes.Button)
                             .background(LaterboxTheme.colors.surfaceSecondary.copy(alpha = 0.8f))
                             .border(

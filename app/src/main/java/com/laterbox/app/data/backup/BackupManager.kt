@@ -44,6 +44,7 @@ class BackupManager(private val database: LaterboxDatabase) {
                     collectionNames = colNames,
                     isRead = item.link.isRead,
                     isArchived = item.link.isArchived,
+                    reminderAt = item.link.reminderAt,
                     createdAt = item.link.createdAt
                 )
             }
@@ -98,9 +99,16 @@ class BackupManager(private val database: LaterboxDatabase) {
 
                 val existing = savedLinkDao.findLinkByNormalizedUrl(bLink.normalizedUrl)
                 if (existing != null) {
-                    // Duplicate found: update notes if incoming backup has personal note and current does not
-                    if (existing.link.personalNote.isNullOrBlank() && !bLink.personalNote.isNullOrBlank()) {
-                        savedLinkDao.updateLink(existing.link.copy(personalNote = bLink.personalNote))
+                    // Duplicate found: update notes/reminder if missing locally
+                    val needsNote = existing.link.personalNote.isNullOrBlank() && !bLink.personalNote.isNullOrBlank()
+                    val needsReminder = existing.link.reminderAt == null && bLink.reminderAt != null
+                    if (needsNote || needsReminder) {
+                        savedLinkDao.updateLink(
+                            existing.link.copy(
+                                personalNote = if (needsNote) bLink.personalNote else existing.link.personalNote,
+                                reminderAt = if (needsReminder) bLink.reminderAt else existing.link.reminderAt
+                            )
+                        )
                     }
                     for (colId in targetColIds) {
                         savedLinkDao.insertLinkCollectionCrossRef(
@@ -123,6 +131,7 @@ class BackupManager(private val database: LaterboxDatabase) {
                         collectionId = targetColIds.firstOrNull(),
                         isRead = bLink.isRead,
                         isArchived = bLink.isArchived,
+                        reminderAt = bLink.reminderAt,
                         metadataStatus = if (bLink.previewImageUrl != null) MetadataStatus.SUCCESS else MetadataStatus.PARTIAL,
                         createdAt = bLink.createdAt,
                         updatedAt = System.currentTimeMillis()
@@ -186,6 +195,7 @@ class BackupManager(private val database: LaterboxDatabase) {
             lObj.put("collectionNames", colNamesArray)
             lObj.put("isRead", link.isRead)
             lObj.put("isArchived", link.isArchived)
+            lObj.put("reminderAt", link.reminderAt ?: JSONObject.NULL)
             lObj.put("createdAt", link.createdAt)
             linkArray.put(lObj)
         }
@@ -237,6 +247,12 @@ class BackupManager(private val database: LaterboxDatabase) {
                     colNamesList.add(legacyCol)
                 }
 
+                val reminderAt = if (lObj.has("reminderAt") && !lObj.isNull("reminderAt")) {
+                    lObj.optLong("reminderAt", 0L).takeIf { it > 0L }
+                } else {
+                    null
+                }
+
                 links.add(
                     BackupLink(
                         originalUrl = lObj.getString("originalUrl"),
@@ -253,6 +269,7 @@ class BackupManager(private val database: LaterboxDatabase) {
                         collectionNames = colNamesList,
                         isRead = lObj.optBoolean("isRead", false),
                         isArchived = lObj.optBoolean("isArchived", false),
+                        reminderAt = reminderAt,
                         createdAt = lObj.optLong("createdAt", System.currentTimeMillis())
                     )
                 )

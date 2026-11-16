@@ -115,6 +115,8 @@ fun InboxScreen(
     onClearSearch: () -> Unit,
     onFilterContentType: (ContentType?) -> Unit,
     onFilterDateRange: (DateRangeFilter) -> Unit,
+    onFilterQuickFilter: (InboxQuickFilter) -> Unit = {},
+    onArchiveAllRead: () -> Unit = {},
     onLinkClick: (SavedLink) -> Unit,
     onQuickOpenClick: (SavedLink) -> Unit,
     onAddLinkClick: () -> Unit,
@@ -123,6 +125,8 @@ fun InboxScreen(
     onToggleViewMode: () -> Unit,
     onRefresh: () -> Unit,
     onCompleteOnboarding: () -> Unit,
+    onCompleteOnboardingWithOptions: ((Boolean, String?) -> Unit)? = null,
+    onSeedStarterGuide: (() -> Unit)? = null,
     onToggleRead: (SavedLink) -> Unit,
     onArchive: (SavedLink) -> Unit,
     onDelete: (SavedLink) -> Unit,
@@ -458,10 +462,16 @@ fun InboxScreen(
 
                             Spacer(modifier = Modifier.width(spacing.xs))
 
-                            // View Mode Toggle button (Hero vs List) right beside search
+                            // View Mode Toggle button (Hero -> Compact -> Editorial) right beside search
+                            val viewToggleDesc = when (uiState.viewMode) {
+                                InboxViewMode.HERO -> "Hero view (tap for compact)"
+                                InboxViewMode.COMPACT -> "Compact view (tap for editorial)"
+                                InboxViewMode.EDITORIAL -> "Editorial view (tap for hero)"
+                            }
                             LaterboxIconButton(
-                                iconRes = if (uiState.viewMode == InboxViewMode.HERO) LaterboxIcons.ViewList else LaterboxIcons.ViewCard,
-                                contentDescription = if (uiState.viewMode == InboxViewMode.HERO) "Switch to compact view" else "Switch to hero view",
+                                iconRes = if (uiState.viewMode == InboxViewMode.COMPACT) LaterboxIcons.ViewCard else LaterboxIcons.ViewList,
+                                contentDescription = viewToggleDesc,
+                                selected = uiState.viewMode != InboxViewMode.HERO,
                                 onClick = onToggleViewMode
                             )
                         }
@@ -531,7 +541,7 @@ fun InboxScreen(
                 }
             }
 
-            // Sticky Content Type Filter Chips Row (pinned at top below status bar when header scrolls away)
+            // Sticky Content Type & Triage Filter Chips Row
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -543,12 +553,33 @@ fun InboxScreen(
                     modifier = Modifier
                         .weight(1f)
                         .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(spacing.xs)
+                    horizontalArrangement = Arrangement.spacedBy(spacing.xs),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     FilterChip(
                         text = "All",
-                        isSelected = uiState.activeFilterType == null,
-                        onClick = { onFilterContentType(null) }
+                        isSelected = uiState.activeFilterType == null && uiState.activeQuickFilter == InboxQuickFilter.ALL,
+                        onClick = {
+                            onFilterContentType(null)
+                            if (uiState.activeQuickFilter != InboxQuickFilter.ALL) {
+                                onFilterQuickFilter(InboxQuickFilter.ALL)
+                            }
+                        }
+                    )
+                    FilterChip(
+                        text = InboxQuickFilter.UNREAD.label,
+                        isSelected = uiState.activeQuickFilter == InboxQuickFilter.UNREAD,
+                        onClick = { onFilterQuickFilter(InboxQuickFilter.UNREAD) }
+                    )
+                    FilterChip(
+                        text = InboxQuickFilter.MEDIA_READY.label,
+                        isSelected = uiState.activeQuickFilter == InboxQuickFilter.MEDIA_READY,
+                        onClick = { onFilterQuickFilter(InboxQuickFilter.MEDIA_READY) }
+                    )
+                    FilterChip(
+                        text = InboxQuickFilter.SCHEDULED.label,
+                        isSelected = uiState.activeQuickFilter == InboxQuickFilter.SCHEDULED,
+                        onClick = { onFilterQuickFilter(InboxQuickFilter.SCHEDULED) }
                     )
                     FilterChip(
                         text = "Articles",
@@ -575,6 +606,25 @@ fun InboxScreen(
                         isSelected = uiState.activeFilterType == ContentType.WEBSITE,
                         onClick = { onFilterContentType(ContentType.WEBSITE) }
                     )
+                    if (uiState.readInboxCount > 0) {
+                        Box(
+                            modifier = Modifier
+                                .height(32.dp)
+                                .clip(LaterboxShapeTokens.Chip)
+                                .background(colors.accentContainer.copy(alpha = 0.7f))
+                                .border(spacing.hairline, colors.accentPrimary.copy(alpha = 0.35f), LaterboxShapeTokens.Chip)
+                                .clickable(role = Role.Button, onClick = onArchiveAllRead)
+                                .padding(horizontal = spacing.md)
+                                .testTag("inbox_archive_read_button"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "Archive read (${uiState.readInboxCount})",
+                                style = typography.uiMedium.copy(fontSize = 12.sp, fontWeight = FontWeight.Medium),
+                                color = colors.accentPrimary
+                            )
+                        }
+                    }
                 }
 
                 if (isScrolled && !uiState.isSelectionMode) {
@@ -620,7 +670,8 @@ fun InboxScreen(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .verticalScroll(rememberScrollState()),
-                            verticalArrangement = Arrangement.Center
+                            verticalArrangement = Arrangement.Center,
+                            horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             EmptyStateView(
                                 title = "Nothing saved. Yet.",
@@ -628,6 +679,15 @@ fun InboxScreen(
                                 actionText = "+ Add link manually",
                                 onActionClick = onAddLinkClick
                             )
+                            if (onSeedStarterGuide != null) {
+                                TextButton(onClick = onSeedStarterGuide) {
+                                    Text(
+                                        text = "Try a sample guide",
+                                        style = typography.uiMedium,
+                                        color = colors.accentPrimary
+                                    )
+                                }
+                            }
                         }
                     }
 
@@ -658,6 +718,8 @@ fun InboxScreen(
                                     "Nothing saved matching \"${uiState.searchQuery}\""
                                 } else if (filterLabel != null) {
                                     "You don't have any links categorized as $filterLabel yet."
+                                } else if (uiState.activeQuickFilter != InboxQuickFilter.ALL) {
+                                    "No links match the ${uiState.activeQuickFilter.label} filter."
                                 } else {
                                     "No links found for this filter."
                                 },
@@ -666,6 +728,7 @@ fun InboxScreen(
                                     onClearSearch()
                                     onFilterContentType(null)
                                     onFilterDateRange(DateRangeFilter.ALL)
+                                    onFilterQuickFilter(InboxQuickFilter.ALL)
                                 }
                             )
                         }
@@ -805,7 +868,8 @@ fun InboxScreen(
         // Onboarding Sheet on First Launch
         if (!uiState.hasCompletedOnboarding) {
             OnboardingSheet(
-                onDismiss = onCompleteOnboarding
+                onDismiss = onCompleteOnboarding,
+                onCompleteOnboardingWithOptions = onCompleteOnboardingWithOptions
             )
         }
     }

@@ -33,6 +33,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
@@ -55,6 +56,8 @@ import com.laterbox.app.ui.sheets.MetadataPreviewStatus
 import com.laterbox.app.ui.sheets.SaveLinkUiState
 import com.laterbox.app.ui.theme.LaterboxMotion
 import com.laterbox.app.ui.theme.LaterboxTheme
+import com.laterbox.app.ui.util.NotificationPermissionHelper
+import com.laterbox.app.ui.util.rememberNotificationPermissionRequester
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -81,10 +84,15 @@ fun SaveLinkForm(
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
     val spacing = LaterboxTheme.spacing
+    val context = LocalContext.current
 
     var showCreateCollectionDialog by remember { mutableStateOf(false) }
     var showCustomReminderPicker by remember { mutableStateOf(false) }
     var showMoreOptions by remember { mutableStateOf(mode == SaveFormMode.FULL) }
+    var showNotificationDeniedBanner by remember { mutableStateOf(false) }
+    val ensureNotificationPermission = rememberNotificationPermissionRequester(
+        onDenied = { showNotificationDeniedBanner = true }
+    )
 
     val domain = remember(uiState.url) {
         if (uiState.url.isNotBlank()) UrlNormalizer.extractDomain(uiState.url) else ""
@@ -408,7 +416,9 @@ fun SaveLinkForm(
                                 if (isSelected) {
                                     onReminderAtChange(null)
                                 } else {
-                                    onReminderAtChange(millis)
+                                    ensureNotificationPermission {
+                                        onReminderAtChange(millis)
+                                    }
                                 }
                             }
                         )
@@ -425,6 +435,16 @@ fun SaveLinkForm(
                         },
                         isSelected = isCustomSelected,
                         onClick = { showCustomReminderPicker = true }
+                    )
+                }
+
+                if (showNotificationDeniedBanner && !NotificationPermissionHelper.isNotificationPermissionGranted(context)) {
+                    Spacer(modifier = Modifier.height(spacing.xs))
+                    LaterboxBanner(
+                        text = "Notifications are disabled, so scheduled reminders won't alert you until enabled.",
+                        isWarning = true,
+                        actionText = "Settings",
+                        onActionClick = { NotificationPermissionHelper.openAppNotificationSettings(context) }
                     )
                 }
             }
@@ -478,8 +498,10 @@ fun SaveLinkForm(
             initialTimestamp = uiState.reminderAt,
             onDismissRequest = { showCustomReminderPicker = false },
             onConfirm = { triggerAtMillis ->
-                onReminderAtChange(triggerAtMillis)
                 showCustomReminderPicker = false
+                ensureNotificationPermission {
+                    onReminderAtChange(triggerAtMillis)
+                }
             }
         )
     }

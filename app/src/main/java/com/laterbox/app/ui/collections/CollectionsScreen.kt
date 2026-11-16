@@ -172,7 +172,7 @@ fun CollectionsScreen(
                             start = spacing.base,
                             end = spacing.base,
                             top = spacing.sm,
-                            bottom = 32.dp
+                            bottom = 112.dp
                         ),
                         horizontalArrangement = Arrangement.spacedBy(spacing.sm),
                         verticalArrangement = Arrangement.spacedBy(spacing.sm),

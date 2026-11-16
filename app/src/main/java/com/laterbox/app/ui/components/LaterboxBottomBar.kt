@@ -33,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
@@ -59,18 +60,20 @@ enum class BottomBarDestination(
 fun LaterboxBottomBar(
     currentDestination: BottomBarDestination,
     onDestinationSelected: (BottomBarDestination) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    downloadsBadgeCount: Int = 0
 ) {
     Box(
         modifier = modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(start = 24.dp, end = 24.dp, bottom = 12.dp),
+            .padding(start = 20.dp, end = 20.dp, bottom = 10.dp)
+            .testTag("laterbox_bottom_bar"),
         contentAlignment = Alignment.Center
     ) {
         Surface(
             modifier = Modifier
-                .widthIn(max = 380.dp)
+                .widthIn(max = 420.dp)
                 .fillMaxWidth()
                 .shadow(
                     elevation = 8.dp,
@@ -107,6 +110,7 @@ fun LaterboxBottomBar(
                         label = "nav_label_color"
                     )
                     val interactionSource = remember { MutableInteractionSource() }
+                    val showDownloadsBadge = destination == BottomBarDestination.DOWNLOADS && downloadsBadgeCount > 0
 
                     Column(
                         modifier = Modifier
@@ -119,16 +123,37 @@ fun LaterboxBottomBar(
                                 role = Role.Tab,
                                 onClick = { onDestinationSelected(destination) }
                             )
+                            .testTag("bottom_bar_${destination.name.lowercase()}")
                             .padding(vertical = 6.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
-                        Icon(
-                            painter = painterResource(id = destination.iconRes),
-                            contentDescription = null,
-                            modifier = Modifier.size(22.dp),
-                            tint = iconTint
-                        )
+                        Box(contentAlignment = Alignment.TopEnd) {
+                            Icon(
+                                painter = painterResource(id = destination.iconRes),
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .padding(horizontal = 6.dp)
+                                    .size(22.dp),
+                                tint = iconTint
+                            )
+                            if (showDownloadsBadge) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(width = if (downloadsBadgeCount > 9) 18.dp else 14.dp, height = 14.dp)
+                                        .clip(CircleShape)
+                                        .background(LaterboxTheme.colors.accentPrimary),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = if (downloadsBadgeCount > 9) "9+" else downloadsBadgeCount.toString(),
+                                        color = LaterboxTheme.colors.onAccentPrimary,
+                                        fontSize = 8.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
 
                         Spacer(modifier = Modifier.height(2.dp))
 

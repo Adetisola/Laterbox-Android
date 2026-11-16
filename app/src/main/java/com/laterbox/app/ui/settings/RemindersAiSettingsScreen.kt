@@ -96,18 +96,32 @@ fun RemindersAiSettingsScreen(
 
     var timePickerTarget by remember { mutableStateOf<TimePickerTarget?>(null) }
 
-    val notificationsEnabled = remember(preferences.smartRemindersEnabled) {
-        NotificationManagerCompat.from(context).areNotificationsEnabled()
+    val notificationsEnabledState = remember {
+        mutableStateOf(NotificationManagerCompat.from(context).areNotificationsEnabled())
+    }
+    val canScheduleExactState = remember {
+        mutableStateOf(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                (context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager)?.canScheduleExactAlarms() ?: true
+            } else {
+                true
+            }
+        )
     }
 
-    val canScheduleExact = remember(preferences.smartRemindersEnabled) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
-            alarmManager?.canScheduleExactAlarms() ?: true
+    androidx.lifecycle.compose.LifecycleResumeEffect(preferences.smartRemindersEnabled) {
+        notificationsEnabledState.value = NotificationManagerCompat.from(context).areNotificationsEnabled()
+        canScheduleExactState.value = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            (context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager)?.canScheduleExactAlarms() ?: true
         } else {
             true
         }
+        onPauseOrDispose {}
     }
+
+    val notificationsEnabled = notificationsEnabledState.value
+    val canScheduleExact = canScheduleExactState.value
+    val ensureNotificationPermission = com.laterbox.app.ui.util.rememberNotificationPermissionRequester()
 
     Box(
         modifier = modifier
@@ -161,7 +175,17 @@ fun RemindersAiSettingsScreen(
 
                         Switch(
                             checked = preferences.smartRemindersEnabled,
-                            onCheckedChange = onSmartRemindersEnabledChange,
+                            onCheckedChange = { enabled ->
+                                if (enabled) {
+                                    ensureNotificationPermission {
+                                        notificationsEnabledState.value =
+                                            NotificationManagerCompat.from(context).areNotificationsEnabled()
+                                        onSmartRemindersEnabledChange(true)
+                                    }
+                                } else {
+                                    onSmartRemindersEnabledChange(false)
+                                }
+                            },
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = colors.surfaceElevated,
                                 checkedTrackColor = colors.accentPrimary

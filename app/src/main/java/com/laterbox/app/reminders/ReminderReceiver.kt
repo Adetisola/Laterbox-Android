@@ -144,36 +144,32 @@ class ReminderReceiver : BroadcastReceiver() {
                             customApiKey = prefs.geminiApiKey.ifBlank { null }
                         )
 
-                        when (result) {
-                            is AiCopyResult.Success -> {
-                                val posted = NotificationHelper.showSmartDigestNotification(
-                                    context = context,
-                                    link = currentLink,
-                                    copy = result.copy
-                                )
-                                if (posted) {
-                                    linkRepository.recordNudge(currentLink.id)
-                                    userPreferencesRepository.recordDeliveredSlot(slotKey)
-                                    Log.d(TAG, "Successfully delivered smart reminder for slot $slotKey")
-                                }
-                                try {
-                                    appContainer.contextualNotificationEngine.evaluateAndNotifyAppHealthIfNeeded()
-                                    appContainer.contextualNotificationEngine.maybeSendContextualSummaryOrTip()
-                                } catch (_: Throwable) {}
-                                scheduler.scheduleNext(type)
-                            }
-
+                        val copy = when (result) {
+                            is AiCopyResult.Success -> result.copy
                             is AiCopyResult.Failure -> {
-                                Log.w(TAG, "AI reminder generation failed for slot $slotKey: ${result.reason.userMessage}")
-                                try {
-                                    appContainer.contextualNotificationEngine.evaluateAndNotifyAppHealthIfNeeded()
-                                    appContainer.contextualNotificationEngine.maybeSendContextualSummaryOrTip()
-                                } catch (_: Throwable) {}
-                                // Never record failed delivery as successfully delivered!
-                                // Advance to next occurrence
-                                scheduler.scheduleNext(type)
+                                Log.w(TAG, "AI reminder generation failed for slot $slotKey (${result.reason.userMessage}); using honest plain copy fallback")
+                                PlainReminderCopy.forSmartDigest(
+                                    link = currentLink,
+                                    userName = prefs.userName.ifBlank { null }
+                                )
                             }
                         }
+
+                        val posted = NotificationHelper.showSmartDigestNotification(
+                            context = context,
+                            link = currentLink,
+                            copy = copy
+                        )
+                        if (posted) {
+                            linkRepository.recordNudge(currentLink.id)
+                            userPreferencesRepository.recordDeliveredSlot(slotKey)
+                            Log.d(TAG, "Successfully delivered smart reminder for slot $slotKey (isAi=${copy.isAiGenerated})")
+                        }
+                        try {
+                            appContainer.contextualNotificationEngine.evaluateAndNotifyAppHealthIfNeeded()
+                            appContainer.contextualNotificationEngine.maybeSendContextualSummaryOrTip()
+                        } catch (_: Throwable) {}
+                        scheduler.scheduleNext(type)
                     }
 
                     ACTION_TRIGGER_SMART_DIGEST -> {

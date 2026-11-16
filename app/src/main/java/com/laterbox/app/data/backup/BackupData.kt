@@ -22,6 +22,7 @@ data class BackupLink(
     val collectionNames: List<String> = emptyList(),
     val isRead: Boolean = false,
     val isArchived: Boolean = false,
+    val reminderAt: Long? = null,
     val createdAt: Long = System.currentTimeMillis()
 )
 

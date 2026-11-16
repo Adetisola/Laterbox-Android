@@ -85,40 +85,51 @@ class SmartReminderWorker(
 
             when (result) {
                 is AiCopyResult.Success -> {
-                    NotificationHelper.showSmartDigestNotification(
+                    val posted = NotificationHelper.showSmartDigestNotification(
                         context = applicationContext,
                         link = candidate,
                         copy = result.copy
                     )
-                    linkRepo.recordNudge(candidate.id)
-                    userPrefsRepo.recordDeliveredSlot(slotKey)
+                    if (posted) {
+                        linkRepo.recordNudge(candidate.id)
+                        userPrefsRepo.recordDeliveredSlot(slotKey)
+                    }
                     SmartReminderCoordinator.scheduleNext(applicationContext, type)
                     return Result.success()
                 }
 
                 is AiCopyResult.Failure -> {
-                    Log.w(TAG, "AI generation failed for slot $slotKey: ${result.reason.userMessage}")
-                    val canRetry = when (result.reason) {
-                        is AiFailure.Offline,
+                    Log.w(TAG, "AI generation failed for slot $slotKey (${result.reason.userMessage}); evaluating retry or fallback.")
+                    val canRetryTransient = when (result.reason) {
                         is AiFailure.Timeout,
                         is AiFailure.RateLimited,
                         is AiFailure.ServerError -> true
                         is AiFailure.NoApiKey,
+                        is AiFailure.Offline,
                         is AiFailure.AuthError,
                         is AiFailure.EmptyResponse,
                         is AiFailure.MalformedResponse -> false
                     }
 
-                    if (canRetry && runAttemptCount < 3) {
+                    if (canRetryTransient && runAttemptCount < 1) {
                         return Result.retry()
-                    } else {
-                        // Max retries exceeded or unrecoverable error:
-                        // Be honest! Never present fake template text as AI-generated.
-                        // Skip this slot quietly and schedule next occurrence.
-                        userPrefsRepo.recordDeliveredSlot(slotKey)
-                        SmartReminderCoordinator.scheduleNext(applicationContext, type)
-                        return Result.success()
                     }
+
+                    val fallbackCopy = com.laterbox.app.ai.PlainReminderCopy.forSmartDigest(
+                        link = candidate,
+                        userName = prefs.userName.ifBlank { null }
+                    )
+                    val posted = NotificationHelper.showSmartDigestNotification(
+                        context = applicationContext,
+                        link = candidate,
+                        copy = fallbackCopy
+                    )
+                    if (posted) {
+                        linkRepo.recordNudge(candidate.id)
+                        userPrefsRepo.recordDeliveredSlot(slotKey)
+                    }
+                    SmartReminderCoordinator.scheduleNext(applicationContext, type)
+                    return Result.success()
                 }
             }
         } catch (ce: CancellationException) {

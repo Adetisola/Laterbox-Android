@@ -172,8 +172,12 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
         )
     }
 
+    private val sharedOkHttpClient: okhttp3.OkHttpClient by lazy {
+        okhttp3.OkHttpClient()
+    }
+
     override val platformResolver: com.laterbox.app.media.domain.adapter.PlatformResolver by lazy {
-        val directAdapter = com.laterbox.app.media.data.adapters.direct.DirectUrlAdapter(okhttp3.OkHttpClient())
+        val directAdapter = com.laterbox.app.media.data.adapters.direct.DirectUrlAdapter(sharedOkHttpClient)
         val spotifyDiscovery = com.laterbox.app.media.data.adapters.spotify.MusicDiscoveryProviderImpl(
             appContext = context.applicationContext,
             runtimeManager = ytDlpRuntimeManager
@@ -188,10 +192,10 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             warmServer = warmYtDlpServer
         )
         val xAdapter = com.laterbox.app.media.data.adapters.x.XMediaAdapter(
-            okHttpClient = okhttp3.OkHttpClient(),
+            okHttpClient = sharedOkHttpClient,
             fallbackYtDlpAdapter = ytDlpAdapter
         )
-        val metadataAdapter = com.laterbox.app.media.data.adapters.metadata.MetadataOnlyAdapter(okhttp3.OkHttpClient())
+        val metadataAdapter = com.laterbox.app.media.data.adapters.metadata.MetadataOnlyAdapter(sharedOkHttpClient)
         val registry = com.laterbox.app.media.domain.adapter.AdapterRegistry(
             listOf(directAdapter, spotifyAdapter, xAdapter, ytDlpAdapter, metadataAdapter)
         )

@@ -27,6 +27,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.laterbox.app.data.preferences.InboxViewMode
 import com.laterbox.app.domain.model.SavedLink
 import com.laterbox.app.ui.components.EmptyStateView
 import com.laterbox.app.ui.components.SavedLinkCard
@@ -38,6 +39,10 @@ fun CollectionDetailScreen(
     onBackClick: () -> Unit,
     onLinkClick: (SavedLink) -> Unit,
     onQuickOpenClick: (SavedLink) -> Unit,
+    viewMode: InboxViewMode = InboxViewMode.HERO,
+    mediaReadyLinkIds: Set<Long> = emptySet(),
+    onToggleRead: ((SavedLink) -> Unit)? = null,
+    onArchive: ((SavedLink) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -112,7 +117,7 @@ fun CollectionDetailScreen(
                             start = spacing.base,
                             end = spacing.base,
                             top = spacing.sm,
-                            bottom = 148.dp
+                            bottom = 112.dp
                         ),
                         verticalArrangement = Arrangement.spacedBy(spacing.sm),
                         modifier = Modifier
@@ -126,7 +131,11 @@ fun CollectionDetailScreen(
                             SavedLinkCard(
                                 link = link,
                                 onClick = { onLinkClick(link) },
-                                onQuickOpenClick = { onQuickOpenClick(link) }
+                                onQuickOpenClick = { onQuickOpenClick(link) },
+                                viewMode = viewMode,
+                                isMediaReady = link.id in mediaReadyLinkIds,
+                                onToggleRead = onToggleRead?.let { cb -> { cb(link) } },
+                                onArchive = onArchive?.let { cb -> { cb(link) } }
                             )
                         }
                     }

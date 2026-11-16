@@ -66,6 +66,7 @@ class BackupManagerTest {
                     collectionName = "Design Inspiration",
                     isRead = true,
                     isArchived = false,
+                    reminderAt = 1700050000000L,
                     createdAt = 1700000000000L
                 )
             )
@@ -86,6 +87,7 @@ class BackupManagerTest {
         assertEquals("Important reference for typography", link.personalNote)
         assertEquals("Design Inspiration", link.collectionName)
         assertEquals(ContentType.ARTICLE, link.contentType)
+        assertEquals(1700050000000L, link.reminderAt)
         assertTrue(link.isRead)
     }
 

@@ -31,6 +31,8 @@ class ArchiveViewModel(
             archived.filter { link ->
                 link.title.contains(query, ignoreCase = true) ||
                     link.domain.contains(query, ignoreCase = true) ||
+                    link.originalUrl.contains(query, ignoreCase = true) ||
+                    (link.siteName?.contains(query, ignoreCase = true) == true) ||
                     (link.description?.contains(query, ignoreCase = true) == true) ||
                     (link.personalNote?.contains(query, ignoreCase = true) == true)
             }

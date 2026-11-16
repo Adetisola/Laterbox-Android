@@ -58,9 +58,16 @@ enum class MediaDownloadNetworkPolicy(val label: String) {
     ANY_NETWORK("Any network")
 }
 
+enum class CardTapAction(val label: String, val description: String) {
+    DETAIL_HUB("Open Detail Hub", "Show notes, offline media, transcript tools, and reader"),
+    IN_APP_READER("Open In-App Reader", "Jump straight into distraction-free reading mode"),
+    EXTERNAL_BROWSER("Open in Browser", "Launch directly in your external browser tab")
+}
+
 data class UserPreferences(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val autoMarkAsRead: Boolean = true,
+    val defaultCardTapAction: CardTapAction = CardTapAction.DETAIL_HUB,
     val includeInBackup: Boolean = true,
     val defaultCollectionId: Long? = null,
     val inboxViewMode: InboxViewMode = InboxViewMode.HERO,
@@ -123,7 +130,16 @@ data class UserPreferences(
     val shownTipIds: Set<String> = emptySet(),
     val lastAppHealthAlertAt: Long = 0L,
     val lastTipNotificationAt: Long = 0L,
-    val lastSummaryNotificationAt: Long = 0L
+    val lastSummaryNotificationAt: Long = 0L,
+    // On-device only product activity counters (never sent off-device)
+    val firstLaunchAt: Long = 0L,
+    val firstLinkSavedAt: Long = 0L,
+    val remindersDeliveredCount: Int = 0,
+    val remindersOpenedCount: Int = 0,
+    val readerOpensCount: Int = 0,
+    val shareCapturesCount: Int = 0,
+    val quickTileCapturesCount: Int = 0,
+    val manualCapturesCount: Int = 0
 ) {
     val allowSystemBackup: Boolean get() = includeInBackup
 
@@ -164,6 +180,7 @@ class UserPreferencesRepository(private val context: Context) {
     private object PreferencesKeys {
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val AUTO_MARK_AS_READ = booleanPreferencesKey("auto_mark_as_read")
+        val DEFAULT_CARD_TAP_ACTION = stringPreferencesKey("default_card_tap_action")
         val INCLUDE_IN_BACKUP = booleanPreferencesKey("include_in_backup")
         val DEFAULT_COLLECTION_ID = longPreferencesKey("default_collection_id")
         val INBOX_VIEW_MODE = stringPreferencesKey("inbox_view_mode")
@@ -237,6 +254,15 @@ class UserPreferencesRepository(private val context: Context) {
         val LAST_APP_HEALTH_ALERT_AT = longPreferencesKey("last_app_health_alert_at")
         val LAST_TIP_NOTIFICATION_AT = longPreferencesKey("last_tip_notification_at")
         val LAST_SUMMARY_NOTIFICATION_AT = longPreferencesKey("last_summary_notification_at")
+
+        val FIRST_LAUNCH_AT = longPreferencesKey("first_launch_at")
+        val FIRST_LINK_SAVED_AT = longPreferencesKey("first_link_saved_at")
+        val REMINDERS_DELIVERED_COUNT = intPreferencesKey("reminders_delivered_count")
+        val REMINDERS_OPENED_COUNT = intPreferencesKey("reminders_opened_count")
+        val READER_OPENS_COUNT = intPreferencesKey("reader_opens_count")
+        val SHARE_CAPTURES_COUNT = intPreferencesKey("share_captures_count")
+        val QUICK_TILE_CAPTURES_COUNT = intPreferencesKey("quick_tile_captures_count")
+        val MANUAL_CAPTURES_COUNT = intPreferencesKey("manual_captures_count")
     }
 
     val userPreferencesFlow: Flow<UserPreferences> = context.userDataStore.data.map { preferences ->
@@ -248,6 +274,12 @@ class UserPreferencesRepository(private val context: Context) {
         }
 
         val autoMarkAsRead = preferences[PreferencesKeys.AUTO_MARK_AS_READ] ?: true
+        val cardTapStr = preferences[PreferencesKeys.DEFAULT_CARD_TAP_ACTION] ?: CardTapAction.DETAIL_HUB.name
+        val defaultCardTapAction = try {
+            CardTapAction.valueOf(cardTapStr)
+        } catch (_: Exception) {
+            CardTapAction.DETAIL_HUB
+        }
         val includeInBackup = preferences[PreferencesKeys.INCLUDE_IN_BACKUP] ?: true
         val defaultCollectionId = preferences[PreferencesKeys.DEFAULT_COLLECTION_ID]
 
@@ -362,6 +394,7 @@ class UserPreferencesRepository(private val context: Context) {
         UserPreferences(
             themeMode = themeMode,
             autoMarkAsRead = autoMarkAsRead,
+            defaultCardTapAction = defaultCardTapAction,
             includeInBackup = includeInBackup,
             defaultCollectionId = defaultCollectionId,
             inboxViewMode = inboxViewMode,
@@ -418,7 +451,15 @@ class UserPreferencesRepository(private val context: Context) {
             shownTipIds = preferences[PreferencesKeys.SHOWN_TIP_IDS] ?: emptySet(),
             lastAppHealthAlertAt = preferences[PreferencesKeys.LAST_APP_HEALTH_ALERT_AT] ?: 0L,
             lastTipNotificationAt = preferences[PreferencesKeys.LAST_TIP_NOTIFICATION_AT] ?: 0L,
-            lastSummaryNotificationAt = preferences[PreferencesKeys.LAST_SUMMARY_NOTIFICATION_AT] ?: 0L
+            lastSummaryNotificationAt = preferences[PreferencesKeys.LAST_SUMMARY_NOTIFICATION_AT] ?: 0L,
+            firstLaunchAt = preferences[PreferencesKeys.FIRST_LAUNCH_AT] ?: 0L,
+            firstLinkSavedAt = preferences[PreferencesKeys.FIRST_LINK_SAVED_AT] ?: 0L,
+            remindersDeliveredCount = preferences[PreferencesKeys.REMINDERS_DELIVERED_COUNT] ?: 0,
+            remindersOpenedCount = preferences[PreferencesKeys.REMINDERS_OPENED_COUNT] ?: 0,
+            readerOpensCount = preferences[PreferencesKeys.READER_OPENS_COUNT] ?: 0,
+            shareCapturesCount = preferences[PreferencesKeys.SHARE_CAPTURES_COUNT] ?: 0,
+            quickTileCapturesCount = preferences[PreferencesKeys.QUICK_TILE_CAPTURES_COUNT] ?: 0,
+            manualCapturesCount = preferences[PreferencesKeys.MANUAL_CAPTURES_COUNT] ?: 0
         )
     }
 
@@ -434,6 +475,12 @@ class UserPreferencesRepository(private val context: Context) {
     suspend fun setAutoMarkAsRead(enabled: Boolean) {
         context.userDataStore.edit { preferences ->
             preferences[PreferencesKeys.AUTO_MARK_AS_READ] = enabled
+        }
+    }
+
+    suspend fun setDefaultCardTapAction(action: CardTapAction) {
+        context.userDataStore.edit { preferences ->
+            preferences[PreferencesKeys.DEFAULT_CARD_TAP_ACTION] = action.name
         }
     }
 
@@ -783,6 +830,78 @@ class UserPreferencesRepository(private val context: Context) {
     suspend fun recordSummaryNotificationPosted(timestamp: Long = System.currentTimeMillis()) {
         context.userDataStore.edit { preferences ->
             preferences[PreferencesKeys.LAST_SUMMARY_NOTIFICATION_AT] = timestamp
+        }
+    }
+
+    suspend fun recordFirstLaunchIfNeeded(timestamp: Long = System.currentTimeMillis()) {
+        context.userDataStore.edit { preferences ->
+            val current = preferences[PreferencesKeys.FIRST_LAUNCH_AT] ?: 0L
+            if (current <= 0L) {
+                preferences[PreferencesKeys.FIRST_LAUNCH_AT] = timestamp
+            }
+        }
+    }
+
+    suspend fun recordFirstLinkSavedIfNeeded(timestamp: Long = System.currentTimeMillis()) {
+        context.userDataStore.edit { preferences ->
+            val current = preferences[PreferencesKeys.FIRST_LINK_SAVED_AT] ?: 0L
+            if (current <= 0L) {
+                preferences[PreferencesKeys.FIRST_LINK_SAVED_AT] = timestamp
+            }
+        }
+    }
+
+    suspend fun incrementReaderOpens() {
+        context.userDataStore.edit { preferences ->
+            preferences[PreferencesKeys.READER_OPENS_COUNT] =
+                (preferences[PreferencesKeys.READER_OPENS_COUNT] ?: 0) + 1
+        }
+    }
+
+    suspend fun incrementRemindersDelivered() {
+        context.userDataStore.edit { preferences ->
+            preferences[PreferencesKeys.REMINDERS_DELIVERED_COUNT] =
+                (preferences[PreferencesKeys.REMINDERS_DELIVERED_COUNT] ?: 0) + 1
+        }
+    }
+
+    suspend fun incrementRemindersOpened() {
+        context.userDataStore.edit { preferences ->
+            preferences[PreferencesKeys.REMINDERS_OPENED_COUNT] =
+                (preferences[PreferencesKeys.REMINDERS_OPENED_COUNT] ?: 0) + 1
+        }
+    }
+
+    suspend fun recordCaptureSource(source: com.laterbox.app.capture.CaptureSource) {
+        context.userDataStore.edit { preferences ->
+            when (source) {
+                com.laterbox.app.capture.CaptureSource.SHARE_SHEET,
+                com.laterbox.app.capture.CaptureSource.PROCESS_TEXT -> {
+                    preferences[PreferencesKeys.SHARE_CAPTURES_COUNT] =
+                        (preferences[PreferencesKeys.SHARE_CAPTURES_COUNT] ?: 0) + 1
+                }
+                com.laterbox.app.capture.CaptureSource.QUICK_SETTINGS_TILE,
+                com.laterbox.app.capture.CaptureSource.ACCESSIBILITY_SELECTION -> {
+                    preferences[PreferencesKeys.QUICK_TILE_CAPTURES_COUNT] =
+                        (preferences[PreferencesKeys.QUICK_TILE_CAPTURES_COUNT] ?: 0) + 1
+                }
+                com.laterbox.app.capture.CaptureSource.IN_APP,
+                com.laterbox.app.capture.CaptureSource.CLIPBOARD_SUGGESTION -> {
+                    preferences[PreferencesKeys.MANUAL_CAPTURES_COUNT] =
+                        (preferences[PreferencesKeys.MANUAL_CAPTURES_COUNT] ?: 0) + 1
+                }
+            }
+        }
+    }
+
+    suspend fun resetActivityCounters() {
+        context.userDataStore.edit { preferences ->
+            preferences.remove(PreferencesKeys.REMINDERS_DELIVERED_COUNT)
+            preferences.remove(PreferencesKeys.REMINDERS_OPENED_COUNT)
+            preferences.remove(PreferencesKeys.READER_OPENS_COUNT)
+            preferences.remove(PreferencesKeys.SHARE_CAPTURES_COUNT)
+            preferences.remove(PreferencesKeys.QUICK_TILE_CAPTURES_COUNT)
+            preferences.remove(PreferencesKeys.MANUAL_CAPTURES_COUNT)
         }
     }
 }

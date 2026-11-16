@@ -169,6 +169,9 @@ class LinkRepository(
             val activityRepo = app?.container?.activityEventRepository
             scope.launch {
                 try {
+                    userPrefsRepo?.recordFirstLinkSavedIfNeeded()
+                } catch (_: Throwable) {}
+                try {
                     activityRepo?.recordEvent(
                         type = com.laterbox.app.data.repository.ActivityEventType.LINK_SAVED,
                         title = "Saved $resolvedTitle",
@@ -645,6 +648,38 @@ class LinkRepository(
     suspend fun setArchivedBatch(ids: Collection<Long>, isArchived: Boolean) {
         if (ids.isEmpty()) return
         savedLinkDao.setArchivedBatch(ids.toList(), isArchived)
+    }
+
+    suspend fun archiveAllReadInboxLinks(): List<Long> {
+        val readIds = savedLinkDao.getReadInboxLinkIds()
+        if (readIds.isNotEmpty()) {
+            savedLinkDao.setArchivedBatch(readIds, true)
+        }
+        return readIds
+    }
+
+    suspend fun seedStarterGuideIfMissing(): Long? {
+        val guideUrl = com.laterbox.app.data.reader.ArticleContentExtractor.STARTER_GUIDE_URL
+        val normalized = UrlNormalizer.normalize(guideUrl)
+        if (savedLinkDao.findLinkByNormalizedUrl(normalized) != null) return null
+        val now = System.currentTimeMillis()
+        val entity = SavedLinkEntity(
+            originalUrl = guideUrl,
+            normalizedUrl = normalized,
+            title = "Welcome to Laterbox: Read Offline, Organize & Remember",
+            description = "Learn how to save links from any app, read distraction-free offline, inspect media, and schedule calm reminders.",
+            siteName = "Laterbox Guide",
+            domain = "example.com",
+            contentType = ContentType.ARTICLE,
+            personalNote = "Tip: Tap 'Read in Laterbox' for distraction-free reading, or long-press cards for batch triage.",
+            isRead = false,
+            isArchived = false,
+            metadataStatus = MetadataStatus.SUCCESS,
+            lastFetchedAt = now,
+            createdAt = now,
+            updatedAt = now
+        )
+        return runCatching { savedLinkDao.insertLink(entity) }.getOrNull()
     }
 
     suspend fun setRead(id: Long, isRead: Boolean) {

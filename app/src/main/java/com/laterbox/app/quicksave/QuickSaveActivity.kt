@@ -152,6 +152,15 @@ class QuickSaveActivity : ComponentActivity() {
                                                             ClipboardSuggestionManager.computeHash(savedUrl)
                                                         )
                                                     }
+                                                    if (!isUpdate) {
+                                                        val rawSource = intent.getStringExtra(EXTRA_CAPTURE_SOURCE)
+                                                        val captureSource = runCatching {
+                                                            if (rawSource != null) com.laterbox.app.capture.CaptureSource.valueOf(rawSource)
+                                                            else com.laterbox.app.capture.CaptureSource.QUICK_SETTINGS_TILE
+                                                        }.getOrDefault(com.laterbox.app.capture.CaptureSource.QUICK_SETTINGS_TILE)
+                                                        userPrefsRepo.recordCaptureSource(captureSource)
+                                                        userPrefsRepo.recordFirstLinkSavedIfNeeded()
+                                                    }
                                                     com.laterbox.app.ui.util.SaveFeedbackHelper.showSaveSuccess(
                                                         this@QuickSaveActivity,
                                                         isUpdate

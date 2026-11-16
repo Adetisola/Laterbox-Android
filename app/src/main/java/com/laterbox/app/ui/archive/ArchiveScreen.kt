@@ -44,6 +44,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.laterbox.app.data.preferences.InboxViewMode
 import com.laterbox.app.domain.model.SavedLink
 import com.laterbox.app.ui.components.DateGroupHeader
 import com.laterbox.app.ui.components.DateGrouper
@@ -71,6 +72,9 @@ fun ArchiveScreen(
     onPermanentDelete: (Long) -> Unit,
     onSettingsClick: () -> Unit = {},
     onMenuClick: (() -> Unit)? = null,
+    viewMode: InboxViewMode = InboxViewMode.HERO,
+    mediaReadyLinkIds: Set<Long> = emptySet(),
+    onToggleRead: ((SavedLink) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -175,7 +179,7 @@ fun ArchiveScreen(
                             start = spacing.base,
                             end = spacing.base,
                             top = 0.dp,
-                            bottom = 32.dp
+                            bottom = 112.dp
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
@@ -219,7 +223,10 @@ fun ArchiveScreen(
                                             link = link,
                                             onClick = { onLinkClick(link) },
                                             onQuickOpenClick = { onQuickOpenClick(link) },
+                                            viewMode = viewMode,
                                             shape = cardShape,
+                                            isMediaReady = link.id in mediaReadyLinkIds,
+                                            onToggleRead = onToggleRead?.let { cb -> { cb(link) } },
                                             onArchive = { onRestoreLink(link.id) },
                                             onDelete = { onOpenDeleteDialog(link) }
                                         )

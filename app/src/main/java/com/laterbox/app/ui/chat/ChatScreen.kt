@@ -28,13 +28,19 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -97,6 +103,7 @@ fun ChatScreen(
     val typography = LaterboxTheme.typography
     val spacing = LaterboxTheme.spacing
     val listState = rememberLazyListState()
+    var showContextTransparencyDialog by remember { mutableStateOf(false) }
 
     val density = LocalDensity.current
     val isImeVisible = WindowInsets.ime.getBottom(density) > WindowInsets.navigationBars.getBottom(density)
@@ -161,6 +168,50 @@ fun ChatScreen(
                     contentDescription = "New chat",
                     onClick = onNewChatClick
                 )
+            }
+
+            if (uiState.assistantEnabled && uiState.aiDisclosureAccepted) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = spacing.base)
+                        .padding(bottom = spacing.xs),
+                    horizontalArrangement = Arrangement.Start
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .testTag("ai_context_transparency_pill")
+                            .clip(LaterboxShapeTokens.Chip)
+                            .background(colors.surfacePrimary)
+                            .border(spacing.hairline, colors.borderSubtle, LaterboxShapeTokens.Chip)
+                            .clickable(role = Role.Button) { showContextTransparencyDialog = true }
+                            .padding(horizontal = 10.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            painter = painterResource(id = LaterboxIcons.Inbox),
+                            contentDescription = null,
+                            modifier = Modifier.size(13.dp),
+                            tint = colors.accentPrimary
+                        )
+                        Text(
+                            text = "Local Library Context · Sent only on prompt",
+                            style = typography.metaText.copy(fontSize = 11.5.sp),
+                            color = colors.textSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "Inspect",
+                            style = typography.metaText.copy(
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Medium
+                            ),
+                            color = colors.accentPrimary
+                        )
+                    }
+                }
             }
 
             if (!uiState.assistantEnabled) {
@@ -268,6 +319,72 @@ fun ChatScreen(
                     )
                 }
             }
+        }
+
+        if (showContextTransparencyDialog) {
+            AlertDialog(
+                onDismissRequest = { showContextTransparencyDialog = false },
+                containerColor = colors.surfaceElevated,
+                title = {
+                    Text(
+                        text = "What Laterbox Shares on Prompt",
+                        style = typography.titleSmall,
+                        color = colors.textPrimary
+                    )
+                },
+                text = {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(spacing.xs)
+                    ) {
+                        Text(
+                            text = "• Sent only when you press Send: Nothing syncs automatically in the background.",
+                            style = typography.bodySecondary.copy(fontSize = 13.sp),
+                            color = colors.textSecondary
+                        )
+                        Text(
+                            text = "• Relevant library context (up to 10 links): Link titles, domains, URLs, personal notes, descriptions, read/reminder flags, and collection names.",
+                            style = typography.bodySecondary.copy(fontSize = 13.sp),
+                            color = colors.textSecondary
+                        )
+                        Text(
+                            text = "• Sanitized local status: Inbox/archive counts, downloaded file count, yt-dlp/FFmpeg/QuickJS availability, and recent inspection/download error summaries without private file paths.",
+                            style = typography.bodySecondary.copy(fontSize = 13.sp),
+                            color = colors.textSecondary
+                        )
+                        Text(
+                            text = "• Never sent: Your Gemini API key, raw SQLite database, device storage paths, or downloaded media files.",
+                            style = typography.bodySecondary.copy(fontSize = 13.sp),
+                            color = colors.textPrimary
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            showContextTransparencyDialog = false
+                            onOpenAiSettings()
+                        }
+                    ) {
+                        Text(
+                            text = "AI Settings",
+                            style = typography.uiMedium,
+                            color = colors.textSecondary
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showContextTransparencyDialog = false }) {
+                        Text(
+                            text = "Got it",
+                            style = typography.uiMedium,
+                            color = colors.accentPrimary
+                        )
+                    }
+                }
+            )
         }
     }
 }

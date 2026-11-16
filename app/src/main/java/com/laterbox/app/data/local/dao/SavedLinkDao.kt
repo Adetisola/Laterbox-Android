@@ -23,8 +23,17 @@ interface SavedLinkDao {
     @Query("SELECT COUNT(*) FROM saved_links WHERE is_archived = 0")
     suspend fun getInboxCount(): Int
 
+    @Query("SELECT COUNT(*) FROM saved_links WHERE is_archived = 0 AND is_read = 0")
+    suspend fun getUnreadInboxCount(): Int
+
     @Query("SELECT COUNT(*) FROM saved_links WHERE is_archived = 1")
     suspend fun getArchivedCount(): Int
+
+    @Query("SELECT COUNT(*) FROM saved_links WHERE is_read = 1")
+    suspend fun getTotalReadCount(): Int
+
+    @Query("SELECT COUNT(*) FROM saved_links WHERE reminder_at IS NOT NULL AND nudge_dismissed = 0 AND is_archived = 0")
+    suspend fun getActiveReminderCount(): Int
 
     @Transaction
     @Query("SELECT * FROM saved_links WHERE is_archived = 0 ORDER BY created_at DESC LIMIT :limit")
@@ -64,12 +73,17 @@ interface SavedLinkDao {
         WHERE is_archived = 0 AND (
             title LIKE '%' || :query || '%' OR 
             domain LIKE '%' || :query || '%' OR 
+            site_name LIKE '%' || :query || '%' OR
             original_url LIKE '%' || :query || '%' OR 
-            personal_note LIKE '%' || :query || '%'
+            personal_note LIKE '%' || :query || '%' OR
+            description LIKE '%' || :query || '%'
         ) 
         ORDER BY created_at DESC
     """)
     fun searchLinks(query: String): Flow<List<SavedLinkWithCollection>>
+
+    @Query("SELECT id FROM saved_links WHERE is_archived = 0 AND is_read = 1")
+    suspend fun getReadInboxLinkIds(): List<Long>
 
     @Transaction
     @Query("SELECT * FROM saved_links WHERE normalized_url = :normalizedUrl LIMIT 1")

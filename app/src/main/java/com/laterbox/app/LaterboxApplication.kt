@@ -44,6 +44,19 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
     }
 
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile
+    private var lastReconcileAtMs: Long = 0L
+
+    private suspend fun reconcileInspectionsIfNeeded(minIntervalMs: Long = 30_000L) {
+        val now = System.currentTimeMillis()
+        if (now - lastReconcileAtMs < minIntervalMs) return
+        lastReconcileAtMs = now
+        try {
+            container.mediaInspectionManager.reconcileInspections()
+        } catch (t: Throwable) {
+            Log.w("LaterboxApplication", "Inspection reconciliation warning: ${t.message}")
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -68,13 +81,28 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
             Log.w("LaterboxApplication", "Failed to install App Check provider: ${e.message}")
         }
 
-        // Reset any links left stuck in FETCHING from an abrupt process termination and enqueue workers
+        // Fast startup state recovery first; defer heavy yt-dlp / FFmpeg / orphan sweep I/O
         applicationScope.launch {
             try {
-                // Initialize yt-dlp core engine asynchronously via YtDlpRuntimeManager
+                container.userPreferencesRepository.recordFirstLaunchIfNeeded()
+                container.database.savedLinkDao().resetStuckFetchingLinks()
+                MetadataSyncWorker.enqueue(this@LaterboxApplication)
+
+                val prefs = container.userPreferencesRepository.userPreferencesFlow.first()
+                SmartReminderCoordinator.sync(
+                    context = this@LaterboxApplication,
+                    settings = prefs.toSmartReminderSettings()
+                )
+
+                // Recover any interrupted media downloads quickly
+                container.mediaRepository.recoverInterruptedTasks()
+
+                // Defer heavy binary warmup, file sweep, APK cleanup, and inspection reconciliation
+                // until after first frame has settled
+                kotlinx.coroutines.delay(2_500L)
+
                 try {
                     container.ytDlpRuntimeManager.ensureYtDlpInitialized()
-                    // Pre-warm FFmpeg asynchronously without blocking other startup tasks
                     applicationScope.launch {
                         try {
                             container.ytDlpRuntimeManager.ensureFfmpegInitialized()
@@ -86,20 +114,8 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
                     Log.w("LaterboxApplication", "yt-dlp runtime init warning: ${t.message}")
                 }
 
-                container.database.savedLinkDao().resetStuckFetchingLinks()
-                MetadataSyncWorker.enqueue(this@LaterboxApplication)
-
-                val prefs = container.userPreferencesRepository.userPreferencesFlow.first()
-                SmartReminderCoordinator.sync(
-                    context = this@LaterboxApplication,
-                    settings = prefs.toSmartReminderSettings()
-                )
-
-                // Recover any interrupted media downloads and sweep orphan files
-                container.mediaRepository.recoverInterruptedTasks()
                 container.mediaRepository.runOrphanSweep()
 
-                // Sweep obsolete or already installed update APKs from cache
                 try {
                     val currentVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: "1.0.0"
                     ApkInstallerHelper.cleanupOldUpdateApks(this@LaterboxApplication, currentVersion)
@@ -107,8 +123,7 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
                     Log.w("LaterboxApplication", "Failed to clean old update APKs: ${t.message}")
                 }
 
-                // Reconcile and recover pending, stale, or uninspected media links
-                container.mediaInspectionManager.reconcileInspections()
+                reconcileInspectionsIfNeeded()
 
                 // Check for yt-dlp binary updates if > 24 hours (deferred to prevent startup lock contention)
                 applicationScope.launch {
@@ -119,23 +134,19 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
                         Log.w("LaterboxApplication", "Deferred yt-dlp update check error: ${t.message}")
                     }
                 }
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 // Safeguard against test environments
             }
         }
 
-        // Register foreground transition observer to reconcile media inspections
+        // Register foreground transition observer to reconcile media inspections cleanly (debounced)
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
             private var startedActivities = 0
 
             override fun onActivityStarted(activity: android.app.Activity) {
                 if (startedActivities == 0) {
                     applicationScope.launch {
-                        try {
-                            container.mediaInspectionManager.reconcileInspections()
-                        } catch (t: Throwable) {
-                            Log.w("LaterboxApplication", "Foreground inspection reconciliation error: ${t.message}")
-                        }
+                        reconcileInspectionsIfNeeded()
                     }
                 }
                 startedActivities++

@@ -1,0 +1,43 @@
+# LaterBox — Product Improvement, UX Overhaul & Technical Refactoring Suite
+
+Welcome to the comprehensive product strategy, UX overhaul, retention architecture, and technical refactoring documentation for **LaterBox**.
+
+This documentation suite was produced following a full end-to-end codebase inspection (`160+` production Kotlin files, `77` test suites, Room database schema v11, Jetpack Compose UI, `yt-dlp`/`FFmpeg`/`QuickJS` media engine, YouTube transcript pipeline, and Gemini AI assistant) combined with source-grounded principles from the **Growth Design Intelligence** (*Grow Your Business With Design* 27-video library by Tim Gabe).
+
+---
+
+## Documentation Index
+
+1. **[01 — Comprehensive Product Audit](file:///home/antigravity/Adetisola/Laterbox/docs/product-overhaul/01-product-audit.md)**
+   - **Phase 1 & Phase 2 Deliverable**: Evidence-based mapping of what LaterBox actually is today vs. what its documentation claims, followed by a deep-dive audit across Product Strategy, UI & Visual Design, UX & Information Architecture, Onboarding & Activation, Retention & Engagement, Capture & Shortcuts, Media & Transcripts, AI Assistant, Settings, Privacy, Offline Reliability, Performance, Accessibility, and Technical Debt.
+
+2. **[02 — Product Strategy, Diagnosis & Prioritised Recommendations](file:///home/antigravity/Adetisola/Laterbox/docs/product-overhaul/02-product-strategy-and-recommendations.md)**
+   - **Phase 3 & Phase 4.1–4.2 Deliverable**: Executive product diagnosis (strengths, weaknesses, risks, opportunities), source-grounded **Growth Design Intelligence** synthesis with exact video/timestamp citations and evidence classifications, and the master **Prioritised Improvement Opportunities** register (distinguishing confirmed codebase issues from product hypotheses).
+
+3. **[03 — Proposed UX, Information Architecture & Onboarding Flows](file:///home/antigravity/Adetisola/Laterbox/docs/product-overhaul/03-proposed-ux-and-onboarding-flows.md)**
+   - **Phase 4.3–4.4 Deliverable**: Cohesive redesign of LaterBox's navigation (activating the orphaned bottom navigation bar + compact contextual assistant), Inbox triage filters, `SavedLinkCard` tap hierarchy, `SavedItemDetailSheet` reading/consumption-first layout, interactive `<60s` onboarding flow with pre-populated sample item, and design-system refinements.
+
+4. **[04 — Retention & Engagement Strategy](file:///home/antigravity/Adetisola/Laterbox/docs/product-overhaul/04-retention-strategy.md)**
+   - **Phase 2.E & Phase 4.3 Deliverable**: Ethical repeat-usage architecture grounded in LaterBox's core "Save → Enrich/Download → Consume → Archive" loop, fixing the silent Smart Digest failure bug, contextual `POST_NOTIFICATIONS` permission priming, no-shame backlog triage ("Forgiveness Design"), and 3-Stage Gift media/transcript moments.
+
+5. **[05 — Technical Refactoring & Measurement Plan](file:///home/antigravity/Adetisola/Laterbox/docs/product-overhaul/05-technical-refactoring-plan.md)**
+   - **Phase 4.5 & Phase 4.6 Deliverable**: Architectural improvements (destination-scoped ViewModels, shared `OkHttpClient` pool, staged cold-startup initialization, DAO search/multi-collection/backup fixes, backward compatibility) and a local-first, privacy-preserving Product Metrics & Funnel Instrumentation specification.
+
+6. **[06 — Phased Implementation Roadmap](file:///home/antigravity/Adetisola/Laterbox/docs/product-overhaul/06-implementation-roadmap.md)**
+   - **Phase 4.7 Deliverable**: Sequenced 5-phase engineering and UX execution plan with clear objectives, affected files, dependencies, acceptance criteria, and automated/manual verification gates.
+
+7. **[07 — Assumptions, Hypotheses & Open Questions](file:///home/antigravity/Adetisola/Laterbox/docs/product-overhaul/07-assumptions-and-open-questions.md)**
+   - **Phase 5 Checkpoint Deliverable**: Key strategic decisions, product trade-offs, and open questions requiring sign-off before implementation begins.
+
+---
+
+## Executive Summary of Key Findings
+
+| Dimension | Current Reality in Codebase | Proposed Overhaul Direction |
+| :--- | :--- | :--- |
+| **Product Identity** | `README.md` and `OnboardingSheet.kt` describe a *"minimalist, distraction-free reading list with no notification badges."* In reality, LaterBox is a **local-first personal media, transcript, and link vault with an embedded AI assistant**—yet it lacks an in-app article reader view. | Reposition honestly as **"Your Local-First Link, Media & Knowledge Vault"** AND add a clean **In-App Reader / Consumption View** so articles, videos, audio, and transcripts can all be consumed first-class inside the app. |
+| **Navigation & Ergonomics** | [`LaterboxBottomBar.kt`](file:///home/antigravity/Adetisola/Laterbox/app/src/main/java/com/laterbox/app/ui/components/LaterboxBottomBar.kt#L59) is completely unused (dead code). All navigation requires reaching for the top-left hamburger drawer while [`FloatingChatComposer.kt`](file:///home/antigravity/Adetisola/Laterbox/app/src/main/java/com/laterbox/app/ui/components/FloatingChatComposer.kt#L81) permanently occupies the bottom of the Inbox. | Activate the bottom navigation bar (`Inbox`, `Collections`, `Downloads`, `Archive`) for 1-handed thumb reach; convert the full-width chat bar into a compact contextual Assistant pill/FAB + `+` Save action. |
+| **Primary Card Action** | Tapping [`SavedLinkCard.kt`](file:///home/antigravity/Adetisola/Laterbox/app/src/main/java/com/laterbox/app/ui/components/SavedLinkCard.kt#L121) opens [`SavedItemDetailSheet.kt`](file:///home/antigravity/Adetisola/Laterbox/app/src/main/java/com/laterbox/app/ui/sheets/SavedItemDetailSheet.kt#L92) with editable text fields (`Title`, `Personal Note`) dominating the top half, pushing Media & Transcripts below the fold. Opening the link requires tapping a small `"View ↗"` chip. | Redesign [`SavedItemDetailSheet.kt`](file:///home/antigravity/Adetisola/Laterbox/app/src/main/java/com/laterbox/app/ui/sheets/SavedItemDetailSheet.kt) into a **Consumption-First Hub** (hero preview, primary Open/Play/Read CTA, Media & Transcript actions above the fold, and a clean toggle for editing title/notes). |
+| **Onboarding & Time-to-First-Value** | [`OnboardingSheet.kt`](file:///home/antigravity/Adetisola/Laterbox/app/src/main/java/com/laterbox/app/ui/onboarding/OnboardingSheet.kt#L45) is a 3-slide passive text modal over an empty `"Nothing saved. Yet."` Inbox, instructing users to leave the app to test saving. | Replace with an **Interactive Value-First Onboarding** (`<45s`) that seeds or lets the user 1-tap save a live interactive showcase link (with working transcript/media preview & reminder demo) so users experience the "Aha!" moment immediately inside the app. |
+| **Retention & Reminders Reliability** | **Confirmed Bug #1**: `POST_NOTIFICATIONS` is never requested during onboarding or when setting a reminder—only inside [`MediaSection.kt`](file:///home/antigravity/Adetisola/Laterbox/app/src/main/java/com/laterbox/app/media/ui/linkdetail/MediaSection.kt#L125) when downloading media. **Confirmed Bug #2**: [`SmartReminderWorker.kt`](file:///home/antigravity/Adetisola/Laterbox/app/src/main/java/com/laterbox/app/reminders/smart/SmartReminderWorker.kt#L106-L122) and [`ReminderReceiver.kt`](file:///home/antigravity/Adetisola/Laterbox/app/src/main/java/com/laterbox/app/reminders/ReminderReceiver.kt#L166-L175) silently abort Smart Digest delivery when Gemini AI fails (e.g., no API key or offline) instead of falling back to deterministic copy. | Add contextual `POST_NOTIFICATIONS` permission priming when scheduling reminders or enabling digests, and implement [`PlainReminderCopy.forSmartDigest()`](file:///home/antigravity/Adetisola/Laterbox/app/src/main/java/com/laterbox/app/ai/SmartReminderCopy.kt#L62) fallback so Smart Digests work 100% reliably offline and without an API key. |
+| **Technical Architecture** | [`LaterboxNavGraph.kt`](file:///home/antigravity/Adetisola/Laterbox/app/src/main/java/com/laterbox/app/ui/navigation/LaterboxNavGraph.kt#L125-L135) instantiates all 11 ViewModels eagerly at app root; [`AppContainer.kt`](file:///home/antigravity/Adetisola/Laterbox/app/src/main/java/com/laterbox/app/di/AppContainer.kt#L176-L195) creates multiple separate `OkHttpClient` instances; [`LaterboxApplication.kt`](file:///home/antigravity/Adetisola/Laterbox/app/src/main/java/com/laterbox/app/LaterboxApplication.kt#L35-L89) fires 8 concurrent startup tasks on cold launch. | Scope ViewModels to destinations/sheets, share a single `OkHttpClient` pool in `AppContainer`, stage startup initialization behind first-frame rendering, and fix DAO search/multi-collection/backup gaps. |

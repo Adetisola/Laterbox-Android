@@ -101,4 +101,45 @@ class SmartDigestTest {
         assertEquals("AI returned an empty response", AiFailure.EmptyResponse.userMessage)
         assertEquals("AI returned unparseable content", AiFailure.MalformedResponse.userMessage)
     }
+
+    @Test
+    fun plainReminderCopy_forSmartDigest_usesPersonalNoteAndMarksNonAi() {
+        val link = SavedLink(
+            id = 10L,
+            originalUrl = "https://example.com/deep-dive",
+            normalizedUrl = "https://example.com/deep-dive",
+            title = "Architecture Guide",
+            domain = "example.com",
+            siteName = "Example",
+            personalNote = "Compare with our current Room schema",
+            contentType = ContentType.ARTICLE
+        )
+
+        val copy = PlainReminderCopy.forSmartDigest(link, userName = "Timi")
+
+        assertFalse(copy.isAiGenerated)
+        assertEquals(ReminderOrigin.SMART_DIGEST, copy.origin)
+        assertTrue(copy.title.contains("Timi"))
+        assertTrue(copy.body.contains("Compare with our current Room schema"))
+        assertTrue(copy.body.contains("Example"))
+    }
+
+    @Test
+    fun plainReminderCopy_forSmartDigest_withoutNoteUsesContentType() {
+        val link = SavedLink(
+            id = 11L,
+            originalUrl = "https://youtube.com/watch?v=abc",
+            normalizedUrl = "https://youtube.com/watch?v=abc",
+            title = "Compose Performance Talk",
+            domain = "youtube.com",
+            contentType = ContentType.VIDEO
+        )
+
+        val copy = PlainReminderCopy.forSmartDigest(link, userName = null)
+
+        assertFalse(copy.isAiGenerated)
+        assertEquals(ReminderOrigin.SMART_DIGEST, copy.origin)
+        assertTrue(copy.title.startsWith("Ready to watch:"))
+        assertTrue(copy.body.contains("Compose Performance Talk"))
+    }
 }

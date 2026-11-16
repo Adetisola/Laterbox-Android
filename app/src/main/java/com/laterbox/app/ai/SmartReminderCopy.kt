@@ -82,4 +82,35 @@ object PlainReminderCopy {
             origin = ReminderOrigin.MANUAL
         )
     }
+
+    fun forSmartDigest(link: SavedLink, userName: String? = null): SmartReminderCopy {
+        val cleanName = userName?.trim()?.takeIf { it.isNotBlank() }
+        val displayTitle = link.title.takeIf { it.isNotBlank() } ?: link.domain.ifBlank { "Saved link" }
+        val sourceLabel = link.siteName?.takeIf { it.isNotBlank() } ?: link.domain.ifBlank { "your inbox" }
+
+        val title = when (link.contentType) {
+            com.laterbox.app.domain.model.ContentType.VIDEO -> "Ready to watch: ${displayTitle.take(32)}"
+            com.laterbox.app.domain.model.ContentType.DISCUSSION -> "Revisit thread: ${displayTitle.take(32)}"
+            com.laterbox.app.domain.model.ContentType.PRODUCT -> "Check saved item: ${displayTitle.take(30)}"
+            else -> if (cleanName != null) {
+                "Hi $cleanName, revisit ${displayTitle.take(28)}"
+            } else {
+                "Revisit: ${displayTitle.take(38)}"
+            }
+        }
+
+        val noteSnippet = link.personalNote?.trim()?.takeIf { it.isNotBlank() }?.take(100)
+        val body = when {
+            noteSnippet != null -> "Note: \"$noteSnippet\" • $sourceLabel"
+            cleanName != null -> "Hi $cleanName, \"$displayTitle\" from $sourceLabel is waiting in your Laterbox."
+            else -> "You saved \"$displayTitle\" from $sourceLabel to check out later."
+        }
+
+        return SmartReminderCopy(
+            title = title,
+            body = body,
+            isAiGenerated = false,
+            origin = ReminderOrigin.SMART_DIGEST
+        )
+    }
 }

@@ -60,7 +60,7 @@ fun StorageTab(
     Column(modifier = modifier.fillMaxSize()) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 96.dp, top = 16.dp),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 112.dp, top = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             // Storage Overview Card

@@ -21,12 +21,16 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.laterbox.app.BuildConfig
+import com.laterbox.app.diagnostics.LocalLibraryMetrics
 import com.laterbox.app.ui.components.LaterboxSecondaryButton
 import com.laterbox.app.ui.theme.LaterboxTheme
 import com.laterbox.app.update.AppUpdateDialog
 import com.laterbox.app.update.AppUpdateInfo
+import java.util.Locale
 
 @Composable
 fun AboutPrivacySettingsScreen(
@@ -36,13 +40,16 @@ fun AboutPrivacySettingsScreen(
     onDismissUpdateDialog: () -> Unit,
     onPostponeUpdate: (String) -> Unit,
     onBackClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    localMetrics: LocalLibraryMetrics? = null,
+    onResetActivityCounters: (() -> Unit)? = null
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
     val spacing = LaterboxTheme.spacing
 
     var showLicensesDialog by remember { mutableStateOf(false) }
+    var showResetMetricsDialog by remember { mutableStateOf(false) }
 
     Box(
         modifier = modifier
@@ -107,6 +114,81 @@ fun AboutPrivacySettingsScreen(
                 }
             }
 
+            if (localMetrics != null) {
+                Spacer(modifier = Modifier.height(spacing.md))
+
+                SettingsSectionHeader(title = "Library & Activity Insights (On-Device)")
+                SettingsCard {
+                    Column(verticalArrangement = Arrangement.spacedBy(spacing.sm)) {
+                        Text(
+                            text = "Computed purely on your device from Room and local preferences. Zero analytics or telemetry leave your phone.",
+                            style = typography.bodySecondary,
+                            color = colors.textSecondary
+                        )
+
+                        SettingsDivider()
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(spacing.md)
+                        ) {
+                            MetricTile(
+                                label = "Saved Library",
+                                value = "${localMetrics.totalLinksSaved} links",
+                                detail = "${localMetrics.inboxUnreadCount} unread • ${localMetrics.archivedCount} archived",
+                                modifier = Modifier.weight(1f)
+                            )
+                            MetricTile(
+                                label = "Reading Progress",
+                                value = "${localMetrics.readCompletionPercent}% read",
+                                detail = "${localMetrics.readerOpensCount} Reader opens",
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(spacing.md)
+                        ) {
+                            MetricTile(
+                                label = "Offline Media",
+                                value = "${localMetrics.mediaAssetsCount} files",
+                                detail = formatStorageBytes(localMetrics.estimatedStorageBytes),
+                                modifier = Modifier.weight(1f)
+                            )
+                            MetricTile(
+                                label = "Reminders",
+                                value = "${localMetrics.activeScheduledReminders} active",
+                                detail = if (localMetrics.remindersDeliveredCount > 0) {
+                                    "${localMetrics.remindersOpenedCount}/${localMetrics.remindersDeliveredCount} opened (${localMetrics.reminderOpenRatePercent ?: 0}%)"
+                                } else {
+                                    "No reminders delivered yet"
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+
+                        val captureSummary = "Share ${localMetrics.shareCapturesCount} • Quick Tile ${localMetrics.quickTileCapturesCount} • In-App ${localMetrics.manualCapturesCount}"
+                        val activationSuffix = localMetrics.timeToFirstSaveMs?.let { durationMs ->
+                            " • First save in ${formatDurationBrief(durationMs)}"
+                        }.orEmpty()
+                        Text(
+                            text = "Capture channels: $captureSummary$activationSuffix",
+                            style = typography.metaText,
+                            color = colors.textSecondary
+                        )
+
+                        if (onResetActivityCounters != null) {
+                            LaterboxSecondaryButton(
+                                text = "Reset Activity Counters",
+                                onClick = { showResetMetricsDialog = true },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.height(80.dp))
         }
 
@@ -116,6 +198,51 @@ fun AboutPrivacySettingsScreen(
                 updateInfo = availableUpdateInfo,
                 onDismiss = onDismissUpdateDialog,
                 onPostpone = onPostponeUpdate
+            )
+        }
+
+        // Reset Activity Counters Dialog
+        if (showResetMetricsDialog && onResetActivityCounters != null) {
+            AlertDialog(
+                onDismissRequest = { showResetMetricsDialog = false },
+                containerColor = colors.surfaceElevated,
+                title = {
+                    Text(
+                        text = "Reset activity counters?",
+                        style = typography.titleSmall,
+                        color = colors.textPrimary
+                    )
+                },
+                text = {
+                    Text(
+                        text = "This clears your on-device Reader open counts, reminder open counts, and capture channel counters. Your saved links, collections, and downloaded media are not affected.",
+                        style = typography.bodySecondary,
+                        color = colors.textSecondary
+                    )
+                },
+                dismissButton = {
+                    TextButton(onClick = { showResetMetricsDialog = false }) {
+                        Text(
+                            text = "Cancel",
+                            style = typography.uiMedium,
+                            color = colors.textSecondary
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            showResetMetricsDialog = false
+                            onResetActivityCounters()
+                        }
+                    ) {
+                        Text(
+                            text = "Reset",
+                            style = typography.uiMedium,
+                            color = colors.accentPrimary
+                        )
+                    }
+                }
             )
         }
 
@@ -162,5 +289,56 @@ fun AboutPrivacySettingsScreen(
                 }
             )
         }
+    }
+}
+
+@Composable
+private fun MetricTile(
+    label: String,
+    value: String,
+    detail: String,
+    modifier: Modifier = Modifier
+) {
+    val colors = LaterboxTheme.colors
+    val typography = LaterboxTheme.typography
+
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        Text(
+            text = label,
+            style = typography.metaText.copy(fontSize = 11.5.sp),
+            color = colors.textSecondary
+        )
+        Text(
+            text = value,
+            style = typography.uiMedium.copy(fontWeight = FontWeight.SemiBold),
+            color = colors.textPrimary
+        )
+        Text(
+            text = detail,
+            style = typography.metaText.copy(fontSize = 11.5.sp),
+            color = colors.textSecondary
+        )
+    }
+}
+
+private fun formatStorageBytes(bytes: Long): String {
+    if (bytes <= 0L) return "0 MB stored"
+    val mb = bytes.toDouble() / (1024.0 * 1024.0)
+    return if (mb >= 1024.0) {
+        String.format(Locale.getDefault(), "%.2f GB stored", mb / 1024.0)
+    } else {
+        String.format(Locale.getDefault(), "%.1f MB stored", mb)
+    }
+}
+
+private fun formatDurationBrief(durationMs: Long): String {
+    val totalSeconds = (durationMs / 1000L).coerceAtLeast(1L)
+    return when {
+        totalSeconds < 60L -> "${totalSeconds}s"
+        totalSeconds < 3600L -> "${totalSeconds / 60L}m ${totalSeconds % 60L}s"
+        else -> "${totalSeconds / 3600L}h ${(totalSeconds % 3600L) / 60L}m"
     }
 }

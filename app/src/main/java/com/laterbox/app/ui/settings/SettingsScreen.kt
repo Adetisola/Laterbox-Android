@@ -163,7 +163,7 @@ fun SettingsScreen(
                 SettingsCategoryRow(
                     iconRes = LaterboxIcons.ViewList,
                     title = "Reading & Behaviour",
-                    subtitle = "Auto-mark as read, inbox reading workflow",
+                    subtitle = "Auto-mark as read, default card tap, inbox layout",
                     onClick = onNavigateToReadingBehavior
                 )
 
@@ -184,7 +184,7 @@ fun SettingsScreen(
                 SettingsCategoryRow(
                     iconRes = LaterboxIcons.Settings,
                     title = "About & Privacy",
-                    subtitle = "App version, update checker, licenses, local-first notice",
+                    subtitle = "App version, local insights, licenses, privacy notice",
                     onClick = onNavigateToAboutPrivacy
                 )
             }

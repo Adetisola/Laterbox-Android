@@ -42,6 +42,9 @@ class InboxViewModel(
     private val _activeDateRangeFilter = MutableStateFlow(DateRangeFilter.ALL)
     val activeDateRangeFilter: StateFlow<DateRangeFilter> = _activeDateRangeFilter
 
+    private val _activeQuickFilter = MutableStateFlow(InboxQuickFilter.ALL)
+    val activeQuickFilter: StateFlow<InboxQuickFilter> = _activeQuickFilter
+
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing
 
@@ -68,6 +71,7 @@ class InboxViewModel(
         _searchQuery,
         _activeFilterType,
         _activeDateRangeFilter,
+        _activeQuickFilter,
         _isRefreshing,
         _clipboardSuggestion,
         userPreferencesRepository.userPreferences,
@@ -79,12 +83,13 @@ class InboxViewModel(
         val query = args[1] as String
         val filterType = args[2] as ContentType?
         val dateFilter = args[3] as DateRangeFilter
-        val refreshing = args[4] as Boolean
-        val suggestion = args[5] as ClipboardSuggestion?
-        val prefs = args[6] as UserPreferences
-        val unreadNotifs = args[7] as Int
-        val mediaReadyIds = (args[8] as? List<Long>)?.toSet() ?: emptySet()
-        val selectedIds = args[9] as Set<Long>
+        val quickFilter = args[4] as InboxQuickFilter
+        val refreshing = args[5] as Boolean
+        val suggestion = args[6] as ClipboardSuggestion?
+        val prefs = args[7] as UserPreferences
+        val unreadNotifs = args[8] as Int
+        val mediaReadyIds = (args[9] as? List<Long>)?.toSet() ?: emptySet()
+        val selectedIds = args[10] as Set<Long>
 
         // If searching, filter out archived links since searchLinks searches all
         val unarchived = rawLinks.filter { !it.isArchived }
@@ -95,15 +100,23 @@ class InboxViewModel(
             unarchived
         }
 
+        val quickFiltered = when (quickFilter) {
+            InboxQuickFilter.ALL -> dateFiltered
+            InboxQuickFilter.UNREAD -> dateFiltered.filter { !it.isRead }
+            InboxQuickFilter.MEDIA_READY -> dateFiltered.filter { it.id in mediaReadyIds }
+            InboxQuickFilter.SCHEDULED -> dateFiltered.filter { it.reminderAt != null }
+        }
+
         val filtered = if (filterType != null) {
-            dateFiltered.filter { it.contentType == filterType }
+            quickFiltered.filter { it.contentType == filterType }
         } else {
-            dateFiltered
+            quickFiltered
         }
 
         val pendingCount = unarchived.count {
             it.metadataStatus == MetadataStatus.PENDING || it.metadataStatus == MetadataStatus.FETCHING
         }
+        val readCount = unarchived.count { it.isRead }
 
         InboxUiState(
             links = filtered,
@@ -112,6 +125,8 @@ class InboxViewModel(
             searchQuery = query,
             activeFilterType = filterType,
             activeDateRangeFilter = dateFilter,
+            activeQuickFilter = quickFilter,
+            readInboxCount = readCount,
             pendingMetadataCount = pendingCount,
             viewMode = prefs.inboxViewMode,
             hasCompletedOnboarding = prefs.hasCompletedOnboarding,
@@ -185,6 +200,7 @@ class InboxViewModel(
     fun onClearSearch() {
         _searchQuery.value = ""
         _activeDateRangeFilter.value = DateRangeFilter.ALL
+        _activeQuickFilter.value = InboxQuickFilter.ALL
     }
 
     fun onFilterContentType(type: ContentType?) {
@@ -194,6 +210,25 @@ class InboxViewModel(
     fun onFilterDateRange(filter: DateRangeFilter) {
         _activeDateRangeFilter.value = if (_activeDateRangeFilter.value == filter) DateRangeFilter.ALL else filter
     }
+
+    fun onFilterQuickFilter(filter: InboxQuickFilter) {
+        _activeQuickFilter.value = if (_activeQuickFilter.value == filter) InboxQuickFilter.ALL else filter
+    }
+
+    fun onArchiveAllRead(onArchived: (List<Long>) -> Unit = {}): kotlinx.coroutines.Job =
+        viewModelScope.launch {
+            val archivedIds = linkRepository.archiveAllReadInboxLinks()
+            if (archivedIds.isNotEmpty()) {
+                onArchived(archivedIds)
+            }
+        }
+
+    fun unarchiveBatch(linkIds: Collection<Long>): kotlinx.coroutines.Job =
+        viewModelScope.launch {
+            if (linkIds.isNotEmpty()) {
+                linkRepository.setArchivedBatch(linkIds, false)
+            }
+        }
 
     fun onToggleRead(linkId: Long, currentIsRead: Boolean): kotlinx.coroutines.Job =
         viewModelScope.launch {
@@ -297,7 +332,11 @@ class InboxViewModel(
     fun onToggleViewMode() {
         viewModelScope.launch {
             val currentMode = userPreferencesRepository.userPreferences.first().inboxViewMode
-            val nextMode = if (currentMode == InboxViewMode.HERO) InboxViewMode.COMPACT else InboxViewMode.HERO
+            val nextMode = when (currentMode) {
+                InboxViewMode.HERO -> InboxViewMode.COMPACT
+                InboxViewMode.COMPACT -> InboxViewMode.EDITORIAL
+                InboxViewMode.EDITORIAL -> InboxViewMode.HERO
+            }
             userPreferencesRepository.setInboxViewMode(nextMode)
         }
     }
@@ -305,6 +344,24 @@ class InboxViewModel(
     fun onCompleteOnboarding() {
         viewModelScope.launch {
             userPreferencesRepository.setHasCompletedOnboarding(true)
+        }
+    }
+
+    fun completeOnboardingWithOptions(seedStarterLink: Boolean, clipboardUrl: String? = null) {
+        viewModelScope.launch {
+            userPreferencesRepository.setHasCompletedOnboarding(true)
+            if (seedStarterLink) {
+                linkRepository.seedStarterGuideIfMissing()
+            }
+            if (!clipboardUrl.isNullOrBlank()) {
+                runCatching { linkRepository.saveLink(originalUrl = clipboardUrl) }
+            }
+        }
+    }
+
+    fun seedStarterGuide() {
+        viewModelScope.launch {
+            linkRepository.seedStarterGuideIfMissing()
         }
     }
 }

@@ -127,6 +127,12 @@ class ShareReceiverActivity : ComponentActivity() {
                                                 userPrefsRepo.recordHandledClipboardHash(
                                                     com.laterbox.app.capture.ClipboardSuggestionManager.computeHash(savedUrl)
                                                 )
+                                                if (!isUpdate) {
+                                                    userPrefsRepo.recordCaptureSource(
+                                                        com.laterbox.app.capture.CaptureSource.SHARE_SHEET
+                                                    )
+                                                    userPrefsRepo.recordFirstLinkSavedIfNeeded()
+                                                }
                                                 com.laterbox.app.ui.util.SaveFeedbackHelper.showSaveSuccess(
                                                     this@ShareReceiverActivity,
                                                     isUpdate
