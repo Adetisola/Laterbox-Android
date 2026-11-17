@@ -1,8 +1,10 @@
 package com.laterbox.app.movies.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -58,6 +60,7 @@ import com.laterbox.app.data.preferences.MoviesProviderMode
 import com.laterbox.app.movies.domain.model.CatalogueSort
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
+import com.laterbox.app.movies.domain.model.SearchSuggestion
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.theme.LaterboxTheme
 
@@ -96,6 +99,16 @@ fun MoviesScreen(
     val focusManager = LocalFocusManager.current
     var showSourcesDialog by remember { mutableStateOf(false) }
 
+    val dismissSearch: () -> Unit = {
+        keyboardController?.hide()
+        focusManager.clearFocus()
+        onSearchFocusChange(false)
+    }
+
+    BackHandler(enabled = uiState.showSearchDropdown) {
+        dismissSearch()
+    }
+
     if (showSourcesDialog) {
         MoviesProviderSourceDialog(
             useSampleFixturesOnly = uiState.useSampleFixturesOnly,
@@ -123,6 +136,12 @@ fun MoviesScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .clickable(
+                    enabled = uiState.showSearchDropdown,
+                    indication = null,
+                    interactionSource = remember { MutableInteractionSource() },
+                    onClick = dismissSearch
+                )
                 .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -205,8 +224,9 @@ fun MoviesScreen(
                 if (uiState.searchQuery.isNotEmpty() || uiState.activeSearchQuery.isNotEmpty()) {
                     IconButton(
                         onClick = {
-                            onClearSearch()
+                            keyboardController?.hide()
                             focusManager.clearFocus()
+                            onClearSearch()
                         },
                         modifier = Modifier.testTag("movies_home_clear_search")
                     ) {
@@ -244,129 +264,6 @@ fun MoviesScreen(
                 .testTag("movies_home_search_field")
         )
 
-        // Live Suggestions & Recent Search Dropdown
-        if (uiState.showSearchDropdown) {
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = colors.surfaceElevated,
-                border = BorderStroke(1.dp, colors.borderSubtle),
-                shadowElevation = 6.dp,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp)
-                    .testTag("movies_home_suggestions")
-            ) {
-                Column(modifier = Modifier.padding(vertical = 6.dp)) {
-                    if (uiState.suggestions.isNotEmpty()) {
-                        uiState.suggestions.forEachIndexed { idx, suggestion ->
-                            val suggestionTagSuffix = suggestion.id.ifBlank { "idx_$idx" }
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        keyboardController?.hide()
-                                        focusManager.clearFocus()
-                                        onSearchFocusChange(false)
-                                        if (suggestion.hasNavigableId) {
-                                            onOpenDetail(suggestion.providerId, suggestion.id)
-                                        } else {
-                                            onSubmitSearch(suggestion.title)
-                                        }
-                                    }
-                                    .padding(horizontal = 12.dp, vertical = 8.dp)
-                                    .testTag("movies_home_suggestion_$suggestionTagSuffix"),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = suggestion.title,
-                                        style = typography.uiLabel,
-                                        color = colors.textPrimary,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    val subMeta = if (!suggestion.hasNavigableId) {
-                                        "Search MovieBox"
-                                    } else {
-                                        listOfNotNull(
-                                            suggestion.kind.label,
-                                            suggestion.releaseYear?.toString()
-                                        ).joinToString(" · ")
-                                    }
-                                    Text(
-                                        text = subMeta,
-                                        style = typography.caption,
-                                        color = colors.textSecondary
-                                    )
-                                }
-                                Icon(
-                                    painter = painterResource(LaterboxIcons.ArrowUpRight),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(14.dp),
-                                    tint = colors.textTertiary
-                                )
-                            }
-                            if (idx < uiState.suggestions.lastIndex) {
-                                HorizontalDivider(color = colors.borderSubtle.copy(alpha = 0.5f))
-                            }
-                        }
-                    }
-
-                    if (uiState.recentSearches.isNotEmpty()) {
-                        if (uiState.suggestions.isNotEmpty()) {
-                            HorizontalDivider(color = colors.borderSubtle)
-                        }
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Recent searches",
-                                style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
-                                color = colors.textSecondary
-                            )
-                            TextButton(
-                                onClick = onClearSearchHistory,
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
-                            ) {
-                                Text("Clear", style = typography.caption, color = colors.accentPrimary)
-                            }
-                        }
-                        FlowRow(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            uiState.recentSearches.forEach { query ->
-                                Surface(
-                                    shape = RoundedCornerShape(16.dp),
-                                    color = colors.surfaceSecondary,
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(16.dp))
-                                        .clickable {
-                                            keyboardController?.hide()
-                                            focusManager.clearFocus()
-                                            onSubmitSearch(query)
-                                        }
-                                ) {
-                                    Text(
-                                        text = query,
-                                        style = typography.caption,
-                                        color = colors.textPrimary,
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         if (uiState.isRefreshing) {
             LinearProgressIndicator(
                 modifier = Modifier
@@ -377,6 +274,9 @@ fun MoviesScreen(
                 trackColor = colors.surfaceSecondary
             )
         }
+
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            Column(modifier = Modifier.fillMaxSize()) {
 
         when {
             uiState.isLoading && uiState.feed == null -> {
@@ -964,6 +864,47 @@ fun MoviesScreen(
                         }
                     }
                 }
+            }
+        }
+            }
+
+            if (uiState.showSearchDropdown) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = dismissSearch
+                        )
+                        .testTag("movies_home_search_scrim")
+                )
+                MoviesSearchSuggestionsDropdown(
+                    query = uiState.searchQuery,
+                    suggestions = uiState.suggestions,
+                    recentSearches = uiState.recentSearches,
+                    isLoading = uiState.isLoadingSuggestions,
+                    errorMessage = uiState.suggestionsError,
+                    containerTag = "movies_home_suggestions",
+                    suggestionTagPrefix = "movies_home_suggestion_",
+                    onSuggestionClick = { suggestion ->
+                        dismissSearch()
+                        if (suggestion.hasNavigableId) {
+                            onOpenDetail(suggestion.providerId, suggestion.id)
+                        } else {
+                            onSubmitSearch(suggestion.title)
+                        }
+                    },
+                    onSubmitQuery = { q ->
+                        keyboardController?.hide()
+                        focusManager.clearFocus()
+                        onSubmitSearch(q)
+                    },
+                    onClearRecent = onClearSearchHistory,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                )
             }
         }
     }

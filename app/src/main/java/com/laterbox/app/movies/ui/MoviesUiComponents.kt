@@ -7,6 +7,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -14,6 +16,8 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -26,6 +30,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -63,6 +69,7 @@ import com.laterbox.app.movies.domain.model.DataSourceBadge
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.model.PlaybackSource
+import com.laterbox.app.movies.domain.model.SearchSuggestion
 import com.laterbox.app.movies.domain.model.WatchHistoryItem
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.theme.LaterboxTheme
@@ -964,5 +971,214 @@ private fun formatResumeTime(positionMs: Long, durationMs: Long): String {
         "${posMin}m / ${totalMin}m"
     } else {
         "At ${posMin}m"
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun MoviesSearchSuggestionsDropdown(
+    query: String,
+    suggestions: List<SearchSuggestion>,
+    recentSearches: List<String>,
+    isLoading: Boolean,
+    errorMessage: String?,
+    containerTag: String,
+    suggestionTagPrefix: String,
+    onSuggestionClick: (SearchSuggestion) -> Unit,
+    onSubmitQuery: (String) -> Unit,
+    onClearRecent: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val colors = LaterboxTheme.colors
+    val typography = LaterboxTheme.typography
+    val trimmedQuery = query.trim()
+    val hasQuery = trimmedQuery.length >= 2
+
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = colors.surfaceElevated,
+        border = BorderStroke(1.dp, colors.borderSubtle),
+        shadowElevation = 6.dp,
+        modifier = modifier
+            .fillMaxWidth()
+            .imePadding()
+            .testTag(containerTag)
+    ) {
+        Column(
+            modifier = Modifier
+                .heightIn(max = 320.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(vertical = 6.dp)
+        ) {
+            when {
+                hasQuery && isLoading && suggestions.isEmpty() -> {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 12.dp)
+                            .testTag("${containerTag}_loading"),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = colors.accentPrimary
+                        )
+                        Text(
+                            text = "Searching suggestions...",
+                            style = typography.bodySecondary,
+                            color = colors.textSecondary
+                        )
+                    }
+                }
+                hasQuery && !errorMessage.isNullOrBlank() && suggestions.isEmpty() -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                            .testTag("${containerTag}_error"),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = errorMessage,
+                            style = typography.metaText,
+                            color = colors.textSecondary
+                        )
+                        Text(
+                            text = "Search all titles for \"$trimmedQuery\"",
+                            style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
+                            color = colors.accentPrimary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { onSubmitQuery(trimmedQuery) }
+                                .padding(vertical = 4.dp)
+                        )
+                    }
+                }
+                suggestions.isNotEmpty() -> {
+                    suggestions.forEachIndexed { idx, suggestion ->
+                        val suggestionTagSuffix = if (suggestion.hasNavigableId) suggestion.id else "idx_$idx"
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onSuggestionClick(suggestion) }
+                                .padding(horizontal = 14.dp, vertical = 10.dp)
+                                .testTag("$suggestionTagPrefix$suggestionTagSuffix"),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = suggestion.title,
+                                    style = typography.uiLabel,
+                                    color = colors.textPrimary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                val subMeta = if (!suggestion.hasNavigableId) {
+                                    "Search catalogue"
+                                } else {
+                                    listOfNotNull(
+                                        suggestion.kind.label,
+                                        suggestion.releaseYear?.toString()
+                                    ).joinToString(" · ")
+                                }
+                                Text(
+                                    text = subMeta,
+                                    style = typography.caption,
+                                    color = colors.textSecondary
+                                )
+                            }
+                            Icon(
+                                painter = painterResource(LaterboxIcons.ArrowUpRight),
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = colors.textTertiary
+                            )
+                        }
+                        if (idx < suggestions.lastIndex) {
+                            HorizontalDivider(thickness = 0.5.dp, color = colors.borderSubtle)
+                        }
+                    }
+                }
+                hasQuery -> {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSubmitQuery(trimmedQuery) }
+                            .padding(horizontal = 14.dp, vertical = 12.dp)
+                            .testTag("${containerTag}_empty"),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "No instant matches for \"$trimmedQuery\"",
+                                style = typography.bodySecondary,
+                                color = colors.textSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "Tap to run full search",
+                                style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                color = colors.accentPrimary
+                            )
+                        }
+                        Icon(
+                            painter = painterResource(LaterboxIcons.Search),
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = colors.accentPrimary
+                        )
+                    }
+                }
+            }
+
+            if (!hasQuery && recentSearches.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Recent searches",
+                        style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                        color = colors.textSecondary
+                    )
+                    TextButton(
+                        onClick = onClearRecent,
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                    ) {
+                        Text("Clear", style = typography.caption, color = colors.accentPrimary)
+                    }
+                }
+                FlowRow(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    recentSearches.take(8).forEach { recent ->
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = colors.surfaceSecondary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(16.dp))
+                                .clickable { onSubmitQuery(recent) }
+                        ) {
+                            Text(
+                                text = recent,
+                                style = typography.caption,
+                                color = colors.textPrimary,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }

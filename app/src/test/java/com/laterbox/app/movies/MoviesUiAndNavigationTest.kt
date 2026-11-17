@@ -723,4 +723,79 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithTag("player_audio_dub_id_fr").assertIsDisplayed().performClick()
         assertEquals("id_fr", selectedDubId)
     }
+
+    @Test
+    fun moviesCatalogueScreen_outsideTapDismissesDropdownAndShowsEmptyLoadingStates() {
+        var focusChangedTo: Boolean? = null
+        var submitted: String? = null
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MoviesCatalogueScreen(
+                    uiState = MoviesCatalogueUiState(
+                        query = "obscure",
+                        showSuggestionsDropdown = true,
+                        isLoadingSuggestions = false,
+                        suggestions = emptyList()
+                    ),
+                    onBackClick = {},
+                    onQueryChange = {},
+                    onSearchFocusChange = { focusChangedTo = it },
+                    onSubmitSearch = { submitted = it },
+                    onClearSearch = {},
+                    onSelectKind = {},
+                    onSelectGenre = {},
+                    onSelectSort = {},
+                    onLoadNextPage = {},
+                    onRetry = {},
+                    onClearSearchHistory = {},
+                    onOpenDetail = { _, _ -> }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("catalogue_suggestions_box").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("catalogue_suggestions_box_empty").assertIsDisplayed().performClick()
+        assertEquals("obscure", submitted)
+
+        composeTestRule.onNodeWithTag("catalogue_search_scrim").performClick()
+        assertEquals(false, focusChangedTo)
+    }
+
+    @Test
+    fun moviesScreen_homeDropdownShowsLoadingStateAndOutsideTapDismisses() {
+        var focusState: Boolean? = null
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MoviesScreen(
+                    uiState = MoviesHomeUiState(
+                        isLoading = false,
+                        searchQuery = "dune",
+                        isSearchFocused = true,
+                        isLoadingSuggestions = true,
+                        feed = MoviesHomeFeed(
+                            featuredBanners = listOf(sampleMovie),
+                            sections = listOf(
+                                BrowseSection("s1", "Trending", null, SectionStyle.RAIL, listOf(sampleMovie))
+                            ),
+                            genres = listOf("All", "Sci-Fi")
+                        )
+                    ),
+                    onRefresh = {},
+                    onOpenCatalogue = { _, _ -> },
+                    onOpenDetail = { _, _ -> },
+                    onOpenPlayer = { _, _, _, _ -> },
+                    onToggleWatchlist = {},
+                    onToggleSampleFixtures = {},
+                    onSaveTmdbApiKey = {},
+                    onSearchFocusChange = { focusState = it }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("movies_home_suggestions").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("movies_home_suggestions_loading").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("movies_home_search_scrim").performClick()
+        assertEquals(false, focusState)
+    }
 }

@@ -1,9 +1,11 @@
 package com.laterbox.app.movies.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -39,11 +42,14 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -53,6 +59,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.laterbox.app.movies.domain.model.CatalogueSort
 import com.laterbox.app.movies.domain.model.MediaKind
+import com.laterbox.app.movies.domain.model.SearchSuggestion
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.theme.LaterboxTheme
 
@@ -75,24 +82,56 @@ fun MoviesCatalogueScreen(
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+
+    val dismissSearch: () -> Unit = {
+        keyboardController?.hide()
+        focusManager.clearFocus()
+        onSearchFocusChange(false)
+    }
+
+    val dropdownHasContent = uiState.query.trim().length >= 2 ||
+        uiState.isLoadingSuggestions ||
+        uiState.suggestionsError != null ||
+        uiState.suggestions.isNotEmpty() ||
+        uiState.recentSearches.isNotEmpty()
+    val isDropdownOpen = uiState.showSuggestionsDropdown && dropdownHasContent
+
+    BackHandler(enabled = isDropdownOpen) {
+        dismissSearch()
+    }
 
     Column(
         modifier = modifier
             .fillMaxSize()
             .background(colors.backgroundPrimary)
             .navigationBarsPadding()
+            .imePadding()
             .testTag("movies_catalogue_screen")
     ) {
         // Search + Back Top Bar
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .clickable(
+                    enabled = isDropdownOpen,
+                    indication = null,
+                    interactionSource = remember { MutableInteractionSource() },
+                    onClick = dismissSearch
+                )
                 .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             IconButton(
-                onClick = onBackClick,
+                onClick = {
+                    if (isDropdownOpen) {
+                        dismissSearch()
+                    } else {
+                        onBackClick()
+                    }
+                },
                 modifier = Modifier.testTag("catalogue_back_button")
             ) {
                 Icon(
@@ -140,7 +179,13 @@ fun MoviesCatalogueScreen(
                             textStyle = typography.bodySecondary.copy(color = colors.textPrimary),
                             cursorBrush = SolidColor(colors.accentPrimary),
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                            keyboardActions = KeyboardActions(onSearch = { onSubmitSearch(null) }),
+                            keyboardActions = KeyboardActions(
+                                onSearch = {
+                                    keyboardController?.hide()
+                                    focusManager.clearFocus()
+                                    onSubmitSearch(null)
+                                }
+                            ),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .onFocusChanged { onSearchFocusChange(it.isFocused) }
@@ -149,7 +194,11 @@ fun MoviesCatalogueScreen(
                     }
                     if (uiState.query.isNotEmpty()) {
                         IconButton(
-                            onClick = onClearSearch,
+                            onClick = {
+                                keyboardController?.hide()
+                                focusManager.clearFocus()
+                                onClearSearch()
+                            },
                             modifier = Modifier
                                 .size(28.dp)
                                 .testTag("catalogue_search_clear")
@@ -166,107 +215,8 @@ fun MoviesCatalogueScreen(
             }
         }
 
-        // Suggestions & Recent Searches Dropdown
-        if (uiState.showSuggestionsDropdown &&
-            (uiState.suggestions.isNotEmpty() || (uiState.query.isBlank() && uiState.recentSearches.isNotEmpty()))
-        ) {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp)
-                    .testTag("catalogue_suggestions_box"),
-                shape = RoundedCornerShape(14.dp),
-                color = colors.surfaceElevated,
-                border = BorderStroke(1.dp, colors.borderSubtle),
-                shadowElevation = 4.dp
-            ) {
-                Column(modifier = Modifier.padding(vertical = 6.dp)) {
-                    if (uiState.query.isBlank() && uiState.recentSearches.isNotEmpty()) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Recent searches",
-                                style = typography.metaText,
-                                color = colors.textSecondary
-                            )
-                            TextButton(onClick = onClearSearchHistory) {
-                                Text("Clear", style = typography.caption, color = colors.accentPrimary)
-                            }
-                        }
-                        uiState.recentSearches.take(5).forEach { recent ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { onSubmitSearch(recent) }
-                                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                Icon(
-                                    painter = painterResource(LaterboxIcons.Clock),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(15.dp),
-                                    tint = colors.textTertiary
-                                )
-                                Text(
-                                    text = recent,
-                                    style = typography.bodySecondary,
-                                    color = colors.textPrimary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-                    } else {
-                        uiState.suggestions.forEachIndexed { idx, suggestion ->
-                            val suggestionTagSuffix = if (suggestion.hasNavigableId) suggestion.id else "idx_$idx"
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        if (suggestion.hasNavigableId) {
-                                            onOpenDetail(suggestion.providerId, suggestion.id)
-                                        } else {
-                                            onSubmitSearch(suggestion.title)
-                                        }
-                                    }
-                                    .padding(horizontal = 14.dp, vertical = 10.dp)
-                                    .testTag("suggestion_item_$suggestionTagSuffix"),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    text = suggestion.title,
-                                    style = typography.bodySecondary.copy(fontWeight = FontWeight.Medium),
-                                    color = colors.textPrimary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                val suffix = buildList {
-                                    suggestion.releaseYear?.let { add(it.toString()) }
-                                    add(suggestion.kind.label)
-                                }.joinToString(" · ")
-                                Text(
-                                    text = suffix,
-                                    style = typography.caption,
-                                    color = colors.textSecondary
-                                )
-                            }
-                            if (idx < uiState.suggestions.lastIndex) {
-                                HorizontalDivider(thickness = 0.5.dp, color = colors.borderSubtle)
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            Column(modifier = Modifier.fillMaxSize()) {
 
         // Kind + Sort Filters Row
         Row(
@@ -470,6 +420,47 @@ fun MoviesCatalogueScreen(
                         }
                     }
                 }
+            }
+        }
+            }
+
+            if (isDropdownOpen) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = dismissSearch
+                        )
+                        .testTag("catalogue_search_scrim")
+                )
+                MoviesSearchSuggestionsDropdown(
+                    query = uiState.query,
+                    suggestions = uiState.suggestions,
+                    recentSearches = uiState.recentSearches,
+                    isLoading = uiState.isLoadingSuggestions,
+                    errorMessage = uiState.suggestionsError,
+                    containerTag = "catalogue_suggestions_box",
+                    suggestionTagPrefix = "suggestion_item_",
+                    onSuggestionClick = { suggestion ->
+                        dismissSearch()
+                        if (suggestion.hasNavigableId) {
+                            onOpenDetail(suggestion.providerId, suggestion.id)
+                        } else {
+                            onSubmitSearch(suggestion.title)
+                        }
+                    },
+                    onSubmitQuery = { q ->
+                        keyboardController?.hide()
+                        focusManager.clearFocus()
+                        onSubmitSearch(q)
+                    },
+                    onClearRecent = onClearSearchHistory,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                )
             }
         }
     }

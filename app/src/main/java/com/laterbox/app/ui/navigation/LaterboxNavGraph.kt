@@ -515,8 +515,10 @@ fun LaterboxApp(
 
         val mainContent: @Composable () -> Unit = {
             val density = LocalDensity.current
+            val isImmersivePlayerRoute = currentRoute == LaterboxDestination.MoviePlayer.route
             val isImeVisible = WindowInsets.ime.getBottom(density) > WindowInsets.navigationBars.getBottom(density)
             val showHandsetBottomBar = !isWideTablet &&
+                !isImmersivePlayerRoute &&
                 currentRoute in topLevelBottomBarRoutes &&
                 !inboxUiState.isSelectionMode &&
                 inboxUiState.hasCompletedOnboarding &&
@@ -529,7 +531,7 @@ fun LaterboxApp(
             Scaffold(
                 modifier = Modifier.fillMaxSize(),
                 containerColor = colors.backgroundPrimary,
-                contentWindowInsets = WindowInsets.statusBars,
+                contentWindowInsets = if (isImmersivePlayerRoute) WindowInsets(0, 0, 0, 0) else WindowInsets.statusBars,
                 snackbarHost = {
                     val navBarBottomDp = with(density) { WindowInsets.navigationBars.getBottom(density).toDp() }
                     val inboxOverlayDp = with(density) { inboxOverlayHeightPx.toDp() }
@@ -566,7 +568,7 @@ fun LaterboxApp(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(top = innerPadding.calculateTopPadding())
+                        .padding(top = if (isImmersivePlayerRoute) 0.dp else innerPadding.calculateTopPadding())
                 ) {
                     val topLevelRoutes = remember {
                         setOf(
@@ -1492,7 +1494,8 @@ fun LaterboxApp(
             }
         }
 
-        if (isWideTablet) {
+        val isImmersivePlayerDestination = currentRoute == LaterboxDestination.MoviePlayer.route
+        if (isWideTablet && !isImmersivePlayerDestination) {
             Row(modifier = Modifier.fillMaxSize()) {
                 LaterboxPersistentSidePanel(
                     currentSection = currentSection,

@@ -43,6 +43,8 @@ data class MoviesHomeUiState(
     val activeSearchQuery: String = "",
     val isSearchFocused: Boolean = false,
     val suggestions: List<SearchSuggestion> = emptyList(),
+    val isLoadingSuggestions: Boolean = false,
+    val suggestionsError: String? = null,
     val recentSearches: List<String> = emptyList(),
     // Inline Filter & Sort state
     val selectedKind: MediaKind? = null,
@@ -62,7 +64,12 @@ data class MoviesHomeUiState(
             activeSearchQuery.isNotBlank()
 
     val showSearchDropdown: Boolean
-        get() = isSearchFocused && (searchQuery.trim().length >= 2 || recentSearches.isNotEmpty())
+        get() = isSearchFocused && (
+            searchQuery.trim().length >= 2 ||
+                isLoadingSuggestions ||
+                suggestionsError != null ||
+                recentSearches.isNotEmpty()
+            )
 }
 
 private data class MoviesConfigSnapshot(
@@ -182,16 +189,24 @@ class MoviesHomeViewModel(
     }
 
     fun onSearchQueryChange(newQuery: String) {
+        val trimmed = newQuery.trim()
         _uiState.update {
             it.copy(
                 searchQuery = newQuery,
-                isSearchFocused = true
+                isSearchFocused = true,
+                isLoadingSuggestions = trimmed.length >= 2,
+                suggestionsError = null
             )
         }
         suggestJob?.cancel()
-        val trimmed = newQuery.trim()
         if (trimmed.length < 2) {
-            _uiState.update { it.copy(suggestions = emptyList()) }
+            _uiState.update {
+                it.copy(
+                    suggestions = emptyList(),
+                    isLoadingSuggestions = false,
+                    suggestionsError = null
+                )
+            }
             if (trimmed.isEmpty() && _uiState.value.activeSearchQuery.isNotEmpty()) {
                 _uiState.update { it.copy(activeSearchQuery = "") }
                 if (_uiState.value.isFilteredMode) {
@@ -202,14 +217,40 @@ class MoviesHomeViewModel(
         }
         suggestJob = viewModelScope.launch {
             delay(260L)
-            moviesRepository.getSuggestions(trimmed, limit = 8).onSuccess { list ->
-                _uiState.update { it.copy(suggestions = list) }
-            }
+            moviesRepository.getSuggestions(trimmed, limit = 8).fold(
+                onSuccess = { list ->
+                    _uiState.update {
+                        it.copy(
+                            suggestions = list,
+                            isLoadingSuggestions = false,
+                            suggestionsError = null
+                        )
+                    }
+                },
+                onFailure = { err ->
+                    _uiState.update {
+                        it.copy(
+                            suggestions = emptyList(),
+                            isLoadingSuggestions = false,
+                            suggestionsError = err.message?.takeIf { m -> m.isNotBlank() }
+                                ?: "Couldn't load suggestions"
+                        )
+                    }
+                }
+            )
         }
     }
 
     fun setSearchFocused(focused: Boolean) {
-        _uiState.update { it.copy(isSearchFocused = focused) }
+        if (!focused) {
+            suggestJob?.cancel()
+        }
+        _uiState.update {
+            it.copy(
+                isSearchFocused = focused,
+                isLoadingSuggestions = if (focused) it.isLoadingSuggestions else false
+            )
+        }
     }
 
     fun submitInlineSearch(overrideQuery: String? = null) {
@@ -220,6 +261,8 @@ class MoviesHomeViewModel(
                 searchQuery = q,
                 activeSearchQuery = q,
                 isSearchFocused = false,
+                isLoadingSuggestions = false,
+                suggestionsError = null,
                 suggestions = emptyList()
             )
         }
@@ -240,6 +283,8 @@ class MoviesHomeViewModel(
                 searchQuery = "",
                 activeSearchQuery = "",
                 suggestions = emptyList(),
+                isLoadingSuggestions = false,
+                suggestionsError = null,
                 isSearchFocused = false
             )
         }
@@ -258,7 +303,8 @@ class MoviesHomeViewModel(
 
     fun selectKind(kind: MediaKind?) {
         if (_uiState.value.selectedKind == kind) return
-        _uiState.update { it.copy(selectedKind = kind, isSearchFocused = false) }
+        suggestJob?.cancel()
+        _uiState.update { it.copy(selectedKind = kind, isSearchFocused = false, isLoadingSuggestions = false) }
         if (_uiState.value.isFilteredMode) {
             loadFiltered(page = 1, append = false)
         } else {
@@ -268,7 +314,8 @@ class MoviesHomeViewModel(
 
     fun selectGenre(genre: String) {
         if (_uiState.value.selectedGenre == genre) return
-        _uiState.update { it.copy(selectedGenre = genre, isSearchFocused = false) }
+        suggestJob?.cancel()
+        _uiState.update { it.copy(selectedGenre = genre, isSearchFocused = false, isLoadingSuggestions = false) }
         if (_uiState.value.isFilteredMode) {
             loadFiltered(page = 1, append = false)
         } else {
@@ -278,7 +325,8 @@ class MoviesHomeViewModel(
 
     fun selectSort(sort: CatalogueSort) {
         if (_uiState.value.selectedSort == sort) return
-        _uiState.update { it.copy(selectedSort = sort, isSearchFocused = false) }
+        suggestJob?.cancel()
+        _uiState.update { it.copy(selectedSort = sort, isSearchFocused = false, isLoadingSuggestions = false) }
         if (_uiState.value.isFilteredMode) {
             loadFiltered(page = 1, append = false)
         } else {
@@ -295,6 +343,8 @@ class MoviesHomeViewModel(
                 activeSearchQuery = "",
                 isSearchFocused = false,
                 suggestions = emptyList(),
+                isLoadingSuggestions = false,
+                suggestionsError = null,
                 selectedKind = null,
                 selectedGenre = "All",
                 selectedSort = CatalogueSort.POPULAR,

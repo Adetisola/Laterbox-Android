@@ -282,14 +282,24 @@ class MoviePlayerViewModel(
         )
     }
 
+    fun updatePlaybackPosition(positionMs: Long) {
+        val clamped = positionMs.coerceAtLeast(0L)
+        if (clamped <= 0L) return
+        _uiState.update { it.copy(startPositionMs = clamped) }
+    }
+
     fun saveProgress(positionMs: Long, durationMs: Long) {
         val state = _uiState.value
+        val clamped = positionMs.coerceAtLeast(0L)
+        if (clamped > 0L) {
+            _uiState.update { it.copy(startPositionMs = clamped) }
+        }
         val summary = state.summary ?: return
-        if (positionMs < 1_000L && durationMs <= 0L) return
+        if (clamped < 1_000L && durationMs <= 0L) return
         viewModelScope.launch {
             moviesRepository.saveWatchProgress(
                 item = summary,
-                positionMs = positionMs,
+                positionMs = clamped,
                 durationMs = durationMs,
                 seasonNumber = state.seasonNumber,
                 episodeNumber = state.episodeNumber,

@@ -651,4 +651,47 @@ class MoviesViewModelsTest {
         assertEquals(1, vm.uiState.value.episodeNumber)
         assertEquals(2 to 2, vm.uiState.value.nextEpisodeTarget)
     }
+
+    @Test
+    fun catalogueViewModel_searchFocusAndDismissalTrackLoadingErrorAndCloseCleanly() = runTest {
+        val failingSuggestRepo = object : MoviesRepository by FakeMoviesRepository() {
+            override suspend fun getSuggestions(query: String, limit: Int): Result<List<SearchSuggestion>> =
+                Result.failure(IllegalStateException("Search service busy"))
+        }
+        val vm = MoviesCatalogueViewModel(failingSuggestRepo)
+        vm.initialize("s_focus")
+        advanceUntilIdle()
+
+        vm.onSearchFocusChange(true)
+        assertTrue(vm.uiState.value.isSearchFocused)
+        assertTrue(vm.uiState.value.showSuggestionsDropdown)
+
+        vm.onQueryChange("incep")
+        assertTrue(vm.uiState.value.isLoadingSuggestions)
+        assertTrue(vm.uiState.value.showSuggestionsDropdown)
+        advanceUntilIdle()
+        assertFalse(vm.uiState.value.isLoadingSuggestions)
+        assertEquals("Search service busy", vm.uiState.value.suggestionsError)
+
+        vm.onSearchFocusChange(false)
+        assertFalse(vm.uiState.value.isSearchFocused)
+        assertFalse(vm.uiState.value.showSuggestionsDropdown)
+        assertFalse(vm.uiState.value.isLoadingSuggestions)
+    }
+
+    @Test
+    fun playerViewModel_updatesStartPositionOnSaveProgressAndDirectPositionUpdate() = runTest {
+        val repo = FakeMoviesRepository()
+        val vm = MoviePlayerViewModel(repo)
+        vm.load("ia", "his_girl_friday")
+        advanceUntilIdle()
+
+        assertEquals(45_000L, vm.uiState.value.startPositionMs)
+        vm.updatePlaybackPosition(132_500L)
+        assertEquals(132_500L, vm.uiState.value.startPositionMs)
+
+        vm.saveProgress(180_000L, 600_000L)
+        advanceUntilIdle()
+        assertEquals(180_000L, vm.uiState.value.startPositionMs)
+    }
 }

@@ -4,8 +4,10 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.graphics.Color as AndroidColor
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -22,6 +24,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -57,6 +60,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,6 +69,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.platform.testTag
@@ -244,22 +249,24 @@ private fun ActiveVideoPlayerContent(
     onDismissDownloadStatus: () -> Unit
 ) {
     val context = LocalContext.current
+    val configuration = LocalConfiguration.current
     val activity = remember(context) { context.findActivity() }
     val viewConfiguration = LocalViewConfiguration.current
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
 
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     var showControls by remember { mutableStateOf(true) }
-    var isLocked by remember { mutableStateOf(false) }
-    var isFullscreen by remember { mutableStateOf(false) }
-    var selectedSpeed by remember { mutableFloatStateOf(1.0f) }
+    var isLocked by rememberSaveable { mutableStateOf(false) }
+    var isFullscreen by rememberSaveable { mutableStateOf(false) }
+    var selectedSpeed by rememberSaveable { mutableFloatStateOf(1.0f) }
     var isHolding2x by remember { mutableStateOf(false) }
     var ignoreNextTap by remember { mutableStateOf(false) }
-    var resizeMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
+    var resizeMode by rememberSaveable { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
 
     var isPlaying by remember { mutableStateOf(true) }
     var isBuffering by remember { mutableStateOf(true) }
-    var currentPositionMs by remember { mutableLongStateOf(startPositionMs.coerceAtLeast(0L)) }
+    var currentPositionMs by rememberSaveable { mutableLongStateOf(startPositionMs.coerceAtLeast(0L)) }
     var durationMs by remember { mutableLongStateOf(0L) }
     var isSeeking by remember { mutableStateOf(false) }
     var seekSliderPosMs by remember { mutableFloatStateOf(0f) }
@@ -278,6 +285,7 @@ private fun ActiveVideoPlayerContent(
     val latestSaveProgress by rememberUpdatedState(onSaveProgress)
     val latestSelectedSpeed by rememberUpdatedState(selectedSpeed)
     val latestIsLocked by rememberUpdatedState(isLocked)
+    val latestStartPositionMs by rememberUpdatedState(startPositionMs)
 
     val isAdaptiveSource = remember(selectedSource.id, selectedSource.format, selectedSource.url) {
         selectedSource.format.equals("DASH", ignoreCase = true) ||
@@ -297,17 +305,29 @@ private fun ActiveVideoPlayerContent(
             .build()
     }
 
-    // Apply orientation & immersive system bars when fullscreen changes, always restoring on dispose
-    LaunchedEffect(isFullscreen, activity) {
+    BackHandler(enabled = isLocked || isFullscreen) {
+        if (isLocked) {
+            showControls = true
+        } else {
+            isFullscreen = false
+        }
+    }
+
+    // Apply orientation & immersive system bars when fullscreen or landscape changes; never reset during config change recreation
+    val isImmersiveLandscape = isFullscreen || isLandscape
+    LaunchedEffect(isFullscreen, isImmersiveLandscape, activity) {
         val act = activity ?: return@LaunchedEffect
         val window = act.window
         val controller = WindowCompat.getInsetsController(window, window.decorView)
         if (isFullscreen) {
             act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        } else {
+            act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+        if (isImmersiveLandscape) {
             controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             controller.hide(WindowInsetsCompat.Type.systemBars())
         } else {
-            act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             controller.show(WindowInsetsCompat.Type.systemBars())
         }
     }
@@ -315,9 +335,11 @@ private fun ActiveVideoPlayerContent(
     DisposableEffect(activity) {
         onDispose {
             activity?.let { act ->
-                act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-                val controller = WindowCompat.getInsetsController(act.window, act.window.decorView)
-                controller.show(WindowInsetsCompat.Type.systemBars())
+                if (!act.isChangingConfigurations) {
+                    act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                    val controller = WindowCompat.getInsetsController(act.window, act.window.decorView)
+                    controller.show(WindowInsetsCompat.Type.systemBars())
+                }
             }
         }
     }
@@ -361,10 +383,11 @@ private fun ActiveVideoPlayerContent(
             .build()
 
         exoPlayer.setMediaItem(itemBuilder.build())
-        if (startPositionMs > 0L) {
-            exoPlayer.seekTo(startPositionMs)
+        val resumeAtMs = maxOf(latestStartPositionMs, currentPositionMs).coerceAtLeast(0L)
+        if (resumeAtMs > 0L) {
+            exoPlayer.seekTo(resumeAtMs)
         }
-        exoPlayer.setPlaybackSpeed(selectedSpeed)
+        exoPlayer.setPlaybackSpeed(latestSelectedSpeed)
         exoPlayer.prepare()
         exoPlayer.playWhenReady = true
     }
@@ -390,7 +413,12 @@ private fun ActiveVideoPlayerContent(
         }
         exoPlayer.addListener(listener)
         onDispose {
-            latestSaveProgress(exoPlayer.currentPosition, exoPlayer.duration.coerceAtLeast(0L))
+            val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
+            val dur = exoPlayer.duration.coerceAtLeast(0L)
+            if (pos > 0L) {
+                currentPositionMs = pos
+            }
+            latestSaveProgress(pos, dur)
             exoPlayer.removeListener(listener)
             exoPlayer.release()
         }
@@ -402,7 +430,7 @@ private fun ActiveVideoPlayerContent(
         while (true) {
             val cur = exoPlayer.currentPosition.coerceAtLeast(0L)
             val dur = exoPlayer.duration.coerceAtLeast(0L)
-            isPlaying = exoPlayer.isPlaying
+            isPlaying = exoPlayer.isPlaying || (exoPlayer.playWhenReady && exoPlayer.playbackState == Player.STATE_BUFFERING)
             durationMs = dur
             if (!isSeeking) {
                 currentPositionMs = cur
@@ -449,35 +477,53 @@ private fun ActiveVideoPlayerContent(
         modifier = Modifier
             .fillMaxSize()
             .pointerInput(exoPlayer) {
-                // Tap-and-Hold 2x Speed gesture on Initial pass so normal clicks/double-taps stay responsive
+                // Tap-and-Hold 2x Speed gesture using a true timeout so stationary holds trigger after 320ms
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val downPos = down.position
                     val slop = viewConfiguration.touchSlop
                     var activatedHold = false
-                    val deadline = System.currentTimeMillis() + 320L
+                    var releasedOrMovedOut = false
 
-                    while (true) {
-                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                        val change = event.changes.firstOrNull { it.id == down.id }
-                        if (change == null || !change.pressed) {
-                            break
+                    try {
+                        val deadline = System.currentTimeMillis() + 320L
+                        while (!releasedOrMovedOut && !activatedHold) {
+                            val remaining = (deadline - System.currentTimeMillis()).coerceAtLeast(1L)
+                            val event = withTimeoutOrNull(remaining) {
+                                awaitPointerEvent(PointerEventPass.Initial)
+                            }
+                            if (event == null) {
+                                if (!latestIsLocked) {
+                                    activatedHold = true
+                                    isHolding2x = true
+                                    ignoreNextTap = true
+                                    exoPlayer.setPlaybackSpeed(2.0f)
+                                } else {
+                                    break
+                                }
+                            } else {
+                                val change = event.changes.firstOrNull { it.id == down.id }
+                                if (change == null || !change.pressed ||
+                                    abs(change.position.x - downPos.x) > slop ||
+                                    abs(change.position.y - downPos.y) > slop
+                                ) {
+                                    releasedOrMovedOut = true
+                                }
+                            }
                         }
-                        if (!activatedHold &&
-                            !latestIsLocked &&
-                            (abs(change.position.x - downPos.x) <= slop && abs(change.position.y - downPos.y) <= slop) &&
-                            System.currentTimeMillis() >= deadline
-                        ) {
-                            activatedHold = true
-                            isHolding2x = true
-                            ignoreNextTap = true
-                            exoPlayer.setPlaybackSpeed(2.0f)
-                        }
-                    }
 
-                    if (activatedHold) {
-                        isHolding2x = false
-                        exoPlayer.setPlaybackSpeed(latestSelectedSpeed)
+                        while (activatedHold) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val change = event.changes.firstOrNull { it.id == down.id }
+                            if (change == null || !change.pressed) {
+                                break
+                            }
+                        }
+                    } finally {
+                        if (activatedHold) {
+                            isHolding2x = false
+                            exoPlayer.setPlaybackSpeed(latestSelectedSpeed)
+                        }
                     }
                 }
             }
@@ -548,60 +594,6 @@ private fun ActiveVideoPlayerContent(
             modifier = Modifier.fillMaxSize()
         )
 
-        if (isBuffering && playerErrorText == null) {
-            CircularProgressIndicator(
-                color = colors.accentPrimary,
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .size(40.dp)
-                    .testTag("player_buffering_indicator")
-            )
-        }
-
-        // Tap-and-Hold 2x Speed Indicator Pill
-        AnimatedVisibility(
-            visible = isHolding2x,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .statusBarsPadding()
-                .padding(top = 18.dp)
-        ) {
-            Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = colors.accentPrimary.copy(alpha = 0.92f),
-                modifier = Modifier.testTag("player_hold_2x_badge")
-            ) {
-                Text(
-                    text = "2.0x Speed >>",
-                    style = typography.uiLabel.copy(fontWeight = FontWeight.Bold),
-                    color = colors.onAccentPrimary,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
-                )
-            }
-        }
-
-        // Double-Tap Seek Feedback Badge
-        AnimatedVisibility(
-            visible = seekFeedbackText != null,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.align(Alignment.Center)
-        ) {
-            Surface(
-                shape = RoundedCornerShape(18.dp),
-                color = Color.Black.copy(alpha = 0.72f)
-            ) {
-                Text(
-                    text = seekFeedbackText.orEmpty(),
-                    style = typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                    color = Color.White,
-                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp)
-                )
-            }
-        }
-
         // Cinema Controls Overlay
         AnimatedVisibility(
             visible = showControls && playerErrorText == null,
@@ -621,6 +613,7 @@ private fun ActiveVideoPlayerContent(
                             )
                         )
                     )
+                    .displayCutoutPadding()
                     .testTag("player_controls_overlay")
             ) {
                 if (isLocked) {
@@ -845,15 +838,18 @@ private fun ActiveVideoPlayerContent(
                         ) {
                             IconButton(
                                 onClick = {
-                                    if (exoPlayer.isPlaying) {
+                                    val activeOrBuffering = exoPlayer.playWhenReady &&
+                                        (exoPlayer.isPlaying || exoPlayer.playbackState == Player.STATE_BUFFERING)
+                                    if (activeOrBuffering) {
                                         exoPlayer.pause()
+                                        isPlaying = false
                                     } else {
                                         if (exoPlayer.playbackState == Player.STATE_ENDED) {
                                             exoPlayer.seekTo(0L)
                                         }
                                         exoPlayer.play()
+                                        isPlaying = true
                                     }
-                                    isPlaying = exoPlayer.isPlaying
                                 },
                                 modifier = Modifier
                                     .fillMaxSize()
@@ -1022,7 +1018,7 @@ private fun ActiveVideoPlayerContent(
                                     )
                                 }
 
-                                if (nextEpisodeTarget == null) {
+                                if (nextEpisodeTarget == null && !isImmersiveLandscape) {
                                     Text(
                                         text = "Hold video for 2x",
                                         style = typography.caption,
@@ -1060,32 +1056,24 @@ private fun ActiveVideoPlayerContent(
                                     }
                                 }
 
-                                // Fullscreen / Landscape Rotation Toggle
+                                // Fullscreen / Landscape Rotation Icon Control
                                 Surface(
                                     shape = RoundedCornerShape(8.dp),
                                     color = if (isFullscreen) colors.accentPrimary else Color.White.copy(alpha = 0.16f),
                                     modifier = Modifier
+                                        .size(34.dp)
                                         .clip(RoundedCornerShape(8.dp))
                                         .clickable { isFullscreen = !isFullscreen }
                                         .testTag("player_fullscreen_button")
                                 ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
+                                    Box(contentAlignment = Alignment.Center) {
                                         Icon(
                                             painter = painterResource(
                                                 if (isFullscreen) LaterboxIcons.FullscreenExit else LaterboxIcons.Fullscreen
                                             ),
-                                            contentDescription = if (isFullscreen) "Exit fullscreen" else "Fullscreen landscape",
+                                            contentDescription = if (isFullscreen) "Exit fullscreen" else "Enter fullscreen",
                                             tint = Color.White,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                        Text(
-                                            text = if (isFullscreen) "Portrait" else "Fullscreen",
-                                            style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
-                                            color = Color.White
+                                            modifier = Modifier.size(18.dp)
                                         )
                                     }
                                 }
@@ -1093,6 +1081,74 @@ private fun ActiveVideoPlayerContent(
                         }
                     }
                 }
+            }
+        }
+
+        // Buffering Indicator (rendered above controls scrim so it stays crisp)
+        if (isBuffering && playerErrorText == null) {
+            Surface(
+                shape = CircleShape,
+                color = Color.Black.copy(alpha = 0.56f),
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(56.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(
+                        color = colors.accentPrimary,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .testTag("player_buffering_indicator")
+                    )
+                }
+            }
+        }
+
+        // Tap-and-Hold 2x Speed Indicator Pill (rendered above controls scrim)
+        AnimatedVisibility(
+            visible = isHolding2x,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(top = 18.dp)
+        ) {
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = colors.accentPrimary.copy(alpha = 0.94f),
+                modifier = Modifier.testTag("player_hold_2x_badge")
+            ) {
+                Text(
+                    text = "2.0x Speed >>",
+                    style = typography.uiLabel.copy(fontWeight = FontWeight.Bold),
+                    color = colors.onAccentPrimary,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                )
+            }
+        }
+
+        // Double-Tap Seek Feedback Badge (above scrim, offset above center controls when controls are visible)
+        AnimatedVisibility(
+            visible = seekFeedbackText != null,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier
+                .align(Alignment.Center)
+                .padding(bottom = if (showControls && !isLocked) 120.dp else 0.dp)
+        ) {
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = Color.Black.copy(alpha = 0.78f),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.18f)),
+                modifier = Modifier.testTag("player_seek_feedback_badge")
+            ) {
+                Text(
+                    text = seekFeedbackText.orEmpty(),
+                    style = typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White,
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp)
+                )
             }
         }
 

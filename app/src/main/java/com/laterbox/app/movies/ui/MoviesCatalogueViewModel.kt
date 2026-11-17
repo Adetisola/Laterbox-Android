@@ -28,7 +28,10 @@ data class MoviesCatalogueUiState(
     val isLoadingMore: Boolean = false,
     val errorMessage: String? = null,
     val suggestions: List<SearchSuggestion> = emptyList(),
+    val isLoadingSuggestions: Boolean = false,
+    val suggestionsError: String? = null,
     val recentSearches: List<String> = emptyList(),
+    val isSearchFocused: Boolean = false,
     val showSuggestionsDropdown: Boolean = false
 ) {
     companion object {
@@ -53,7 +56,14 @@ class MoviesCatalogueViewModel(
     init {
         viewModelScope.launch {
             moviesRepository.observeRecentSearches(10).collect { recent ->
-                _uiState.update { it.copy(recentSearches = recent) }
+                _uiState.update { current ->
+                    val shouldShow = current.isSearchFocused &&
+                        (current.query.trim().length >= 2 || recent.isNotEmpty())
+                    current.copy(
+                        recentSearches = recent,
+                        showSuggestionsDropdown = if (current.isSearchFocused) shouldShow else current.showSuggestionsDropdown
+                    )
+                }
             }
         }
         viewModelScope.launch {
@@ -78,7 +88,10 @@ class MoviesCatalogueViewModel(
                 selectedKind = initialKind,
                 selectedGenre = initialGenre?.takeIf { g -> g.isNotBlank() } ?: "All",
                 query = initialQuery.orEmpty(),
+                isSearchFocused = false,
                 showSuggestionsDropdown = false,
+                isLoadingSuggestions = false,
+                suggestionsError = null,
                 suggestions = emptyList()
             )
         }
@@ -86,30 +99,85 @@ class MoviesCatalogueViewModel(
     }
 
     fun onQueryChange(newQuery: String) {
+        val trimmed = newQuery.trim()
         _uiState.update {
             it.copy(
                 query = newQuery,
-                showSuggestionsDropdown = newQuery.isNotBlank() || it.recentSearches.isNotEmpty()
+                isSearchFocused = true,
+                showSuggestionsDropdown = trimmed.length >= 2 || it.recentSearches.isNotEmpty(),
+                isLoadingSuggestions = trimmed.length >= 2,
+                suggestionsError = null
             )
         }
         suggestJob?.cancel()
-        if (newQuery.trim().length < 2) {
-            _uiState.update { it.copy(suggestions = emptyList()) }
+        if (trimmed.length < 2) {
+            _uiState.update {
+                it.copy(
+                    suggestions = emptyList(),
+                    isLoadingSuggestions = false,
+                    suggestionsError = null
+                )
+            }
             if (newQuery.isBlank()) {
                 loadPage(page = 1, append = false)
             }
             return
         }
         suggestJob = viewModelScope.launch {
-            delay(280L)
-            moviesRepository.getSuggestions(newQuery, limit = 8).onSuccess { list ->
-                _uiState.update { it.copy(suggestions = list) }
+            delay(260L)
+            moviesRepository.getSuggestions(trimmed, limit = 8).fold(
+                onSuccess = { list ->
+                    _uiState.update {
+                        it.copy(
+                            suggestions = list,
+                            isLoadingSuggestions = false,
+                            suggestionsError = null
+                        )
+                    }
+                },
+                onFailure = { err ->
+                    _uiState.update {
+                        it.copy(
+                            suggestions = emptyList(),
+                            isLoadingSuggestions = false,
+                            suggestionsError = err.message?.takeIf { m -> m.isNotBlank() }
+                                ?: "Couldn't load suggestions"
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    fun onSearchFocusChange(focused: Boolean) {
+        if (!focused) {
+            dismissSuggestions()
+        } else {
+            _uiState.update { current ->
+                current.copy(
+                    isSearchFocused = true,
+                    showSuggestionsDropdown = current.query.trim().length >= 2 ||
+                        current.isLoadingSuggestions ||
+                        current.suggestionsError != null ||
+                        current.recentSearches.isNotEmpty()
+                )
             }
         }
     }
 
     fun setSuggestionsVisible(visible: Boolean) {
-        _uiState.update { it.copy(showSuggestionsDropdown = visible) }
+        onSearchFocusChange(visible)
+    }
+
+    fun dismissSuggestions() {
+        suggestJob?.cancel()
+        _uiState.update {
+            it.copy(
+                isSearchFocused = false,
+                isLoadingSuggestions = false,
+                showSuggestionsDropdown = false
+            )
+        }
     }
 
     fun submitSearch(overrideQuery: String? = null) {
@@ -118,6 +186,9 @@ class MoviesCatalogueViewModel(
         _uiState.update {
             it.copy(
                 query = q,
+                isSearchFocused = false,
+                isLoadingSuggestions = false,
+                suggestionsError = null,
                 showSuggestionsDropdown = false,
                 suggestions = emptyList()
             )
@@ -136,6 +207,9 @@ class MoviesCatalogueViewModel(
             it.copy(
                 query = "",
                 suggestions = emptyList(),
+                isSearchFocused = false,
+                isLoadingSuggestions = false,
+                suggestionsError = null,
                 showSuggestionsDropdown = false
             )
         }
