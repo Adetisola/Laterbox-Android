@@ -184,7 +184,7 @@ class MoviesRepositoryImpl(
                 featuredBanners = mergedBanners,
                 sections = mergedSections,
                 genres = mergedGenres,
-                activeProviderNotice = "Live sources: ${activeSources.joinToString(" · ")}",
+                activeProviderNotice = null,
                 isOfflineCached = false,
                 containsSampleFixtures = false
             )
@@ -209,16 +209,18 @@ class MoviesRepositoryImpl(
         page: Int,
         pageSize: Int,
         genre: String?,
-        sort: CatalogueSort
+        sort: CatalogueSort,
+        country: String?,
+        year: String?
     ): Result<CataloguePage> {
         return when (resolveMode()) {
             MoviesProviderMode.SAMPLE_FIXTURES -> {
                 when (kind) {
                     MediaKind.MOVIE, MediaKind.TV_SERIES ->
-                        fixtureProvider.getCatalogue(kind, page, pageSize, genre, sort)
+                        fixtureProvider.getCatalogue(kind, page, pageSize, genre, sort, country, year)
                     null -> coroutineScope {
-                        val m = async { fixtureProvider.getCatalogue(MediaKind.MOVIE, page, pageSize, genre, sort) }.await()
-                        val t = async { fixtureProvider.getCatalogue(MediaKind.TV_SERIES, page, pageSize, genre, sort) }.await()
+                        val m = async { fixtureProvider.getCatalogue(MediaKind.MOVIE, page, pageSize, genre, sort, country, year) }.await()
+                        val t = async { fixtureProvider.getCatalogue(MediaKind.TV_SERIES, page, pageSize, genre, sort, country, year) }.await()
                         val combined = interleaveLists(
                             listOf(m.getOrNull()?.items.orEmpty(), t.getOrNull()?.items.orEmpty())
                         ).distinctBy { it.compositeId }
@@ -240,13 +242,19 @@ class MoviesRepositoryImpl(
                     IllegalStateException("MovieBox provider is not configured.")
                 )
                 val effectiveGenre = genre?.takeUnless { it.equals("All", ignoreCase = true) }
+                val effectiveCountry = country?.takeUnless { it.equals("All", ignoreCase = true) }
+                val effectiveYear = year?.takeUnless { it.equals("All", ignoreCase = true) }
                 when (kind) {
                     MediaKind.MOVIE, MediaKind.TV_SERIES ->
-                        mb.getCatalogue(kind, page, pageSize, effectiveGenre, sort)
+                        mb.getCatalogue(kind, page, pageSize, effectiveGenre, sort, effectiveCountry, effectiveYear)
                     null -> coroutineScope {
                         val halfSize = (pageSize / 2).coerceAtLeast(10)
-                        val moviesDef = async { mb.getCatalogue(MediaKind.MOVIE, page, halfSize, effectiveGenre, sort) }
-                        val seriesDef = async { mb.getCatalogue(MediaKind.TV_SERIES, page, halfSize, effectiveGenre, sort) }
+                        val moviesDef = async {
+                            mb.getCatalogue(MediaKind.MOVIE, page, halfSize, effectiveGenre, sort, effectiveCountry, effectiveYear)
+                        }
+                        val seriesDef = async {
+                            mb.getCatalogue(MediaKind.TV_SERIES, page, halfSize, effectiveGenre, sort, effectiveCountry, effectiveYear)
+                        }
                         val moviesRes = moviesDef.await()
                         val seriesRes = seriesDef.await()
                         val pages = listOfNotNull(moviesRes.getOrNull(), seriesRes.getOrNull())
@@ -272,6 +280,8 @@ class MoviesRepositoryImpl(
 
             MoviesProviderMode.OPEN_ARCHIVE_AND_TVMAZE -> {
                 val effectiveGenre = genre?.takeUnless { it.equals("All", ignoreCase = true) }
+                val effectiveCountry = country?.takeUnless { it.equals("All", ignoreCase = true) }
+                val effectiveYear = year?.takeUnless { it.equals("All", ignoreCase = true) }
                 coroutineScope {
                     val tmdbActive = tmdbProvider.isConfigured()
                     val queryMovies = kind == null || kind == MediaKind.MOVIE
@@ -279,16 +289,16 @@ class MoviesRepositoryImpl(
                     val perProviderSize = if (kind == null) (pageSize / 2).coerceAtLeast(8) else pageSize
 
                     val iaDeferred = if (queryMovies) {
-                        async { internetArchiveProvider.getCatalogue(MediaKind.MOVIE, page, perProviderSize, effectiveGenre, sort) }
+                        async { internetArchiveProvider.getCatalogue(MediaKind.MOVIE, page, perProviderSize, effectiveGenre, sort, effectiveCountry, effectiveYear) }
                     } else null
                     val tvDeferred = if (querySeries) {
-                        async { tvMazeProvider.getCatalogue(MediaKind.TV_SERIES, page, perProviderSize, effectiveGenre, sort) }
+                        async { tvMazeProvider.getCatalogue(MediaKind.TV_SERIES, page, perProviderSize, effectiveGenre, sort, effectiveCountry, effectiveYear) }
                     } else null
                     val tmdbMovieDeferred = if (queryMovies && tmdbActive) {
-                        async { tmdbProvider.getCatalogue(MediaKind.MOVIE, page, perProviderSize, effectiveGenre, sort) }
+                        async { tmdbProvider.getCatalogue(MediaKind.MOVIE, page, perProviderSize, effectiveGenre, sort, effectiveCountry, effectiveYear) }
                     } else null
                     val tmdbTvDeferred = if (querySeries && tmdbActive) {
-                        async { tmdbProvider.getCatalogue(MediaKind.TV_SERIES, page, perProviderSize, effectiveGenre, sort) }
+                        async { tmdbProvider.getCatalogue(MediaKind.TV_SERIES, page, perProviderSize, effectiveGenre, sort, effectiveCountry, effectiveYear) }
                     } else null
 
                     val results = listOfNotNull(

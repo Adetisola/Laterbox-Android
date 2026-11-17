@@ -201,7 +201,7 @@ class MovieBoxProviderTest {
         ).getOrThrow()
         assertEquals(2, moviesPage.items.size)
         assertTrue(moviesPage.hasMore)
-        assertTrue(paths.first().contains("/movies?page=1&per_page=2&sort=RANKING"))
+        assertTrue(paths.first().contains("/movies?page=1&per_page=2&sort=Rating&genre=Action"))
         assertEquals("secret-test-key", apiKeys.first())
 
         val seriesPage = provider.getCatalogue(
@@ -213,7 +213,7 @@ class MovieBoxProviderTest {
         assertEquals(2, seriesPage.items.size)
         assertFalse(seriesPage.hasMore)
         assertEquals(MediaKind.TV_SERIES, seriesPage.items.first().kind)
-        assertTrue(paths[1].contains("/tv-series?page=2&per_page=2&sort=LATEST"))
+        assertTrue(paths[1].contains("/tv-series?page=2&per_page=2&sort=Latest"))
     }
 
     @Test
@@ -470,7 +470,7 @@ class MovieBoxProviderTest {
     }
 
     @Test
-    fun homeFeed_parsesShortTvAppointmentListAndPreservesCachedTrailerIntoDetails() = runTest {
+    fun homeFeed_excludesShortTvAndPromoBannersAndPreservesCachedTrailerIntoDetails() = runTest {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 return when (request.path) {
@@ -480,7 +480,22 @@ class MovieBoxProviderTest {
                           "code": 0,
                           "message": "ok",
                           "data": {
+                            "genres": ["Action", "Fantasy", "Drama"],
                             "operatingList": [
+                              {
+                                "type": "BANNER",
+                                "title": "Top Banner",
+                                "banner": {
+                                  "items": [
+                                    {
+                                      "title": "External Promo",
+                                      "url": "https://promo.example/offer",
+                                      "subjectId": "0",
+                                      "image": {"url": "https://cdn.example/promo.jpg"}
+                                    }
+                                  ]
+                                }
+                              },
                               {
                                 "type": "APPOINTMENT_LIST",
                                 "opId": "coming_soon",
@@ -546,13 +561,65 @@ class MovieBoxProviderTest {
         }
 
         val feed = provider.getHomeFeed().getOrThrow()
-        assertEquals(2, feed.sections.size)
+        assertEquals(1, feed.sections.size)
         assertEquals(SectionStyle.COLLECTION, feed.sections[0].style)
-        assertEquals(MediaKind.TV_SERIES, feed.sections[1].items.first().kind)
+        assertEquals("Percy Jackson", feed.sections[0].items.first().title)
+        assertNull(feed.activeProviderNotice)
+        assertEquals(listOf("All", "Action", "Drama"), feed.genres)
 
         // /detail omits trailer, so MovieBoxProvider restores the cached trailerUrl from /home
         val details = provider.getDetails("2845168888013275776").getOrThrow()
         assertEquals("https://cdn.example/percy-trailer.mp4", details.summary.trailerUrl)
+    }
+
+    @Test
+    fun catalogue_passesVerifiedCountryYearAndAppliesWesternSortQuirk() = runTest {
+        val paths = mutableListOf<String>()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                paths.add(request.path.orEmpty())
+                return MockResponse().setResponseCode(200).setBody(
+                    """
+                    {
+                      "page": 1,
+                      "per_page": 20,
+                      "total": 1,
+                      "items": [
+                        {"title": "Stagecoach", "subject_id": "555", "detail_path": "stagecoach", "subject_type": 1, "genre": "Western", "country": "United States", "year": "1939"}
+                      ]
+                    }
+                    """.trimIndent()
+                )
+            }
+        }
+
+        val page = provider.getCatalogue(
+            kind = MediaKind.MOVIE,
+            page = 1,
+            pageSize = 20,
+            genre = "Western",
+            sort = CatalogueSort.POPULAR,
+            country = "United States",
+            year = "2024"
+        ).getOrThrow()
+        assertEquals(1, page.items.size)
+        assertEquals("United States", page.items.first().country)
+        assertTrue(paths[0].contains("sort=ForYou"))
+        assertTrue(paths[0].contains("genre=Western"))
+        assertTrue(paths[0].contains("country=United%20States"))
+        assertTrue(paths[0].contains("year=2024"))
+
+        provider.getCatalogue(
+            kind = MediaKind.TV_SERIES,
+            page = 1,
+            pageSize = 20,
+            genre = "Fantasy",
+            sort = CatalogueSort.POPULAR,
+            country = "South Korea"
+        ).getOrThrow()
+        assertTrue(paths[1].contains("sort=Hottest"))
+        assertFalse(paths[1].contains("genre=Fantasy"))
+        assertTrue(paths[1].contains("country=Korea"))
     }
 
     @Test

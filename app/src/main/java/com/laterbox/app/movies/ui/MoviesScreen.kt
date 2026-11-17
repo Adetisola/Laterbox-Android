@@ -60,6 +60,7 @@ import com.laterbox.app.data.preferences.MoviesProviderMode
 import com.laterbox.app.movies.domain.model.CatalogueSort
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
+import com.laterbox.app.movies.domain.model.MoviesDiscoveryShortcut
 import com.laterbox.app.movies.domain.model.SearchSuggestion
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.theme.LaterboxTheme
@@ -84,11 +85,16 @@ fun MoviesScreen(
     onClearSearchHistory: () -> Unit = {},
     onSelectKind: (MediaKind?) -> Unit = {},
     onSelectGenre: (String) -> Unit = {},
+    onSelectCountry: (String) -> Unit = {},
+    onSelectShortcut: (MoviesDiscoveryShortcut) -> Unit = {},
     onSelectSort: (CatalogueSort) -> Unit = {},
     onResetFilters: () -> Unit = {},
     onLoadMoreFiltered: () -> Unit = {},
     onDismissTmdbPrompt: () -> Unit = {},
     onOpenExternalUrl: (String) -> Unit = {},
+    onOpenCatalogueWithSort: (kind: MediaKind?, genre: String?, sort: CatalogueSort?, country: String?) -> Unit = { k, g, _, _ ->
+        onOpenCatalogue(k, g)
+    },
     onMenuClick: (() -> Unit)? = null,
     bottomPaddingDp: Int = 96,
     modifier: Modifier = Modifier
@@ -164,10 +170,10 @@ fun MoviesScreen(
                     color = colors.textPrimary
                 )
                 Text(
-                    text = when {
-                        uiState.useSampleFixturesOnly -> "Offline sample cinema mode"
-                        uiState.providerMode == MoviesProviderMode.MOVIEBOX -> "MovieBox catalogue & streaming"
-                        else -> "Open cinema & series discovery"
+                    text = if (uiState.useSampleFixturesOnly) {
+                        "Offline sample cinema mode"
+                    } else {
+                        "Discover films & series"
                     },
                     style = typography.metaText,
                     color = colors.textSecondary,
@@ -347,14 +353,15 @@ fun MoviesScreen(
                     uiState.watchlist.map { it.compositeId }.toSet()
                 }
                 val genresList = remember(feed.genres) {
-                    if (feed.genres.any { it.equals("All", ignoreCase = true) }) {
-                        feed.genres
+                    val cleaned = feed.genres.filterNot { it.equals("Fantasy", ignoreCase = true) }
+                    if (cleaned.any { it.equals("All", ignoreCase = true) }) {
+                        cleaned
                     } else {
-                        listOf("All") + feed.genres
+                        listOf("All") + cleaned
                     }
                 }
 
-                // Inline Kind + Sort + Genre Filter Bar
+                // Inline Kind + Shortcuts/Countries + Sort/Genre Filter Bar
                 Spacer(modifier = Modifier.height(8.dp))
                 Column(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -401,6 +408,38 @@ fun MoviesScreen(
                                     color = colors.accentPrimary
                                 )
                             }
+                        }
+                    }
+
+                    // Discovery Shortcuts + Countries row
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        items(MoviesDiscoveryShortcut.entries, key = { "shortcut_${it.id}" }) { shortcut ->
+                            FilterChipPill(
+                                label = shortcut.label,
+                                selected = uiState.activeShortcut == shortcut,
+                                onClick = { onSelectShortcut(shortcut) },
+                                modifier = Modifier.testTag("movies_home_shortcut_${shortcut.id}")
+                            )
+                        }
+                        item(key = "shortcut_country_divider") {
+                            Box(
+                                modifier = Modifier
+                                    .width(1.dp)
+                                    .height(18.dp)
+                                    .background(colors.borderSubtle)
+                            )
+                        }
+                        items(uiState.availableCountries, key = { "country_$it" }) { country ->
+                            FilterChipPill(
+                                label = if (country == "All") "All Regions" else country,
+                                selected = uiState.selectedCountry == country,
+                                onClick = { onSelectCountry(country) },
+                                modifier = Modifier.testTag("movies_home_country_${country.lowercase().replace(' ', '_')}")
+                            )
                         }
                     }
 
@@ -462,8 +501,14 @@ fun MoviesScreen(
                                     "Results for \"${uiState.activeSearchQuery}\""
                                 } else {
                                     buildList {
-                                        add(uiState.selectedKind?.label ?: "All Titles")
-                                        if (uiState.selectedGenre != "All") add(uiState.selectedGenre)
+                                        val shortcut = uiState.activeShortcut
+                                        if (shortcut != null) {
+                                            add(shortcut.label)
+                                        } else {
+                                            add(uiState.selectedKind?.label ?: "All Titles")
+                                            if (uiState.selectedGenre != "All") add(uiState.selectedGenre)
+                                            if (uiState.selectedCountry != "All") add(uiState.selectedCountry)
+                                        }
                                         add(uiState.selectedSort.label)
                                     }.joinToString(" · ")
                                 }
@@ -804,6 +849,60 @@ fun MoviesScreen(
                             }
                         }
 
+                        // Top Rated Rail
+                        if (uiState.topRatedRail.isNotEmpty()) {
+                            item(key = "top_rated_rail") {
+                                Column(
+                                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                                    modifier = Modifier.testTag("movies_home_top_rated_rail")
+                                ) {
+                                    SectionHeaderRow(
+                                        title = "Top Rated",
+                                        subtitle = "Highest-rated films & series",
+                                        onSeeAll = { onOpenCatalogueWithSort(null, null, CatalogueSort.TOP_RATED, null) }
+                                    )
+                                    LazyRow(
+                                        contentPadding = PaddingValues(horizontal = 16.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                    ) {
+                                        items(uiState.topRatedRail, key = { "tr_${it.compositeId}" }) { item ->
+                                            MoviePosterCard(
+                                                item = item,
+                                                onClick = { onOpenDetail(item.providerId, item.id) }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Newest Rail
+                        if (uiState.newestRail.isNotEmpty()) {
+                            item(key = "newest_rail") {
+                                Column(
+                                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                                    modifier = Modifier.testTag("movies_home_newest_rail")
+                                ) {
+                                    SectionHeaderRow(
+                                        title = "Newest",
+                                        subtitle = "Latest releases added",
+                                        onSeeAll = { onOpenCatalogueWithSort(null, null, CatalogueSort.NEWEST, null) }
+                                    )
+                                    LazyRow(
+                                        contentPadding = PaddingValues(horizontal = 16.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                    ) {
+                                        items(uiState.newestRail, key = { "nw_${it.compositeId}" }) { item ->
+                                            MoviePosterCard(
+                                                item = item,
+                                                onClick = { onOpenDetail(item.providerId, item.id) }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         // Watchlist Rail
                         if (uiState.watchlist.isNotEmpty()) {
                             item(key = "watchlist_rail") {
@@ -851,16 +950,6 @@ fun MoviesScreen(
                                     }
                                 }
                             }
-                        }
-
-                        // Attribution footer
-                        item(key = "provider_footer") {
-                            Text(
-                                text = feed.activeProviderNotice ?: "Powered by ${uiState.providerMode.label}",
-                                style = typography.caption,
-                                color = colors.textTertiary,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                            )
                         }
                     }
                 }

@@ -33,12 +33,20 @@ sealed class LaterboxDestination(val route: String) {
 
     object Movies : LaterboxDestination("movies")
 
-    object MoviesCatalogue : LaterboxDestination("movies/catalogue?kind={kind}&genre={genre}&query={query}") {
-        fun createRoute(kind: String? = null, genre: String? = null, query: String? = null): String {
+    object MoviesCatalogue : LaterboxDestination("movies/catalogue?kind={kind}&genre={genre}&query={query}&sort={sort}&country={country}") {
+        fun createRoute(
+            kind: String? = null,
+            genre: String? = null,
+            query: String? = null,
+            sort: String? = null,
+            country: String? = null
+        ): String {
             val encodedKind = java.net.URLEncoder.encode(kind.orEmpty(), "UTF-8")
             val encodedGenre = java.net.URLEncoder.encode(genre.orEmpty(), "UTF-8")
             val encodedQuery = java.net.URLEncoder.encode(query.orEmpty(), "UTF-8")
-            return "movies/catalogue?kind=$encodedKind&genre=$encodedGenre&query=$encodedQuery"
+            val encodedSort = java.net.URLEncoder.encode(sort.orEmpty(), "UTF-8")
+            val encodedCountry = java.net.URLEncoder.encode(country.orEmpty(), "UTF-8")
+            return "movies/catalogue?kind=$encodedKind&genre=$encodedGenre&query=$encodedQuery&sort=$encodedSort&country=$encodedCountry"
         }
     }
 

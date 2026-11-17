@@ -165,14 +165,20 @@ class DevelopmentMoviesFixtureProvider :
         page: Int,
         pageSize: Int,
         genre: String?,
-        sort: CatalogueSort
+        sort: CatalogueSort,
+        country: String?,
+        year: String?
     ): Result<CataloguePage> {
         val base = when (kind) {
             MediaKind.MOVIE -> movies
             MediaKind.TV_SERIES -> series
         }.filter { item ->
-            genre.isNullOrBlank() || genre.equals("All", ignoreCase = true) ||
-                item.genres.any { it.equals(genre, ignoreCase = true) }
+            (genre.isNullOrBlank() || genre.equals("All", ignoreCase = true) ||
+                item.genres.any { it.equals(genre, ignoreCase = true) }) &&
+                (country.isNullOrBlank() || country.equals("All", ignoreCase = true) ||
+                    item.country.equals(country, ignoreCase = true)) &&
+                (year.isNullOrBlank() || year.equals("All", ignoreCase = true) ||
+                    item.releaseYear?.toString() == year.trim())
         }
         val sorted = when (sort) {
             CatalogueSort.POPULAR -> base

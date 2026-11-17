@@ -59,6 +59,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.laterbox.app.movies.domain.model.CatalogueSort
 import com.laterbox.app.movies.domain.model.MediaKind
+import com.laterbox.app.movies.domain.model.MoviesDiscoveryShortcut
 import com.laterbox.app.movies.domain.model.SearchSuggestion
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.theme.LaterboxTheme
@@ -78,6 +79,9 @@ fun MoviesCatalogueScreen(
     onRetry: () -> Unit,
     onClearSearchHistory: () -> Unit,
     onOpenDetail: (providerId: String, titleId: String) -> Unit,
+    onSelectCountry: (String) -> Unit = {},
+    onSelectShortcut: (MoviesDiscoveryShortcut) -> Unit = {},
+    onResetFilters: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -218,7 +222,12 @@ fun MoviesCatalogueScreen(
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             Column(modifier = Modifier.fillMaxSize()) {
 
-        // Kind + Sort Filters Row
+        // Kind Filters + Reset Row
+        val hasActiveFilters = uiState.selectedKind != null ||
+            uiState.selectedGenre != "All" ||
+            uiState.selectedCountry != "All" ||
+            uiState.activeShortcut != null ||
+            uiState.sort != CatalogueSort.POPULAR
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -250,15 +259,89 @@ fun MoviesCatalogueScreen(
                     modifier = Modifier.testTag("filter_kind_${kind?.wireValue ?: "all"}")
                 )
             }
+            Spacer(modifier = Modifier.weight(1f))
+            if (hasActiveFilters) {
+                TextButton(
+                    onClick = onResetFilters,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                    modifier = Modifier.testTag("catalogue_reset_filters")
+                ) {
+                    Text(
+                        text = "Reset",
+                        style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                        color = colors.accentPrimary
+                    )
+                }
+            }
         }
 
-        // Sort + Genre Row
-        LazyRow(
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            if (uiState.query.isBlank()) {
+        if (uiState.query.isBlank()) {
+            // Discovery Shortcuts & Country Row
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                items(MoviesDiscoveryShortcut.entries, key = { "shortcut_${it.id}" }) { shortcut ->
+                    val selected = uiState.activeShortcut == shortcut
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = if (selected) colors.accentPrimary else colors.surfacePrimary,
+                        border = BorderStroke(0.75.dp, if (selected) colors.accentPrimary else colors.borderSubtle),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .clickable { onSelectShortcut(shortcut) }
+                            .testTag("catalogue_shortcut_${shortcut.id}")
+                    ) {
+                        Text(
+                            text = shortcut.label,
+                            style = typography.uiLabel.copy(
+                                fontSize = 12.sp,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+                            ),
+                            color = if (selected) colors.onAccentPrimary else colors.textPrimary,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+                item(key = "shortcut_country_divider") {
+                    Box(
+                        modifier = Modifier
+                            .width(1.dp)
+                            .height(18.dp)
+                            .background(colors.borderSubtle)
+                    )
+                }
+                items(uiState.availableCountries, key = { "country_$it" }) { country ->
+                    val selected = uiState.selectedCountry.equals(country, ignoreCase = true)
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = if (selected) colors.accentContainer else colors.surfacePrimary,
+                        border = BorderStroke(0.75.dp, if (selected) colors.accentPrimary else colors.borderSubtle),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .clickable { onSelectCountry(country) }
+                            .testTag("catalogue_country_${country.lowercase().replace(' ', '_')}")
+                    ) {
+                        Text(
+                            text = if (country == "All") "All Regions" else country,
+                            style = typography.uiLabel.copy(
+                                fontSize = 12.sp,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+                            ),
+                            color = if (selected) colors.accentPrimary else colors.textPrimary,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+            }
+
+            // Sort + Genre Row
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 items(CatalogueSort.entries, key = { "sort_${it.name}" }) { sort ->
                     val selected = uiState.sort == sort
                     Surface(
@@ -277,25 +360,28 @@ fun MoviesCatalogueScreen(
                         )
                     }
                 }
-            }
 
-            items(uiState.availableGenres, key = { "genre_$it" }) { genre ->
-                val selected = uiState.selectedGenre.equals(genre, ignoreCase = true)
-                Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = if (selected) colors.accentPrimary else colors.surfacePrimary,
-                    border = BorderStroke(0.75.dp, if (selected) colors.accentPrimary else colors.borderSubtle),
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(20.dp))
-                        .clickable { onSelectGenre(genre) }
-                        .testTag("genre_chip_$genre")
-                ) {
-                    Text(
-                        text = genre,
-                        style = typography.uiLabel.copy(fontSize = 12.sp),
-                        color = if (selected) colors.onAccentPrimary else colors.textPrimary,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                    )
+                items(
+                    uiState.availableGenres.filterNot { it.equals("Fantasy", ignoreCase = true) },
+                    key = { "genre_$it" }
+                ) { genre ->
+                    val selected = uiState.selectedGenre.equals(genre, ignoreCase = true)
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = if (selected) colors.accentPrimary else colors.surfacePrimary,
+                        border = BorderStroke(0.75.dp, if (selected) colors.accentPrimary else colors.borderSubtle),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .clickable { onSelectGenre(genre) }
+                            .testTag("genre_chip_$genre")
+                    ) {
+                        Text(
+                            text = genre,
+                            style = typography.uiLabel.copy(fontSize = 12.sp),
+                            color = if (selected) colors.onAccentPrimary else colors.textPrimary,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                    }
                 }
             }
         }

@@ -57,6 +57,14 @@ class MoviesViewModelsTest {
         val continueFlow = MutableStateFlow<List<WatchHistoryItem>>(emptyList())
         val recentSearchesFlow = MutableStateFlow<List<String>>(listOf("noir"))
         val savedProgressCalls = mutableListOf<Pair<Long, Long>>()
+        data class CatalogueCall(
+            val kind: MediaKind?,
+            val genre: String?,
+            val sort: CatalogueSort,
+            val country: String?,
+            val year: String?
+        )
+        val catalogueCalls = mutableListOf<CatalogueCall>()
 
         val sampleMovie = MovieTitleSummary(
             id = "his_girl_friday",
@@ -101,8 +109,11 @@ class MoviesViewModelsTest {
             page: Int,
             pageSize: Int,
             genre: String?,
-            sort: CatalogueSort
+            sort: CatalogueSort,
+            country: String?,
+            year: String?
         ): Result<CataloguePage> {
+            catalogueCalls.add(CatalogueCall(kind, genre, sort, country, year))
             val pool = when (kind) {
                 MediaKind.MOVIE -> listOf(sampleMovie)
                 MediaKind.TV_SERIES -> listOf(sampleSeries)
@@ -119,7 +130,7 @@ class MoviesViewModelsTest {
             )
         }
 
-        override suspend fun getGenres(): Result<List<String>> = Result.success(listOf("All", "Comedy", "Drama"))
+        override suspend fun getGenres(): Result<List<String>> = Result.success(listOf("All", "Comedy", "Drama", "Fantasy"))
 
         override suspend fun search(query: String, kind: MediaKind?, page: Int, pageSize: Int): Result<CataloguePage> =
             Result.success(CataloguePage(listOf(sampleMovie), page, pageSize, 1, false))
@@ -437,9 +448,10 @@ class MoviesViewModelsTest {
 
         val callsBefore = repo.homeCallCount
         vm.setMovieBoxConfig("https://movies.example.com/", "secret-key")
-        val updatedConfigState = vm.uiState.first { it.movieBoxApiBaseUrl == "https://movies.example.com/" }
+        val updatedConfigState = vm.uiState.first {
+            it.movieBoxApiBaseUrl == "https://movies.example.com/" && !it.isRefreshing
+        }
         assertEquals("secret-key", updatedConfigState.movieBoxApiKey)
-        advanceUntilIdle()
         assertTrue(repo.homeCallCount > callsBefore)
 
         vm.setProviderMode(com.laterbox.app.data.preferences.MoviesProviderMode.OPEN_ARCHIVE_AND_TVMAZE)
@@ -693,5 +705,62 @@ class MoviesViewModelsTest {
         vm.saveProgress(180_000L, 600_000L)
         advanceUntilIdle()
         assertEquals(180_000L, vm.uiState.value.startPositionMs)
+    }
+
+    @Test
+    fun homeViewModel_loadsTopRatedAndNewestRailsAndAppliesShortcutsAndCountries() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = UserPreferencesRepository(context)
+        val repo = FakeMoviesRepository()
+        val vm = MoviesHomeViewModel(repo, prefs)
+        val initial = vm.uiState.first { !it.isLoading }
+
+        assertTrue(initial.topRatedRail.isNotEmpty())
+        assertTrue(initial.newestRail.isNotEmpty())
+        assertTrue(repo.catalogueCalls.any { it.sort == CatalogueSort.TOP_RATED })
+        assertTrue(repo.catalogueCalls.any { it.sort == CatalogueSort.NEWEST })
+
+        vm.selectShortcut(com.laterbox.app.movies.domain.model.MoviesDiscoveryShortcut.K_DRAMA)
+        advanceUntilIdle()
+        assertEquals(com.laterbox.app.movies.domain.model.MoviesDiscoveryShortcut.K_DRAMA, vm.uiState.value.activeShortcut)
+        assertEquals(MediaKind.TV_SERIES, vm.uiState.value.selectedKind)
+        assertEquals("Drama", vm.uiState.value.selectedGenre)
+        assertEquals("Korea", vm.uiState.value.selectedCountry)
+        assertTrue(vm.uiState.value.isFilteredMode)
+        val kDramaCall = repo.catalogueCalls.last()
+        assertEquals(MediaKind.TV_SERIES, kDramaCall.kind)
+        assertEquals("Drama", kDramaCall.genre)
+        assertEquals("Korea", kDramaCall.country)
+
+        vm.selectShortcut(com.laterbox.app.movies.domain.model.MoviesDiscoveryShortcut.K_DRAMA)
+        advanceUntilIdle()
+        assertFalse(vm.uiState.value.isFilteredMode)
+
+        vm.selectCountry("India")
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.isFilteredMode)
+        assertEquals("India", repo.catalogueCalls.last().country)
+    }
+
+    @Test
+    fun catalogueViewModel_excludesFantasyAndSupportsShortcutsAndCountries() = runTest {
+        val repo = FakeMoviesRepository()
+        val vm = MoviesCatalogueViewModel(repo)
+        vm.initialize("m2_cat")
+        advanceUntilIdle()
+
+        assertFalse(vm.uiState.value.availableGenres.any { it.equals("Fantasy", ignoreCase = true) })
+
+        vm.selectShortcut(com.laterbox.app.movies.domain.model.MoviesDiscoveryShortcut.HOLLYWOOD)
+        advanceUntilIdle()
+        assertEquals(MediaKind.MOVIE, vm.uiState.value.selectedKind)
+        assertEquals("United States", vm.uiState.value.selectedCountry)
+        assertEquals("United States", repo.catalogueCalls.last().country)
+
+        vm.resetFilters()
+        advanceUntilIdle()
+        assertNull(vm.uiState.value.activeShortcut)
+        assertEquals("All", vm.uiState.value.selectedCountry)
+        assertEquals("All", vm.uiState.value.selectedGenre)
     }
 }

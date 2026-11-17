@@ -26,7 +26,9 @@ interface MoviesCatalogueProvider : MoviesProviderIdentity {
         page: Int = 1,
         pageSize: Int = 20,
         genre: String? = null,
-        sort: CatalogueSort = CatalogueSort.POPULAR
+        sort: CatalogueSort = CatalogueSort.POPULAR,
+        country: String? = null,
+        year: String? = null
     ): Result<CataloguePage>
 
     suspend fun getGenres(): Result<List<String>>

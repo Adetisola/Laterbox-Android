@@ -30,7 +30,25 @@ enum class DataSourceBadge(
 enum class CatalogueSort(val wireValue: String, val label: String) {
     POPULAR("popular", "Popular"),
     TOP_RATED("top_rated", "Top Rated"),
-    NEWEST("newest", "Newest")
+    NEWEST("newest", "Newest");
+
+    companion object {
+        fun fromWire(value: String?): CatalogueSort? =
+            entries.firstOrNull { it.wireValue.equals(value?.trim(), ignoreCase = true) }
+    }
+}
+
+enum class MoviesDiscoveryShortcut(
+    val id: String,
+    val label: String,
+    val kind: MediaKind,
+    val genre: String? = null,
+    val country: String? = null
+) {
+    HOLLYWOOD("hollywood", "Hollywood", MediaKind.MOVIE, genre = null, country = "United States"),
+    BOLLYWOOD("bollywood", "Bollywood", MediaKind.MOVIE, genre = null, country = "India"),
+    WESTERN("western", "Western", MediaKind.MOVIE, genre = "Western", country = null),
+    K_DRAMA("k_drama", "K-Drama", MediaKind.TV_SERIES, genre = "Drama", country = "Korea")
 }
 
 enum class SectionStyle {

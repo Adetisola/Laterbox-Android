@@ -982,11 +982,25 @@ fun LaterboxApp(
                                 onRefresh = moviesHomeViewModel::refresh,
                                 onOpenCatalogue = { kind, genre ->
                                     val queryArg = moviesUiState.activeSearchQuery.takeIf { it.isNotBlank() }
+                                    val sortArg = moviesUiState.selectedSort.takeIf { it != com.laterbox.app.movies.domain.model.CatalogueSort.POPULAR }?.wireValue
+                                    val countryArg = moviesUiState.selectedCountry.takeUnless { it == "All" }
                                     navController.navigate(
                                         LaterboxDestination.MoviesCatalogue.createRoute(
                                             kind = kind?.wireValue,
                                             genre = genre,
-                                            query = queryArg
+                                            query = queryArg,
+                                            sort = sortArg,
+                                            country = countryArg
+                                        )
+                                    )
+                                },
+                                onOpenCatalogueWithSort = { kind, genre, sort, country ->
+                                    navController.navigate(
+                                        LaterboxDestination.MoviesCatalogue.createRoute(
+                                            kind = kind?.wireValue,
+                                            genre = genre,
+                                            sort = sort?.wireValue,
+                                            country = country
                                         )
                                     )
                                 },
@@ -1017,6 +1031,8 @@ fun LaterboxApp(
                                 onClearSearchHistory = moviesHomeViewModel::clearSearchHistory,
                                 onSelectKind = moviesHomeViewModel::selectKind,
                                 onSelectGenre = moviesHomeViewModel::selectGenre,
+                                onSelectCountry = moviesHomeViewModel::selectCountry,
+                                onSelectShortcut = moviesHomeViewModel::selectShortcut,
                                 onSelectSort = moviesHomeViewModel::selectSort,
                                 onResetFilters = moviesHomeViewModel::resetFilters,
                                 onLoadMoreFiltered = moviesHomeViewModel::loadMoreFiltered,
@@ -1035,7 +1051,9 @@ fun LaterboxApp(
                             arguments = listOf(
                                 navArgument("kind") { type = NavType.StringType; defaultValue = ""; nullable = true },
                                 navArgument("genre") { type = NavType.StringType; defaultValue = ""; nullable = true },
-                                navArgument("query") { type = NavType.StringType; defaultValue = ""; nullable = true }
+                                navArgument("query") { type = NavType.StringType; defaultValue = ""; nullable = true },
+                                navArgument("sort") { type = NavType.StringType; defaultValue = ""; nullable = true },
+                                navArgument("country") { type = NavType.StringType; defaultValue = ""; nullable = true }
                             )
                         ) { backStackEntry ->
                             val rawKind = java.net.URLDecoder.decode(
@@ -1050,14 +1068,25 @@ fun LaterboxApp(
                                 backStackEntry.arguments?.getString("query").orEmpty(),
                                 "UTF-8"
                             ).takeIf { it.isNotBlank() }
+                            val rawSort = java.net.URLDecoder.decode(
+                                backStackEntry.arguments?.getString("sort").orEmpty(),
+                                "UTF-8"
+                            ).takeIf { it.isNotBlank() }
+                            val rawCountry = java.net.URLDecoder.decode(
+                                backStackEntry.arguments?.getString("country").orEmpty(),
+                                "UTF-8"
+                            ).takeIf { it.isNotBlank() }
                             val initialKind = rawKind?.let { com.laterbox.app.movies.domain.model.MediaKind.fromWire(it) }
+                            val initialSort = com.laterbox.app.movies.domain.model.CatalogueSort.fromWire(rawSort)
 
                             LaunchedEffect(backStackEntry.id) {
                                 moviesCatalogueViewModel.initialize(
                                     sessionKey = backStackEntry.id,
                                     initialKind = initialKind,
                                     initialGenre = rawGenre,
-                                    initialQuery = rawQuery
+                                    initialQuery = rawQuery,
+                                    initialSort = initialSort,
+                                    initialCountry = rawCountry
                                 )
                             }
 
@@ -1066,14 +1095,15 @@ fun LaterboxApp(
                                 uiState = catState,
                                 onBackClick = { navController.popBackStack() },
                                 onQueryChange = moviesCatalogueViewModel::onQueryChange,
-                                onSearchFocusChange = { focused ->
-                                    if (focused) moviesCatalogueViewModel.setSuggestionsVisible(true)
-                                },
+                                onSearchFocusChange = moviesCatalogueViewModel::onSearchFocusChange,
                                 onSubmitSearch = moviesCatalogueViewModel::submitSearch,
                                 onClearSearch = moviesCatalogueViewModel::clearSearch,
                                 onSelectKind = moviesCatalogueViewModel::selectKind,
                                 onSelectGenre = moviesCatalogueViewModel::selectGenre,
+                                onSelectCountry = moviesCatalogueViewModel::selectCountry,
+                                onSelectShortcut = moviesCatalogueViewModel::selectShortcut,
                                 onSelectSort = moviesCatalogueViewModel::selectSort,
+                                onResetFilters = moviesCatalogueViewModel::resetFilters,
                                 onLoadNextPage = moviesCatalogueViewModel::loadNextPage,
                                 onRetry = moviesCatalogueViewModel::retry,
                                 onClearSearchHistory = moviesCatalogueViewModel::clearSearchHistory,

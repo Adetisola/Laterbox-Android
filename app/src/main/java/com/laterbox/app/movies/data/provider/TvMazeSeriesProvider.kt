@@ -126,7 +126,9 @@ class TvMazeSeriesProvider(
         page: Int,
         pageSize: Int,
         genre: String?,
-        sort: CatalogueSort
+        sort: CatalogueSort,
+        country: String?,
+        year: String?
     ): Result<CataloguePage> = withContext(Dispatchers.IO) {
         if (kind == MediaKind.MOVIE) {
             return@withContext Result.success(
@@ -142,9 +144,14 @@ class TvMazeSeriesProvider(
 
             val indexedShows = fetchShowIndex(apiPage = apiPage)
             val filtered = indexedShows.filter { indexed ->
-                genre.isNullOrBlank() ||
+                (genre.isNullOrBlank() ||
                     genre.equals("All", ignoreCase = true) ||
-                    indexed.summary.genres.any { g -> g.equals(genre, ignoreCase = true) }
+                    indexed.summary.genres.any { g -> g.equals(genre, ignoreCase = true) }) &&
+                    (country.isNullOrBlank() || country.equals("All", ignoreCase = true) ||
+                        indexed.summary.country.isNullOrBlank() ||
+                        indexed.summary.country.equals(country, ignoreCase = true)) &&
+                    (year.isNullOrBlank() || year.equals("All", ignoreCase = true) ||
+                        indexed.summary.releaseYear?.toString() == year.trim())
             }
             val sorted = when (sort) {
                 CatalogueSort.POPULAR -> filtered.sortedByDescending { it.weight }

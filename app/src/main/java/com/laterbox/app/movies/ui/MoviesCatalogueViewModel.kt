@@ -2,9 +2,11 @@ package com.laterbox.app.movies.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.laterbox.app.movies.data.provider.MovieBoxProvider
 import com.laterbox.app.movies.domain.model.CatalogueSort
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
+import com.laterbox.app.movies.domain.model.MoviesDiscoveryShortcut
 import com.laterbox.app.movies.domain.model.SearchSuggestion
 import com.laterbox.app.movies.domain.repository.MoviesRepository
 import kotlinx.coroutines.Job
@@ -19,8 +21,11 @@ data class MoviesCatalogueUiState(
     val query: String = "",
     val selectedKind: MediaKind? = null,
     val selectedGenre: String = "All",
+    val selectedCountry: String = "All",
+    val activeShortcut: MoviesDiscoveryShortcut? = null,
     val sort: CatalogueSort = CatalogueSort.POPULAR,
     val availableGenres: List<String> = DEFAULT_GENRES,
+    val availableCountries: List<String> = listOf("All") + MovieBoxProvider.VERIFIED_COUNTRIES,
     val items: List<MovieTitleSummary> = emptyList(),
     val page: Int = 1,
     val hasMore: Boolean = false,
@@ -35,10 +40,7 @@ data class MoviesCatalogueUiState(
     val showSuggestionsDropdown: Boolean = false
 ) {
     companion object {
-        val DEFAULT_GENRES = listOf(
-            "All", "Drama", "Comedy", "Film Noir", "Sci-Fi",
-            "Horror", "Science-Fiction", "Animation", "Action", "Crime", "Mystery"
-        )
+        val DEFAULT_GENRES = MovieBoxProvider.DEFAULT_GENRES
     }
 }
 
@@ -68,8 +70,9 @@ class MoviesCatalogueViewModel(
         }
         viewModelScope.launch {
             moviesRepository.getGenres().onSuccess { genres ->
-                if (genres.isNotEmpty()) {
-                    _uiState.update { it.copy(availableGenres = genres) }
+                val clean = genres.filterNot { it.equals("Fantasy", ignoreCase = true) }
+                if (clean.isNotEmpty()) {
+                    _uiState.update { it.copy(availableGenres = clean) }
                 }
             }
         }
@@ -79,14 +82,21 @@ class MoviesCatalogueViewModel(
         sessionKey: String,
         initialKind: MediaKind? = null,
         initialGenre: String? = null,
-        initialQuery: String? = null
+        initialQuery: String? = null,
+        initialSort: CatalogueSort? = null,
+        initialCountry: String? = null
     ) {
         if (lastInitializedKey == sessionKey && _uiState.value.items.isNotEmpty()) return
         lastInitializedKey = sessionKey
+        val cleanGenre = initialGenre?.takeIf { g -> g.isNotBlank() } ?: "All"
+        val cleanCountry = initialCountry?.takeIf { c -> c.isNotBlank() } ?: "All"
         _uiState.update {
             it.copy(
                 selectedKind = initialKind,
-                selectedGenre = initialGenre?.takeIf { g -> g.isNotBlank() } ?: "All",
+                selectedGenre = cleanGenre,
+                selectedCountry = cleanCountry,
+                activeShortcut = matchingShortcut(initialKind, cleanGenre, cleanCountry),
+                sort = initialSort ?: CatalogueSort.POPULAR,
                 query = initialQuery.orEmpty(),
                 isSearchFocused = false,
                 showSuggestionsDropdown = false,
@@ -218,19 +228,82 @@ class MoviesCatalogueViewModel(
 
     fun selectKind(kind: MediaKind?) {
         if (_uiState.value.selectedKind == kind) return
-        _uiState.update { it.copy(selectedKind = kind) }
+        _uiState.update { current ->
+            current.copy(
+                selectedKind = kind,
+                activeShortcut = matchingShortcut(kind, current.selectedGenre, current.selectedCountry)
+            )
+        }
         loadPage(page = 1, append = false)
     }
 
     fun selectGenre(genre: String) {
         if (_uiState.value.selectedGenre == genre) return
-        _uiState.update { it.copy(selectedGenre = genre) }
+        _uiState.update { current ->
+            current.copy(
+                selectedGenre = genre,
+                activeShortcut = matchingShortcut(current.selectedKind, genre, current.selectedCountry)
+            )
+        }
+        loadPage(page = 1, append = false)
+    }
+
+    fun selectCountry(country: String) {
+        if (_uiState.value.selectedCountry == country) return
+        _uiState.update { current ->
+            current.copy(
+                selectedCountry = country,
+                activeShortcut = matchingShortcut(current.selectedKind, current.selectedGenre, country)
+            )
+        }
+        loadPage(page = 1, append = false)
+    }
+
+    fun selectShortcut(shortcut: MoviesDiscoveryShortcut) {
+        val isTogglingOff = _uiState.value.activeShortcut == shortcut
+        _uiState.update {
+            if (isTogglingOff) {
+                it.copy(
+                    activeShortcut = null,
+                    selectedKind = null,
+                    selectedGenre = "All",
+                    selectedCountry = "All"
+                )
+            } else {
+                it.copy(
+                    activeShortcut = shortcut,
+                    selectedKind = shortcut.kind,
+                    selectedGenre = shortcut.genre ?: "All",
+                    selectedCountry = shortcut.country ?: "All"
+                )
+            }
+        }
         loadPage(page = 1, append = false)
     }
 
     fun selectSort(sort: CatalogueSort) {
         if (_uiState.value.sort == sort) return
         _uiState.update { it.copy(sort = sort) }
+        loadPage(page = 1, append = false)
+    }
+
+    fun resetFilters() {
+        suggestJob?.cancel()
+        _uiState.update {
+            it.copy(
+                query = "",
+                selectedKind = null,
+                selectedGenre = "All",
+                selectedCountry = "All",
+                activeShortcut = null,
+                sort = CatalogueSort.POPULAR,
+                isSearchFocused = false,
+                showSuggestionsDropdown = false,
+                isLoadingSuggestions = false,
+                suggestionsError = null,
+                suggestions = emptyList()
+            )
+        }
         loadPage(page = 1, append = false)
     }
 
@@ -248,6 +321,16 @@ class MoviesCatalogueViewModel(
         viewModelScope.launch {
             moviesRepository.clearSearchHistory()
         }
+    }
+
+    private fun matchingShortcut(
+        kind: MediaKind?,
+        genre: String,
+        country: String
+    ): MoviesDiscoveryShortcut? = MoviesDiscoveryShortcut.entries.firstOrNull { shortcut ->
+        shortcut.kind == kind &&
+            (shortcut.genre ?: "All").equals(genre, ignoreCase = true) &&
+            (shortcut.country ?: "All").equals(country, ignoreCase = true)
     }
 
     private fun loadPage(page: Int, append: Boolean) {
@@ -270,7 +353,8 @@ class MoviesCatalogueViewModel(
                     page = page,
                     pageSize = 20,
                     genre = state.selectedGenre.takeUnless { it == "All" },
-                    sort = state.sort
+                    sort = state.sort,
+                    country = state.selectedCountry.takeUnless { it == "All" }
                 )
             }
 

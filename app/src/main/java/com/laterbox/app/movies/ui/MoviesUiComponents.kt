@@ -400,10 +400,16 @@ fun MoviesHeroCarousel(
                             .fillMaxWidth()
                             .padding(12.dp)
                             .align(Alignment.TopCenter),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        horizontalArrangement = if (item.sourceBadge.isSampleFixture) {
+                            Arrangement.SpaceBetween
+                        } else {
+                            Arrangement.End
+                        },
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        DataSourceBadgeChip(badge = item.sourceBadge)
+                        if (item.sourceBadge.isSampleFixture) {
+                            DataSourceBadgeChip(badge = item.sourceBadge)
+                        }
                         Surface(
                             shape = CircleShape,
                             color = Color.Black.copy(alpha = 0.52f)

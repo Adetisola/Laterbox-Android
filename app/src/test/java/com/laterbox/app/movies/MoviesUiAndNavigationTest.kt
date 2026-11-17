@@ -489,7 +489,7 @@ class MoviesUiAndNavigationTest {
             }
         }
 
-        composeTestRule.onNodeWithText("MovieBox catalogue & streaming").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Discover films & series").assertIsDisplayed()
         composeTestRule.onNodeWithTag("movies_tmdb_setup_card").assertDoesNotExist()
         composeTestRule.onNodeWithTag("movies_sources_button").performClick()
         composeTestRule.onNodeWithTag("provider_mode_moviebox").assertIsDisplayed()
@@ -797,5 +797,103 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithTag("movies_home_suggestions_loading").assertIsDisplayed()
         composeTestRule.onNodeWithTag("movies_home_search_scrim").performClick()
         assertEquals(false, focusState)
+    }
+
+    @Test
+    fun moviesScreen_rendersShortcutsCountriesTopRatedNewestRailsAndOmitsProviderFooter() {
+        var clickedShortcut: com.laterbox.app.movies.domain.model.MoviesDiscoveryShortcut? = null
+        var clickedCountry: String? = null
+        var clickedSortSeeAll: CatalogueSort? = null
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MoviesScreen(
+                    uiState = MoviesHomeUiState(
+                        isLoading = false,
+                        topRatedRail = listOf(sampleMovie.copy(id = "tr1", title = "Top Classic")),
+                        newestRail = listOf(sampleMovie.copy(id = "nw1", title = "Fresh Premiere")),
+                        feed = MoviesHomeFeed(
+                            featuredBanners = listOf(sampleMovie),
+                            sections = listOf(
+                                BrowseSection("s1", "Trending", null, SectionStyle.RAIL, listOf(sampleMovie))
+                            ),
+                            genres = listOf("All", "Action", "Fantasy")
+                        )
+                    ),
+                    onRefresh = {},
+                    onOpenCatalogue = { _, _ -> },
+                    onOpenDetail = { _, _ -> },
+                    onOpenPlayer = { _, _, _, _ -> },
+                    onToggleWatchlist = {},
+                    onToggleSampleFixtures = {},
+                    onSaveTmdbApiKey = {},
+                    onSelectCountry = { clickedCountry = it },
+                    onSelectShortcut = { clickedShortcut = it },
+                    onOpenCatalogueWithSort = { _, _, sort, _ -> clickedSortSeeAll = sort }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithText("Discover films & series").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Powered by", substring = true).assertDoesNotExist()
+        composeTestRule.onNodeWithTag("movies_home_genre_fantasy").assertDoesNotExist()
+
+        composeTestRule.onNodeWithTag("movies_home_shortcut_k_drama").assertIsDisplayed().performClick()
+        assertEquals(com.laterbox.app.movies.domain.model.MoviesDiscoveryShortcut.K_DRAMA, clickedShortcut)
+
+        composeTestRule.onNodeWithTag("movies_home_country_korea").performScrollTo().performClick()
+        assertEquals("Korea", clickedCountry)
+
+        composeTestRule.onNodeWithTag("movies_home_list").performScrollToNode(hasTestTag("movies_home_top_rated_rail"))
+        composeTestRule.onNodeWithTag("movies_home_top_rated_rail").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Highest-rated films & series").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("movies_home_list").performScrollToNode(hasTestTag("movies_home_newest_rail"))
+        composeTestRule.onNodeWithTag("movies_home_newest_rail").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Latest releases added").assertIsDisplayed()
+        assertEquals(null, clickedSortSeeAll)
+    }
+
+    @Test
+    fun moviesCatalogueScreen_rendersShortcutsCountriesResetAndExcludesFantasy() {
+        var clickedShortcut: com.laterbox.app.movies.domain.model.MoviesDiscoveryShortcut? = null
+        var clickedCountry: String? = null
+        var resetClicked = false
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MoviesCatalogueScreen(
+                    uiState = MoviesCatalogueUiState(
+                        selectedKind = MediaKind.MOVIE,
+                        availableGenres = listOf("All", "Action", "Fantasy"),
+                        items = listOf(sampleMovie)
+                    ),
+                    onBackClick = {},
+                    onQueryChange = {},
+                    onSearchFocusChange = {},
+                    onSubmitSearch = {},
+                    onClearSearch = {},
+                    onSelectKind = {},
+                    onSelectGenre = {},
+                    onSelectSort = {},
+                    onLoadNextPage = {},
+                    onRetry = {},
+                    onClearSearchHistory = {},
+                    onOpenDetail = { _, _ -> },
+                    onSelectCountry = { clickedCountry = it },
+                    onSelectShortcut = { clickedShortcut = it },
+                    onResetFilters = { resetClicked = true }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("genre_chip_Fantasy").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("catalogue_shortcut_hollywood").assertIsDisplayed().performClick()
+        assertEquals(com.laterbox.app.movies.domain.model.MoviesDiscoveryShortcut.HOLLYWOOD, clickedShortcut)
+
+        composeTestRule.onNodeWithTag("catalogue_country_united_states").performScrollTo().performClick()
+        assertEquals("United States", clickedCountry)
+
+        composeTestRule.onNodeWithTag("catalogue_reset_filters").assertIsDisplayed().performClick()
+        assertTrue(resetClicked)
     }
 }

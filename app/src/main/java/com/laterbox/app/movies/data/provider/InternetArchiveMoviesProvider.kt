@@ -176,7 +176,9 @@ class InternetArchiveMoviesProvider(
         page: Int,
         pageSize: Int,
         genre: String?,
-        sort: CatalogueSort
+        sort: CatalogueSort,
+        country: String?,
+        year: String?
     ): Result<CataloguePage> = withContext(Dispatchers.IO) {
         if (kind == MediaKind.TV_SERIES) {
             return@withContext Result.success(

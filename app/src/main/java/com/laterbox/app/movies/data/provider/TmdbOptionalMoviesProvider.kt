@@ -95,7 +95,9 @@ class TmdbOptionalMoviesProvider(
         page: Int,
         pageSize: Int,
         genre: String?,
-        sort: CatalogueSort
+        sort: CatalogueSort,
+        country: String?,
+        year: String?
     ): Result<CataloguePage> = withContext(Dispatchers.IO) {
         val key = apiKeyProvider().trim()
         if (key.isBlank()) {

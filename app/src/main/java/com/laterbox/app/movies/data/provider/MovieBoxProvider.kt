@@ -104,6 +104,8 @@ class MovieBoxProvider(
                         val bannerItems = bannerObj?.optJSONArray("items") ?: JSONArray()
                         for (j in 0 until bannerItems.length()) {
                             val entry = bannerItems.optJSONObject(j) ?: continue
+                            val externalUrl = entry.optCleanString("url")
+                            if (externalUrl != null) continue
                             val bannerImage = entry.optJSONObject("image")?.optCleanString("url")
                             val sub = entry.optJSONObject("subject")
                             val trailerUrl = (sub ?: entry)
@@ -121,7 +123,10 @@ class MovieBoxProvider(
                                     trailerOverride = trailerUrl
                                 )?.let { banners.add(it) }
                             } else {
-                                val id = entry.optCleanString("subjectId") ?: entry.optCleanString("id")
+                                val id = (entry.optCleanString("subjectId") ?: entry.optCleanString("id"))
+                                    ?.takeUnless { it == "0" }
+                                val subjectType = entry.optIntOrNull("subjectType")
+                                if (subjectType != null && subjectType !in VALID_SUBJECT_TYPES) continue
                                 val title = entry.optCleanString("title") ?: opTitle
                                 if (id != null && title != null) {
                                     val dp = entry.optCleanString("detailPath")
@@ -132,7 +137,7 @@ class MovieBoxProvider(
                                             id = id,
                                             providerId = PROVIDER_ID,
                                             kind = parseMediaKind(
-                                                entry.optIntOrNull("subjectType"),
+                                                subjectType,
                                                 entry.optCleanString("type")
                                             ),
                                             title = title,
@@ -149,11 +154,15 @@ class MovieBoxProvider(
                         }
                     }
 
-                    opType.equals("FILTER", ignoreCase = true) || op.has("filters") -> {
+                    opType.equals("SPORT_LIVE", ignoreCase = true) -> Unit
+
+                    opType.equals("FILTER", ignoreCase = true) || (op.has("filters") && !op.has("subjects")) -> {
                         val filters = op.optJSONArray("filters") ?: JSONArray()
                         for (j in 0 until filters.length()) {
                             filters.optJSONObject(j)?.optCleanString("title")?.let { filterTitle ->
-                                extractedGenres.add(filterTitle)
+                                if (!filterTitle.equals("Fantasy", ignoreCase = true)) {
+                                    extractedGenres.add(filterTitle)
+                                }
                             }
                         }
                     }
@@ -197,11 +206,23 @@ class MovieBoxProvider(
                 sections.firstOrNull()?.items?.take(5).orEmpty()
             }).distinctBy { it.id }
 
+            val apiGenres = buildList {
+                val arr = data.optJSONArray("genres") ?: JSONArray()
+                for (gIdx in 0 until arr.length()) {
+                    arr.optString(gIdx).trim()
+                        .takeIf { it.isNotBlank() && !it.equals("Fantasy", ignoreCase = true) }
+                        ?.let { add(it) }
+                }
+            }
+
             val genreList = buildList {
                 add("All")
-                val discovered = extractedGenres.ifEmpty {
-                    sections.flatMap { section -> section.items.flatMap { it.genres } }
-                }.filterNot { it.equals("All", ignoreCase = true) }.distinct()
+                val discovered = when {
+                    apiGenres.isNotEmpty() -> apiGenres
+                    extractedGenres.isNotEmpty() -> extractedGenres
+                    else -> VERIFIED_GENRES
+                }.filterNot { it.equals("All", ignoreCase = true) || it.equals("Fantasy", ignoreCase = true) }
+                    .distinct()
                 addAll(discovered)
             }
             if (genreList.size > 1) {
@@ -212,7 +233,7 @@ class MovieBoxProvider(
                 featuredBanners = finalBanners,
                 sections = sections,
                 genres = genreList,
-                activeProviderNotice = "Live source: MovieBox",
+                activeProviderNotice = null,
                 isOfflineCached = false,
                 containsSampleFixtures = false
             )
@@ -224,26 +245,44 @@ class MovieBoxProvider(
         page: Int,
         pageSize: Int,
         genre: String?,
-        sort: CatalogueSort
+        sort: CatalogueSort,
+        country: String?,
+        year: String?
     ): Result<CataloguePage> = withContext(Dispatchers.IO) {
         runCatching {
             val safePage = page.coerceAtLeast(1)
             val safePageSize = pageSize.coerceIn(1, 50)
             val endpoint = if (kind == MediaKind.TV_SERIES) "tv-series" else "movies"
-            val apiSort = when (sort) {
-                CatalogueSort.POPULAR -> "RECOMMEND"
-                CatalogueSort.TOP_RATED -> "RANKING"
-                CatalogueSort.NEWEST -> "LATEST"
+            val normalizedGenre = normalizeVerifiedGenre(genre)
+            val normalizedCountry = normalizeVerifiedCountry(country)
+            val normalizedYear = year?.trim()?.takeIf { YEAR_REGEX.matches(it) }
+            val rawApiSort = when (sort) {
+                CatalogueSort.POPULAR -> "Hottest"
+                CatalogueSort.TOP_RATED -> "Rating"
+                CatalogueSort.NEWEST -> "Latest"
+            }
+            val apiSort = if (normalizedGenre == "Western" && rawApiSort == "Hottest") {
+                "ForYou"
+            } else {
+                rawApiSort
             }
 
-            val url = requireBaseHttpUrl().newBuilder()
+            val urlBuilder = requireBaseHttpUrl().newBuilder()
                 .addPathSegment(endpoint)
                 .addQueryParameter("page", safePage.toString())
                 .addQueryParameter("per_page", safePageSize.toString())
                 .addQueryParameter("sort", apiSort)
-                .build()
+            if (normalizedGenre != null) {
+                urlBuilder.addQueryParameter("genre", normalizedGenre)
+            }
+            if (normalizedCountry != null) {
+                urlBuilder.addQueryParameter("country", normalizedCountry)
+            }
+            if (normalizedYear != null) {
+                urlBuilder.addQueryParameter("year", normalizedYear)
+            }
 
-            val body = executeGet(url)
+            val body = executeGet(urlBuilder.build())
             val root = JSONObject(body)
             val total = root.optIntOrNull("total")
             val rawItems = root.optJSONArray("items") ?: JSONArray()
@@ -256,16 +295,19 @@ class MovieBoxProvider(
                     val dp = obj.optCleanString("detail_path")
                     cacheMetadata(id, title, dp)
                     val cover = obj.optCleanString("cover")
+                    val itemKind = obj.optIntOrNull("subject_type")?.let { parseMediaKind(it, null) } ?: kind
                     add(
                         MovieTitleSummary(
                             id = id,
                             providerId = PROVIDER_ID,
-                            kind = kind,
+                            kind = itemKind,
                             title = title,
                             releaseYear = parseYear(null, obj.optCleanString("year")),
                             rating = obj.optRating("rating", "imdb_rating"),
                             posterUrl = cover,
                             backdropUrl = cover,
+                            genres = parseGenres(obj.optCleanString("genre")),
+                            country = obj.optCleanString("country"),
                             detailPath = dp,
                             sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
                             isPlayableHint = true
@@ -274,22 +316,15 @@ class MovieBoxProvider(
                 }
             }
 
-            val effectiveGenre = genre?.takeUnless { it.equals("All", ignoreCase = true) }
-            val filtered = if (effectiveGenre != null && parsed.any { it.genres.isNotEmpty() }) {
-                parsed.filter { item -> item.genres.any { it.equals(effectiveGenre, ignoreCase = true) } }
-            } else {
-                parsed
-            }
-
             val hasMore = parsed.isNotEmpty() &&
                 parsed.size >= safePageSize &&
                 (total == null || safePage * parsed.size < total)
 
             CataloguePage(
-                items = filtered,
+                items = parsed,
                 page = safePage,
                 pageSize = safePageSize,
-                totalCount = total ?: filtered.size,
+                totalCount = total ?: parsed.size,
                 hasMore = hasMore
             )
         }
@@ -298,9 +333,7 @@ class MovieBoxProvider(
     override suspend fun getGenres(): Result<List<String>> {
         val current = cachedGenres
         if (current.isNotEmpty()) return Result.success(current)
-        return getHomeFeed().map { feed ->
-            feed.genres.ifEmpty { DEFAULT_GENRES }
-        }
+        return Result.success(DEFAULT_GENRES)
     }
 
     override suspend fun search(
@@ -693,7 +726,10 @@ class MovieBoxProvider(
         backdropOverride: String? = null,
         trailerOverride: String? = null
     ): MovieTitleSummary? {
-        val id = obj.optCleanString("subjectId") ?: obj.optCleanString("subject_id") ?: return null
+        val id = (obj.optCleanString("subjectId") ?: obj.optCleanString("subject_id"))
+            ?.takeUnless { it == "0" } ?: return null
+        val subjectType = obj.optIntOrNull("subjectType") ?: obj.optIntOrNull("subject_type")
+        if (subjectType != null && subjectType !in VALID_SUBJECT_TYPES) return null
         val title = obj.optCleanString("title") ?: return null
         val dp = obj.optCleanString("detailPath") ?: obj.optCleanString("detail_path")
 
@@ -708,7 +744,7 @@ class MovieBoxProvider(
         return MovieTitleSummary(
             id = id,
             providerId = PROVIDER_ID,
-            kind = parseMediaKind(obj.optIntOrNull("subjectType"), obj.optCleanString("type")),
+            kind = parseMediaKind(subjectType, obj.optCleanString("type")),
             title = title,
             releaseYear = parseYear(obj.optCleanString("releaseDate") ?: obj.optCleanString("release_date")),
             rating = obj.optRating("imdbRatingValue", "imdb_rating", "rating"),
@@ -932,10 +968,34 @@ class MovieBoxProvider(
     companion object {
         private const val TAG = "MovieBoxProvider"
         const val PROVIDER_ID = "moviebox"
+        private val VALID_SUBJECT_TYPES = setOf(1, 2)
+        private val YEAR_REGEX = Regex("^\\d{4}$")
 
-        private val DEFAULT_GENRES = listOf(
-            "All", "Action", "Adventure", "Animation", "Comedy",
-            "Crime", "Drama", "Horror", "Romance", "Sci-Fi", "Thriller"
+        val VERIFIED_GENRES = listOf(
+            "Action", "Adventure", "Animation", "Biography", "Comedy",
+            "Crime", "Documentary", "Drama", "Family", "History",
+            "Horror", "Music", "Musical", "Mystery", "Romance",
+            "Sci-Fi", "Sport", "Thriller", "War", "Western"
         )
+
+        val VERIFIED_COUNTRIES = listOf(
+            "United States", "India", "Korea", "United Kingdom", "Japan", "Nigeria"
+        )
+
+        val DEFAULT_GENRES = listOf("All") + VERIFIED_GENRES
+
+        private val GENRE_MAP = VERIFIED_GENRES.associateBy { it.lowercase(Locale.US) }
+        private val COUNTRY_MAP = VERIFIED_COUNTRIES.associateBy { it.lowercase(Locale.US) } +
+            mapOf("south korea" to "Korea")
+
+        fun normalizeVerifiedGenre(raw: String?): String? {
+            val clean = raw?.trim()?.takeIf { it.isNotBlank() && !it.equals("All", ignoreCase = true) } ?: return null
+            return GENRE_MAP[clean.lowercase(Locale.US)]
+        }
+
+        fun normalizeVerifiedCountry(raw: String?): String? {
+            val clean = raw?.trim()?.takeIf { it.isNotBlank() && !it.equals("All", ignoreCase = true) } ?: return null
+            return COUNTRY_MAP[clean.lowercase(Locale.US)]
+        }
     }
 }
