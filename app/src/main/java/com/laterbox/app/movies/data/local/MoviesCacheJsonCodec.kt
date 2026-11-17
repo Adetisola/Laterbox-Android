@@ -67,6 +67,8 @@ object MoviesCacheJsonCodec {
                     put("name", c.name)
                     put("role", c.role ?: JSONObject.NULL)
                     put("imageUrl", c.imageUrl ?: JSONObject.NULL)
+                    put("personId", c.personId ?: JSONObject.NULL)
+                    put("providerId", c.providerId ?: JSONObject.NULL)
                 })
             }
         })
@@ -77,6 +79,7 @@ object MoviesCacheJsonCodec {
                     put("title", s.title)
                     put("episodeCount", s.episodeCount)
                     put("imageUrl", s.imageUrl ?: JSONObject.NULL)
+                    put("availableEpisodes", JSONArray(s.availableEpisodes))
                 })
             }
         })
@@ -114,7 +117,15 @@ object MoviesCacheJsonCodec {
             if (arr != null) {
                 for (i in 0 until arr.length()) {
                     val o = arr.optJSONObject(i) ?: continue
-                    add(CastMember(o.optString("name"), o.optNullableString("role"), o.optNullableString("imageUrl")))
+                    add(
+                        CastMember(
+                            name = o.optString("name"),
+                            role = o.optNullableString("role"),
+                            imageUrl = o.optNullableString("imageUrl"),
+                            personId = o.optNullableString("personId"),
+                            providerId = o.optNullableString("providerId")
+                        )
+                    )
                 }
             }
         }
@@ -123,7 +134,24 @@ object MoviesCacheJsonCodec {
             if (arr != null) {
                 for (i in 0 until arr.length()) {
                     val o = arr.optJSONObject(i) ?: continue
-                    add(SeasonSummary(o.optInt("seasonNumber", 1), o.optString("title"), o.optInt("episodeCount", 0), o.optNullableString("imageUrl")))
+                    val epArr = o.optJSONArray("availableEpisodes")
+                    val availableEps = buildList {
+                        if (epArr != null) {
+                            for (j in 0 until epArr.length()) {
+                                val epNum = epArr.optInt(j, 0)
+                                if (epNum > 0) add(epNum)
+                            }
+                        }
+                    }
+                    add(
+                        SeasonSummary(
+                            seasonNumber = o.optInt("seasonNumber", 1),
+                            title = o.optString("title"),
+                            episodeCount = o.optInt("episodeCount", 0),
+                            imageUrl = o.optNullableString("imageUrl"),
+                            availableEpisodes = availableEps
+                        )
+                    )
                 }
             }
         }

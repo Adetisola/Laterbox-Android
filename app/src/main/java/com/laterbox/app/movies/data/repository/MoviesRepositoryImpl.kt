@@ -21,6 +21,7 @@ import com.laterbox.app.movies.domain.model.MediaDetails
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.model.MoviesHomeFeed
+import com.laterbox.app.movies.domain.model.PersonFilmography
 import com.laterbox.app.movies.domain.model.PlaybackResolution
 import com.laterbox.app.movies.domain.model.ProviderLinkRecord
 import com.laterbox.app.movies.domain.model.SearchSuggestion
@@ -493,7 +494,13 @@ class MoviesRepositoryImpl(
                     altDetails.summary,
                     seasonCount = altDetails.seasons.size.takeIf { it > 0 }
                 )
-                return Result.success(altDetails.copy(summary = resolvedSummary))
+                val resolvedRelated = registerSummariesCanonical(altDetails.relatedTitles)
+                return Result.success(
+                    altDetails.copy(
+                        summary = resolvedSummary,
+                        relatedTitles = resolvedRelated
+                    )
+                )
             }
         }
 
@@ -513,6 +520,23 @@ class MoviesRepositoryImpl(
             TmdbOptionalMoviesProvider.PROVIDER_ID -> tmdbProvider.getDetails(titleId)
             else -> Result.failure(IllegalArgumentException("Unknown provider '$providerId'"))
         }
+
+    override suspend fun getPersonFilmography(
+        providerId: String,
+        personId: String,
+        personName: String,
+        personImageUrl: String?
+    ): Result<PersonFilmography> {
+        val result = when (providerId) {
+            MovieBoxProvider.PROVIDER_ID -> movieBoxProvider?.getPersonFilmography(personId, personName, personImageUrl)
+                ?: Result.failure(IllegalStateException("MovieBox provider is not configured."))
+            TvMazeSeriesProvider.PROVIDER_ID -> tvMazeProvider.getPersonFilmography(personId, personName, personImageUrl)
+            else -> Result.failure(UnsupportedOperationException("Person filmography is not supported for $providerId"))
+        }
+        return result.map { filmography ->
+            filmography.copy(credits = registerSummariesCanonical(filmography.credits))
+        }
+    }
 
     override suspend fun getSeasons(providerId: String, seriesId: String): Result<List<SeasonSummary>> {
         val (resolvedProviderId, resolvedSeriesId) = mediaResolver.resolveConcreteTarget(

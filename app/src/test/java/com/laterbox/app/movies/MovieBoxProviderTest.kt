@@ -780,4 +780,98 @@ class MovieBoxProviderTest {
         assertTrue((err as com.laterbox.app.movies.data.provider.MovieBoxApiException).isAuthFailure)
         assertTrue(err.message.orEmpty().contains("App Check", ignoreCase = true))
     }
+
+    @Test
+    fun detailsAndStaff_parseStarsStillsRelatedAllEpAndPersonFilmography() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path == "/detail/777" -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "subject_id": "777",
+                          "title": "Dune: Part Two",
+                          "subject_type": 1,
+                          "type": "Movie",
+                          "description": "Paul Atreides unites with the Fremen.",
+                          "release_date": "2024-03-01",
+                          "duration": 9960,
+                          "imdb_rating": "8.6",
+                          "imdb_id": "tt15239678",
+                          "cover": "https://cdn.example/dune-poster.jpg",
+                          "stills": {"url": "https://cdn.example/dune-still.jpg", "width": 1280, "height": 720},
+                          "stars": [
+                            {"staff_id": "101", "staff_type": 2, "name": "Denis Villeneuve", "character": null, "avatar_url": "https://cdn.example/denis.jpg"},
+                            {"staff_id": "202", "staff_type": 1, "name": "Timothee Chalamet", "character": "Paul Atreides", "avatar_url": "https://cdn.example/tim.jpg"}
+                          ],
+                          "seasons": [],
+                          "related": [
+                            {
+                              "subject_id": "888",
+                              "title": "Dune",
+                              "subject_type": 1,
+                              "type": "Movie",
+                              "cover": "https://cdn.example/dune1-poster.jpg",
+                              "stills": {"url": "https://cdn.example/dune1-still.jpg"},
+                              "imdb_rating": "8.0",
+                              "release_date": "2021-10-22",
+                              "genre": "Sci-Fi",
+                              "country": "United States",
+                              "detail_path": "dune-2021"
+                            }
+                          ]
+                        }
+                        """.trimIndent()
+                    )
+                    path == "/episodes/909" -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "subject_id": "909",
+                          "seasons": [
+                            {"season": 1, "episode_count": 3, "all_ep": [1, 3, 5]}
+                          ]
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/staff/202/titles") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "staff_id": "202",
+                          "page": 1,
+                          "per_page": 24,
+                          "total": 2,
+                          "items": [
+                            {"subject_id": "777", "title": "Dune: Part Two", "subject_type": 1, "type": "Movie", "cover": "https://cdn.example/dune-poster.jpg"},
+                            {"subject_id": "909", "title": "Wonka", "subject_type": 1, "type": "Movie", "cover": "https://cdn.example/wonka-poster.jpg"}
+                          ]
+                        }
+                        """.trimIndent()
+                    )
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val details = provider.getDetails("777").getOrThrow()
+        assertEquals("https://cdn.example/dune-poster.jpg", details.summary.posterUrl)
+        assertEquals("https://cdn.example/dune-still.jpg", details.summary.backdropUrl)
+        assertEquals("tt15239678", details.summary.imdbId)
+        assertEquals("Denis Villeneuve", details.directorOrCreator)
+        assertEquals(2, details.cast.size)
+        assertEquals("202", details.cast[1].personId)
+        assertEquals("moviebox", details.cast[1].providerId)
+        assertEquals("Paul Atreides", details.cast[1].role)
+        assertEquals(1, details.relatedTitles.size)
+        assertEquals("888", details.relatedTitles.first().id)
+        assertEquals("https://cdn.example/dune1-still.jpg", details.relatedTitles.first().backdropUrl)
+
+        val episodes = provider.getEpisodes("909", 1).getOrThrow()
+        assertEquals(listOf(1, 3, 5), episodes.map { it.episodeNumber })
+
+        val filmography = provider.getPersonFilmography("202", "Timothee Chalamet").getOrThrow()
+        assertEquals("202", filmography.personId)
+        assertEquals(2, filmography.credits.size)
+        assertEquals("Wonka", filmography.credits[1].title)
+    }
 }

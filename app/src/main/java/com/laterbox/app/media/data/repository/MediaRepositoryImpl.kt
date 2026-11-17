@@ -89,6 +89,58 @@ class MediaRepositoryImpl(
         artworkUrl: String?,
         spotifyTrackId: String?,
         versionTag: String?
+    ): String = enqueueDownloadInternal(
+        linkId = linkId,
+        candidate = candidate,
+        sourcePlatform = sourcePlatform,
+        title = title,
+        artist = artist,
+        album = album,
+        artworkUrl = artworkUrl,
+        spotifyTrackId = spotifyTrackId,
+        versionTag = versionTag,
+        contentCategory = null,
+        sourceRef = null,
+        urlExpiresAt = null
+    )
+
+    override suspend fun enqueueStandaloneDownload(
+        candidate: MediaCandidate,
+        sourcePlatform: String,
+        title: String?,
+        artworkUrl: String?,
+        versionTag: String?,
+        contentCategory: String?,
+        sourceRef: String?,
+        urlExpiresAt: Long?
+    ): String = enqueueDownloadInternal(
+        linkId = null,
+        candidate = candidate,
+        sourcePlatform = sourcePlatform,
+        title = title,
+        artist = null,
+        album = null,
+        artworkUrl = artworkUrl,
+        spotifyTrackId = null,
+        versionTag = versionTag,
+        contentCategory = contentCategory,
+        sourceRef = sourceRef,
+        urlExpiresAt = urlExpiresAt
+    )
+
+    private suspend fun enqueueDownloadInternal(
+        linkId: Long?,
+        candidate: MediaCandidate,
+        sourcePlatform: String,
+        title: String?,
+        artist: String?,
+        album: String?,
+        artworkUrl: String?,
+        spotifyTrackId: String?,
+        versionTag: String?,
+        contentCategory: String?,
+        sourceRef: String?,
+        urlExpiresAt: Long?
     ): String = withContext(Dispatchers.IO) {
         val taskId = UUID.randomUUID().toString()
         val sourceUrl = when (val s = candidate.source) {
@@ -137,7 +189,10 @@ class MediaRepositoryImpl(
             artworkUrl = artworkUrl,
             spotifyTrackId = spotifyTrackId,
             versionTag = versionTag,
-            headersJson = headersJson
+            headersJson = headersJson,
+            contentCategory = contentCategory,
+            sourceRef = sourceRef,
+            urlExpiresAt = urlExpiresAt
         )
 
         taskDao.insertTask(taskEntity)

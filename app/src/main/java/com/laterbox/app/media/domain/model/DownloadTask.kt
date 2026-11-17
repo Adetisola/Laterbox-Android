@@ -2,7 +2,7 @@ package com.laterbox.app.media.domain.model
 
 data class DownloadTask(
     val id: String,
-    val savedLinkId: Long,
+    val savedLinkId: Long?,
     val sourceUrl: String,
     val sourcePlatform: String,
     val candidateId: String?,
@@ -29,5 +29,11 @@ data class DownloadTask(
     val versionTag: String? = null,
     val stage: DownloadStage? = null,
     val stageDetail: String? = null,
-    val headers: Map<String, String> = emptyMap()
+    val headers: Map<String, String> = emptyMap(),
+    val contentCategory: String? = null,
+    val speedBps: Long? = null,
+    val etaSeconds: Long? = null,
+    val etag: String? = null,
+    val urlExpiresAt: Long? = null,
+    val sourceRef: String? = null
 )

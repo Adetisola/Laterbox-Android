@@ -4,7 +4,6 @@ import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.laterbox.app.data.local.LaterboxDatabase
-import com.laterbox.app.data.repository.LinkRepository
 import com.laterbox.app.media.domain.model.AcquisitionSource
 import com.laterbox.app.media.domain.model.DownloadTask
 import com.laterbox.app.media.domain.model.InspectionResult
@@ -23,7 +22,6 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -36,17 +34,18 @@ import org.robolectric.annotation.Config
 class MoviesDownloadBridgeTest {
 
     private lateinit var database: LaterboxDatabase
-    private lateinit var linkRepository: LinkRepository
     private lateinit var fakeMediaRepository: RecordingMediaRepository
     private lateinit var bridge: MoviesDownloadBridge
 
     private data class EnqueuedCall(
-        val linkId: Long,
         val candidate: MediaCandidate,
         val sourcePlatform: String,
         val title: String?,
         val artworkUrl: String?,
-        val versionTag: String?
+        val versionTag: String?,
+        val contentCategory: String?,
+        val sourceRef: String?,
+        val urlExpiresAt: Long?
     )
 
     private class RecordingMediaRepository : MediaRepository {
@@ -73,7 +72,31 @@ class MoviesDownloadBridgeTest {
             spotifyTrackId: String?,
             versionTag: String?
         ): String {
-            enqueued.add(EnqueuedCall(linkId, candidate, sourcePlatform, title, artworkUrl, versionTag))
+            error("Movies downloads should call enqueueStandaloneDownload")
+        }
+
+        override suspend fun enqueueStandaloneDownload(
+            candidate: MediaCandidate,
+            sourcePlatform: String,
+            title: String?,
+            artworkUrl: String?,
+            versionTag: String?,
+            contentCategory: String?,
+            sourceRef: String?,
+            urlExpiresAt: Long?
+        ): String {
+            enqueued.add(
+                EnqueuedCall(
+                    candidate = candidate,
+                    sourcePlatform = sourcePlatform,
+                    title = title,
+                    artworkUrl = artworkUrl,
+                    versionTag = versionTag,
+                    contentCategory = contentCategory,
+                    sourceRef = sourceRef,
+                    urlExpiresAt = urlExpiresAt
+                )
+            )
             return "task_${enqueued.size}"
         }
 
@@ -112,9 +135,8 @@ class MoviesDownloadBridgeTest {
         database = Room.inMemoryDatabaseBuilder(context, LaterboxDatabase::class.java)
             .allowMainThreadQueries()
             .build()
-        linkRepository = LinkRepository(database.savedLinkDao())
         fakeMediaRepository = RecordingMediaRepository()
-        bridge = MoviesDownloadBridge(linkRepository, fakeMediaRepository)
+        bridge = MoviesDownloadBridge(fakeMediaRepository)
     }
 
     @After
@@ -123,10 +145,10 @@ class MoviesDownloadBridgeTest {
     }
 
     @Test
-    fun enqueueAuthorisedDownload_createsParentSavedLinkAndEnqueuesSelectedResolution() = runTest {
+    fun enqueueAuthorisedDownload_enqueuesStandaloneWithoutInboxPollution() = runTest {
         val source720 = PlaybackSource(
             id = "src_720",
-            url = "https://archive.org/download/his_girl_friday/his_girl_friday_720p.mp4",
+            url = "https://archive.org/download/his_girl_friday/his_girl_friday_720p.mp4?exp=1800000000",
             format = "MP4",
             qualityLabel = "720p",
             qualityHeight = 720,
@@ -145,13 +167,15 @@ class MoviesDownloadBridgeTest {
         assertTrue(result.isSuccess)
         assertEquals("task_1", result.getOrNull())
         assertEquals(1, fakeMediaRepository.enqueued.size)
+        assertEquals(0, database.savedLinkDao().getInboxCount())
 
         val call = fakeMediaRepository.enqueued.first()
-        val savedLink = database.savedLinkDao().getLinkById(call.linkId).first()
-        assertNotNull(savedLink)
         assertEquals("His Girl Friday (720p)", call.title)
         assertEquals("720p", call.versionTag)
         assertEquals("Internet Archive Cinema", call.sourcePlatform)
+        assertEquals(MoviesDownloadBridge.CATEGORY_MOVIE, call.contentCategory)
+        assertEquals("ia|his_girl_friday|0|0|720p", call.sourceRef)
+        assertEquals(1800000000_000L, call.urlExpiresAt)
         assertEquals(MediaType.VIDEO, call.candidate.mediaType)
         assertEquals(720, call.candidate.height)
         assertEquals("mp4", call.candidate.ext)

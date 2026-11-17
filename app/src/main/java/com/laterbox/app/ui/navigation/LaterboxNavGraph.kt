@@ -1157,7 +1157,10 @@ fun LaterboxApp(
                                 onDownloadSource = movieDetailViewModel::downloadSource,
                                 onDismissDownloadStatus = movieDetailViewModel::clearDownloadStatus,
                                 onRetryPlaybackCheck = movieDetailViewModel::retryPlaybackCheck,
-                                onUnlinkProviderLink = movieDetailViewModel::unlinkProviderLink
+                                onUnlinkProviderLink = movieDetailViewModel::unlinkProviderLink,
+                                onCastMemberClick = movieDetailViewModel::openCastMember,
+                                onDismissPersonSheet = movieDetailViewModel::dismissPersonSheet,
+                                onDownloadEpisodesBatch = movieDetailViewModel::downloadEpisodesBatch
                             )
                         }
 

@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -53,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.laterbox.app.BuildConfig
+import com.laterbox.app.movies.domain.model.CastMember
 import com.laterbox.app.movies.domain.model.EpisodeItem
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.PlaybackResolution
@@ -76,20 +78,50 @@ fun MovieDetailScreen(
     onDismissDownloadStatus: () -> Unit = {},
     onRetryPlaybackCheck: () -> Unit = onRetry,
     onUnlinkProviderLink: (providerId: String, titleId: String) -> Unit = { _, _ -> },
+    onCastMemberClick: (CastMember) -> Unit = {},
+    onDismissPersonSheet: () -> Unit = {},
+    onDownloadEpisodesBatch: (seasonNumber: Int, episodeNumbers: List<Int>, preferredQualityHeight: Int?) -> Unit = { _, _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
     var showDownloadDialog by remember { mutableStateOf(false) }
+    var showPosterViewer by remember { mutableStateOf(false) }
 
     val availableRes = uiState.playbackResolution as? PlaybackResolution.Available
     if (showDownloadDialog && availableRes != null && uiState.details != null) {
-        DownloadResolutionDialog(
+        DownloadOptionsBottomSheet(
             title = uiState.details.summary.title,
+            kind = uiState.details.summary.kind,
             sources = availableRes.sources,
+            subtitles = availableRes.subtitles.ifEmpty { uiState.details.availableSubtitles },
+            seasons = uiState.details.seasons,
+            selectedSeasonNumber = uiState.selectedSeasonNumber,
+            currentEpisodes = uiState.episodes,
             isEnqueuing = uiState.isEnqueuingDownload,
             onSelectSource = onDownloadSource,
+            onDownloadBatch = onDownloadEpisodesBatch,
             onDismiss = { showDownloadDialog = false }
+        )
+    }
+
+    val posterForViewer = uiState.details?.summary?.posterUrl
+    if (showPosterViewer && !posterForViewer.isNullOrBlank()) {
+        PosterViewerDialog(
+            imageUrl = posterForViewer,
+            title = uiState.details.summary.title,
+            onDismiss = { showPosterViewer = false }
+        )
+    }
+
+    uiState.activePersonMember?.let { activeMember ->
+        PersonFilmographyBottomSheet(
+            member = activeMember,
+            filmography = uiState.selectedPerson,
+            isLoading = uiState.isLoadingPerson,
+            errorMessage = uiState.personError,
+            onOpenCredit = onOpenRelated,
+            onDismiss = onDismissPersonSheet
         )
     }
 
@@ -232,6 +264,10 @@ fun MovieDetailScreen(
                                         .clip(RoundedCornerShape(12.dp))
                                         .background(colors.surfacePrimary)
                                         .border(1.dp, colors.borderSubtle, RoundedCornerShape(12.dp))
+                                        .clickable(enabled = !summary.posterUrl.isNullOrBlank()) {
+                                            showPosterViewer = true
+                                        }
+                                        .testTag("detail_poster_image")
                                 ) {
                                     if (!summary.posterUrl.isNullOrBlank()) {
                                         AsyncImage(
@@ -632,9 +668,17 @@ fun MovieDetailScreen(
                                     contentPadding = PaddingValues(horizontal = 16.dp),
                                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                                 ) {
-                                    items(details.cast, key = { it.name + (it.role ?: "") }) { member ->
+                                    itemsIndexed(
+                                        items = details.cast,
+                                        key = { index, it -> "${index}_${it.personId ?: it.name}_${it.role ?: ""}" }
+                                    ) { index, member ->
                                         Column(
-                                            modifier = Modifier.width(86.dp),
+                                            modifier = Modifier
+                                                .width(86.dp)
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .clickable { onCastMemberClick(member) }
+                                                .padding(vertical = 4.dp)
+                                                .testTag("detail_cast_$index"),
                                             horizontalAlignment = Alignment.CenterHorizontally
                                         ) {
                                             Box(

@@ -353,7 +353,8 @@ class DownloadWorker(
                             artworkUrl = task.artworkUrl,
                             spotifyTrackId = task.spotifyTrackId,
                             versionTag = task.versionTag,
-                            thumbnailPath = thumbPath
+                            thumbnailPath = thumbPath,
+                            contentCategory = task.contentCategory
                         )
 
                         assetDao.insertAsset(assetEntity)
@@ -364,7 +365,7 @@ class DownloadWorker(
                                 type = com.laterbox.app.data.repository.ActivityEventType.DOWNLOAD_COMPLETED,
                                 title = "Downloaded ${task.title ?: "media"}",
                                 detail = "${task.mediaType}${task.qualityLabel?.let { " • $it" } ?: ""}",
-                                linkId = task.savedLinkId.takeIf { it > 0 }
+                                linkId = task.savedLinkId?.takeIf { it > 0 }
                             )
                         } catch (_: Throwable) {}
                         notificationManager.cancel(notificationId)
@@ -461,22 +462,23 @@ class DownloadWorker(
     private suspend fun notifyTerminalDownloadFailure(
         container: com.laterbox.app.di.AppContainer?,
         taskId: String,
-        savedLinkId: Long,
+        savedLinkId: Long?,
         title: String?,
         errorMessage: String,
         retryCount: Int
     ) {
         if (container == null) return
         try {
+            val validLinkId = savedLinkId?.takeIf { it > 0 }
             container.activityEventRepository.recordEvent(
                 type = com.laterbox.app.data.repository.ActivityEventType.DOWNLOAD_FAILED,
                 title = "Download failed: ${title ?: "media"}",
                 detail = errorMessage,
-                linkId = savedLinkId.takeIf { it > 0 }
+                linkId = validLinkId
             )
             container.contextualNotificationEngine.notifyDownloadFailure(
                 taskId = taskId,
-                savedLinkId = savedLinkId,
+                savedLinkId = validLinkId ?: -1L,
                 title = title,
                 errorMessage = errorMessage,
                 dedupKey = "download_${taskId}_r${retryCount}"

@@ -278,6 +278,7 @@ fun MoviesCatalogueScreen(
         if (uiState.query.isBlank()) {
             // Discovery Shortcuts & Country Row
             LazyRow(
+                modifier = Modifier.testTag("catalogue_shortcuts_row"),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically

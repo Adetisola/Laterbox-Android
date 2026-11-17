@@ -1709,4 +1709,65 @@ class LaterboxDatabaseTest {
             context.deleteDatabase(dbName)
         }
     }
+
+    @Test
+    fun migration13To14_preservesExistingTasksAndAssetsAndAllowsNullSavedLinkId() {
+        val instrumentation = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+        val helper = androidx.room.testing.MigrationTestHelper(
+            instrumentation,
+            LaterboxDatabase::class.java
+        )
+        val dbName = "migration_13_14_test.db"
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        context.deleteDatabase(dbName)
+
+        helper.createDatabase(dbName, 13).use { v13Db ->
+            v13Db.execSQL(
+                "INSERT INTO `saved_links` (`id`, `original_url`, `normalized_url`, `title`, `domain`, `content_type`, `is_read`, `is_archived`, `metadata_status`, `retry_count`, `nudge_count`, `nudge_dismissed`, `created_at`, `updated_at`) " +
+                    "VALUES (5, 'https://laterbox.app/video', 'https://laterbox.app/video', 'Video Link', 'laterbox.app', 'VIDEO', 0, 0, 'SUCCESS', 0, 0, 0, 1000, 1000)"
+            )
+            v13Db.execSQL(
+                "INSERT INTO `download_task` (`id`, `savedLinkId`, `sourceUrl`, `sourcePlatform`, `mediaType`, `title`, `status`, `progress`, `downloadedBytes`, `allowCellularOverride`, `supportsRange`, `retryCount`, `createdAt`, `updatedAt`) " +
+                    "VALUES ('task_existing', 5, 'https://cdn.example/video.mp4', 'MovieBox', 'VIDEO', 'Existing Movie', 'PAUSED', 40, 4000, 0, 1, 0, 1000, 2000)"
+            )
+            v13Db.execSQL(
+                "INSERT INTO `downloaded_asset` (`id`, `savedLinkId`, `sourcePlatform`, `originalSourceUrl`, `title`, `mimeType`, `mediaType`, `localPath`, `fileStatus`, `fileSize`, `checksum`, `createdAt`) " +
+                    "VALUES ('asset_existing', 5, 'MovieBox', 'https://cdn.example/done.mp4', 'Done Movie', 'video/mp4', 'VIDEO', '/tmp/done.mp4', 'AVAILABLE', 12000, 'abc', 1500)"
+            )
+        }
+
+        val migratedDb = helper.runMigrationsAndValidate(
+            dbName,
+            14,
+            true,
+            LaterboxDatabase.MIGRATION_13_14
+        )
+        try {
+            migratedDb.query("SELECT savedLinkId, title, contentCategory, speedBps FROM `download_task` WHERE id = 'task_existing'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals(5L, c.getLong(0))
+                assertEquals("Existing Movie", c.getString(1))
+                assertEquals("MOVIE", c.getString(2))
+                assertTrue(c.isNull(3))
+            }
+            migratedDb.query("SELECT contentCategory FROM `downloaded_asset` WHERE id = 'asset_existing'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("MOVIE", c.getString(0))
+            }
+            // Standalone task with NULL savedLinkId must be permitted
+            migratedDb.execSQL(
+                "INSERT INTO `download_task` (`id`, `savedLinkId`, `sourceUrl`, `sourcePlatform`, `mediaType`, `title`, `status`, `progress`, `downloadedBytes`, `allowCellularOverride`, `supportsRange`, `retryCount`, `createdAt`, `updatedAt`, `contentCategory`, `sourceRef`) " +
+                    "VALUES ('task_standalone', NULL, 'https://cdn.example/ep1.mp4', 'MovieBox', 'VIDEO', 'Series S1E1', 'QUEUED', 0, 0, 0, 1, 0, 3000, 3000, 'EPISODE', 'moviebox|123|1|1|720p')"
+            )
+            migratedDb.query("SELECT savedLinkId, contentCategory, sourceRef FROM `download_task` WHERE id = 'task_standalone'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertTrue(c.isNull(0))
+                assertEquals("EPISODE", c.getString(1))
+                assertEquals("moviebox|123|1|1|720p", c.getString(2))
+            }
+        } finally {
+            migratedDb.close()
+            context.deleteDatabase(dbName)
+        }
+    }
 }

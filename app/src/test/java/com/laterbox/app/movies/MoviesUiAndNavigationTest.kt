@@ -51,9 +51,11 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
 class MoviesUiAndNavigationTest {
 
     @get:Rule
@@ -824,7 +826,8 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithTag("movies_home_shortcut_k_drama").assertIsDisplayed().performClick()
         assertEquals(com.laterbox.app.movies.domain.model.MoviesDiscoveryShortcut.K_DRAMA, clickedShortcut)
 
-        composeTestRule.onNodeWithTag("movies_home_country_korea").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("movies_home_shortcuts_row").performScrollToNode(hasTestTag("movies_home_country_korea"))
+        composeTestRule.onNodeWithTag("movies_home_country_korea").performClick()
         assertEquals("Korea", clickedCountry)
 
         composeTestRule.onNodeWithTag("movies_home_list").performScrollToNode(hasTestTag("movies_home_top_rated_rail"))
@@ -873,10 +876,124 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithTag("catalogue_shortcut_hollywood").assertIsDisplayed().performClick()
         assertEquals(com.laterbox.app.movies.domain.model.MoviesDiscoveryShortcut.HOLLYWOOD, clickedShortcut)
 
-        composeTestRule.onNodeWithTag("catalogue_country_united_states").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("catalogue_shortcuts_row").performScrollToNode(hasTestTag("catalogue_country_united_states"))
+        composeTestRule.onNodeWithTag("catalogue_country_united_states").performClick()
         assertEquals("United States", clickedCountry)
 
         composeTestRule.onNodeWithTag("catalogue_reset_filters").assertIsDisplayed().performClick()
         assertTrue(resetClicked)
+    }
+
+    @Test
+    fun movieDetailScreen_opensPosterViewerCastSheetAndBatchDownloadEpisodes() {
+        var clickedCastName: String? = null
+        var batchCall: Triple<Int, List<Int>, Int?>? = null
+        val seriesSummary = sampleMovie.copy(
+            id = "mb_series_1",
+            providerId = "moviebox",
+            kind = MediaKind.TV_SERIES,
+            title = "Severance",
+            posterUrl = "https://cdn.example/severance-poster.jpg",
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+        )
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MovieDetailScreen(
+                    uiState = MovieDetailUiState(
+                        isLoading = false,
+                        details = MediaDetails(
+                            summary = seriesSummary,
+                            fullDescription = "Workplace thriller.",
+                            cast = listOf(CastMember("Adam Scott", "Mark S.", personId = "p1", providerId = "tvmaze")),
+                            seasons = listOf(SeasonSummary(1, "Season 1", 3, availableEpisodes = listOf(1, 2, 3)))
+                        ),
+                        selectedSeasonNumber = 1,
+                        episodes = listOf(
+                            EpisodeItem("ep_1_1", 1, 1, "Episode 1"),
+                            EpisodeItem("ep_1_2", 1, 2, "Episode 2"),
+                            EpisodeItem("ep_1_3", 1, 3, "Episode 3")
+                        ),
+                        playbackResolution = PlaybackResolution.Available(
+                            title = "Severance",
+                            sources = listOf(
+                                PlaybackSource("s720", "https://cdn.example/720.mp4", "MP4", "720p", 720, sizeMb = 420.0, providerName = "MovieBox")
+                            ),
+                            subtitles = listOf(SubtitleTrack("sub_en", "English", "en", "English", "https://cdn.example/en.srt"))
+                        )
+                    ),
+                    onBackClick = {},
+                    onRetry = {},
+                    onToggleWatchlist = {},
+                    onPlayClick = { _, _ -> },
+                    onSelectSeason = {},
+                    onOpenRelated = { _, _ -> },
+                    onOpenExternalUrl = {},
+                    onCastMemberClick = { clickedCastName = it.name },
+                    onDownloadEpisodesBatch = { se, eps, q -> batchCall = Triple(se, eps, q) }
+                )
+            }
+        }
+
+        // Open poster viewer dialog
+        composeTestRule.onNodeWithTag("detail_poster_image").performClick()
+        composeTestRule.onNodeWithTag("detail_poster_viewer_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("detail_poster_viewer_close").performClick()
+
+        // Tap download button to open DownloadOptionsBottomSheet & batch-select episodes 1 and 2
+        composeTestRule.onNodeWithTag("detail_download_button").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("download_resolution_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("download_options_list").performScrollToNode(hasTestTag("batch_episode_checkbox_1"))
+        composeTestRule.onNodeWithTag("batch_episode_checkbox_1").performClick()
+        composeTestRule.onNodeWithTag("download_options_list").performScrollToNode(hasTestTag("batch_episode_checkbox_2"))
+        composeTestRule.onNodeWithTag("batch_episode_checkbox_2").performClick()
+        composeTestRule.onNodeWithTag("download_options_list").performScrollToNode(hasTestTag("batch_download_confirm_button"))
+        composeTestRule.onNodeWithTag("batch_download_confirm_button").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(1, batchCall?.first)
+        assertEquals(listOf(1, 2), batchCall?.second?.sorted())
+        assertEquals(720, batchCall?.third)
+
+        // Tap cast member
+        composeTestRule.onNodeWithTag("movie_detail_list").performScrollToNode(hasTestTag("detail_cast_0"))
+        composeTestRule.onNodeWithTag("detail_cast_0").performClick()
+        assertEquals("Adam Scott", clickedCastName)
+    }
+
+    @Test
+    fun movieDetailScreen_displaysPersonFilmographySheetAndNavigatesToCredit() {
+        var openedCreditId: String? = null
+        val member = CastMember("Adam Scott", "Mark S.", personId = "p1", providerId = "tvmaze")
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MovieDetailScreen(
+                    uiState = MovieDetailUiState(
+                        isLoading = false,
+                        details = MediaDetails(summary = sampleMovie, fullDescription = "Film"),
+                        activePersonMember = member,
+                        selectedPerson = com.laterbox.app.movies.domain.model.PersonFilmography(
+                            personId = "p1",
+                            providerId = "tvmaze",
+                            name = "Adam Scott",
+                            credits = listOf(sampleMovie.copy(id = "parks_rec", title = "Parks and Recreation"))
+                        )
+                    ),
+                    onBackClick = {},
+                    onRetry = {},
+                    onToggleWatchlist = {},
+                    onPlayClick = { _, _ -> },
+                    onSelectSeason = {},
+                    onOpenRelated = { _, id -> openedCreditId = id },
+                    onOpenExternalUrl = {}
+                )
+            }
+        }
+
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("person_filmography_sheet").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("person_credit_parks_rec").assertIsDisplayed().performClick()
+        composeTestRule.waitForIdle()
+        assertEquals("parks_rec", openedCreditId)
     }
 }

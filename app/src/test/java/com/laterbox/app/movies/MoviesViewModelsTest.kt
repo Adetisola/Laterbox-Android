@@ -383,6 +383,19 @@ class MoviesViewModelsTest {
                     enqueuedTitles.add(title)
                     return "dl_${enqueuedTitles.size}"
                 }
+                override suspend fun enqueueStandaloneDownload(
+                    candidate: com.laterbox.app.media.domain.model.MediaCandidate,
+                    sourcePlatform: String,
+                    title: String?,
+                    artworkUrl: String?,
+                    versionTag: String?,
+                    contentCategory: String?,
+                    sourceRef: String?,
+                    urlExpiresAt: Long?
+                ): String {
+                    enqueuedTitles.add(title)
+                    return "dl_${enqueuedTitles.size}"
+                }
                 override suspend fun overrideCellularRequirement(taskId: String) {}
                 override suspend fun pauseDownload(taskId: String) {}
                 override suspend fun resumeDownload(taskId: String) {}
@@ -401,7 +414,7 @@ class MoviesViewModelsTest {
                 override suspend fun cancelInspection(linkId: Long) {}
             }
 
-            val bridge = com.laterbox.app.movies.data.download.MoviesDownloadBridge(linkRepo, fakeMediaRepo)
+            val bridge = com.laterbox.app.movies.data.download.MoviesDownloadBridge(fakeMediaRepo)
             val repo = FakeMoviesRepository()
 
             val detailVm = MovieDetailViewModel(repo, bridge)
@@ -558,6 +571,19 @@ class MoviesViewModelsTest {
                     enqueuedTitles.add(title)
                     return "dl_1"
                 }
+                override suspend fun enqueueStandaloneDownload(
+                    candidate: com.laterbox.app.media.domain.model.MediaCandidate,
+                    sourcePlatform: String,
+                    title: String?,
+                    artworkUrl: String?,
+                    versionTag: String?,
+                    contentCategory: String?,
+                    sourceRef: String?,
+                    urlExpiresAt: Long?
+                ): String {
+                    enqueuedTitles.add(title)
+                    return "dl_1"
+                }
                 override suspend fun overrideCellularRequirement(taskId: String) {}
                 override suspend fun pauseDownload(taskId: String) {}
                 override suspend fun resumeDownload(taskId: String) {}
@@ -576,7 +602,7 @@ class MoviesViewModelsTest {
                 override suspend fun cancelInspection(linkId: Long) {}
             }
 
-            val bridge = com.laterbox.app.movies.data.download.MoviesDownloadBridge(linkRepo, fakeMediaRepo)
+            val bridge = com.laterbox.app.movies.data.download.MoviesDownloadBridge(fakeMediaRepo)
             val vm = MovieDetailViewModel(customRepo, bridge)
             vm.load("moviebox", "mb_series_1")
             advanceUntilIdle()
@@ -779,5 +805,140 @@ class MoviesViewModelsTest {
         assertNull(vm.uiState.value.activeShortcut)
         assertEquals("All", vm.uiState.value.selectedCountry)
         assertEquals("All", vm.uiState.value.selectedGenre)
+    }
+
+    @Test
+    fun detailViewModel_loadsPersonFilmographyAndBatchDownloadsSelectedEpisodes() = runTest {
+        val enqueuedTitles = mutableListOf<String?>()
+        val seriesSummary = MovieTitleSummary(
+            id = "mb_s",
+            providerId = "moviebox",
+            kind = MediaKind.TV_SERIES,
+            title = "Severance",
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+            isPlayableHint = true
+        )
+        val baseFake = FakeMoviesRepository()
+        val customRepo = object : MoviesRepository by baseFake {
+            override suspend fun getDetails(providerId: String, titleId: String, forceRefresh: Boolean) =
+                Result.success(
+                    MediaDetails(
+                        summary = seriesSummary,
+                        cast = listOf(
+                            com.laterbox.app.movies.domain.model.CastMember(
+                                name = "Adam Scott",
+                                role = "Mark S.",
+                                personId = "p_adam",
+                                providerId = "tvmaze"
+                            )
+                        ),
+                        seasons = listOf(SeasonSummary(1, "Season 1", 4, availableEpisodes = listOf(1, 2, 3, 4)))
+                    )
+                )
+
+            override suspend fun getPersonFilmography(
+                providerId: String,
+                personId: String,
+                personName: String,
+                personImageUrl: String?
+            ) = Result.success(
+                com.laterbox.app.movies.domain.model.PersonFilmography(
+                    personId = personId,
+                    providerId = providerId,
+                    name = personName,
+                    credits = listOf(baseFake.sampleSeries.copy(title = "Parks and Recreation"))
+                )
+            )
+
+            override suspend fun resolvePlayback(
+                providerId: String,
+                titleId: String,
+                seasonNumber: Int?,
+                episodeNumber: Int?
+            ): Result<PlaybackResolution> {
+                return Result.success(
+                    PlaybackResolution.Available(
+                        title = "Severance",
+                        sources = listOf(
+                            PlaybackSource("s1080", "https://cdn.example/s${seasonNumber}e${episodeNumber}_1080.mp4", "MP4", "1080p", 1080, providerName = "MovieBox"),
+                            PlaybackSource("s720", "https://cdn.example/s${seasonNumber}e${episodeNumber}_720.mp4", "MP4", "720p", 720, providerName = "MovieBox")
+                        ),
+                        providerName = "MovieBox",
+                        sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+                    )
+                )
+            }
+        }
+        val fakeMediaRepo = object : com.laterbox.app.media.domain.repository.MediaRepository {
+            override fun getAssetsForLink(linkId: Long) = kotlinx.coroutines.flow.flowOf(emptyList<com.laterbox.app.media.domain.model.MediaAsset>())
+            override fun getAllAssets() = kotlinx.coroutines.flow.flowOf(emptyList<com.laterbox.app.media.domain.model.MediaAsset>())
+            override fun filterAssets(mediaType: com.laterbox.app.media.domain.model.MediaType?, query: String) = kotlinx.coroutines.flow.flowOf(emptyList<com.laterbox.app.media.domain.model.MediaAsset>())
+            override fun getAssetById(id: String) = kotlinx.coroutines.flow.flowOf(null)
+            override fun getTasksForLink(linkId: Long) = kotlinx.coroutines.flow.flowOf(emptyList<com.laterbox.app.media.domain.model.DownloadTask>())
+            override fun getQueueTasks() = kotlinx.coroutines.flow.flowOf(emptyList<com.laterbox.app.media.domain.model.DownloadTask>())
+            override fun getTaskById(taskId: String) = kotlinx.coroutines.flow.flowOf(null)
+            override fun getStorageBreakdown() = kotlinx.coroutines.flow.flowOf(emptyMap<com.laterbox.app.media.domain.model.MediaType, Long>())
+            override fun getAssetCount() = kotlinx.coroutines.flow.flowOf(0)
+            override suspend fun enqueueDownload(
+                linkId: Long,
+                candidate: com.laterbox.app.media.domain.model.MediaCandidate,
+                sourcePlatform: String,
+                title: String?,
+                artist: String?,
+                album: String?,
+                artworkUrl: String?,
+                spotifyTrackId: String?,
+                versionTag: String?
+            ) = "dl"
+            override suspend fun enqueueStandaloneDownload(
+                candidate: com.laterbox.app.media.domain.model.MediaCandidate,
+                sourcePlatform: String,
+                title: String?,
+                artworkUrl: String?,
+                versionTag: String?,
+                contentCategory: String?,
+                sourceRef: String?,
+                urlExpiresAt: Long?
+            ): String {
+                enqueuedTitles.add(title)
+                return "dl_${enqueuedTitles.size}"
+            }
+            override suspend fun overrideCellularRequirement(taskId: String) {}
+            override suspend fun pauseDownload(taskId: String) {}
+            override suspend fun resumeDownload(taskId: String) {}
+            override suspend fun cancelDownload(taskId: String) {}
+            override suspend fun dismissTask(taskId: String) {}
+            override suspend fun clearTerminalTasks() {}
+            override suspend fun retryDownload(taskId: String) {}
+            override suspend fun deleteAsset(assetId: String) {}
+            override suspend fun exportAsset(assetId: String) = Result.success("")
+            override suspend fun deleteAssetsForLink(linkId: Long, deleteFiles: Boolean) {}
+            override suspend fun runOrphanSweep() {}
+            override suspend fun recoverInterruptedTasks() {}
+            override fun getInspectionForLink(linkId: Long) = kotlinx.coroutines.flow.flowOf(null)
+            override fun isInspectingLink(linkId: Long) = kotlinx.coroutines.flow.flowOf(false)
+            override fun startInspection(linkId: Long, url: String, previewImageUrl: String?, forceRefresh: Boolean) {}
+            override suspend fun cancelInspection(linkId: Long) {}
+        }
+
+        val vm = MovieDetailViewModel(customRepo, com.laterbox.app.movies.data.download.MoviesDownloadBridge(fakeMediaRepo))
+        vm.load("moviebox", "mb_s")
+        advanceUntilIdle()
+
+        val castMember = vm.uiState.value.details!!.cast.first()
+        vm.openCastMember(castMember)
+        advanceUntilIdle()
+        assertEquals("Adam Scott", vm.uiState.value.selectedPerson?.name)
+        assertEquals("Parks and Recreation", vm.uiState.value.selectedPerson?.credits?.firstOrNull()?.title)
+        vm.dismissPersonSheet()
+        assertNull(vm.uiState.value.activePersonMember)
+
+        vm.downloadEpisodesBatch(seasonNumber = 1, episodeNumbers = listOf(1, 3), preferredQualityHeight = 720)
+        advanceUntilIdle()
+        assertEquals(
+            listOf("Severance · S1 · E1 (720p)", "Severance · S1 · E3 (720p)"),
+            enqueuedTitles
+        )
+        assertTrue(vm.uiState.value.downloadStatusMessage?.contains("Queued 2 episodes") == true)
     }
 }

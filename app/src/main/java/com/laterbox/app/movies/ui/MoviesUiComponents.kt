@@ -21,6 +21,9 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -30,19 +33,24 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -61,14 +69,21 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import com.laterbox.app.BuildConfig
 import com.laterbox.app.data.preferences.MovieBoxEndpointConfig
+import com.laterbox.app.movies.domain.model.CastMember
 import com.laterbox.app.movies.domain.model.DataSourceBadge
+import com.laterbox.app.movies.domain.model.EpisodeItem
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
+import com.laterbox.app.movies.domain.model.PersonFilmography
 import com.laterbox.app.movies.domain.model.PlaybackSource
 import com.laterbox.app.movies.domain.model.SearchSuggestion
+import com.laterbox.app.movies.domain.model.SeasonSummary
+import com.laterbox.app.movies.domain.model.SubtitleTrack
 import com.laterbox.app.movies.domain.model.WatchHistoryItem
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.theme.LaterboxTheme
@@ -112,7 +127,8 @@ fun MoviePosterCard(
     item: MovieTitleSummary,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    width: Dp = 132.dp
+    width: Dp = 132.dp,
+    testTag: String = "movie_card_${item.providerId}_${item.id}"
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -122,7 +138,7 @@ fun MoviePosterCard(
             .width(width)
             .clip(RoundedCornerShape(14.dp))
             .clickable(onClick = onClick)
-            .testTag("movie_card_${item.providerId}_${item.id}")
+            .testTag(testTag)
     ) {
         Box(
             modifier = Modifier
@@ -863,6 +879,535 @@ fun DownloadResolutionDialog(
             }
         }
     )
+}
+
+@Composable
+fun PosterViewerDialog(
+    imageUrl: String,
+    title: String,
+    onDismiss: () -> Unit
+) {
+    val colors = LaterboxTheme.colors
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.94f))
+                .clickable(onClick = onDismiss)
+                .testTag("detail_poster_viewer_dialog"),
+            contentAlignment = Alignment.Center
+        ) {
+            AsyncImage(
+                model = imageUrl,
+                contentDescription = title,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp)
+                    .aspectRatio(2f / 3f)
+                    .clip(RoundedCornerShape(16.dp))
+            )
+            Surface(
+                shape = CircleShape,
+                color = colors.surfaceElevated.copy(alpha = 0.85f),
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(20.dp)
+            ) {
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.testTag("detail_poster_viewer_close")
+                ) {
+                    Icon(
+                        painter = painterResource(LaterboxIcons.Close),
+                        contentDescription = "Close poster",
+                        tint = colors.textPrimary
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun PersonFilmographyBottomSheet(
+    member: CastMember,
+    filmography: PersonFilmography?,
+    isLoading: Boolean,
+    errorMessage: String?,
+    onOpenCredit: (providerId: String, titleId: String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val colors = LaterboxTheme.colors
+    val typography = LaterboxTheme.typography
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = colors.surfaceElevated,
+        modifier = Modifier.testTag("person_filmography_sheet")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(64.dp)
+                        .clip(CircleShape)
+                        .background(colors.surfaceSecondary)
+                        .border(0.75.dp, colors.borderSubtle, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    val img = filmography?.imageUrl ?: member.imageUrl
+                    if (!img.isNullOrBlank()) {
+                        AsyncImage(
+                            model = img,
+                            contentDescription = member.name,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        Icon(
+                            painter = painterResource(LaterboxIcons.User),
+                            contentDescription = null,
+                            tint = colors.textTertiary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        text = filmography?.name ?: member.name,
+                        style = typography.sheetTitle,
+                        color = colors.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    member.role?.takeIf { it.isNotBlank() }?.let { role ->
+                        Text(
+                            text = "as $role",
+                            style = typography.bodySecondary,
+                            color = colors.textSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+
+            when {
+                isLoading -> {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 20.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(22.dp),
+                            strokeWidth = 2.dp,
+                            color = colors.accentPrimary
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = "Loading credits...",
+                            style = typography.bodySecondary,
+                            color = colors.textSecondary
+                        )
+                    }
+                }
+                !errorMessage.isNullOrBlank() -> {
+                    Text(
+                        text = errorMessage,
+                        style = typography.bodySecondary,
+                        color = colors.textSecondary,
+                        modifier = Modifier.padding(vertical = 12.dp)
+                    )
+                }
+                filmography == null || filmography.credits.isEmpty() -> {
+                    Text(
+                        text = "No additional catalogue credits found for ${member.name}.",
+                        style = typography.bodySecondary,
+                        color = colors.textSecondary,
+                        modifier = Modifier.padding(vertical = 12.dp)
+                    )
+                }
+                else -> {
+                    Text(
+                        text = "Known For (${filmography.credits.size})",
+                        style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
+                        color = colors.textPrimary
+                    )
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(filmography.credits, key = { it.compositeId }) { credit ->
+                            MoviePosterCard(
+                                item = credit,
+                                width = 112.dp,
+                                onClick = {
+                                    onDismiss()
+                                    onOpenCredit(credit.providerId, credit.id)
+                                },
+                                testTag = "person_credit_${credit.id}"
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+fun DownloadOptionsBottomSheet(
+    title: String,
+    kind: MediaKind,
+    sources: List<PlaybackSource>,
+    subtitles: List<SubtitleTrack>,
+    seasons: List<SeasonSummary>,
+    selectedSeasonNumber: Int?,
+    currentEpisodes: List<EpisodeItem>,
+    isEnqueuing: Boolean = false,
+    onSelectSource: (PlaybackSource) -> Unit,
+    onDownloadBatch: (seasonNumber: Int, episodeNumbers: List<Int>, preferredQualityHeight: Int?) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val colors = LaterboxTheme.colors
+    val typography = LaterboxTheme.typography
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val authorisedSources = remember(sources) { sources.filter { it.isAuthorised } }
+    val progressiveSources = remember(authorisedSources) {
+        authorisedSources.filter { src ->
+            !src.format.equals("DASH", ignoreCase = true) &&
+                !src.format.equals("HLS", ignoreCase = true) &&
+                !src.url.contains(".mpd", ignoreCase = true) &&
+                !src.url.contains(".m3u8", ignoreCase = true)
+        }
+    }
+
+    var batchSeason by remember(selectedSeasonNumber, seasons) {
+        mutableIntStateOf(selectedSeasonNumber ?: seasons.firstOrNull()?.seasonNumber ?: 1)
+    }
+    var batchPreferredQualityHeight by remember(progressiveSources) {
+        mutableStateOf(progressiveSources.firstOrNull()?.qualityHeight)
+    }
+    val seasonEpisodeNumbers = remember(batchSeason, seasons, currentEpisodes, selectedSeasonNumber) {
+        val seasonObj = seasons.firstOrNull { it.seasonNumber == batchSeason }
+        when {
+            seasonObj != null && seasonObj.availableEpisodes.isNotEmpty() -> seasonObj.availableEpisodes
+            batchSeason == selectedSeasonNumber && currentEpisodes.isNotEmpty() ->
+                currentEpisodes.map { it.episodeNumber }.distinct().sorted()
+            seasonObj != null && seasonObj.episodeCount > 0 -> (1..seasonObj.episodeCount).toList()
+            else -> emptyList()
+        }
+    }
+    var selectedEpisodes by remember(batchSeason, seasonEpisodeNumbers) {
+        mutableStateOf(emptySet<Int>())
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = colors.surfaceElevated,
+        modifier = Modifier.testTag("download_resolution_dialog")
+    ) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 560.dp)
+                .padding(horizontal = 16.dp)
+                .testTag("download_options_list"),
+            contentPadding = PaddingValues(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            item(key = "dl_header") {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = "Download Offline Copy",
+                        style = typography.sheetTitle,
+                        color = colors.textPrimary
+                    )
+                    Text(
+                        text = "Choose an authorised stream resolution for \"$title\". Downloads save to Laterbox Downloads.",
+                        style = typography.bodySecondary,
+                        color = colors.textSecondary
+                    )
+                }
+            }
+
+            if (subtitles.isNotEmpty()) {
+                item(key = "dl_subtitles") {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Available Subtitles",
+                            style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                            color = colors.textSecondary
+                        )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            subtitles.distinctBy { it.language }.take(6).forEach { track ->
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = colors.surfaceSecondary,
+                                    border = BorderStroke(0.5.dp, colors.borderSubtle)
+                                ) {
+                                    Text(
+                                        text = "${track.language} (${track.format.uppercase(Locale.US)})",
+                                        style = typography.caption,
+                                        color = colors.textSecondary,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (authorisedSources.isEmpty()) {
+                item(key = "dl_no_sources") {
+                    Text(
+                        text = "No downloadable authorised video streams are available for this title.",
+                        style = typography.metaText,
+                        color = colors.textSecondary
+                    )
+                }
+            } else {
+                items(authorisedSources, key = { "dl_src_${it.id}" }) { source ->
+                    val isAdaptive = source.format.equals("DASH", ignoreCase = true) ||
+                        source.format.equals("HLS", ignoreCase = true) ||
+                        source.url.contains(".mpd", ignoreCase = true) ||
+                        source.url.contains(".m3u8", ignoreCase = true)
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = colors.surfaceSecondary,
+                        border = BorderStroke(0.75.dp, colors.borderSubtle),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable(enabled = !isEnqueuing && !isAdaptive) {
+                                onSelectSource(source)
+                                onDismiss()
+                            }
+                            .testTag("download_quality_option_${source.id}")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "${source.qualityLabel} · ${source.format}",
+                                    style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
+                                    color = if (isAdaptive) colors.textSecondary else colors.textPrimary
+                                )
+                                val metaParts = buildList {
+                                    if (isAdaptive) add("Stream only (Adaptive manifest)")
+                                    source.codec?.takeIf { it.isNotBlank() }?.let { add(it) }
+                                    source.sizeMb?.takeIf { it > 0.0 }?.let { mb ->
+                                        add(String.format(Locale.US, "%.0f MB", mb))
+                                    }
+                                    add(source.providerName)
+                                }
+                                Text(
+                                    text = metaParts.joinToString(" · "),
+                                    style = typography.caption,
+                                    color = colors.textSecondary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            if (!isAdaptive) {
+                                Icon(
+                                    painter = painterResource(LaterboxIcons.Download),
+                                    contentDescription = "Download ${source.qualityLabel}",
+                                    tint = colors.accentPrimary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (kind == MediaKind.TV_SERIES && seasons.isNotEmpty() && progressiveSources.isNotEmpty()) {
+                item(key = "dl_batch_header") {
+                    Column(
+                        modifier = Modifier.padding(top = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        HorizontalDivider(thickness = 0.75.dp, color = colors.borderSubtle)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Batch Download Episodes",
+                                style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
+                                color = colors.textPrimary
+                            )
+                            if (seasonEpisodeNumbers.isNotEmpty()) {
+                                val allSelected = selectedEpisodes.size == seasonEpisodeNumbers.size
+                                TextButton(
+                                    onClick = {
+                                        selectedEpisodes = if (allSelected) {
+                                            emptySet()
+                                        } else {
+                                            seasonEpisodeNumbers.toSet()
+                                        }
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                    modifier = Modifier.testTag("batch_select_all_button")
+                                ) {
+                                    Text(
+                                        text = if (allSelected) "Clear All" else "Select All (${seasonEpisodeNumbers.size})",
+                                        style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                        color = colors.accentPrimary
+                                    )
+                                }
+                            }
+                        }
+
+                        if (seasons.size > 1) {
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                items(seasons, key = { "batch_s_${it.seasonNumber}" }) { season ->
+                                    val selected = batchSeason == season.seasonNumber
+                                    Surface(
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = if (selected) colors.accentPrimary else colors.surfaceSecondary,
+                                        border = BorderStroke(
+                                            0.75.dp,
+                                            if (selected) colors.accentPrimary else colors.borderSubtle
+                                        ),
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .clickable { batchSeason = season.seasonNumber }
+                                            .testTag("batch_season_chip_${season.seasonNumber}")
+                                    ) {
+                                        Text(
+                                            text = "Season ${season.seasonNumber}",
+                                            style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                            color = if (selected) colors.onAccentPrimary else colors.textPrimary,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        if (progressiveSources.size > 1) {
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                items(progressiveSources.distinctBy { it.qualityHeight }, key = { "bq_${it.qualityHeight}" }) { src ->
+                                    val selected = batchPreferredQualityHeight == src.qualityHeight
+                                    Surface(
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = if (selected) colors.accentContainer else colors.surfaceSecondary,
+                                        border = BorderStroke(
+                                            0.75.dp,
+                                            if (selected) colors.accentPrimary else colors.borderSubtle
+                                        ),
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .clickable { batchPreferredQualityHeight = src.qualityHeight }
+                                            .testTag("batch_quality_chip_${src.qualityHeight}")
+                                    ) {
+                                        Text(
+                                            text = src.qualityLabel,
+                                            style = typography.caption.copy(fontWeight = FontWeight.Medium),
+                                            color = if (selected) colors.accentPrimary else colors.textSecondary,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                items(seasonEpisodeNumbers, key = { "batch_ep_${batchSeason}_$it" }) { epNum ->
+                    val checked = epNum in selectedEpisodes
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(colors.surfaceSecondary)
+                            .clickable {
+                                selectedEpisodes = if (checked) {
+                                    selectedEpisodes - epNum
+                                } else {
+                                    selectedEpisodes + epNum
+                                }
+                            }
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                            .testTag("batch_episode_row_$epNum"),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Season $batchSeason · Episode $epNum",
+                            style = typography.uiLabel,
+                            color = colors.textPrimary
+                        )
+                        Checkbox(
+                            checked = checked,
+                            onCheckedChange = { nowChecked ->
+                                selectedEpisodes = if (nowChecked) {
+                                    selectedEpisodes + epNum
+                                } else {
+                                    selectedEpisodes - epNum
+                                }
+                            },
+                            modifier = Modifier.testTag("batch_episode_checkbox_$epNum")
+                        )
+                    }
+                }
+
+                item(key = "dl_batch_confirm") {
+                    Button(
+                        onClick = {
+                            onDownloadBatch(batchSeason, selectedEpisodes.toList(), batchPreferredQualityHeight)
+                            onDismiss()
+                        },
+                        enabled = !isEnqueuing && selectedEpisodes.isNotEmpty(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = colors.accentPrimary,
+                            contentColor = colors.onAccentPrimary
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp)
+                            .testTag("batch_download_confirm_button")
+                    ) {
+                        Text(
+                            text = "Download Selected (${selectedEpisodes.size})",
+                            style = typography.buttonLabel
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 private fun formatResumeTime(positionMs: Long, durationMs: Long): String {

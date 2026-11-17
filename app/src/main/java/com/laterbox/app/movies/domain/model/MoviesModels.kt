@@ -132,7 +132,17 @@ data class SearchSuggestion(
 data class CastMember(
     val name: String,
     val role: String? = null,
-    val imageUrl: String? = null
+    val imageUrl: String? = null,
+    val personId: String? = null,
+    val providerId: String? = null
+)
+
+data class PersonFilmography(
+    val personId: String,
+    val providerId: String,
+    val name: String,
+    val imageUrl: String? = null,
+    val credits: List<MovieTitleSummary> = emptyList()
 )
 
 data class AudioDubInfo(
@@ -145,7 +155,8 @@ data class SeasonSummary(
     val seasonNumber: Int,
     val title: String = "Season $seasonNumber",
     val episodeCount: Int = 0,
-    val imageUrl: String? = null
+    val imageUrl: String? = null,
+    val availableEpisodes: List<Int> = emptyList()
 )
 
 data class EpisodeItem(

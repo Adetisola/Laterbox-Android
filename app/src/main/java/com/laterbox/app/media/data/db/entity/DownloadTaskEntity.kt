@@ -27,7 +27,7 @@ import com.laterbox.app.media.domain.model.MediaType
 )
 data class DownloadTaskEntity(
     @PrimaryKey val id: String,
-    val savedLinkId: Long,
+    val savedLinkId: Long?,
     val sourceUrl: String,
     val sourcePlatform: String,
     val candidateId: String?,
@@ -54,7 +54,13 @@ data class DownloadTaskEntity(
     val versionTag: String? = null,
     val stage: String? = null,
     val stageDetail: String? = null,
-    val headersJson: String? = null
+    val headersJson: String? = null,
+    val contentCategory: String? = null,
+    val speedBps: Long? = null,
+    val etaSeconds: Long? = null,
+    val etag: String? = null,
+    val urlExpiresAt: Long? = null,
+    val sourceRef: String? = null
 ) {
     fun toDomain(): DownloadTask = DownloadTask(
         id = id,
@@ -85,7 +91,13 @@ data class DownloadTaskEntity(
         versionTag = versionTag,
         stage = com.laterbox.app.media.domain.model.DownloadStage.fromNameOrNull(stage),
         stageDetail = stageDetail,
-        headers = headersJson?.let { parseHeaders(it) } ?: emptyMap()
+        headers = headersJson?.let { parseHeaders(it) } ?: emptyMap(),
+        contentCategory = contentCategory,
+        speedBps = speedBps,
+        etaSeconds = etaSeconds,
+        etag = etag,
+        urlExpiresAt = urlExpiresAt,
+        sourceRef = sourceRef
     )
 
     companion object {
@@ -135,7 +147,13 @@ data class DownloadTaskEntity(
                 val obj = org.json.JSONObject()
                 task.headers.forEach { (k, v) -> obj.put(k, v) }
                 obj.toString()
-            } else null
+            } else null,
+            contentCategory = task.contentCategory,
+            speedBps = task.speedBps,
+            etaSeconds = task.etaSeconds,
+            etag = task.etag,
+            urlExpiresAt = task.urlExpiresAt,
+            sourceRef = task.sourceRef
         )
     }
 }

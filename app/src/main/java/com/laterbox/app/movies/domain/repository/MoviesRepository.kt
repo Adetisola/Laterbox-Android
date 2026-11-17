@@ -8,6 +8,7 @@ import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.model.MoviesHomeFeed
 import com.laterbox.app.movies.domain.model.PlaybackResolution
+import com.laterbox.app.movies.domain.model.PersonFilmography
 import com.laterbox.app.movies.domain.model.ProviderLinkRecord
 import com.laterbox.app.movies.domain.model.SearchSuggestion
 import com.laterbox.app.movies.domain.model.SeasonSummary
@@ -44,6 +45,15 @@ interface MoviesRepository {
     suspend fun getSeasons(providerId: String, seriesId: String): Result<List<SeasonSummary>>
 
     suspend fun getEpisodes(providerId: String, seriesId: String, seasonNumber: Int): Result<List<EpisodeItem>>
+
+    suspend fun getPersonFilmography(
+        providerId: String,
+        personId: String,
+        personName: String,
+        personImageUrl: String? = null
+    ): Result<PersonFilmography> = Result.failure(
+        UnsupportedOperationException("Person filmography is not supported for $providerId")
+    )
 
     suspend fun resolvePlayback(
         providerId: String,

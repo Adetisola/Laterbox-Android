@@ -31,6 +31,19 @@ interface MediaRepository {
         versionTag: String? = null
     ): String
 
+    suspend fun enqueueStandaloneDownload(
+        candidate: MediaCandidate,
+        sourcePlatform: String,
+        title: String?,
+        artworkUrl: String? = null,
+        versionTag: String? = null,
+        contentCategory: String? = null,
+        sourceRef: String? = null,
+        urlExpiresAt: Long? = null
+    ): String {
+        throw UnsupportedOperationException("enqueueStandaloneDownload not implemented")
+    }
+
     suspend fun overrideCellularRequirement(taskId: String)
     suspend fun pauseDownload(taskId: String)
     suspend fun resumeDownload(taskId: String)

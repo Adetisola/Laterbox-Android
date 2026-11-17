@@ -272,7 +272,6 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
 
     override val moviesDownloadBridge: com.laterbox.app.movies.data.download.MoviesDownloadBridge by lazy {
         com.laterbox.app.movies.data.download.MoviesDownloadBridge(
-            linkRepository = linkRepository,
             mediaRepository = mediaRepository
         )
     }

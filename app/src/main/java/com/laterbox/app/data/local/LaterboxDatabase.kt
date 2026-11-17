@@ -52,7 +52,7 @@ import com.laterbox.app.movies.data.local.entity.MovieWatchlistEntity
         CanonicalMediaEntity::class,
         MediaProviderLinkEntity::class
     ],
-    version = 13,
+    version = 14,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -678,6 +678,101 @@ abstract class LaterboxDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Non-destructive migration from version 13 to version 14:
+         * 1. Recreates download_task with nullable savedLinkId (allowing standalone Movies/TV downloads
+         *    without polluting saved_links) and adds contentCategory, speedBps, etaSeconds, etag,
+         *    urlExpiresAt, and sourceRef columns.
+         * 2. Adds contentCategory column to downloaded_asset and backfills existing MovieBox/IA items.
+         */
+        val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `download_task_new` (
+                        `id` TEXT NOT NULL,
+                        `savedLinkId` INTEGER,
+                        `sourceUrl` TEXT NOT NULL,
+                        `sourcePlatform` TEXT NOT NULL,
+                        `candidateId` TEXT,
+                        `formatSelector` TEXT,
+                        `mediaType` TEXT NOT NULL,
+                        `qualityLabel` TEXT,
+                        `title` TEXT,
+                        `assetId` TEXT,
+                        `status` TEXT NOT NULL,
+                        `progress` INTEGER NOT NULL,
+                        `downloadedBytes` INTEGER NOT NULL,
+                        `totalBytes` INTEGER,
+                        `allowCellularOverride` INTEGER NOT NULL,
+                        `supportsRange` INTEGER NOT NULL,
+                        `retryCount` INTEGER NOT NULL,
+                        `errorCode` TEXT,
+                        `errorMessage` TEXT,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        `artist` TEXT,
+                        `album` TEXT,
+                        `artworkUrl` TEXT,
+                        `spotifyTrackId` TEXT,
+                        `versionTag` TEXT,
+                        `stage` TEXT,
+                        `stageDetail` TEXT,
+                        `headersJson` TEXT,
+                        `contentCategory` TEXT,
+                        `speedBps` INTEGER,
+                        `etaSeconds` INTEGER,
+                        `etag` TEXT,
+                        `urlExpiresAt` INTEGER,
+                        `sourceRef` TEXT,
+                        PRIMARY KEY(`id`),
+                        FOREIGN KEY(`savedLinkId`) REFERENCES `saved_links`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    INSERT INTO `download_task_new` (
+                        `id`, `savedLinkId`, `sourceUrl`, `sourcePlatform`, `candidateId`, `formatSelector`,
+                        `mediaType`, `qualityLabel`, `title`, `assetId`, `status`, `progress`,
+                        `downloadedBytes`, `totalBytes`, `allowCellularOverride`, `supportsRange`,
+                        `retryCount`, `errorCode`, `errorMessage`, `createdAt`, `updatedAt`,
+                        `artist`, `album`, `artworkUrl`, `spotifyTrackId`, `versionTag`,
+                        `stage`, `stageDetail`, `headersJson`,
+                        `contentCategory`, `speedBps`, `etaSeconds`, `etag`, `urlExpiresAt`, `sourceRef`
+                    )
+                    SELECT
+                        `id`, `savedLinkId`, `sourceUrl`, `sourcePlatform`, `candidateId`, `formatSelector`,
+                        `mediaType`, `qualityLabel`, `title`, `assetId`, `status`, `progress`,
+                        `downloadedBytes`, `totalBytes`, `allowCellularOverride`, `supportsRange`,
+                        `retryCount`, `errorCode`, `errorMessage`, `createdAt`, `updatedAt`,
+                        `artist`, `album`, `artworkUrl`, `spotifyTrackId`, `versionTag`,
+                        `stage`, `stageDetail`, `headersJson`,
+                        CASE
+                            WHEN `sourcePlatform` LIKE '%MovieBox%' OR `sourcePlatform` LIKE '%Internet Archive%' THEN 'MOVIE'
+                            ELSE NULL
+                        END,
+                        NULL, NULL, NULL, NULL, NULL
+                    FROM `download_task`
+                    """.trimIndent()
+                )
+                db.execSQL("DROP TABLE `download_task`")
+                db.execSQL("ALTER TABLE `download_task_new` RENAME TO `download_task`")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_download_task_savedLinkId` ON `download_task` (`savedLinkId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_download_task_status` ON `download_task` (`status`)")
+
+                db.execSQL("ALTER TABLE `downloaded_asset` ADD COLUMN `contentCategory` TEXT DEFAULT NULL")
+                db.execSQL(
+                    """
+                    UPDATE `downloaded_asset`
+                    SET `contentCategory` = 'MOVIE'
+                    WHERE `contentCategory` IS NULL
+                      AND (`sourcePlatform` LIKE '%MovieBox%' OR `sourcePlatform` LIKE '%Internet Archive%')
+                    """.trimIndent()
+                )
+            }
+        }
+
         @Volatile
         private var INSTANCE: LaterboxDatabase? = null
 
@@ -700,7 +795,8 @@ abstract class LaterboxDatabase : RoomDatabase() {
                         MIGRATION_9_10,
                         MIGRATION_10_11,
                         MIGRATION_11_12,
-                        MIGRATION_12_13
+                        MIGRATION_12_13,
+                        MIGRATION_13_14
                     )
                     .build()
                     .also { INSTANCE = it }

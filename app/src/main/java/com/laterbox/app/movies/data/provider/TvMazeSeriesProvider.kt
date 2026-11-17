@@ -10,6 +10,7 @@ import com.laterbox.app.movies.domain.model.MediaDetails
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.model.MoviesHomeFeed
+import com.laterbox.app.movies.domain.model.PersonFilmography
 import com.laterbox.app.movies.domain.model.PlaybackResolution
 import com.laterbox.app.movies.domain.model.SearchSuggestion
 import com.laterbox.app.movies.domain.model.SeasonSummary
@@ -309,6 +310,36 @@ class TvMazeSeriesProvider(
         }
     }
 
+    suspend fun getPersonFilmography(
+        personId: String,
+        personName: String,
+        personImageUrl: String? = null
+    ): Result<PersonFilmography> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanId = personId.trim()
+            require(cleanId.isNotBlank()) { "Person ID is required." }
+            val rawCredits = executeGet("$normalizedBaseUrl/people/$cleanId/castcredits?embed=show")
+            val arr = JSONArray(rawCredits)
+            val credits = buildList {
+                for (i in 0 until arr.length()) {
+                    val entry = arr.optJSONObject(i) ?: continue
+                    val show = entry.optJSONObject("_embedded")?.optJSONObject("show")
+                        ?: entry.optJSONObject("show")
+                        ?: continue
+                    add(parseShowSummary(show))
+                }
+            }.distinctBy { it.id }
+
+            PersonFilmography(
+                personId = cleanId,
+                providerId = PROVIDER_ID,
+                name = personName.ifBlank { "Cast Member" },
+                imageUrl = personImageUrl,
+                credits = credits
+            )
+        }
+    }
+
     private data class IndexedShow(val summary: MovieTitleSummary, val weight: Int)
 
     private fun fetchShowIndex(apiPage: Int): List<IndexedShow> {
@@ -431,11 +462,14 @@ class TvMazeSeriesProvider(
                 val character = entry.optJSONObject("character")
                 val image = character?.optJSONObject("image")?.optString("medium")?.takeIf { it.isNotBlank() && it != "null" }
                     ?: person.optJSONObject("image")?.optString("medium")?.takeIf { it.isNotBlank() && it != "null" }
+                val personId = person.optLong("id", 0L).takeIf { it > 0L }?.toString()
                 add(
                     CastMember(
                         name = person.optString("name"),
                         role = character?.optString("name")?.takeIf { it.isNotBlank() },
-                        imageUrl = image
+                        imageUrl = image,
+                        personId = personId,
+                        providerId = PROVIDER_ID
                     )
                 )
             }

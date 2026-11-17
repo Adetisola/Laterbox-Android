@@ -194,4 +194,46 @@ class TvMazeSeriesProviderTest {
         assertTrue("Severance" in titles)
         assertTrue("Abbott Elementary" in titles)
     }
+
+    @Test
+    fun castPreservesPersonIdAndPersonFilmographyFetchesCredits() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/shows/169?embed") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "id": 169,
+                          "name": "Breaking Bad",
+                          "_embedded": {
+                            "cast": [
+                              {"person": {"id": 142, "name": "Bryan Cranston"}, "character": {"name": "Walter White"}}
+                            ]
+                          }
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/people/142/castcredits") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        [
+                          {"_embedded": {"show": {"id": 169, "name": "Breaking Bad", "genres": ["Drama"]}}},
+                          {"_embedded": {"show": {"id": 318, "name": "Malcolm in the Middle", "genres": ["Comedy"]}}}
+                        ]
+                        """.trimIndent()
+                    )
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val details = provider.getDetails("169").getOrThrow()
+        val member = details.cast.first()
+        assertEquals("142", member.personId)
+        assertEquals("tvmaze", member.providerId)
+
+        val filmography = provider.getPersonFilmography("142", member.name).getOrThrow()
+        assertEquals("142", filmography.personId)
+        assertEquals(listOf("Breaking Bad", "Malcolm in the Middle"), filmography.credits.map { it.title })
+    }
 }

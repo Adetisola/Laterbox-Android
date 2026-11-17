@@ -406,6 +406,7 @@ fun MoviesScreen(
 
                     // Discovery Shortcuts + Countries row
                     LazyRow(
+                        modifier = Modifier.testTag("movies_home_shortcuts_row"),
                         contentPadding = PaddingValues(horizontal = 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically

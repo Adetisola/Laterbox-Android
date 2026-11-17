@@ -5,6 +5,7 @@ import com.laterbox.app.BuildConfig
 import com.laterbox.app.data.preferences.MovieBoxEndpointConfig
 import com.laterbox.app.movies.domain.model.AudioDubInfo
 import com.laterbox.app.movies.domain.model.BrowseSection
+import com.laterbox.app.movies.domain.model.CastMember
 import com.laterbox.app.movies.domain.model.CataloguePage
 import com.laterbox.app.movies.domain.model.CatalogueSort
 import com.laterbox.app.movies.domain.model.DataSourceBadge
@@ -13,6 +14,7 @@ import com.laterbox.app.movies.domain.model.MediaDetails
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.model.MoviesHomeFeed
+import com.laterbox.app.movies.domain.model.PersonFilmography
 import com.laterbox.app.movies.domain.model.PlaybackResolution
 import com.laterbox.app.movies.domain.model.PlaybackSource
 import com.laterbox.app.movies.domain.model.SearchSuggestion
@@ -296,6 +298,7 @@ class MovieBoxProvider(
                     val dp = obj.optCleanString("detail_path")
                     cacheMetadata(id, title, dp)
                     val cover = obj.optCleanString("cover")
+                    val stillsUrl = obj.optJSONObject("stills")?.optCleanString("url")
                     val itemKind = obj.optIntOrNull("subject_type")?.let { parseMediaKind(it, null) } ?: kind
                     add(
                         MovieTitleSummary(
@@ -306,7 +309,7 @@ class MovieBoxProvider(
                             releaseYear = parseYear(null, obj.optCleanString("year")),
                             rating = obj.optRating("rating", "imdb_rating"),
                             posterUrl = cover,
-                            backdropUrl = cover,
+                            backdropUrl = stillsUrl,
                             genres = parseGenres(obj.optCleanString("genre")),
                             country = obj.optCleanString("country"),
                             detailPath = dp,
@@ -370,6 +373,7 @@ class MovieBoxProvider(
                     val dp = obj.optCleanString("detail_path")
                     cacheMetadata(id, title, dp)
                     val cover = obj.optCleanString("cover")
+                    val stillsUrl = obj.optJSONObject("stills")?.optCleanString("url")
                     val itemKind = parseMediaKind(
                         obj.optIntOrNull("subject_type"),
                         obj.optCleanString("type")
@@ -383,7 +387,7 @@ class MovieBoxProvider(
                             releaseYear = parseYear(obj.optCleanString("release_date")),
                             rating = obj.optRating("imdb_rating", "rating"),
                             posterUrl = cover,
-                            backdropUrl = cover,
+                            backdropUrl = stillsUrl,
                             genres = parseGenres(obj.optCleanString("genre")),
                             language = obj.optCleanString("language"),
                             detailPath = dp,
@@ -476,6 +480,7 @@ class MovieBoxProvider(
                 root.optCleanString("type")
             )
             val cover = root.optCleanString("cover")
+            val stillsUrl = root.optJSONObject("stills")?.optCleanString("url")
             val description = root.optCleanString("description").orEmpty()
 
             val dubs = buildList {
@@ -495,10 +500,43 @@ class MovieBoxProvider(
                 }
             }
 
+            var directorOrCreator: String? = null
+            val cast = buildList {
+                val starsArr = root.optJSONArray("stars") ?: JSONArray()
+                for (i in 0 until starsArr.length()) {
+                    val star = starsArr.optJSONObject(i) ?: continue
+                    val name = star.optCleanString("name") ?: continue
+                    val staffType = star.optIntOrNull("staff_type")
+                    if (staffType == 2 && directorOrCreator == null) {
+                        directorOrCreator = name
+                    }
+                    val role = star.optCleanString("character")
+                        ?: if (staffType == 2) "Director" else null
+                    add(
+                        CastMember(
+                            name = name,
+                            role = role,
+                            imageUrl = star.optCleanString("avatar_url"),
+                            personId = star.optCleanString("staff_id"),
+                            providerId = PROVIDER_ID
+                        )
+                    )
+                }
+            }
+
+            val detailSeasons = parseSeasonsArray(root.optJSONArray("seasons"))
             val seasons = if (kind == MediaKind.TV_SERIES) {
-                getSeasons(id).getOrDefault(emptyList())
+                detailSeasons.ifEmpty { getSeasons(id).getOrDefault(emptyList()) }
             } else {
                 emptyList()
+            }
+
+            val relatedTitles = buildList {
+                val relArr = root.optJSONArray("related") ?: JSONArray()
+                for (i in 0 until relArr.length()) {
+                    val relObj = relArr.optJSONObject(i) ?: continue
+                    parseFlatItemSummary(relObj)?.let { add(it) }
+                }
             }
 
             val summary = MovieTitleSummary(
@@ -510,7 +548,7 @@ class MovieBoxProvider(
                 rating = root.optRating("imdb_rating", "rating"),
                 durationMinutes = parseDurationMinutes(root.optLongOrNull("duration")),
                 posterUrl = cover,
-                backdropUrl = cover,
+                backdropUrl = stillsUrl,
                 genres = parseGenres(root.optCleanString("genre")),
                 summary = description.takeIf { it.isNotBlank() },
                 language = root.optCleanString("language"),
@@ -525,8 +563,11 @@ class MovieBoxProvider(
             MediaDetails(
                 summary = summary,
                 fullDescription = description,
+                directorOrCreator = directorOrCreator,
+                cast = cast,
                 seasons = seasons,
-                audioDubs = dubs
+                audioDubs = dubs,
+                relatedTitles = relatedTitles
             )
         }
     }
@@ -539,22 +580,7 @@ class MovieBoxProvider(
                 .build()
             val body = executeGet(url)
             val root = JSONObject(body)
-            val seasonsArr = root.optJSONArray("seasons") ?: JSONArray()
-
-            buildList {
-                for (i in 0 until seasonsArr.length()) {
-                    val s = seasonsArr.optJSONObject(i) ?: continue
-                    val seasonNumber = s.optInt("season", 0).takeIf { it > 0 } ?: continue
-                    val episodeCount = s.optInt("episode_count", 0).coerceAtLeast(0)
-                    add(
-                        SeasonSummary(
-                            seasonNumber = seasonNumber,
-                            title = "Season $seasonNumber",
-                            episodeCount = episodeCount
-                        )
-                    )
-                }
-            }.sortedBy { it.seasonNumber }
+            parseSeasonsArray(root.optJSONArray("seasons"))
         }
     }
 
@@ -564,20 +590,112 @@ class MovieBoxProvider(
     ): Result<List<EpisodeItem>> = withContext(Dispatchers.IO) {
         getSeasons(seriesId).map { seasons ->
             val target = seasons.firstOrNull { it.seasonNumber == seasonNumber }
-            val count = target?.episodeCount ?: 0
-            if (count <= 0) {
-                emptyList()
-            } else {
-                (1..count).map { ep ->
-                    EpisodeItem(
-                        id = "${seriesId}_s${seasonNumber}_e$ep",
-                        seasonNumber = seasonNumber,
-                        episodeNumber = ep,
-                        title = "Episode $ep"
-                    )
-                }
+            val epNumbers = when {
+                target == null -> emptyList()
+                target.availableEpisodes.isNotEmpty() -> target.availableEpisodes
+                target.episodeCount > 0 -> (1..target.episodeCount).toList()
+                else -> emptyList()
+            }
+            epNumbers.map { ep ->
+                EpisodeItem(
+                    id = "${seriesId}_s${seasonNumber}_e$ep",
+                    seasonNumber = seasonNumber,
+                    episodeNumber = ep,
+                    title = "Episode $ep"
+                )
             }
         }
+    }
+
+    suspend fun getPersonFilmography(
+        staffId: String,
+        personName: String,
+        personImageUrl: String? = null
+    ): Result<PersonFilmography> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanId = staffId.trim()
+            require(cleanId.isNotBlank()) { "Staff ID is required." }
+            val url = requireBaseHttpUrl().newBuilder()
+                .addPathSegment("staff")
+                .addPathSegment(cleanId)
+                .addPathSegment("titles")
+                .addQueryParameter("page", "1")
+                .addQueryParameter("per_page", "24")
+                .build()
+            val body = executeGet(url)
+            val root = JSONObject(body)
+            val rawItems = root.optJSONArray("items") ?: JSONArray()
+            val credits = buildList {
+                for (i in 0 until rawItems.length()) {
+                    val obj = rawItems.optJSONObject(i) ?: continue
+                    parseFlatItemSummary(obj)?.let { add(it) }
+                }
+            }.distinctBy { it.id }
+
+            PersonFilmography(
+                personId = cleanId,
+                providerId = PROVIDER_ID,
+                name = personName.ifBlank { "Cast Member" },
+                imageUrl = personImageUrl,
+                credits = credits
+            )
+        }
+    }
+
+    private fun parseSeasonsArray(seasonsArr: JSONArray?): List<SeasonSummary> {
+        if (seasonsArr == null) return emptyList()
+        return buildList {
+            for (i in 0 until seasonsArr.length()) {
+                val s = seasonsArr.optJSONObject(i) ?: continue
+                val seasonNumber = s.optInt("season", 0).takeIf { it > 0 } ?: continue
+                val episodeCount = s.optInt("episode_count", 0).coerceAtLeast(0)
+                val allEpArr = s.optJSONArray("all_ep")
+                val availableEpisodes = buildList {
+                    if (allEpArr != null) {
+                        for (j in 0 until allEpArr.length()) {
+                            val epNum = allEpArr.optInt(j, 0)
+                            if (epNum > 0) add(epNum)
+                        }
+                    }
+                }.distinct()
+                add(
+                    SeasonSummary(
+                        seasonNumber = seasonNumber,
+                        title = "Season $seasonNumber",
+                        episodeCount = if (episodeCount > 0) episodeCount else availableEpisodes.size,
+                        availableEpisodes = availableEpisodes
+                    )
+                )
+            }
+        }.sortedBy { it.seasonNumber }
+    }
+
+    private fun parseFlatItemSummary(obj: JSONObject): MovieTitleSummary? {
+        val id = obj.optCleanString("subject_id") ?: return null
+        val title = obj.optCleanString("title") ?: return null
+        val dp = obj.optCleanString("detail_path")
+        cacheMetadata(id, title, dp)
+        val cover = obj.optCleanString("cover")
+        val stillsUrl = obj.optJSONObject("stills")?.optCleanString("url")
+        val kind = parseMediaKind(
+            obj.optIntOrNull("subject_type"),
+            obj.optCleanString("type")
+        )
+        return MovieTitleSummary(
+            id = id,
+            providerId = PROVIDER_ID,
+            kind = kind,
+            title = title,
+            releaseYear = parseYear(obj.optCleanString("release_date"), obj.optCleanString("year")),
+            rating = obj.optRating("imdb_rating", "rating"),
+            posterUrl = cover,
+            backdropUrl = stillsUrl,
+            genres = parseGenres(obj.optCleanString("genre")),
+            country = obj.optCleanString("country"),
+            detailPath = dp,
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+            isPlayableHint = true
+        )
     }
 
     override suspend fun resolvePlaybackSources(
@@ -738,6 +856,7 @@ class MovieBoxProvider(
         val coverUrl = obj.optJSONObject("cover")?.optCleanString("url")
             ?: obj.optCleanString("cover")
             ?: obj.optJSONObject("image")?.optCleanString("url")
+        val stillsUrl = obj.optJSONObject("stills")?.optCleanString("url")
         val trailerUrl = trailerOverride
             ?: obj.optJSONObject("trailer")?.optJSONObject("videoAddress")?.optCleanString("url")
         cacheMetadata(id, title, dp, trailerUrl)
@@ -751,8 +870,8 @@ class MovieBoxProvider(
             releaseYear = parseYear(obj.optCleanString("releaseDate") ?: obj.optCleanString("release_date")),
             rating = obj.optRating("imdbRatingValue", "imdb_rating", "rating"),
             durationMinutes = parseDurationMinutes(obj.optLongOrNull("duration")),
-            posterUrl = coverUrl ?: backdropOverride,
-            backdropUrl = backdropOverride ?: coverUrl,
+            posterUrl = coverUrl,
+            backdropUrl = backdropOverride ?: stillsUrl,
             genres = parseGenres(obj.optCleanString("genre")),
             summary = obj.optCleanString("description"),
             language = obj.optCleanString("language"),
