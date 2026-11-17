@@ -51,6 +51,7 @@ class MovieBoxProvider(
 
     private val detailPathCache = ConcurrentHashMap<String, String>()
     private val titleCache = ConcurrentHashMap<String, String>()
+    private val trailerCache = ConcurrentHashMap<String, String>()
 
     @Volatile
     private var cachedGenres: List<String> = emptyList()
@@ -109,7 +110,7 @@ class MovieBoxProvider(
                                 val title = entry.optCleanString("title") ?: opTitle
                                 if (id != null && title != null) {
                                     val dp = entry.optCleanString("detailPath")
-                                    cacheMetadata(id, title, dp)
+                                    cacheMetadata(id, title, dp, trailerUrl)
                                     val cover = entry.optJSONObject("cover")?.optCleanString("url") ?: bannerImage
                                     banners.add(
                                         MovieTitleSummary(
@@ -414,7 +415,12 @@ class MovieBoxProvider(
             val id = root.optCleanString("subject_id") ?: titleId
             val title = root.optCleanString("title") ?: titleCache[id] ?: "Title $id"
             val dp = root.optCleanString("detail_path")
-            cacheMetadata(id, title, dp)
+            val trailerUrl = root.optJSONObject("trailer")
+                ?.optJSONObject("videoAddress")
+                ?.optCleanString("url")
+                ?: root.optCleanString("trailer_url")
+                ?: trailerCache[id]
+            cacheMetadata(id, title, dp, trailerUrl)
 
             val kind = parseMediaKind(
                 root.optIntOrNull("subject_type"),
@@ -461,6 +467,7 @@ class MovieBoxProvider(
                 language = root.optCleanString("language"),
                 country = root.optCleanString("country"),
                 detailPath = dp,
+                trailerUrl = trailerUrl,
                 sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
                 isPlayableHint = true
             )
@@ -672,13 +679,13 @@ class MovieBoxProvider(
         val id = obj.optCleanString("subjectId") ?: obj.optCleanString("subject_id") ?: return null
         val title = obj.optCleanString("title") ?: return null
         val dp = obj.optCleanString("detailPath") ?: obj.optCleanString("detail_path")
-        cacheMetadata(id, title, dp)
 
         val coverUrl = obj.optJSONObject("cover")?.optCleanString("url")
             ?: obj.optCleanString("cover")
             ?: obj.optJSONObject("image")?.optCleanString("url")
         val trailerUrl = trailerOverride
             ?: obj.optJSONObject("trailer")?.optJSONObject("videoAddress")?.optCleanString("url")
+        cacheMetadata(id, title, dp, trailerUrl)
         val hasResource = if (obj.has("hasResource")) obj.optBoolean("hasResource", true) else true
 
         return MovieTitleSummary(
@@ -702,12 +709,20 @@ class MovieBoxProvider(
         )
     }
 
-    private fun cacheMetadata(subjectId: String, title: String?, detailPath: String?) {
+    private fun cacheMetadata(
+        subjectId: String,
+        title: String?,
+        detailPath: String?,
+        trailerUrl: String? = null
+    ) {
         if (!title.isNullOrBlank()) {
             titleCache[subjectId] = title
         }
         if (!detailPath.isNullOrBlank()) {
             detailPathCache[subjectId] = detailPath
+        }
+        if (!trailerUrl.isNullOrBlank()) {
+            trailerCache[subjectId] = trailerUrl
         }
     }
 
@@ -747,7 +762,7 @@ class MovieBoxProvider(
 
     private fun parseMediaKind(subjectType: Int?, typeLabel: String?): MediaKind = when {
         subjectType == 1 -> MediaKind.MOVIE
-        subjectType == 2 -> MediaKind.TV_SERIES
+        subjectType == 2 || subjectType == 7 -> MediaKind.TV_SERIES
         typeLabel != null && (typeLabel.contains("series", ignoreCase = true) ||
             typeLabel.contains("tv", ignoreCase = true)) -> MediaKind.TV_SERIES
         else -> MediaKind.MOVIE

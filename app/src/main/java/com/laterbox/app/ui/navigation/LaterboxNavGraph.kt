@@ -1128,7 +1128,8 @@ fun LaterboxApp(
                                     BrowserLauncher.openUrl(context, url, colors)
                                 },
                                 onDownloadSource = movieDetailViewModel::downloadSource,
-                                onDismissDownloadStatus = movieDetailViewModel::clearDownloadStatus
+                                onDismissDownloadStatus = movieDetailViewModel::clearDownloadStatus,
+                                onRetryPlaybackCheck = movieDetailViewModel::retryPlaybackCheck
                             )
                         }
 

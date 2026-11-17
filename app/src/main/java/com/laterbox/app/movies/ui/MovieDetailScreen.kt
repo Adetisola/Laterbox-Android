@@ -73,6 +73,7 @@ fun MovieDetailScreen(
     onOpenExternalUrl: (String) -> Unit,
     onDownloadSource: (PlaybackSource) -> Unit = {},
     onDismissDownloadStatus: () -> Unit = {},
+    onRetryPlaybackCheck: () -> Unit = onRetry,
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -307,13 +308,19 @@ fun MovieDetailScreen(
                                 resolution is PlaybackResolution.Available -> {
                                     val isResume = uiState.savedPositionMs >= 5_000L
                                     val hasAuthorisedDownloads = resolution.sources.any { it.isAuthorised }
+                                    val playSeason = if (summary.kind == MediaKind.TV_SERIES) {
+                                        uiState.selectedSeasonNumber ?: 1
+                                    } else null
+                                    val playEpisode = if (summary.kind == MediaKind.TV_SERIES) {
+                                        uiState.episodes.firstOrNull()?.episodeNumber ?: 1
+                                    } else null
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Button(
-                                            onClick = { onPlayClick(null, null) },
+                                            onClick = { onPlayClick(playSeason, playEpisode) },
                                             colors = ButtonDefaults.buttonColors(
                                                 containerColor = colors.accentPrimary,
                                                 contentColor = colors.onAccentPrimary
@@ -331,7 +338,16 @@ fun MovieDetailScreen(
                                             )
                                             Spacer(modifier = Modifier.width(8.dp))
                                             val maxQual = resolution.sources.firstOrNull()?.qualityLabel ?: "Stream"
-                                            val ctaLabel = if (isResume) "Resume (${maxQual})" else "Watch Now (${maxQual})"
+                                            val epPrefix = if (playSeason != null && playEpisode != null) {
+                                                "S${playSeason}·E${playEpisode} "
+                                            } else ""
+                                            val ctaLabel = if (isResume) {
+                                                "Resume ${epPrefix}(${maxQual})"
+                                            } else if (epPrefix.isNotEmpty()) {
+                                                "Watch ${epPrefix}(${maxQual})"
+                                            } else {
+                                                "Watch Now (${maxQual})"
+                                            }
                                             Text(text = ctaLabel, style = typography.buttonLabel, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         }
 
@@ -439,6 +455,39 @@ fun MovieDetailScreen(
                                                     Spacer(modifier = Modifier.width(6.dp))
                                                     Text("Open Official Guide", color = colors.textPrimary)
                                                 }
+                                            }
+                                        }
+                                    }
+                                }
+                                uiState.playbackError != null -> {
+                                    Surface(
+                                        shape = RoundedCornerShape(14.dp),
+                                        color = colors.surfaceSecondary,
+                                        border = BorderStroke(0.75.dp, colors.borderSubtle),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("detail_playback_error")
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(14.dp),
+                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Text(
+                                                text = "Stream check unavailable",
+                                                style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
+                                                color = colors.textPrimary
+                                            )
+                                            Text(
+                                                text = uiState.playbackError,
+                                                style = typography.bodySecondary,
+                                                color = colors.textSecondary
+                                            )
+                                            OutlinedButton(
+                                                onClick = onRetryPlaybackCheck,
+                                                border = BorderStroke(1.dp, colors.borderSubtle),
+                                                shape = RoundedCornerShape(10.dp)
+                                            ) {
+                                                Text("Retry Stream Check", color = colors.textPrimary)
                                             }
                                         }
                                     }

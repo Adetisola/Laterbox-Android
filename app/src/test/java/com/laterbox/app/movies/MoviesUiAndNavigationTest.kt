@@ -537,4 +537,87 @@ class MoviesUiAndNavigationTest {
         assertEquals("Inception", submittedQuery)
         assertEquals(null, openedDetailId)
     }
+
+    @Test
+    fun movieDetailScreen_watchNowForTvSeriesPassesSelectedSeasonAndEpisode() {
+        var clickedSeason: Int? = null
+        var clickedEpisode: Int? = null
+        val seriesSummary = sampleMovie.copy(
+            id = "mb_series_1",
+            providerId = "moviebox",
+            kind = MediaKind.TV_SERIES,
+            title = "Severance",
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+        )
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MovieDetailScreen(
+                    uiState = MovieDetailUiState(
+                        isLoading = false,
+                        details = MediaDetails(
+                            summary = seriesSummary,
+                            fullDescription = "Workplace thriller.",
+                            seasons = listOf(SeasonSummary(1, "Season 1", 9), SeasonSummary(2, "Season 2", 10))
+                        ),
+                        selectedSeasonNumber = 2,
+                        episodes = listOf(EpisodeItem("ep_2_1", 2, 1, "Episode 1")),
+                        playbackResolution = PlaybackResolution.Available(
+                            title = "Severance",
+                            sources = listOf(
+                                PlaybackSource("s1080", "https://cdn.example/s2e1.mp4", "MP4", "1080p", 1080, providerName = "MovieBox")
+                            ),
+                            providerName = "MovieBox",
+                            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+                        )
+                    ),
+                    onBackClick = {},
+                    onRetry = {},
+                    onToggleWatchlist = {},
+                    onPlayClick = { se, ep ->
+                        clickedSeason = se
+                        clickedEpisode = ep
+                    },
+                    onSelectSeason = {},
+                    onOpenRelated = { _, _ -> },
+                    onOpenExternalUrl = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithText("Watch S2·E1 (1080p)").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("detail_watch_button").performClick()
+        assertEquals(2, clickedSeason)
+        assertEquals(1, clickedEpisode)
+    }
+
+    @Test
+    fun movieDetailScreen_displaysRetryablePlaybackErrorWhenStreamCheckFails() {
+        var retried = false
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MovieDetailScreen(
+                    uiState = MovieDetailUiState(
+                        isLoading = false,
+                        details = MediaDetails(summary = sampleMovie, fullDescription = "Classic."),
+                        playbackResolution = null,
+                        playbackError = "Failed to bootstrap MovieBox token"
+                    ),
+                    onBackClick = {},
+                    onRetry = {},
+                    onToggleWatchlist = {},
+                    onPlayClick = { _, _ -> },
+                    onSelectSeason = {},
+                    onOpenRelated = { _, _ -> },
+                    onOpenExternalUrl = {},
+                    onRetryPlaybackCheck = { retried = true }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("detail_playback_error").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Failed to bootstrap MovieBox token").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Retry Stream Check").performClick()
+        assertTrue(retried)
+    }
 }

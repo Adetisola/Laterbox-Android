@@ -447,4 +447,125 @@ class MoviesViewModelsTest {
         }
         assertFalse(openArchiveState.useSampleFixturesOnly)
     }
+
+    @Test
+    fun detailViewModel_selectSeasonRefreshesPlaybackAndLabelsEpisodeDownloads() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(context, com.laterbox.app.data.local.LaterboxDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val linkRepo = com.laterbox.app.data.repository.LinkRepository(db.savedLinkDao())
+            val enqueuedTitles = mutableListOf<String?>()
+            val resolvedPairs = mutableListOf<Pair<Int?, Int?>>()
+            var failNextPlayback = false
+
+            val seriesSummary = MovieTitleSummary(
+                id = "mb_series_1",
+                providerId = "moviebox",
+                kind = MediaKind.TV_SERIES,
+                title = "Breaking Bad",
+                releaseYear = 2008,
+                sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+                isPlayableHint = true
+            )
+            val baseFake = FakeMoviesRepository()
+            val customRepo = object : MoviesRepository by baseFake {
+                override suspend fun getDetails(providerId: String, titleId: String, forceRefresh: Boolean) =
+                    Result.success(
+                        MediaDetails(
+                            summary = seriesSummary,
+                            fullDescription = "Chemistry teacher series.",
+                            seasons = listOf(SeasonSummary(1, "Season 1", 7), SeasonSummary(2, "Season 2", 13))
+                        )
+                    )
+
+                override suspend fun resolvePlayback(
+                    providerId: String,
+                    titleId: String,
+                    seasonNumber: Int?,
+                    episodeNumber: Int?
+                ): Result<PlaybackResolution> {
+                    resolvedPairs.add(seasonNumber to episodeNumber)
+                    if (failNextPlayback) {
+                        return Result.failure(IllegalStateException("Upstream bootstrap failed"))
+                    }
+                    return Result.success(
+                        PlaybackResolution.Available(
+                            title = "Breaking Bad",
+                            subtitleHeading = "Season $seasonNumber · Episode $episodeNumber",
+                            sources = listOf(
+                                PlaybackSource("s1", "https://cdn.example/s${seasonNumber}e${episodeNumber}.mp4", "MP4", "720p", 720, providerName = "MovieBox")
+                            ),
+                            providerName = "MovieBox",
+                            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+                        )
+                    )
+                }
+            }
+
+            val fakeMediaRepo = object : com.laterbox.app.media.domain.repository.MediaRepository {
+                override fun getAssetsForLink(linkId: Long) = kotlinx.coroutines.flow.flowOf(emptyList<com.laterbox.app.media.domain.model.MediaAsset>())
+                override fun getAllAssets() = kotlinx.coroutines.flow.flowOf(emptyList<com.laterbox.app.media.domain.model.MediaAsset>())
+                override fun filterAssets(mediaType: com.laterbox.app.media.domain.model.MediaType?, query: String) = kotlinx.coroutines.flow.flowOf(emptyList<com.laterbox.app.media.domain.model.MediaAsset>())
+                override fun getAssetById(id: String) = kotlinx.coroutines.flow.flowOf(null)
+                override fun getTasksForLink(linkId: Long) = kotlinx.coroutines.flow.flowOf(emptyList<com.laterbox.app.media.domain.model.DownloadTask>())
+                override fun getQueueTasks() = kotlinx.coroutines.flow.flowOf(emptyList<com.laterbox.app.media.domain.model.DownloadTask>())
+                override fun getTaskById(taskId: String) = kotlinx.coroutines.flow.flowOf(null)
+                override fun getStorageBreakdown() = kotlinx.coroutines.flow.flowOf(emptyMap<com.laterbox.app.media.domain.model.MediaType, Long>())
+                override fun getAssetCount() = kotlinx.coroutines.flow.flowOf(0)
+                override suspend fun enqueueDownload(
+                    linkId: Long,
+                    candidate: com.laterbox.app.media.domain.model.MediaCandidate,
+                    sourcePlatform: String,
+                    title: String?,
+                    artist: String?,
+                    album: String?,
+                    artworkUrl: String?,
+                    spotifyTrackId: String?,
+                    versionTag: String?
+                ): String {
+                    enqueuedTitles.add(title)
+                    return "dl_1"
+                }
+                override suspend fun overrideCellularRequirement(taskId: String) {}
+                override suspend fun pauseDownload(taskId: String) {}
+                override suspend fun resumeDownload(taskId: String) {}
+                override suspend fun cancelDownload(taskId: String) {}
+                override suspend fun dismissTask(taskId: String) {}
+                override suspend fun clearTerminalTasks() {}
+                override suspend fun retryDownload(taskId: String) {}
+                override suspend fun deleteAsset(assetId: String) {}
+                override suspend fun exportAsset(assetId: String) = Result.success("")
+                override suspend fun deleteAssetsForLink(linkId: Long, deleteFiles: Boolean) {}
+                override suspend fun runOrphanSweep() {}
+                override suspend fun recoverInterruptedTasks() {}
+                override fun getInspectionForLink(linkId: Long) = kotlinx.coroutines.flow.flowOf(null)
+                override fun isInspectingLink(linkId: Long) = kotlinx.coroutines.flow.flowOf(false)
+                override fun startInspection(linkId: Long, url: String, previewImageUrl: String?, forceRefresh: Boolean) {}
+                override suspend fun cancelInspection(linkId: Long) {}
+            }
+
+            val bridge = com.laterbox.app.movies.data.download.MoviesDownloadBridge(linkRepo, fakeMediaRepo)
+            val vm = MovieDetailViewModel(customRepo, bridge)
+            vm.load("moviebox", "mb_series_1")
+            advanceUntilIdle()
+            assertEquals(listOf(1 to 1), resolvedPairs)
+
+            vm.selectSeason(2)
+            advanceUntilIdle()
+            assertEquals(listOf(1 to 1, 2 to 1), resolvedPairs)
+            val src = (vm.uiState.value.playbackResolution as PlaybackResolution.Available).sources.first()
+            vm.downloadSource(src)
+            vm.uiState.first { it.downloadStatusMessage != null }
+            assertEquals(listOf("Breaking Bad · S2 · E1 (720p)"), enqueuedTitles)
+
+            failNextPlayback = true
+            vm.retryPlaybackCheck()
+            advanceUntilIdle()
+            assertEquals("Upstream bootstrap failed", vm.uiState.value.playbackError)
+        } finally {
+            db.close()
+        }
+    }
 }

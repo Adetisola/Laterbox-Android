@@ -777,7 +777,11 @@ fun MoviesScreen(
                                     banners = feed.featuredBanners,
                                     watchlistIds = watchlistIds,
                                     onBannerClick = { item -> onOpenDetail(item.providerId, item.id) },
-                                    onPlayClick = { item -> onOpenPlayer(item.providerId, item.id, null, null) },
+                                    onPlayClick = { item ->
+                                        val defaultSeason = if (item.kind == MediaKind.TV_SERIES) 1 else null
+                                        val defaultEpisode = if (item.kind == MediaKind.TV_SERIES) 1 else null
+                                        onOpenPlayer(item.providerId, item.id, defaultSeason, defaultEpisode)
+                                    },
                                     onToggleWatchlist = onToggleWatchlist
                                 )
                             }

@@ -468,4 +468,90 @@ class MovieBoxProviderTest {
         val configErr = unconfigured.getHomeFeed().exceptionOrNull()
         assertTrue(configErr?.message.orEmpty().contains("not configured"))
     }
+
+    @Test
+    fun homeFeed_parsesShortTvAppointmentListAndPreservesCachedTrailerIntoDetails() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                return when (request.path) {
+                    "/home" -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "code": 0,
+                          "message": "ok",
+                          "data": {
+                            "operatingList": [
+                              {
+                                "type": "APPOINTMENT_LIST",
+                                "opId": "coming_soon",
+                                "title": "Coming Soon",
+                                "subjects": [
+                                  {
+                                    "subjectId": "2845168888013275776",
+                                    "subjectType": 2,
+                                    "title": "Percy Jackson",
+                                    "releaseDate": "2023-12-19",
+                                    "genre": "Action,Adventure",
+                                    "cover": {"url": "https://cdn.example/percy.jpg"},
+                                    "detailPath": "percy-jackson",
+                                    "trailer": {
+                                      "videoAddress": {
+                                        "url": "https://cdn.example/percy-trailer.mp4"
+                                      }
+                                    }
+                                  }
+                                ]
+                              },
+                              {
+                                "type": "SUBJECTS_MOVIE",
+                                "opId": "hot_short_tv",
+                                "title": "Hot Short TV",
+                                "subjects": [
+                                  {
+                                    "subjectId": "8616684100902086880",
+                                    "subjectType": 7,
+                                    "title": "The Holy Covenant Prophet",
+                                    "releaseDate": "2026-10-19",
+                                    "genre": "Modern Drama",
+                                    "cover": {"url": "https://cdn.example/short.jpg"},
+                                    "detailPath": "short-tv-prophet"
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        }
+                        """.trimIndent()
+                    )
+                    "/detail/2845168888013275776" -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "subject_id": "2845168888013275776",
+                          "title": "Percy Jackson",
+                          "subject_type": 2,
+                          "type": "Series",
+                          "description": "Demigod adventure.",
+                          "release_date": "2023-12-19",
+                          "cover": "https://cdn.example/percy.jpg",
+                          "detail_path": "percy-jackson"
+                        }
+                        """.trimIndent()
+                    )
+                    "/episodes/2845168888013275776" -> MockResponse().setResponseCode(200).setBody(
+                        """{"subject_id": "2845168888013275776", "seasons": [{"season": 1, "episode_count": 8}]}"""
+                    )
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val feed = provider.getHomeFeed().getOrThrow()
+        assertEquals(2, feed.sections.size)
+        assertEquals(SectionStyle.COLLECTION, feed.sections[0].style)
+        assertEquals(MediaKind.TV_SERIES, feed.sections[1].items.first().kind)
+
+        // /detail omits trailer, so MovieBoxProvider restores the cached trailerUrl from /home
+        val details = provider.getDetails("2845168888013275776").getOrThrow()
+        assertEquals("https://cdn.example/percy-trailer.mp4", details.summary.trailerUrl)
+    }
 }

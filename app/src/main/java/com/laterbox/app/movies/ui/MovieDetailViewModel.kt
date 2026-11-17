@@ -25,6 +25,7 @@ data class MovieDetailUiState(
     val episodesError: String? = null,
     val playbackResolution: PlaybackResolution? = null,
     val isCheckingPlayback: Boolean = false,
+    val playbackError: String? = null,
     val isInWatchlist: Boolean = false,
     val savedPositionMs: Long = 0L,
     val isEnqueuingDownload: Boolean = false,
@@ -43,6 +44,7 @@ class MovieDetailViewModel(
     private var loadJob: Job? = null
     private var watchlistJob: Job? = null
     private var episodesJob: Job? = null
+    private var playbackJob: Job? = null
     private var currentKey: Pair<String, String>? = null
 
     fun load(providerId: String, titleId: String, forceRefresh: Boolean = false) {
@@ -58,6 +60,8 @@ class MovieDetailViewModel(
         }
 
         loadJob?.cancel()
+        playbackJob?.cancel()
+        episodesJob?.cancel()
         loadJob = viewModelScope.launch {
             _uiState.update {
                 MovieDetailUiState(
@@ -68,8 +72,12 @@ class MovieDetailViewModel(
             val result = moviesRepository.getDetails(providerId, titleId, forceRefresh)
             result.fold(
                 onSuccess = { details ->
-                    val savedPos = moviesRepository.getSavedPositionMs(providerId, titleId, null, null)
-                    val firstSeason = details.seasons.firstOrNull()?.seasonNumber
+                    val isSeries = details.summary.kind == MediaKind.TV_SERIES
+                    val firstSeason = if (isSeries) {
+                        details.seasons.firstOrNull()?.seasonNumber ?: 1
+                    } else null
+                    val defaultEp = if (isSeries) 1 else null
+                    val savedPos = moviesRepository.getSavedPositionMs(providerId, titleId, firstSeason, defaultEp)
                     _uiState.update {
                         it.copy(
                             isLoading = false,
@@ -79,10 +87,10 @@ class MovieDetailViewModel(
                             errorMessage = null
                         )
                     }
-                    if (details.summary.kind == MediaKind.TV_SERIES && firstSeason != null) {
+                    if (isSeries && firstSeason != null) {
                         loadEpisodes(providerId, titleId, firstSeason)
                     }
-                    checkPlayback(providerId, titleId, firstSeason, if (firstSeason != null) 1 else null)
+                    checkPlayback(providerId, titleId, firstSeason, defaultEp)
                 },
                 onFailure = { error ->
                     _uiState.update {
@@ -102,12 +110,20 @@ class MovieDetailViewModel(
         if (_uiState.value.selectedSeasonNumber == seasonNumber) return
         _uiState.update { it.copy(selectedSeasonNumber = seasonNumber) }
         loadEpisodes(providerId, titleId, seasonNumber)
+        if (_uiState.value.details?.summary?.kind == MediaKind.TV_SERIES) {
+            viewModelScope.launch {
+                val savedPos = moviesRepository.getSavedPositionMs(providerId, titleId, seasonNumber, 1)
+                _uiState.update { it.copy(savedPositionMs = savedPos) }
+            }
+            checkPlayback(providerId, titleId, seasonNumber, 1)
+        }
     }
 
     fun retryPlaybackCheck() {
         val (providerId, titleId) = currentKey ?: return
-        val season = _uiState.value.selectedSeasonNumber
-        val firstEp = _uiState.value.episodes.firstOrNull()?.episodeNumber
+        val isSeries = _uiState.value.details?.summary?.kind == MediaKind.TV_SERIES
+        val season = if (isSeries) _uiState.value.selectedSeasonNumber ?: 1 else null
+        val firstEp = if (isSeries) _uiState.value.episodes.firstOrNull()?.episodeNumber ?: 1 else null
         checkPlayback(providerId, titleId, season, firstEp)
     }
 
@@ -147,12 +163,23 @@ class MovieDetailViewModel(
 
     fun downloadSource(source: PlaybackSource) {
         val bridge = moviesDownloadBridge ?: return
-        val summary = _uiState.value.details?.summary ?: return
-        if (_uiState.value.isEnqueuingDownload) return
+        val state = _uiState.value
+        val summary = state.details?.summary ?: return
+        if (state.isEnqueuingDownload) return
+
+        val episodeLabel = if (summary.kind == MediaKind.TV_SERIES) {
+            val s = state.selectedSeasonNumber ?: 1
+            val e = state.episodes.firstOrNull()?.episodeNumber ?: 1
+            "S${s} · E${e}"
+        } else null
 
         viewModelScope.launch {
             _uiState.update { it.copy(isEnqueuingDownload = true, downloadStatusMessage = null) }
-            bridge.enqueueAuthorisedDownload(summary = summary, source = source).fold(
+            bridge.enqueueAuthorisedDownload(
+                summary = summary,
+                source = source,
+                episodeLabel = episodeLabel
+            ).fold(
                 onSuccess = {
                     _uiState.update {
                         it.copy(
@@ -183,14 +210,27 @@ class MovieDetailViewModel(
         seasonNumber: Int?,
         episodeNumber: Int?
     ) {
-        viewModelScope.launch {
-            _uiState.update { it.copy(isCheckingPlayback = true) }
+        playbackJob?.cancel()
+        playbackJob = viewModelScope.launch {
+            _uiState.update { it.copy(isCheckingPlayback = true, playbackError = null) }
             moviesRepository.resolvePlayback(providerId, titleId, seasonNumber, episodeNumber).fold(
                 onSuccess = { resolution ->
-                    _uiState.update { it.copy(isCheckingPlayback = false, playbackResolution = resolution) }
+                    _uiState.update {
+                        it.copy(
+                            isCheckingPlayback = false,
+                            playbackResolution = resolution,
+                            playbackError = null
+                        )
+                    }
                 },
-                onFailure = {
-                    _uiState.update { it.copy(isCheckingPlayback = false) }
+                onFailure = { error ->
+                    _uiState.update {
+                        it.copy(
+                            isCheckingPlayback = false,
+                            playbackError = error.message?.takeIf { m -> m.isNotBlank() }
+                                ?: "Unable to check stream availability."
+                        )
+                    }
                 }
             )
         }
