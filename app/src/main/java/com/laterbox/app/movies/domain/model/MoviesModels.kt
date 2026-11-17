@@ -15,6 +15,7 @@ enum class DataSourceBadge(
     val isLiveNetwork: Boolean,
     val isSampleFixture: Boolean = false
 ) {
+    LIVE_MOVIEBOX("MovieBox", isLiveNetwork = true),
     LIVE_INTERNET_ARCHIVE("Internet Archive", isLiveNetwork = true),
     LIVE_TVMAZE("TVMaze", isLiveNetwork = true),
     LIVE_TMDB("TMDB", isLiveNetwork = true),
@@ -52,6 +53,8 @@ data class MovieTitleSummary(
     val summary: String? = null,
     val language: String? = null,
     val country: String? = null,
+    val detailPath: String? = null,
+    val trailerUrl: String? = null,
     val sourceBadge: DataSourceBadge = DataSourceBadge.LIVE_INTERNET_ARCHIVE,
     val isPlayableHint: Boolean = false
 ) {

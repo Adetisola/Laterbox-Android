@@ -217,6 +217,8 @@ object MoviesCacheJsonCodec {
         put("summary", item.summary ?: JSONObject.NULL)
         put("language", item.language ?: JSONObject.NULL)
         put("country", item.country ?: JSONObject.NULL)
+        put("detailPath", item.detailPath ?: JSONObject.NULL)
+        put("trailerUrl", item.trailerUrl ?: JSONObject.NULL)
         put("sourceBadge", item.sourceBadge.name)
         put("isPlayableHint", item.isPlayableHint)
     }
@@ -235,6 +237,8 @@ object MoviesCacheJsonCodec {
         summary = o.optNullableString("summary"),
         language = o.optNullableString("language"),
         country = o.optNullableString("country"),
+        detailPath = o.optNullableString("detailPath"),
+        trailerUrl = o.optNullableString("trailerUrl"),
         sourceBadge = DataSourceBadge.fromName(o.optString("sourceBadge")),
         isPlayableHint = o.optBoolean("isPlayableHint", false)
     )

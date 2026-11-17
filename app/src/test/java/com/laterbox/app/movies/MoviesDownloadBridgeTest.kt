@@ -185,5 +185,19 @@ class MoviesDownloadBridgeTest {
         val res2 = bridge.enqueueAuthorisedDownload(sampleSummary, badScheme)
         assertTrue(res2.isFailure)
         assertTrue(fakeMediaRepository.enqueued.isEmpty())
+
+        val adaptiveDash = PlaybackSource(
+            id = "dash_1080",
+            url = "https://cdn.example/index.mpd",
+            format = "DASH",
+            qualityLabel = "1080p (Adaptive)",
+            qualityHeight = 1080,
+            providerName = "MovieBox",
+            isAuthorised = true
+        )
+        val res3 = bridge.enqueueAuthorisedDownload(sampleSummary, adaptiveDash)
+        assertTrue(res3.isFailure)
+        assertTrue(res3.exceptionOrNull()?.message.orEmpty().contains("Adaptive"))
+        assertTrue(fakeMediaRepository.enqueued.isEmpty())
     }
 }

@@ -64,6 +64,50 @@ enum class CardTapAction(val label: String, val description: String) {
     EXTERNAL_BROWSER("Open in Browser", "Launch directly in your external browser tab")
 }
 
+enum class MoviesProviderMode(val wireValue: String, val label: String) {
+    MOVIEBOX("moviebox", "MovieBox (Primary)"),
+    OPEN_ARCHIVE_AND_TVMAZE("open_archive_tvmaze", "Internet Archive & TVMaze"),
+    SAMPLE_FIXTURES("sample_fixtures", "Offline Sample Fixtures");
+
+    companion object {
+        fun fromWire(value: String?): MoviesProviderMode =
+            entries.firstOrNull {
+                it.name.equals(value, ignoreCase = true) ||
+                    it.wireValue.equals(value, ignoreCase = true)
+            } ?: MOVIEBOX
+    }
+}
+
+object MovieBoxEndpointConfig {
+    private val DEBUG_LOOPBACK_HOSTS = setOf("10.0.2.2", "localhost", "127.0.0.1")
+
+    fun normalizeBaseUrl(rawUrl: String): String {
+        val trimmed = rawUrl.trim()
+        if (trimmed.isBlank()) return ""
+        return if (trimmed.endsWith("/")) trimmed else "$trimmed/"
+    }
+
+    fun isValidBaseUrl(
+        rawUrl: String,
+        allowDebugCleartextLoopback: Boolean
+    ): Boolean {
+        val trimmed = rawUrl.trim()
+        if (trimmed.isEmpty()) return true
+        val parsed = try {
+            java.net.URI(trimmed)
+        } catch (_: Exception) {
+            return false
+        }
+        val scheme = parsed.scheme?.lowercase() ?: return false
+        val host = parsed.host?.lowercase() ?: return false
+        return when (scheme) {
+            "https" -> host.isNotBlank()
+            "http" -> allowDebugCleartextLoopback && host in DEBUG_LOOPBACK_HOSTS
+            else -> false
+        }
+    }
+}
+
 data class UserPreferences(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val autoMarkAsRead: Boolean = true,
@@ -141,7 +185,10 @@ data class UserPreferences(
     val quickTileCapturesCount: Int = 0,
     val manualCapturesCount: Int = 0,
     val tmdbApiKey: String = "",
-    val moviesUseSampleFixturesOnly: Boolean = false
+    val moviesUseSampleFixturesOnly: Boolean = false,
+    val moviesProviderMode: MoviesProviderMode = MoviesProviderMode.MOVIEBOX,
+    val movieBoxApiBaseUrl: String = "",
+    val movieBoxApiKey: String = ""
 ) {
     val allowSystemBackup: Boolean get() = includeInBackup
 
@@ -267,6 +314,9 @@ class UserPreferencesRepository(private val context: Context) {
         val MANUAL_CAPTURES_COUNT = intPreferencesKey("manual_captures_count")
         val TMDB_API_KEY = stringPreferencesKey("tmdb_api_key")
         val MOVIES_USE_SAMPLE_FIXTURES_ONLY = booleanPreferencesKey("movies_use_sample_fixtures_only")
+        val MOVIES_PROVIDER_MODE = stringPreferencesKey("movies_provider_mode")
+        val MOVIEBOX_API_BASE_URL = stringPreferencesKey("moviebox_api_base_url")
+        val MOVIEBOX_API_KEY = stringPreferencesKey("moviebox_api_key")
     }
 
     val userPreferencesFlow: Flow<UserPreferences> = context.userDataStore.data.map { preferences ->
@@ -395,6 +445,18 @@ class UserPreferencesRepository(private val context: Context) {
         val ytDlpVersion = preferences[PreferencesKeys.YTDLP_VERSION] ?: ""
         val lastYtDlpUpdateCheck = preferences[PreferencesKeys.LAST_YTDLP_UPDATE_CHECK] ?: 0L
 
+        val legacySampleFixturesOnly = preferences[PreferencesKeys.MOVIES_USE_SAMPLE_FIXTURES_ONLY] ?: false
+        val rawProviderMode = preferences[PreferencesKeys.MOVIES_PROVIDER_MODE]
+        val moviesProviderMode = when {
+            rawProviderMode != null -> MoviesProviderMode.fromWire(rawProviderMode)
+            legacySampleFixturesOnly -> MoviesProviderMode.SAMPLE_FIXTURES
+            else -> MoviesProviderMode.MOVIEBOX
+        }
+        val movieBoxApiBaseUrl = MovieBoxEndpointConfig.normalizeBaseUrl(
+            preferences[PreferencesKeys.MOVIEBOX_API_BASE_URL] ?: ""
+        )
+        val movieBoxApiKey = (preferences[PreferencesKeys.MOVIEBOX_API_KEY] ?: "").trim()
+
         UserPreferences(
             themeMode = themeMode,
             autoMarkAsRead = autoMarkAsRead,
@@ -465,7 +527,10 @@ class UserPreferencesRepository(private val context: Context) {
             quickTileCapturesCount = preferences[PreferencesKeys.QUICK_TILE_CAPTURES_COUNT] ?: 0,
             manualCapturesCount = preferences[PreferencesKeys.MANUAL_CAPTURES_COUNT] ?: 0,
             tmdbApiKey = preferences[PreferencesKeys.TMDB_API_KEY] ?: "",
-            moviesUseSampleFixturesOnly = preferences[PreferencesKeys.MOVIES_USE_SAMPLE_FIXTURES_ONLY] ?: false
+            moviesUseSampleFixturesOnly = moviesProviderMode == MoviesProviderMode.SAMPLE_FIXTURES,
+            moviesProviderMode = moviesProviderMode,
+            movieBoxApiBaseUrl = movieBoxApiBaseUrl,
+            movieBoxApiKey = movieBoxApiKey
         )
     }
 
@@ -925,6 +990,61 @@ class UserPreferencesRepository(private val context: Context) {
     suspend fun setMoviesUseSampleFixturesOnly(enabled: Boolean) {
         context.userDataStore.edit { preferences ->
             preferences[PreferencesKeys.MOVIES_USE_SAMPLE_FIXTURES_ONLY] = enabled
+            if (enabled) {
+                preferences[PreferencesKeys.MOVIES_PROVIDER_MODE] = MoviesProviderMode.SAMPLE_FIXTURES.wireValue
+            } else {
+                val current = preferences[PreferencesKeys.MOVIES_PROVIDER_MODE]
+                if (current == null || MoviesProviderMode.fromWire(current) == MoviesProviderMode.SAMPLE_FIXTURES) {
+                    preferences[PreferencesKeys.MOVIES_PROVIDER_MODE] = MoviesProviderMode.MOVIEBOX.wireValue
+                }
+            }
+        }
+    }
+
+    suspend fun setMoviesProviderMode(mode: MoviesProviderMode) {
+        context.userDataStore.edit { preferences ->
+            preferences[PreferencesKeys.MOVIES_PROVIDER_MODE] = mode.wireValue
+            preferences[PreferencesKeys.MOVIES_USE_SAMPLE_FIXTURES_ONLY] =
+                (mode == MoviesProviderMode.SAMPLE_FIXTURES)
+        }
+    }
+
+    suspend fun setMovieBoxApiBaseUrl(baseUrl: String) {
+        val normalized = MovieBoxEndpointConfig.normalizeBaseUrl(baseUrl)
+        context.userDataStore.edit { preferences ->
+            if (normalized.isNotBlank()) {
+                preferences[PreferencesKeys.MOVIEBOX_API_BASE_URL] = normalized
+            } else {
+                preferences.remove(PreferencesKeys.MOVIEBOX_API_BASE_URL)
+            }
+        }
+    }
+
+    suspend fun setMovieBoxApiKey(apiKey: String) {
+        val trimmed = apiKey.trim()
+        context.userDataStore.edit { preferences ->
+            if (trimmed.isNotBlank()) {
+                preferences[PreferencesKeys.MOVIEBOX_API_KEY] = trimmed
+            } else {
+                preferences.remove(PreferencesKeys.MOVIEBOX_API_KEY)
+            }
+        }
+    }
+
+    suspend fun setMovieBoxConfig(baseUrl: String, apiKey: String) {
+        val normalized = MovieBoxEndpointConfig.normalizeBaseUrl(baseUrl)
+        val trimmedKey = apiKey.trim()
+        context.userDataStore.edit { preferences ->
+            if (normalized.isNotBlank()) {
+                preferences[PreferencesKeys.MOVIEBOX_API_BASE_URL] = normalized
+            } else {
+                preferences.remove(PreferencesKeys.MOVIEBOX_API_BASE_URL)
+            }
+            if (trimmedKey.isNotBlank()) {
+                preferences[PreferencesKeys.MOVIEBOX_API_KEY] = trimmedKey
+            } else {
+                preferences.remove(PreferencesKeys.MOVIEBOX_API_KEY)
+            }
         }
     }
 }

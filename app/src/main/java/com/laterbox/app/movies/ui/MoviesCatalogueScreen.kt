@@ -224,12 +224,19 @@ fun MoviesCatalogueScreen(
                         }
                     } else {
                         uiState.suggestions.forEachIndexed { idx, suggestion ->
+                            val suggestionTagSuffix = suggestion.id.ifBlank { "idx_$idx" }
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable { onOpenDetail(suggestion.providerId, suggestion.id) }
+                                    .clickable {
+                                        if (suggestion.id.isNotBlank()) {
+                                            onOpenDetail(suggestion.providerId, suggestion.id)
+                                        } else {
+                                            onSubmitSearch(suggestion.title)
+                                        }
+                                    }
                                     .padding(horizontal = 14.dp, vertical = 10.dp)
-                                    .testTag("suggestion_item_${suggestion.id}"),
+                                    .testTag("suggestion_item_$suggestionTagSuffix"),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {

@@ -426,4 +426,25 @@ class MoviesViewModelsTest {
             db.close()
         }
     }
+
+    @Test
+    fun homeViewModel_updatesProviderModeAndMovieBoxConfig() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = UserPreferencesRepository(context)
+        val repo = FakeMoviesRepository()
+        val vm = MoviesHomeViewModel(repo, prefs)
+        vm.uiState.first { !it.isLoading }
+
+        val callsBefore = repo.homeCallCount
+        vm.setMovieBoxConfig("https://movies.example.com/", "secret-key")
+        val updatedConfigState = vm.uiState.first { it.movieBoxApiBaseUrl == "https://movies.example.com/" }
+        assertEquals("secret-key", updatedConfigState.movieBoxApiKey)
+        assertTrue(repo.homeCallCount > callsBefore)
+
+        vm.setProviderMode(com.laterbox.app.data.preferences.MoviesProviderMode.OPEN_ARCHIVE_AND_TVMAZE)
+        val openArchiveState = vm.uiState.first {
+            it.providerMode == com.laterbox.app.data.preferences.MoviesProviderMode.OPEN_ARCHIVE_AND_TVMAZE
+        }
+        assertFalse(openArchiveState.useSampleFixturesOnly)
+    }
 }

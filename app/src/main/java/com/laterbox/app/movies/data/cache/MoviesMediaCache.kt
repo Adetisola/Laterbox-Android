@@ -48,14 +48,20 @@ object MoviesMediaCache {
         context: Context,
         headers: Map<String, String> = emptyMap()
     ): DataSource.Factory {
+        val customUserAgent = headers.entries
+            .firstOrNull { it.key.equals("User-Agent", ignoreCase = true) }
+            ?.value
+            ?.takeIf { it.isNotBlank() }
+            ?: "Mozilla/5.0 (Linux; Android 14; Laterbox) AppleWebKit/537.36"
         val httpFactory = DefaultHttpDataSource.Factory()
-            .setUserAgent("Mozilla/5.0 (Linux; Android 14; Laterbox) AppleWebKit/537.36")
+            .setUserAgent(customUserAgent)
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(15_000)
-            .setReadTimeoutMs(25_000)
+            .setReadTimeoutMs(30_000)
 
-        if (headers.isNotEmpty()) {
-            httpFactory.setDefaultRequestProperties(headers)
+        val extraHeaders = headers.filterKeys { !it.equals("User-Agent", ignoreCase = true) }
+        if (extraHeaders.isNotEmpty()) {
+            httpFactory.setDefaultRequestProperties(extraHeaders)
         }
 
         val upstreamFactory = DefaultDataSource.Factory(context.applicationContext, httpFactory)

@@ -245,7 +245,7 @@ private fun ActiveVideoPlayerContent(
     val latestSelectedSpeed by rememberUpdatedState(selectedSpeed)
     val latestIsLocked by rememberUpdatedState(isLocked)
 
-    val exoPlayer = remember(resolution.title) {
+    val exoPlayer = remember(resolution.title, selectedSource.headers) {
         val mediaSourceFactory = MoviesMediaCache.createMediaSourceFactory(context, selectedSource.headers)
         ExoPlayer.Builder(context)
             .setMediaSourceFactory(mediaSourceFactory)
@@ -281,6 +281,17 @@ private fun ActiveVideoPlayerContent(
         playerErrorText = null
         val itemBuilder = MediaItem.Builder()
             .setUri(Uri.parse(selectedSource.url))
+
+        val streamMimeType = when {
+            selectedSource.format.equals("DASH", ignoreCase = true) ||
+                selectedSource.url.contains(".mpd", ignoreCase = true) -> MimeTypes.APPLICATION_MPD
+            selectedSource.format.equals("HLS", ignoreCase = true) ||
+                selectedSource.url.contains(".m3u8", ignoreCase = true) -> MimeTypes.APPLICATION_M3U8
+            else -> null
+        }
+        if (streamMimeType != null) {
+            itemBuilder.setMimeType(streamMimeType)
+        }
 
         if (selectedSubtitle != null) {
             val mimeType = if (selectedSubtitle.format.equals("vtt", ignoreCase = true)) {
@@ -1061,7 +1072,7 @@ private fun ActiveVideoPlayerContent(
                     }
                     if (resolution.subtitles.isEmpty()) {
                         Text(
-                            text = "No subtitle tracks were published for this open-license stream.",
+                            text = "No subtitle tracks were returned for this stream.",
                             style = typography.metaText,
                             color = colors.textSecondary,
                             modifier = Modifier.padding(top = 6.dp)

@@ -2,6 +2,9 @@ package com.laterbox.app.movies.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.laterbox.app.BuildConfig
+import com.laterbox.app.data.preferences.MovieBoxEndpointConfig
+import com.laterbox.app.data.preferences.MoviesProviderMode
 import com.laterbox.app.data.preferences.UserPreferencesRepository
 import com.laterbox.app.movies.domain.model.CatalogueSort
 import com.laterbox.app.movies.domain.model.MediaKind
@@ -27,6 +30,10 @@ data class MoviesHomeUiState(
     val watchlist: List<MovieTitleSummary> = emptyList(),
     val continueWatching: List<WatchHistoryItem> = emptyList(),
     val errorMessage: String? = null,
+    val providerMode: MoviesProviderMode = MoviesProviderMode.MOVIEBOX,
+    val movieBoxApiBaseUrl: String = "",
+    val effectiveMovieBoxBaseUrl: String = BuildConfig.MOVIEBOX_API_BASE_URL,
+    val movieBoxApiKey: String = "",
     val useSampleFixturesOnly: Boolean = false,
     val tmdbApiKeyConfigured: Boolean = false,
     val currentTmdbApiKey: String = "",
@@ -58,6 +65,13 @@ data class MoviesHomeUiState(
         get() = isSearchFocused && (searchQuery.trim().length >= 2 || recentSearches.isNotEmpty())
 }
 
+private data class MoviesConfigSnapshot(
+    val providerMode: MoviesProviderMode,
+    val movieBoxBaseUrl: String,
+    val movieBoxApiKey: String,
+    val tmdbApiKey: String
+)
+
 class MoviesHomeViewModel(
     private val moviesRepository: MoviesRepository,
     private val userPreferencesRepository: UserPreferencesRepository
@@ -69,7 +83,7 @@ class MoviesHomeViewModel(
     private var loadJob: Job? = null
     private var filterJob: Job? = null
     private var suggestJob: Job? = null
-    private var lastConfigKey: Pair<Boolean, String>? = null
+    private var lastConfigKey: MoviesConfigSnapshot? = null
 
     init {
         viewModelScope.launch {
@@ -89,16 +103,28 @@ class MoviesHomeViewModel(
         }
         viewModelScope.launch {
             userPreferencesRepository.userPreferencesFlow
-                .map { it.moviesUseSampleFixturesOnly to it.tmdbApiKey }
+                .map { prefs ->
+                    MoviesConfigSnapshot(
+                        providerMode = prefs.moviesProviderMode,
+                        movieBoxBaseUrl = prefs.movieBoxApiBaseUrl,
+                        movieBoxApiKey = prefs.movieBoxApiKey,
+                        tmdbApiKey = prefs.tmdbApiKey
+                    )
+                }
                 .distinctUntilChanged()
                 .collect { config ->
                     val changed = lastConfigKey != null && lastConfigKey != config
                     lastConfigKey = config
+                    val effectiveBase = config.movieBoxBaseUrl.ifBlank { BuildConfig.MOVIEBOX_API_BASE_URL }
                     _uiState.update {
                         it.copy(
-                            useSampleFixturesOnly = config.first,
-                            tmdbApiKeyConfigured = config.second.isNotBlank(),
-                            currentTmdbApiKey = config.second
+                            providerMode = config.providerMode,
+                            movieBoxApiBaseUrl = config.movieBoxBaseUrl,
+                            effectiveMovieBoxBaseUrl = effectiveBase,
+                            movieBoxApiKey = config.movieBoxApiKey,
+                            useSampleFixturesOnly = config.providerMode == MoviesProviderMode.SAMPLE_FIXTURES,
+                            tmdbApiKeyConfigured = config.tmdbApiKey.isNotBlank(),
+                            currentTmdbApiKey = config.tmdbApiKey
                         )
                     }
                     if (changed || _uiState.value.feed == null) {
@@ -349,6 +375,19 @@ class MoviesHomeViewModel(
     fun toggleWatchlist(item: MovieTitleSummary) {
         viewModelScope.launch {
             moviesRepository.toggleWatchlist(item)
+        }
+    }
+
+    fun setProviderMode(mode: MoviesProviderMode) {
+        viewModelScope.launch {
+            userPreferencesRepository.setMoviesProviderMode(mode)
+        }
+    }
+
+    fun setMovieBoxConfig(baseUrl: String, apiKey: String) {
+        if (!MovieBoxEndpointConfig.isValidBaseUrl(baseUrl, BuildConfig.DEBUG)) return
+        viewModelScope.launch {
+            userPreferencesRepository.setMovieBoxConfig(baseUrl, apiKey)
         }
     }
 

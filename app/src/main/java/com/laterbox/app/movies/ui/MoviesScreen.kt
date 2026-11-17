@@ -54,6 +54,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.laterbox.app.data.preferences.MoviesProviderMode
 import com.laterbox.app.movies.domain.model.CatalogueSort
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
@@ -71,6 +72,8 @@ fun MoviesScreen(
     onToggleWatchlist: (MovieTitleSummary) -> Unit,
     onToggleSampleFixtures: (Boolean) -> Unit,
     onSaveTmdbApiKey: (String) -> Unit,
+    onSelectProviderMode: (MoviesProviderMode) -> Unit = {},
+    onSaveMovieBoxConfig: (baseUrl: String, apiKey: String) -> Unit = { _, _ -> },
     onSearchQueryChange: (String) -> Unit = {},
     onSearchFocusChange: (Boolean) -> Unit = {},
     onSubmitSearch: (String?) -> Unit = {},
@@ -100,7 +103,13 @@ fun MoviesScreen(
             onToggleSampleFixtures = onToggleSampleFixtures,
             onSaveTmdbKey = onSaveTmdbApiKey,
             onDismiss = { showSourcesDialog = false },
-            onOpenExternalUrl = onOpenExternalUrl
+            onOpenExternalUrl = onOpenExternalUrl,
+            providerMode = uiState.providerMode,
+            currentMovieBoxBaseUrl = uiState.movieBoxApiBaseUrl,
+            effectiveMovieBoxBaseUrl = uiState.effectiveMovieBoxBaseUrl,
+            currentMovieBoxApiKey = uiState.movieBoxApiKey,
+            onSelectProviderMode = onSelectProviderMode,
+            onSaveMovieBoxConfig = onSaveMovieBoxConfig
         )
     }
 
@@ -136,10 +145,10 @@ fun MoviesScreen(
                     color = colors.textPrimary
                 )
                 Text(
-                    text = if (uiState.useSampleFixturesOnly) {
-                        "Offline sample cinema mode"
-                    } else {
-                        "Open cinema & series discovery"
+                    text = when {
+                        uiState.useSampleFixturesOnly -> "Offline sample cinema mode"
+                        uiState.providerMode == MoviesProviderMode.MOVIEBOX -> "MovieBox catalogue & streaming"
+                        else -> "Open cinema & series discovery"
                     },
                     style = typography.metaText,
                     color = colors.textSecondary,
@@ -250,6 +259,7 @@ fun MoviesScreen(
                 Column(modifier = Modifier.padding(vertical = 6.dp)) {
                     if (uiState.suggestions.isNotEmpty()) {
                         uiState.suggestions.forEachIndexed { idx, suggestion ->
+                            val suggestionTagSuffix = suggestion.id.ifBlank { "idx_$idx" }
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -257,10 +267,14 @@ fun MoviesScreen(
                                         keyboardController?.hide()
                                         focusManager.clearFocus()
                                         onSearchFocusChange(false)
-                                        onOpenDetail(suggestion.providerId, suggestion.id)
+                                        if (suggestion.id.isNotBlank()) {
+                                            onOpenDetail(suggestion.providerId, suggestion.id)
+                                        } else {
+                                            onSubmitSearch(suggestion.title)
+                                        }
                                     }
                                     .padding(horizontal = 12.dp, vertical = 8.dp)
-                                    .testTag("movies_home_suggestion_${suggestion.id}"),
+                                    .testTag("movies_home_suggestion_$suggestionTagSuffix"),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
@@ -407,10 +421,16 @@ fun MoviesScreen(
                                     Text("Retry")
                                 }
                                 OutlinedButton(
+                                    onClick = { showSourcesDialog = true },
+                                    border = BorderStroke(1.dp, colors.borderSubtle)
+                                ) {
+                                    Text("Sources", color = colors.textPrimary)
+                                }
+                                OutlinedButton(
                                     onClick = { onToggleSampleFixtures(true) },
                                     border = BorderStroke(1.dp, colors.borderSubtle)
                                 ) {
-                                    Text("Sample Fixtures", color = colors.textPrimary)
+                                    Text("Fixtures", color = colors.textPrimary)
                                 }
                             }
                         }
@@ -763,8 +783,12 @@ fun MoviesScreen(
                             }
                         }
 
-                        // Dismissible Guided Free TMDB API Setup Card
-                        if (!uiState.tmdbApiKeyConfigured && !uiState.useSampleFixturesOnly && !uiState.tmdbPromptDismissed) {
+                        // Dismissible Guided Free TMDB API Setup Card (secondary Open Archive mode only)
+                        if (uiState.providerMode == MoviesProviderMode.OPEN_ARCHIVE_AND_TVMAZE &&
+                            !uiState.tmdbApiKeyConfigured &&
+                            !uiState.useSampleFixturesOnly &&
+                            !uiState.tmdbPromptDismissed
+                        ) {
                             item(key = "tmdb_setup_card") {
                                 Surface(
                                     shape = RoundedCornerShape(14.dp),
@@ -924,7 +948,7 @@ fun MoviesScreen(
                         // Attribution footer
                         item(key = "provider_footer") {
                             Text(
-                                text = feed.activeProviderNotice ?: "Powered by Internet Archive & TVMaze",
+                                text = feed.activeProviderNotice ?: "Powered by ${uiState.providerMode.label}",
                                 style = typography.caption,
                                 color = colors.textTertiary,
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)

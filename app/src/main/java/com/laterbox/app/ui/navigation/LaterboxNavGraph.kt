@@ -1006,6 +1006,8 @@ fun LaterboxApp(
                                 onToggleWatchlist = moviesHomeViewModel::toggleWatchlist,
                                 onToggleSampleFixtures = moviesHomeViewModel::setSampleFixturesOnly,
                                 onSaveTmdbApiKey = moviesHomeViewModel::setTmdbApiKey,
+                                onSelectProviderMode = moviesHomeViewModel::setProviderMode,
+                                onSaveMovieBoxConfig = moviesHomeViewModel::setMovieBoxConfig,
                                 onSearchQueryChange = moviesHomeViewModel::onSearchQueryChange,
                                 onSearchFocusChange = moviesHomeViewModel::setSearchFocused,
                                 onSubmitSearch = moviesHomeViewModel::submitInlineSearch,

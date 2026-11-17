@@ -19,8 +19,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -52,6 +54,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.laterbox.app.BuildConfig
+import com.laterbox.app.data.preferences.MovieBoxEndpointConfig
+import com.laterbox.app.data.preferences.MoviesProviderMode
 import com.laterbox.app.movies.domain.model.DataSourceBadge
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
@@ -560,11 +565,24 @@ fun MoviesProviderSourceDialog(
     onToggleSampleFixtures: (Boolean) -> Unit,
     onSaveTmdbKey: (String) -> Unit,
     onDismiss: () -> Unit,
-    onOpenExternalUrl: (String) -> Unit = {}
+    onOpenExternalUrl: (String) -> Unit = {},
+    providerMode: MoviesProviderMode = MoviesProviderMode.MOVIEBOX,
+    currentMovieBoxBaseUrl: String = "",
+    effectiveMovieBoxBaseUrl: String = "",
+    currentMovieBoxApiKey: String = "",
+    onSelectProviderMode: (MoviesProviderMode) -> Unit = {},
+    onSaveMovieBoxConfig: (baseUrl: String, apiKey: String) -> Unit = { _, _ -> }
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
+    var selectedMode by remember(providerMode) { mutableStateOf(providerMode) }
+    var movieBoxUrlInput by remember(currentMovieBoxBaseUrl) { mutableStateOf(currentMovieBoxBaseUrl) }
+    var movieBoxApiKeyInput by remember(currentMovieBoxApiKey) { mutableStateOf(currentMovieBoxApiKey) }
     var tmdbInput by remember(currentTmdbKey) { mutableStateOf(currentTmdbKey) }
+    val isUrlValid = MovieBoxEndpointConfig.isValidBaseUrl(
+        rawUrl = movieBoxUrlInput,
+        allowDebugCleartextLoopback = BuildConfig.DEBUG
+    )
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -577,15 +595,128 @@ fun MoviesProviderSourceDialog(
             )
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 Text(
-                    text = "Laterbox Movies connects exclusively to open, authorised providers:\n" +
-                        "• Internet Archive Cinema (open-license streams & captions)\n" +
-                        "• TVMaze Series Guide (metadata, cast & episodes)\n" +
-                        "• Optional TMDB API (free personal developer key)",
+                    text = "Choose your primary catalogue & playback provider:",
                     style = typography.bodySecondary,
                     color = colors.textSecondary
                 )
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(colors.surfaceSecondary)
+                        .padding(vertical = 4.dp)
+                ) {
+                    listOf(
+                        MoviesProviderMode.MOVIEBOX to "Hosted FastAPI catalogue, search, episodes & 1080p streams",
+                        MoviesProviderMode.OPEN_ARCHIVE_AND_TVMAZE to "Public domain Cinema + TVMaze guide + optional TMDB"
+                    ).forEach { (mode, desc) ->
+                        val isSelected = selectedMode == mode && !useSampleFixturesOnly
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    selectedMode = mode
+                                    onSelectProviderMode(mode)
+                                }
+                                .padding(horizontal = 10.dp, vertical = 8.dp)
+                                .testTag("provider_mode_${mode.wireValue}"),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            androidx.compose.material3.RadioButton(
+                                selected = isSelected,
+                                onClick = null
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = mode.label,
+                                    style = typography.uiLabel,
+                                    color = colors.textPrimary
+                                )
+                                Text(
+                                    text = desc,
+                                    style = typography.caption,
+                                    color = colors.textSecondary
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // MovieBox Server Configuration
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(colors.surfaceSecondary)
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "MovieBox API Server",
+                            style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
+                            color = colors.textPrimary
+                        )
+                        if (movieBoxUrlInput.isNotBlank()) {
+                            TextButton(
+                                onClick = { movieBoxUrlInput = "" },
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                            ) {
+                                Text("Reset Default", style = typography.caption, color = colors.accentPrimary)
+                            }
+                        }
+                    }
+                    OutlinedTextField(
+                        value = movieBoxUrlInput,
+                        onValueChange = { movieBoxUrlInput = it },
+                        label = { Text("Server Base URL") },
+                        placeholder = {
+                            Text(
+                                effectiveMovieBoxBaseUrl.ifBlank { "https://your-moviebox-api.example/" }
+                            )
+                        },
+                        isError = !isUrlValid,
+                        supportingText = {
+                            if (!isUrlValid) {
+                                Text(
+                                    text = if (BuildConfig.DEBUG) {
+                                        "Use https:// (or http://10.0.2.2 / localhost in debug)."
+                                    } else {
+                                        "Use an https:// MovieBox API URL."
+                                    },
+                                    color = colors.statusDanger
+                                )
+                            } else if (effectiveMovieBoxBaseUrl.isNotBlank() && movieBoxUrlInput.isBlank()) {
+                                Text("Active default: $effectiveMovieBoxBaseUrl")
+                            }
+                        },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("moviebox_base_url_input")
+                    )
+                    OutlinedTextField(
+                        value = movieBoxApiKeyInput,
+                        onValueChange = { movieBoxApiKeyInput = it },
+                        label = { Text("Optional MovieBox API Key") },
+                        placeholder = { Text("X-API-Key if protected") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("moviebox_api_key_input")
+                    )
+                }
 
                 Row(
                     modifier = Modifier
@@ -626,7 +757,7 @@ fun MoviesProviderSourceDialog(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
-                            text = "How to unlock trending TMDB cinema (Free):",
+                            text = "Optional TMDB Key (for Open Archive mode):",
                             style = typography.uiLabel.copy(fontSize = 12.sp, fontWeight = FontWeight.SemiBold),
                             color = colors.textPrimary
                         )
@@ -673,10 +804,13 @@ fun MoviesProviderSourceDialog(
         confirmButton = {
             Button(
                 onClick = {
+                    onSaveMovieBoxConfig(movieBoxUrlInput, movieBoxApiKeyInput)
                     onSaveTmdbKey(tmdbInput)
                     onDismiss()
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = colors.accentPrimary)
+                enabled = isUrlValid,
+                colors = ButtonDefaults.buttonColors(containerColor = colors.accentPrimary),
+                modifier = Modifier.testTag("sources_dialog_save_button")
             ) {
                 Text("Save")
             }
@@ -727,6 +861,10 @@ fun DownloadResolutionDialog(
                     )
                 } else {
                     authorisedSources.forEach { source ->
+                        val isAdaptive = source.format.equals("DASH", ignoreCase = true) ||
+                            source.format.equals("HLS", ignoreCase = true) ||
+                            source.url.contains(".mpd", ignoreCase = true) ||
+                            source.url.contains(".m3u8", ignoreCase = true)
                         Surface(
                             shape = RoundedCornerShape(12.dp),
                             color = colors.surfaceSecondary,
@@ -734,7 +872,7 @@ fun DownloadResolutionDialog(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
-                                .clickable(enabled = !isEnqueuing) {
+                                .clickable(enabled = !isEnqueuing && !isAdaptive) {
                                     onSelectSource(source)
                                     onDismiss()
                                 }
@@ -749,9 +887,10 @@ fun DownloadResolutionDialog(
                                     Text(
                                         text = "${source.qualityLabel} · ${source.format}",
                                         style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
-                                        color = colors.textPrimary
+                                        color = if (isAdaptive) colors.textSecondary else colors.textPrimary
                                     )
                                     val metaParts = buildList {
+                                        if (isAdaptive) add("Stream only (Adaptive manifest)")
                                         source.codec?.takeIf { it.isNotBlank() }?.let { add(it) }
                                         source.sizeMb?.takeIf { it > 0.0 }?.let { mb ->
                                             add(String.format(Locale.US, "%.0f MB", mb))
@@ -766,12 +905,14 @@ fun DownloadResolutionDialog(
                                         overflow = TextOverflow.Ellipsis
                                     )
                                 }
-                                Icon(
-                                    painter = painterResource(LaterboxIcons.Download),
-                                    contentDescription = "Download ${source.qualityLabel}",
-                                    tint = colors.accentPrimary,
-                                    modifier = Modifier.size(18.dp)
-                                )
+                                if (!isAdaptive) {
+                                    Icon(
+                                        painter = painterResource(LaterboxIcons.Download),
+                                        contentDescription = "Download ${source.qualityLabel}",
+                                        tint = colors.accentPrimary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
                         }
                     }

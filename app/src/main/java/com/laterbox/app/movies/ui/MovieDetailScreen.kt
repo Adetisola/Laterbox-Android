@@ -464,7 +464,11 @@ fun MovieDetailScreen(
                             val metaLines = buildList {
                                 details.directorOrCreator?.let { add("Director / Creator: $it") }
                                 details.networkOrStudio?.let { add("Studio / Network: $it") }
-                                summary.language?.let { add("Language: $it") }
+                                summary.country?.takeIf { it.isNotBlank() }?.let { add("Country: $it") }
+                                summary.language?.takeIf { it.isNotBlank() }?.let { add("Language: $it") }
+                                if (details.audioDubs.isNotEmpty()) {
+                                    add("Audio Dubs: ${details.audioDubs.joinToString { it.label }}")
+                                }
                                 if (details.availableSubtitles.isNotEmpty()) {
                                     add("Subtitles: ${details.availableSubtitles.joinToString { it.language }}")
                                 }
@@ -478,6 +482,23 @@ fun MovieDetailScreen(
                                             color = colors.textSecondary
                                         )
                                     }
+                                }
+                            }
+                            val trailerUrl = summary.trailerUrl
+                            if (!trailerUrl.isNullOrBlank()) {
+                                OutlinedButton(
+                                    onClick = { onOpenExternalUrl(trailerUrl) },
+                                    border = BorderStroke(0.75.dp, colors.borderSubtle),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Icon(
+                                        painter = painterResource(LaterboxIcons.Play),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(14.dp),
+                                        tint = colors.accentPrimary
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Watch Trailer", color = colors.textPrimary)
                                 }
                             }
 

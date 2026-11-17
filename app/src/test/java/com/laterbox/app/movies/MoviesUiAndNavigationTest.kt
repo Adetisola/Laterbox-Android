@@ -9,8 +9,10 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.unit.dp
+import com.laterbox.app.data.preferences.MoviesProviderMode
 import com.laterbox.app.movies.data.cache.MoviesMediaCache
 import com.laterbox.app.movies.domain.model.BrowseSection
 import com.laterbox.app.movies.domain.model.CastMember
@@ -320,6 +322,7 @@ class MoviesUiAndNavigationTest {
                 MoviesScreen(
                     uiState = MoviesHomeUiState(
                         isLoading = false,
+                        providerMode = MoviesProviderMode.OPEN_ARCHIVE_AND_TVMAZE,
                         tmdbApiKeyConfigured = false,
                         useSampleFixturesOnly = false,
                         tmdbPromptDismissed = false,
@@ -447,5 +450,91 @@ class MoviesUiAndNavigationTest {
         // Test Subtitles Dialog
         composeTestRule.onNodeWithTag("player_subtitles_button").performClick()
         composeTestRule.onNodeWithTag("player_subtitles_dialog").assertIsDisplayed()
+    }
+
+    @Test
+    fun moviesScreen_movieBoxModeHidesTmdbPromptAndOpensServerConfigDialog() {
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MoviesScreen(
+                    uiState = MoviesHomeUiState(
+                        isLoading = false,
+                        providerMode = MoviesProviderMode.MOVIEBOX,
+                        movieBoxApiBaseUrl = "https://movies.example.com/",
+                        effectiveMovieBoxBaseUrl = "https://movies.example.com/",
+                        tmdbApiKeyConfigured = false,
+                        tmdbPromptDismissed = false,
+                        feed = MoviesHomeFeed(
+                            featuredBanners = listOf(
+                                sampleMovie.copy(
+                                    id = "mb1",
+                                    providerId = "moviebox",
+                                    sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+                                )
+                            ),
+                            sections = listOf(
+                                BrowseSection("s1", "Trending", null, SectionStyle.RAIL, listOf(sampleMovie))
+                            ),
+                            genres = listOf("All", "Action")
+                        )
+                    ),
+                    onRefresh = {},
+                    onOpenCatalogue = { _, _ -> },
+                    onOpenDetail = { _, _ -> },
+                    onOpenPlayer = { _, _, _, _ -> },
+                    onToggleWatchlist = {},
+                    onToggleSampleFixtures = {},
+                    onSaveTmdbApiKey = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithText("MovieBox catalogue & streaming").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("movies_tmdb_setup_card").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("movies_sources_button").performClick()
+        composeTestRule.onNodeWithTag("provider_mode_moviebox").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("moviebox_base_url_input").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun moviesCatalogueScreen_emptySuggestionIdTriggersSubmitSearchInsteadOfDetail() {
+        var submittedQuery: String? = null
+        var openedDetailId: String? = null
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MoviesCatalogueScreen(
+                    uiState = MoviesCatalogueUiState(
+                        query = "incep",
+                        showSuggestionsDropdown = true,
+                        suggestions = listOf(
+                            SearchSuggestion(
+                                id = "",
+                                providerId = "moviebox",
+                                title = "Inception",
+                                kind = MediaKind.MOVIE,
+                                releaseYear = null
+                            )
+                        )
+                    ),
+                    onBackClick = {},
+                    onQueryChange = {},
+                    onSearchFocusChange = {},
+                    onSubmitSearch = { submittedQuery = it },
+                    onClearSearch = {},
+                    onSelectKind = {},
+                    onSelectGenre = {},
+                    onSelectSort = {},
+                    onLoadNextPage = {},
+                    onRetry = {},
+                    onClearSearchHistory = {},
+                    onOpenDetail = { _, id -> openedDetailId = id }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("suggestion_item_idx_0").assertIsDisplayed().performClick()
+        assertEquals("Inception", submittedQuery)
+        assertEquals(null, openedDetailId)
     }
 }

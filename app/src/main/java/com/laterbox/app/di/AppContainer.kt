@@ -228,11 +228,22 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
     private val moviesOkHttpClient: okhttp3.OkHttpClient by lazy {
         sharedOkHttpClient.newBuilder()
             .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
-            .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(35, java.util.concurrent.TimeUnit.SECONDS)
             .build()
     }
 
     override val moviesRepository: com.laterbox.app.movies.domain.repository.MoviesRepository by lazy {
+        val movieBoxProvider = com.laterbox.app.movies.data.provider.MovieBoxProvider(
+            okHttpClient = moviesOkHttpClient,
+            baseUrlProvider = {
+                userPreferencesRepository.userPreferencesFlow.first().movieBoxApiBaseUrl
+                    .ifBlank { com.laterbox.app.BuildConfig.MOVIEBOX_API_BASE_URL }
+            },
+            apiKeyProvider = {
+                userPreferencesRepository.userPreferencesFlow.first().movieBoxApiKey
+                    .ifBlank { com.laterbox.app.BuildConfig.MOVIEBOX_API_KEY }
+            }
+        )
         val iaProvider = com.laterbox.app.movies.data.provider.InternetArchiveMoviesProvider(moviesOkHttpClient)
         val tvMazeProvider = com.laterbox.app.movies.data.provider.TvMazeSeriesProvider(moviesOkHttpClient)
         val tmdbProvider = com.laterbox.app.movies.data.provider.TmdbOptionalMoviesProvider(
@@ -245,6 +256,10 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             tvMazeProvider = tvMazeProvider,
             tmdbProvider = tmdbProvider,
             fixtureProvider = com.laterbox.app.movies.data.fixtures.DevelopmentMoviesFixtureProvider(),
+            movieBoxProvider = movieBoxProvider,
+            providerModeProvider = {
+                userPreferencesRepository.userPreferencesFlow.first().moviesProviderMode
+            },
             useSampleFixturesOnlyProvider = {
                 userPreferencesRepository.userPreferencesFlow.first().moviesUseSampleFixturesOnly
             }

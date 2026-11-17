@@ -154,6 +154,99 @@ class MoviesRepositoryTest {
     }
 
     @Test
+    fun movieBoxMode_routesAllOperationsToMovieBox_andNeverSilentlyFallsBackToOpenArchive() = runTest {
+        var failMovieBox = false
+        val iaOrTvMazeHits = mutableListOf<String>()
+
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                if (path.startsWith("/advancedsearch.php") || path.startsWith("/shows") || path.startsWith("/schedule")) {
+                    iaOrTvMazeHits.add(path)
+                    return MockResponse().setResponseCode(200).setBody("""{"response":{"numFound":0,"docs":[]}}""")
+                }
+                if (failMovieBox) {
+                    return MockResponse().setResponseCode(502).setBody("""{"detail":"MovieBox upstream offline"}""")
+                }
+                return when {
+                    path == "/home" -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "code": 0,
+                          "data": {
+                            "operatingList": [
+                              {
+                                "type": "SUBJECTS_MOVIE",
+                                "title": "MovieBox Picks",
+                                "subjects": [
+                                  {
+                                    "subjectId": "777",
+                                    "subjectType": 1,
+                                    "title": "MovieBox Feature",
+                                    "releaseDate": "2024-05-01",
+                                    "imdbRatingValue": "8.4",
+                                    "cover": {"url": "https://cdn.example/mb.jpg"},
+                                    "detailPath": "moviebox-feature"
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/search?") -> MockResponse().setResponseCode(200).setBody(
+                        """{"query":"Feature","page":1,"results":[{"subject_id":"777","title":"MovieBox Feature","type":"Movie","subject_type":1}]}"""
+                    )
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val client = OkHttpClient()
+        val base = server.url("/").toString().trimEnd('/')
+        val mbProvider = com.laterbox.app.movies.data.provider.MovieBoxProvider(client, baseUrlProvider = { base })
+        val repo = MoviesRepositoryImpl(
+            moviesDao = db.moviesDao(),
+            internetArchiveProvider = InternetArchiveMoviesProvider(client, base),
+            tvMazeProvider = TvMazeSeriesProvider(client, base),
+            tmdbProvider = TmdbOptionalMoviesProvider(client, apiKeyProvider = { "" }, baseUrl = base),
+            movieBoxProvider = mbProvider,
+            providerModeProvider = { com.laterbox.app.data.preferences.MoviesProviderMode.MOVIEBOX },
+            useSampleFixturesOnlyProvider = { false },
+            nowMs = { fakeClockMs }
+        )
+
+        // When MovieBox fails initially with no cache, must return failure and NEVER silently call IA/TVMaze
+        failMovieBox = true
+        val initialErr = repo.getHomeFeed(forceRefresh = false)
+        assertTrue(initialErr.isFailure)
+        assertTrue("IA/TVMaze must not be hit in MovieBox mode: $iaOrTvMazeHits", iaOrTvMazeHits.isEmpty())
+
+        // Recover MovieBox: caches MovieBox response in Room
+        failMovieBox = false
+        val liveFeed = repo.getHomeFeed(forceRefresh = true).getOrThrow()
+        assertFalse(liveFeed.isOfflineCached)
+        assertEquals("777", liveFeed.featuredBanners.first().id)
+        assertEquals("moviebox", liveFeed.featuredBanners.first().providerId)
+        assertEquals(DataSourceBadge.LIVE_MOVIEBOX, liveFeed.featuredBanners.first().sourceBadge)
+
+        // Search routes strictly to MovieBox
+        val searchPage = repo.search("Feature").getOrThrow()
+        assertEquals(1, searchPage.items.size)
+        assertEquals("moviebox", searchPage.items.first().providerId)
+
+        // Break MovieBox after stale TTL -> returns MovieBox's own offline cache, still zero IA/TVMaze calls
+        failMovieBox = true
+        fakeClockMs += MoviesRepositoryImpl.CACHE_TTL_MS + 60_000L
+        val staleFeed = repo.getHomeFeed(forceRefresh = false).getOrThrow()
+        assertTrue(staleFeed.isOfflineCached)
+        assertEquals("moviebox", staleFeed.featuredBanners.first().providerId)
+        assertTrue(staleFeed.activeProviderNotice.orEmpty().contains("MovieBox"))
+        assertTrue(iaOrTvMazeHits.isEmpty())
+    }
+
+    @Test
     fun productionSourcesContainZeroUnauthorisedMovieBoxHostsOrSecrets() {
         val forbiddenTokens = listOf(
             "aoneroom.com",

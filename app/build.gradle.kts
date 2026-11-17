@@ -9,15 +9,21 @@ plugins {
     alias(libs.plugins.google.services)
 }
 
-fun resolveGeminiApiKey(project: Project): String {
-    (project.findProperty("GEMINI_API_KEY") as? String)?.takeIf { it.isNotBlank() }?.let { return it }
-    System.getenv("GEMINI_API_KEY")?.takeIf { it.isNotBlank() }?.let { return it }
+fun resolveProjectConfigValue(project: Project, keys: List<String>): String {
+    for (key in keys) {
+        (project.findProperty(key) as? String)?.trim()?.takeIf { it.isNotBlank() }?.let { return it }
+    }
+    for (key in keys) {
+        System.getenv(key)?.trim()?.takeIf { it.isNotBlank() }?.let { return it }
+    }
 
     val envFile = project.rootProject.file(".env")
     if (envFile.exists()) {
         for (rawLine in envFile.readLines()) {
             val line = rawLine.trim()
-            if (line.startsWith("GEMINI_API_KEY=")) {
+            if (line.isEmpty() || line.startsWith("#")) continue
+            val matchedKey = keys.firstOrNull { line.startsWith("$it=") }
+            if (matchedKey != null) {
                 val value = line.substringAfter("=").trim().removeSurrounding("\"").removeSurrounding("'")
                 if (value.isNotBlank()) return value
             }
@@ -28,12 +34,34 @@ fun resolveGeminiApiKey(project: Project): String {
     if (localPropFile.exists()) {
         val props = Properties()
         localPropFile.inputStream().use { props.load(it) }
-        val propKey = props.getProperty("GEMINI_API_KEY") ?: props.getProperty("gemini.api.key")
-        if (!propKey.isNullOrBlank()) return propKey.trim()
+        for (key in keys) {
+            val propVal = props.getProperty(key)
+            if (!propVal.isNullOrBlank()) return propVal.trim()
+        }
     }
 
     return ""
 }
+
+fun resolveGeminiApiKey(project: Project): String =
+    resolveProjectConfigValue(project, listOf("GEMINI_API_KEY", "gemini.api.key"))
+
+fun normalizeMovieBoxUrlForBuildConfig(rawUrl: String): String {
+    val trimmed = rawUrl.trim()
+    if (trimmed.isBlank()) return ""
+    return if (trimmed.endsWith("/")) trimmed else "$trimmed/"
+}
+
+fun resolveMovieBoxApiBaseUrl(project: Project): String =
+    normalizeMovieBoxUrlForBuildConfig(
+        resolveProjectConfigValue(project, listOf("MOVIEBOX_API_BASE_URL", "moviebox.api.baseUrl"))
+    )
+
+fun resolveMovieBoxApiKey(project: Project): String =
+    resolveProjectConfigValue(project, listOf("MOVIEBOX_API_KEY", "moviebox.api.key"))
+
+fun escapeBuildConfigString(value: String): String =
+    value.replace("\\", "\\\\").replace("\"", "\\\"")
 
 android {
     namespace = "com.laterbox.app"
@@ -47,7 +75,7 @@ android {
         versionName = System.getenv("VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "1.0.50"
 
         val embeddedKey = resolveGeminiApiKey(project)
-        buildConfigField("String", "EMBEDDED_GEMINI_API_KEY", "\"$embeddedKey\"")
+        buildConfigField("String", "EMBEDDED_GEMINI_API_KEY", "\"${escapeBuildConfigString(embeddedKey)}\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -80,11 +108,21 @@ android {
         }
     }
 
+    val configuredMovieBoxUrl = resolveMovieBoxApiBaseUrl(project)
+    val configuredMovieBoxKey = resolveMovieBoxApiKey(project)
+
     buildTypes {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             signingConfig = signingConfigs.getByName("release")
+            val releaseMovieBoxUrl = if (configuredMovieBoxUrl.startsWith("https://", ignoreCase = true)) {
+                configuredMovieBoxUrl
+            } else {
+                ""
+            }
+            buildConfigField("String", "MOVIEBOX_API_BASE_URL", "\"${escapeBuildConfigString(releaseMovieBoxUrl)}\"")
+            buildConfigField("String", "MOVIEBOX_API_KEY", "\"${escapeBuildConfigString(configuredMovieBoxKey)}\"")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -93,6 +131,9 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             isDebuggable = true
+            val debugMovieBoxUrl = configuredMovieBoxUrl.ifBlank { "http://10.0.2.2:8000/" }
+            buildConfigField("String", "MOVIEBOX_API_BASE_URL", "\"${escapeBuildConfigString(debugMovieBoxUrl)}\"")
+            buildConfigField("String", "MOVIEBOX_API_KEY", "\"${escapeBuildConfigString(configuredMovieBoxKey)}\"")
         }
     }
 
@@ -171,6 +212,8 @@ dependencies {
 
     // Media3 Playback
     implementation(libs.media3.exoplayer)
+    implementation(libs.media3.exoplayer.hls)
+    implementation(libs.media3.exoplayer.dash)
     implementation(libs.media3.ui)
     implementation(libs.media3.common)
 

@@ -29,6 +29,13 @@ class MoviesDownloadBridge(
         require(source.url.startsWith("http://") || source.url.startsWith("https://")) {
             "Invalid download stream URL."
         }
+        val isAdaptiveManifest = source.format.equals("DASH", ignoreCase = true) ||
+            source.format.equals("HLS", ignoreCase = true) ||
+            source.url.contains(".mpd", ignoreCase = true) ||
+            source.url.contains(".m3u8", ignoreCase = true)
+        require(!isAdaptiveManifest) {
+            "Adaptive DASH/HLS streams can only be streamed online. Choose a progressive MP4 source to download."
+        }
 
         val displayTitle = buildString {
             append(summary.title)
