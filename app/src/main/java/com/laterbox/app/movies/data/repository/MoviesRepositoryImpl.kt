@@ -1,6 +1,6 @@
 package com.laterbox.app.movies.data.repository
 
-import com.laterbox.app.data.preferences.MoviesProviderMode
+import com.laterbox.app.BuildConfig
 import com.laterbox.app.movies.data.fixtures.DevelopmentMoviesFixtureProvider
 import com.laterbox.app.movies.data.local.MoviesCacheJsonCodec
 import com.laterbox.app.movies.data.local.dao.MoviesDao
@@ -12,7 +12,7 @@ import com.laterbox.app.movies.data.provider.InternetArchiveMoviesProvider
 import com.laterbox.app.movies.data.provider.MovieBoxProvider
 import com.laterbox.app.movies.data.provider.TmdbOptionalMoviesProvider
 import com.laterbox.app.movies.data.provider.TvMazeSeriesProvider
-import com.laterbox.app.movies.domain.model.BrowseSection
+import com.laterbox.app.movies.data.resolver.MediaResolver
 import com.laterbox.app.movies.domain.model.CataloguePage
 import com.laterbox.app.movies.domain.model.CatalogueSort
 import com.laterbox.app.movies.domain.model.DataSourceBadge
@@ -22,6 +22,7 @@ import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.model.MoviesHomeFeed
 import com.laterbox.app.movies.domain.model.PlaybackResolution
+import com.laterbox.app.movies.domain.model.ProviderLinkRecord
 import com.laterbox.app.movies.domain.model.SearchSuggestion
 import com.laterbox.app.movies.domain.model.SeasonSummary
 import com.laterbox.app.movies.domain.model.SubtitleTrack
@@ -36,116 +37,140 @@ class MoviesRepositoryImpl(
     private val moviesDao: MoviesDao,
     private val internetArchiveProvider: InternetArchiveMoviesProvider,
     private val tvMazeProvider: TvMazeSeriesProvider,
+    @Suppress("UNUSED_PARAMETER")
     private val tmdbProvider: TmdbOptionalMoviesProvider,
     private val fixtureProvider: DevelopmentMoviesFixtureProvider = DevelopmentMoviesFixtureProvider(),
     private val movieBoxProvider: MovieBoxProvider? = null,
-    private val providerModeProvider: suspend () -> MoviesProviderMode = {
-        if (movieBoxProvider != null) MoviesProviderMode.MOVIEBOX else MoviesProviderMode.OPEN_ARCHIVE_AND_TVMAZE
-    },
     private val useSampleFixturesOnlyProvider: suspend () -> Boolean = { false },
-    private val nowMs: () -> Long = { System.currentTimeMillis() }
+    private val nowMs: () -> Long = { System.currentTimeMillis() },
+    private val mediaResolver: MediaResolver = MediaResolver(moviesDao, nowMs)
 ) : MoviesRepository {
 
-    private suspend fun resolveMode(): MoviesProviderMode =
-        if (useSampleFixturesOnlyProvider()) {
-            MoviesProviderMode.SAMPLE_FIXTURES
-        } else {
-            val mode = providerModeProvider()
-            if (mode == MoviesProviderMode.MOVIEBOX && movieBoxProvider == null) {
-                MoviesProviderMode.OPEN_ARCHIVE_AND_TVMAZE
-            } else {
-                mode
-            }
-        }
+    private suspend fun isDebugSampleFixturesEnabled(): Boolean =
+        BuildConfig.DEBUG && useSampleFixturesOnlyProvider()
 
     override suspend fun getHomeFeed(forceRefresh: Boolean): Result<MoviesHomeFeed> {
-        return when (resolveMode()) {
-            MoviesProviderMode.SAMPLE_FIXTURES -> fixtureProvider.getHomeFeed()
-            MoviesProviderMode.MOVIEBOX -> getMovieBoxHomeFeed(forceRefresh)
-            MoviesProviderMode.OPEN_ARCHIVE_AND_TVMAZE -> getOpenArchiveHomeFeed(forceRefresh)
+        if (isDebugSampleFixturesEnabled()) {
+            return fixtureProvider.getHomeFeed()
         }
-    }
 
-    private suspend fun getMovieBoxHomeFeed(forceRefresh: Boolean): Result<MoviesHomeFeed> {
-        val mb = movieBoxProvider ?: return Result.failure(
-            IllegalStateException("MovieBox provider is not configured.")
-        )
+        mediaResolver.backfillWatchlistAndHistoryIfNeeded()
+
         val currentMs = nowMs()
-        val cacheKey = buildMovieBoxHomeCacheKey(mb.activeBaseUrl())
-        val cachedEntry = moviesDao.getCacheEntry(cacheKey)
-        if (!forceRefresh && cachedEntry != null && cachedEntry.expiresAt > currentMs) {
-            MoviesCacheJsonCodec.decodeHomeFeed(cachedEntry.payloadJson, isOfflineCached = false)
-                ?.let { return Result.success(it) }
-        }
+        val mb = movieBoxProvider
+        val mbCacheKey = mb?.let { buildMovieBoxHomeCacheKey(it.activeBaseUrl()) }
+        val mbCachedEntry = mbCacheKey?.let { moviesDao.getCacheEntry(it) }
 
-        return mb.getHomeFeed().fold(
-            onSuccess = { feed ->
+        if (mb != null && mbCacheKey != null) {
+            if (!forceRefresh && mbCachedEntry != null && mbCachedEntry.expiresAt > currentMs) {
+                MoviesCacheJsonCodec.decodeHomeFeed(mbCachedEntry.payloadJson, isOfflineCached = false)
+                    ?.let { return Result.success(registerFeedCanonical(it)) }
+            }
+
+            val mbResult = mb.getHomeFeed()
+            if (mbResult.isSuccess) {
+                val enrichedFeed = registerFeedCanonical(mbResult.getOrThrow())
                 moviesDao.upsertCacheEntry(
                     MovieCacheEntryEntity(
-                        cacheKey = cacheKey,
+                        cacheKey = mbCacheKey,
                         providerId = MovieBoxProvider.PROVIDER_ID,
-                        payloadJson = MoviesCacheJsonCodec.encodeHomeFeed(feed),
+                        payloadJson = MoviesCacheJsonCodec.encodeHomeFeed(enrichedFeed),
                         updatedAt = currentMs,
                         expiresAt = currentMs + CACHE_TTL_MS
                     )
                 )
                 moviesDao.pruneExpiredCache(currentMs - STALE_RETENTION_MS)
-                Result.success(feed)
-            },
-            onFailure = { error ->
-                // Only fall back to MovieBox's own stale cache; never silently substitute IA or TVMaze.
-                if (cachedEntry != null) {
-                    MoviesCacheJsonCodec.decodeHomeFeed(cachedEntry.payloadJson, isOfflineCached = true)
-                        ?.let { cachedFeed ->
-                            return Result.success(
-                                cachedFeed.copy(
-                                    activeProviderNotice = "Offline cache: showing previously loaded MovieBox feed"
-                                )
-                            )
-                        }
-                }
-                Result.failure(error)
+                return Result.success(enrichedFeed)
             }
-        )
+
+            // MovieBox failed live: attempt live Internet Archive + TVMaze fallback before stale cache.
+            val fallbackFeedResult = getOpenArchiveHomeFeed(
+                forceRefresh = true,
+                fallbackNotice = MOVIEBOX_FALLBACK_NOTICE
+            )
+            if (fallbackFeedResult.isSuccess) {
+                return fallbackFeedResult
+            }
+
+            // All live providers failed: fall back to stale cache (prefer MovieBox cache first).
+            if (mbCachedEntry != null) {
+                MoviesCacheJsonCodec.decodeHomeFeed(mbCachedEntry.payloadJson, isOfflineCached = true)
+                    ?.let { cachedFeed ->
+                        return Result.success(
+                            cachedFeed.copy(
+                                activeProviderNotice = "Offline cache: showing previously loaded MovieBox feed"
+                            )
+                        )
+                    }
+            }
+            val openCacheKey = buildHomeCacheKey()
+            moviesDao.getCacheEntry(openCacheKey)?.let { openCached ->
+                MoviesCacheJsonCodec.decodeHomeFeed(openCached.payloadJson, isOfflineCached = true)
+                    ?.let { cachedFeed ->
+                        return Result.success(
+                            cachedFeed.copy(
+                                activeProviderNotice = "Offline cache: showing previously loaded discovery feed"
+                            )
+                        )
+                    }
+            }
+            return Result.failure(
+                mbResult.exceptionOrNull()
+                    ?: fallbackFeedResult.exceptionOrNull()
+                    ?: IllegalStateException("Unable to load Movies & TV catalogue")
+            )
+        }
+
+        return getOpenArchiveHomeFeed(forceRefresh = forceRefresh, fallbackNotice = null)
     }
 
-    private suspend fun getOpenArchiveHomeFeed(forceRefresh: Boolean): Result<MoviesHomeFeed> {
+    private suspend fun getOpenArchiveHomeFeed(
+        forceRefresh: Boolean,
+        fallbackNotice: String?
+    ): Result<MoviesHomeFeed> {
         val currentMs = nowMs()
         val cacheKey = buildHomeCacheKey()
         val cachedEntry = moviesDao.getCacheEntry(cacheKey)
         if (!forceRefresh && cachedEntry != null && cachedEntry.expiresAt > currentMs) {
             MoviesCacheJsonCodec.decodeHomeFeed(cachedEntry.payloadJson, isOfflineCached = false)
-                ?.let { return Result.success(it) }
+                ?.let { feed ->
+                    return Result.success(
+                        registerFeedCanonical(
+                            if (fallbackNotice != null && feed.activeProviderNotice == null) {
+                                feed.copy(activeProviderNotice = fallbackNotice)
+                            } else {
+                                feed
+                            }
+                        )
+                    )
+                }
         }
 
         return coroutineScope {
-            val tmdbActive = tmdbProvider.isConfigured()
             val iaDeferred = async { internetArchiveProvider.getHomeFeed() }
             val tvMazeDeferred = async { tvMazeProvider.getHomeFeed() }
-            val tmdbDeferred = if (tmdbActive) async { tmdbProvider.getHomeFeed() } else null
 
             val iaResult = iaDeferred.await()
             val tvMazeResult = tvMazeDeferred.await()
-            val tmdbResult = tmdbDeferred?.await()
 
             val iaFeed = iaResult.getOrNull()
             val tvFeed = tvMazeResult.getOrNull()
-            val tmdbFeed = tmdbResult?.getOrNull()
 
-            if (iaFeed == null && tvFeed == null && tmdbFeed == null) {
-                if (cachedEntry != null) {
-                    MoviesCacheJsonCodec.decodeHomeFeed(cachedEntry.payloadJson, isOfflineCached = true)
-                        ?.let { cachedFeed ->
-                            return@coroutineScope Result.success(
-                                cachedFeed.copy(
-                                    activeProviderNotice = "Offline cache: showing previously loaded discovery feed"
+            if (iaFeed == null && tvFeed == null) {
+                if (!forceRefresh || fallbackNotice == null) {
+                    if (cachedEntry != null) {
+                        MoviesCacheJsonCodec.decodeHomeFeed(cachedEntry.payloadJson, isOfflineCached = true)
+                            ?.let { cachedFeed ->
+                                return@coroutineScope Result.success(
+                                    cachedFeed.copy(
+                                        activeProviderNotice = "Offline cache: showing previously loaded discovery feed"
+                                    )
                                 )
-                            )
-                        }
+                            }
+                    }
                 }
                 val firstError = iaResult.exceptionOrNull()
                     ?: tvMazeResult.exceptionOrNull()
-                    ?: tmdbResult?.exceptionOrNull()
                     ?: IllegalStateException("Unable to load Movies & TV catalogue")
                 return@coroutineScope Result.failure(firstError)
             }
@@ -153,15 +178,13 @@ class MoviesRepositoryImpl(
             val mergedBanners = interleaveLists(
                 listOfNotNull(
                     iaFeed?.featuredBanners,
-                    tvFeed?.featuredBanners,
-                    tmdbFeed?.featuredBanners
+                    tvFeed?.featuredBanners
                 )
             ).distinctBy { it.compositeId }.take(6)
 
             val mergedSections = buildList {
                 iaFeed?.sections?.let { addAll(it) }
                 tvFeed?.sections?.let { addAll(it) }
-                tmdbFeed?.sections?.let { addAll(it) }
             }
 
             val mergedGenres = buildList {
@@ -169,24 +192,19 @@ class MoviesRepositoryImpl(
                 val rawGenres = buildList {
                     iaFeed?.genres?.let { addAll(it) }
                     tvFeed?.genres?.let { addAll(it) }
-                    tmdbFeed?.genres?.let { addAll(it) }
                 }.filterNot { it.equals("All", ignoreCase = true) }
                 addAll(rawGenres.distinct())
             }
 
-            val activeSources = buildList {
-                if (iaFeed != null) add("Internet Archive Cinema")
-                if (tvFeed != null) add("TVMaze Series")
-                if (tmdbFeed != null) add("TMDB")
-            }
-
-            val mergedFeed = MoviesHomeFeed(
-                featuredBanners = mergedBanners,
-                sections = mergedSections,
-                genres = mergedGenres,
-                activeProviderNotice = null,
-                isOfflineCached = false,
-                containsSampleFixtures = false
+            val mergedFeed = registerFeedCanonical(
+                MoviesHomeFeed(
+                    featuredBanners = mergedBanners,
+                    sections = mergedSections,
+                    genres = mergedGenres,
+                    activeProviderNotice = fallbackNotice,
+                    isOfflineCached = false,
+                    containsSampleFixtures = false
+                )
             )
 
             moviesDao.upsertCacheEntry(
@@ -213,57 +231,55 @@ class MoviesRepositoryImpl(
         country: String?,
         year: String?
     ): Result<CataloguePage> {
-        return when (resolveMode()) {
-            MoviesProviderMode.SAMPLE_FIXTURES -> {
-                when (kind) {
-                    MediaKind.MOVIE, MediaKind.TV_SERIES ->
-                        fixtureProvider.getCatalogue(kind, page, pageSize, genre, sort, country, year)
-                    null -> coroutineScope {
-                        val m = async { fixtureProvider.getCatalogue(MediaKind.MOVIE, page, pageSize, genre, sort, country, year) }.await()
-                        val t = async { fixtureProvider.getCatalogue(MediaKind.TV_SERIES, page, pageSize, genre, sort, country, year) }.await()
-                        val combined = interleaveLists(
-                            listOf(m.getOrNull()?.items.orEmpty(), t.getOrNull()?.items.orEmpty())
-                        ).distinctBy { it.compositeId }
-                        Result.success(
-                            CataloguePage(
-                                items = combined,
-                                page = page,
-                                pageSize = pageSize,
-                                totalCount = combined.size,
-                                hasMore = false
-                            )
+        if (isDebugSampleFixturesEnabled()) {
+            return when (kind) {
+                MediaKind.MOVIE, MediaKind.TV_SERIES ->
+                    fixtureProvider.getCatalogue(kind, page, pageSize, genre, sort, country, year)
+                null -> coroutineScope {
+                    val m = async { fixtureProvider.getCatalogue(MediaKind.MOVIE, page, pageSize, genre, sort, country, year) }.await()
+                    val t = async { fixtureProvider.getCatalogue(MediaKind.TV_SERIES, page, pageSize, genre, sort, country, year) }.await()
+                    val combined = interleaveLists(
+                        listOf(m.getOrNull()?.items.orEmpty(), t.getOrNull()?.items.orEmpty())
+                    ).distinctBy { it.compositeId }
+                    Result.success(
+                        CataloguePage(
+                            items = combined,
+                            page = page,
+                            pageSize = pageSize,
+                            totalCount = combined.size,
+                            hasMore = false
                         )
-                    }
+                    )
                 }
             }
+        }
 
-            MoviesProviderMode.MOVIEBOX -> {
-                val mb = movieBoxProvider ?: return Result.failure(
-                    IllegalStateException("MovieBox provider is not configured.")
-                )
-                val effectiveGenre = genre?.takeUnless { it.equals("All", ignoreCase = true) }
-                val effectiveCountry = country?.takeUnless { it.equals("All", ignoreCase = true) }
-                val effectiveYear = year?.takeUnless { it.equals("All", ignoreCase = true) }
-                when (kind) {
-                    MediaKind.MOVIE, MediaKind.TV_SERIES ->
-                        mb.getCatalogue(kind, page, pageSize, effectiveGenre, sort, effectiveCountry, effectiveYear)
-                    null -> coroutineScope {
-                        val halfSize = (pageSize / 2).coerceAtLeast(10)
-                        val moviesDef = async {
-                            mb.getCatalogue(MediaKind.MOVIE, page, halfSize, effectiveGenre, sort, effectiveCountry, effectiveYear)
-                        }
-                        val seriesDef = async {
-                            mb.getCatalogue(MediaKind.TV_SERIES, page, halfSize, effectiveGenre, sort, effectiveCountry, effectiveYear)
-                        }
-                        val moviesRes = moviesDef.await()
-                        val seriesRes = seriesDef.await()
-                        val pages = listOfNotNull(moviesRes.getOrNull(), seriesRes.getOrNull())
-                        if (pages.isEmpty()) {
-                            val err = moviesRes.exceptionOrNull()
-                                ?: seriesRes.exceptionOrNull()
-                                ?: IllegalStateException("MovieBox catalogue request failed.")
-                            return@coroutineScope Result.failure(err)
-                        }
+        val effectiveGenre = genre?.takeUnless { it.equals("All", ignoreCase = true) }
+        val effectiveCountry = country?.takeUnless { it.equals("All", ignoreCase = true) }
+        val effectiveYear = year?.takeUnless { it.equals("All", ignoreCase = true) }
+
+        val mb = movieBoxProvider
+        if (mb != null) {
+            val mbResult = when (kind) {
+                MediaKind.MOVIE, MediaKind.TV_SERIES ->
+                    mb.getCatalogue(kind, page, pageSize, effectiveGenre, sort, effectiveCountry, effectiveYear)
+                null -> coroutineScope {
+                    val halfSize = (pageSize / 2).coerceAtLeast(10)
+                    val moviesDef = async {
+                        mb.getCatalogue(MediaKind.MOVIE, page, halfSize, effectiveGenre, sort, effectiveCountry, effectiveYear)
+                    }
+                    val seriesDef = async {
+                        mb.getCatalogue(MediaKind.TV_SERIES, page, halfSize, effectiveGenre, sort, effectiveCountry, effectiveYear)
+                    }
+                    val moviesRes = moviesDef.await()
+                    val seriesRes = seriesDef.await()
+                    val pages = listOfNotNull(moviesRes.getOrNull(), seriesRes.getOrNull())
+                    if (pages.isEmpty()) {
+                        val err = moviesRes.exceptionOrNull()
+                            ?: seriesRes.exceptionOrNull()
+                            ?: IllegalStateException("MovieBox catalogue request failed.")
+                        Result.failure(err)
+                    } else {
                         val combined = interleaveLists(pages.map { it.items }).distinctBy { it.compositeId }
                         Result.success(
                             CataloguePage(
@@ -277,78 +293,63 @@ class MoviesRepositoryImpl(
                     }
                 }
             }
-
-            MoviesProviderMode.OPEN_ARCHIVE_AND_TVMAZE -> {
-                val effectiveGenre = genre?.takeUnless { it.equals("All", ignoreCase = true) }
-                val effectiveCountry = country?.takeUnless { it.equals("All", ignoreCase = true) }
-                val effectiveYear = year?.takeUnless { it.equals("All", ignoreCase = true) }
-                coroutineScope {
-                    val tmdbActive = tmdbProvider.isConfigured()
-                    val queryMovies = kind == null || kind == MediaKind.MOVIE
-                    val querySeries = kind == null || kind == MediaKind.TV_SERIES
-                    val perProviderSize = if (kind == null) (pageSize / 2).coerceAtLeast(8) else pageSize
-
-                    val iaDeferred = if (queryMovies) {
-                        async { internetArchiveProvider.getCatalogue(MediaKind.MOVIE, page, perProviderSize, effectiveGenre, sort, effectiveCountry, effectiveYear) }
-                    } else null
-                    val tvDeferred = if (querySeries) {
-                        async { tvMazeProvider.getCatalogue(MediaKind.TV_SERIES, page, perProviderSize, effectiveGenre, sort, effectiveCountry, effectiveYear) }
-                    } else null
-                    val tmdbMovieDeferred = if (queryMovies && tmdbActive) {
-                        async { tmdbProvider.getCatalogue(MediaKind.MOVIE, page, perProviderSize, effectiveGenre, sort, effectiveCountry, effectiveYear) }
-                    } else null
-                    val tmdbTvDeferred = if (querySeries && tmdbActive) {
-                        async { tmdbProvider.getCatalogue(MediaKind.TV_SERIES, page, perProviderSize, effectiveGenre, sort, effectiveCountry, effectiveYear) }
-                    } else null
-
-                    val results = listOfNotNull(
-                        iaDeferred?.await(),
-                        tvDeferred?.await(),
-                        tmdbMovieDeferred?.await(),
-                        tmdbTvDeferred?.await()
-                    )
-                    val pages = results.mapNotNull { it.getOrNull() }
-                    if (pages.isEmpty()) {
-                        val err = results.firstNotNullOfOrNull { it.exceptionOrNull() }
-                            ?: IllegalStateException("Catalogue request failed")
-                        return@coroutineScope Result.failure(err)
-                    }
-
-                    val items = interleaveLists(pages.map { it.items }).distinctBy { it.compositeId }
-                    val hasMore = pages.any { it.hasMore }
-                    val total = pages.sumOf { it.totalCount ?: it.items.size }
-                    Result.success(
-                        CataloguePage(
-                            items = items,
-                            page = page,
-                            pageSize = pageSize,
-                            totalCount = total,
-                            hasMore = hasMore
-                        )
-                    )
-                }
+            if (mbResult.isSuccess) {
+                val pageData = mbResult.getOrThrow()
+                return Result.success(pageData.copy(items = registerSummariesCanonical(pageData.items)))
             }
+        }
+
+        // Secondary fallback to Internet Archive + TVMaze
+        return coroutineScope {
+            val queryMovies = kind == null || kind == MediaKind.MOVIE
+            val querySeries = kind == null || kind == MediaKind.TV_SERIES
+            val perProviderSize = if (kind == null) (pageSize / 2).coerceAtLeast(8) else pageSize
+
+            val iaDeferred = if (queryMovies) {
+                async { internetArchiveProvider.getCatalogue(MediaKind.MOVIE, page, perProviderSize, effectiveGenre, sort, effectiveCountry, effectiveYear) }
+            } else null
+            val tvDeferred = if (querySeries) {
+                async { tvMazeProvider.getCatalogue(MediaKind.TV_SERIES, page, perProviderSize, effectiveGenre, sort, effectiveCountry, effectiveYear) }
+            } else null
+
+            val results = listOfNotNull(iaDeferred?.await(), tvDeferred?.await())
+            val pages = results.mapNotNull { it.getOrNull() }
+            if (pages.isEmpty()) {
+                val err = results.firstNotNullOfOrNull { it.exceptionOrNull() }
+                    ?: IllegalStateException("Catalogue request failed")
+                return@coroutineScope Result.failure(err)
+            }
+
+            val items = registerSummariesCanonical(
+                interleaveLists(pages.map { it.items }).distinctBy { it.compositeId }
+            )
+            Result.success(
+                CataloguePage(
+                    items = items,
+                    page = page,
+                    pageSize = pageSize,
+                    totalCount = pages.sumOf { it.totalCount ?: it.items.size },
+                    hasMore = pages.any { it.hasMore }
+                )
+            )
         }
     }
 
     override suspend fun getGenres(): Result<List<String>> {
-        return when (resolveMode()) {
-            MoviesProviderMode.SAMPLE_FIXTURES -> fixtureProvider.getGenres()
-            MoviesProviderMode.MOVIEBOX -> {
-                movieBoxProvider?.getGenres()
-                    ?: Result.failure(IllegalStateException("MovieBox provider is not configured."))
-            }
-            MoviesProviderMode.OPEN_ARCHIVE_AND_TVMAZE -> {
-                val iaGenres = internetArchiveProvider.getGenres().getOrDefault(emptyList())
-                val tvGenres = tvMazeProvider.getGenres().getOrDefault(emptyList())
-                val tmdbGenres = if (tmdbProvider.isConfigured()) tmdbProvider.getGenres().getOrDefault(emptyList()) else emptyList()
-                val combined = buildList {
-                    add("All")
-                    addAll((iaGenres + tvGenres + tmdbGenres).filterNot { it.equals("All", ignoreCase = true) }.distinct())
-                }
-                Result.success(combined)
-            }
+        if (isDebugSampleFixturesEnabled()) {
+            return fixtureProvider.getGenres()
         }
+        val mbResult = movieBoxProvider?.getGenres()
+        if (mbResult != null && mbResult.isSuccess) {
+            return mbResult
+        }
+        val iaGenres = internetArchiveProvider.getGenres().getOrDefault(emptyList())
+        val tvGenres = tvMazeProvider.getGenres().getOrDefault(emptyList())
+        val combined = buildList {
+            add("All")
+            addAll((iaGenres + tvGenres).filterNot { it.equals("All", ignoreCase = true) }.distinct())
+        }
+        return Result.success(combined)
     }
 
     override suspend fun search(
@@ -361,100 +362,150 @@ class MoviesRepositoryImpl(
         if (clean.isBlank()) {
             return Result.success(CataloguePage(emptyList(), page, pageSize, 0, false))
         }
-        return when (resolveMode()) {
-            MoviesProviderMode.SAMPLE_FIXTURES -> fixtureProvider.search(clean, kind, page, pageSize)
-            MoviesProviderMode.MOVIEBOX -> {
-                val mb = movieBoxProvider ?: return Result.failure(
-                    IllegalStateException("MovieBox provider is not configured.")
-                )
-                mb.search(clean, kind, page, pageSize)
+        if (isDebugSampleFixturesEnabled()) {
+            return fixtureProvider.search(clean, kind, page, pageSize)
+        }
+
+        val mbResult = movieBoxProvider?.search(clean, kind, page, pageSize)
+        if (mbResult != null && mbResult.isSuccess) {
+            val pageData = mbResult.getOrThrow()
+            return Result.success(pageData.copy(items = registerSummariesCanonical(pageData.items)))
+        }
+
+        return coroutineScope {
+            val queryMovies = kind == null || kind == MediaKind.MOVIE
+            val querySeries = kind == null || kind == MediaKind.TV_SERIES
+            val perProviderSize = if (kind == null) (pageSize / 2).coerceAtLeast(8) else pageSize
+
+            val iaDeferred = if (queryMovies) {
+                async { internetArchiveProvider.search(clean, MediaKind.MOVIE, page, perProviderSize) }
+            } else null
+            val tvDeferred = if (querySeries) {
+                async { tvMazeProvider.search(clean, MediaKind.TV_SERIES, page, perProviderSize) }
+            } else null
+
+            val results = listOfNotNull(iaDeferred?.await(), tvDeferred?.await())
+            val pages = results.mapNotNull { it.getOrNull() }
+            if (pages.isEmpty()) {
+                val err = results.firstNotNullOfOrNull { it.exceptionOrNull() }
+                    ?: IllegalStateException("Search failed")
+                return@coroutineScope Result.failure(err)
             }
-            MoviesProviderMode.OPEN_ARCHIVE_AND_TVMAZE -> coroutineScope {
-                val tmdbActive = tmdbProvider.isConfigured()
-                val queryMovies = kind == null || kind == MediaKind.MOVIE
-                val querySeries = kind == null || kind == MediaKind.TV_SERIES
-                val perProviderSize = if (kind == null) (pageSize / 2).coerceAtLeast(8) else pageSize
 
-                val iaDeferred = if (queryMovies) {
-                    async { internetArchiveProvider.search(clean, MediaKind.MOVIE, page, perProviderSize) }
-                } else null
-                val tvDeferred = if (querySeries) {
-                    async { tvMazeProvider.search(clean, MediaKind.TV_SERIES, page, perProviderSize) }
-                } else null
-                val tmdbDeferred = if (tmdbActive) {
-                    async { tmdbProvider.search(clean, kind, page, perProviderSize) }
-                } else null
-
-                val results = listOfNotNull(
-                    iaDeferred?.await(),
-                    tvDeferred?.await(),
-                    tmdbDeferred?.await()
+            val items = registerSummariesCanonical(
+                interleaveLists(pages.map { it.items }).distinctBy { it.compositeId }
+            )
+            Result.success(
+                CataloguePage(
+                    items = items,
+                    page = page,
+                    pageSize = pageSize,
+                    totalCount = pages.sumOf { it.totalCount ?: it.items.size },
+                    hasMore = pages.any { it.hasMore }
                 )
-                val pages = results.mapNotNull { it.getOrNull() }
-                if (pages.isEmpty()) {
-                    val err = results.firstNotNullOfOrNull { it.exceptionOrNull() }
-                        ?: IllegalStateException("Search failed")
-                    return@coroutineScope Result.failure(err)
-                }
-
-                val items = interleaveLists(pages.map { it.items }).distinctBy { it.compositeId }
-                Result.success(
-                    CataloguePage(
-                        items = items,
-                        page = page,
-                        pageSize = pageSize,
-                        totalCount = pages.sumOf { it.totalCount ?: it.items.size },
-                        hasMore = pages.any { it.hasMore }
-                    )
-                )
-            }
+            )
         }
     }
 
     override suspend fun getSuggestions(query: String, limit: Int): Result<List<SearchSuggestion>> {
         val clean = query.trim()
         if (clean.length < 2) return Result.success(emptyList())
-        return when (resolveMode()) {
-            MoviesProviderMode.SAMPLE_FIXTURES -> fixtureProvider.getSuggestions(clean, limit)
-            MoviesProviderMode.MOVIEBOX -> {
-                val mb = movieBoxProvider ?: return Result.failure(
-                    IllegalStateException("MovieBox provider is not configured.")
-                )
-                mb.getSuggestions(clean, limit)
-            }
-            MoviesProviderMode.OPEN_ARCHIVE_AND_TVMAZE -> coroutineScope {
-                val iaDeferred = async { internetArchiveProvider.getSuggestions(clean, limit) }
-                val tvDeferred = async { tvMazeProvider.getSuggestions(clean, limit) }
-                val tmdbDeferred = if (tmdbProvider.isConfigured()) {
-                    async { tmdbProvider.getSuggestions(clean, limit) }
-                } else null
+        if (isDebugSampleFixturesEnabled()) {
+            return fixtureProvider.getSuggestions(clean, limit)
+        }
 
-                val results = listOfNotNull(iaDeferred.await(), tvDeferred.await(), tmdbDeferred?.await())
-                val lists = results.mapNotNull { it.getOrNull() }
-                if (lists.isEmpty()) {
-                    return@coroutineScope Result.failure(
-                        results.firstNotNullOfOrNull { it.exceptionOrNull() } ?: IllegalStateException("Suggestions failed")
-                    )
-                }
-                val merged = interleaveLists(lists).distinctBy { "${it.providerId}:${it.id}" }.take(limit)
-                Result.success(merged)
+        val mbResult = movieBoxProvider?.getSuggestions(clean, limit)
+        if (mbResult != null && mbResult.isSuccess) {
+            return mbResult
+        }
+
+        return coroutineScope {
+            val iaDeferred = async { internetArchiveProvider.getSuggestions(clean, limit) }
+            val tvDeferred = async { tvMazeProvider.getSuggestions(clean, limit) }
+
+            val results = listOf(iaDeferred.await(), tvDeferred.await())
+            val lists = results.mapNotNull { it.getOrNull() }
+            if (lists.isEmpty()) {
+                return@coroutineScope Result.failure(
+                    results.firstNotNullOfOrNull { it.exceptionOrNull() } ?: IllegalStateException("Suggestions failed")
+                )
             }
+            val merged = interleaveLists(lists).distinctBy { "${it.providerId}:${it.id}" }.take(limit)
+            Result.success(merged)
         }
     }
 
     override suspend fun getDetails(providerId: String, titleId: String, forceRefresh: Boolean): Result<MediaDetails> {
-        if (providerId == DevelopmentMoviesFixtureProvider.PROVIDER_ID) {
-            return fixtureProvider.getDetails(titleId)
+        val (resolvedProviderId, resolvedTitleId) = mediaResolver.resolveConcreteTarget(
+            providerId = providerId,
+            titleId = titleId,
+            preferPlayable = false
+        )
+        if (resolvedProviderId == DevelopmentMoviesFixtureProvider.PROVIDER_ID) {
+            return fixtureProvider.getDetails(resolvedTitleId)
         }
 
         val currentMs = nowMs()
-        val cacheKey = "details:$providerId:$titleId"
+        val cacheKey = "details:$resolvedProviderId:$resolvedTitleId"
         val cachedEntry = moviesDao.getCacheEntry(cacheKey)
         if (!forceRefresh && cachedEntry != null && cachedEntry.expiresAt > currentMs) {
-            MoviesCacheJsonCodec.decodeDetails(cachedEntry.payloadJson)?.let { return Result.success(it) }
+            MoviesCacheJsonCodec.decodeDetails(cachedEntry.payloadJson)?.let { details ->
+                val resolvedSummary = mediaResolver.resolveOrRegister(
+                    details.summary,
+                    seasonCount = details.seasons.size.takeIf { it > 0 }
+                )
+                return Result.success(details.copy(summary = resolvedSummary))
+            }
         }
 
-        val result = when (providerId) {
+        val primaryResult = fetchProviderDetails(resolvedProviderId, resolvedTitleId)
+        if (primaryResult.isSuccess) {
+            val rawDetails = primaryResult.getOrThrow()
+            val resolvedSummary = mediaResolver.resolveOrRegister(
+                rawDetails.summary,
+                seasonCount = rawDetails.seasons.size.takeIf { it > 0 }
+            )
+            val resolvedRelated = registerSummariesCanonical(rawDetails.relatedTitles)
+            val enriched = rawDetails.copy(
+                summary = resolvedSummary,
+                relatedTitles = resolvedRelated
+            )
+            moviesDao.upsertCacheEntry(
+                MovieCacheEntryEntity(
+                    cacheKey = cacheKey,
+                    providerId = resolvedProviderId,
+                    payloadJson = MoviesCacheJsonCodec.encodeDetails(enriched),
+                    updatedAt = currentMs,
+                    expiresAt = currentMs + CACHE_TTL_MS
+                )
+            )
+            return Result.success(enriched)
+        }
+
+        // If primary failed, try linked alternate providers for the same canonical identity
+        val linkedAlternates = mediaResolver.getLinksForTitle(resolvedProviderId, resolvedTitleId)
+            .filterNot { it.providerId == resolvedProviderId && it.providerTitleId == resolvedTitleId }
+        for (alt in linkedAlternates) {
+            val altRes = fetchProviderDetails(alt.providerId, alt.providerTitleId)
+            if (altRes.isSuccess) {
+                val altDetails = altRes.getOrThrow()
+                val resolvedSummary = mediaResolver.resolveOrRegister(
+                    altDetails.summary,
+                    seasonCount = altDetails.seasons.size.takeIf { it > 0 }
+                )
+                return Result.success(altDetails.copy(summary = resolvedSummary))
+            }
+        }
+
+        val primaryError = primaryResult.exceptionOrNull()
+            ?: IllegalStateException("Unable to load title details.")
+        return cachedEntry?.let { MoviesCacheJsonCodec.decodeDetails(it.payloadJson) }
+            ?.let { Result.success(it) }
+            ?: Result.failure(primaryError)
+    }
+
+    private suspend fun fetchProviderDetails(providerId: String, titleId: String): Result<MediaDetails> =
+        when (providerId) {
             MovieBoxProvider.PROVIDER_ID -> movieBoxProvider?.getDetails(titleId)
                 ?: Result.failure(IllegalStateException("MovieBox provider is not configured."))
             InternetArchiveMoviesProvider.PROVIDER_ID -> internetArchiveProvider.getDetails(titleId)
@@ -463,75 +514,84 @@ class MoviesRepositoryImpl(
             else -> Result.failure(IllegalArgumentException("Unknown provider '$providerId'"))
         }
 
-        return result.fold(
-            onSuccess = { details ->
-                moviesDao.upsertCacheEntry(
-                    MovieCacheEntryEntity(
-                        cacheKey = cacheKey,
-                        providerId = providerId,
-                        payloadJson = MoviesCacheJsonCodec.encodeDetails(details),
-                        updatedAt = currentMs,
-                        expiresAt = currentMs + CACHE_TTL_MS
-                    )
-                )
-                Result.success(details)
-            },
-            onFailure = { error ->
-                cachedEntry?.let { MoviesCacheJsonCodec.decodeDetails(it.payloadJson) }
-                    ?.let { Result.success(it) }
-                    ?: Result.failure(error)
-            }
+    override suspend fun getSeasons(providerId: String, seriesId: String): Result<List<SeasonSummary>> {
+        val (resolvedProviderId, resolvedSeriesId) = mediaResolver.resolveConcreteTarget(
+            providerId = providerId,
+            titleId = seriesId,
+            preferPlayable = false
         )
-    }
-
-    override suspend fun getSeasons(providerId: String, seriesId: String): Result<List<SeasonSummary>> =
-        when (providerId) {
-            MovieBoxProvider.PROVIDER_ID -> movieBoxProvider?.getSeasons(seriesId)
+        val primary = when (resolvedProviderId) {
+            MovieBoxProvider.PROVIDER_ID -> movieBoxProvider?.getSeasons(resolvedSeriesId)
                 ?: Result.failure(IllegalStateException("MovieBox provider is not configured."))
-            TvMazeSeriesProvider.PROVIDER_ID -> tvMazeProvider.getSeasons(seriesId)
-            TmdbOptionalMoviesProvider.PROVIDER_ID -> tmdbProvider.getSeasons(seriesId)
-            DevelopmentMoviesFixtureProvider.PROVIDER_ID -> fixtureProvider.getSeasons(seriesId)
+            TvMazeSeriesProvider.PROVIDER_ID -> tvMazeProvider.getSeasons(resolvedSeriesId)
+            TmdbOptionalMoviesProvider.PROVIDER_ID -> tmdbProvider.getSeasons(resolvedSeriesId)
+            DevelopmentMoviesFixtureProvider.PROVIDER_ID -> fixtureProvider.getSeasons(resolvedSeriesId)
             else -> Result.success(emptyList())
         }
+        if (primary.isSuccess) return primary
+
+        val linkedAlternates = mediaResolver.getLinksForTitle(resolvedProviderId, resolvedSeriesId)
+            .filterNot { it.providerId == resolvedProviderId }
+        for (alt in linkedAlternates) {
+            if (alt.providerId == TvMazeSeriesProvider.PROVIDER_ID) {
+                val altRes = tvMazeProvider.getSeasons(alt.providerTitleId)
+                if (altRes.isSuccess) return altRes
+            }
+        }
+        return primary
+    }
 
     override suspend fun getEpisodes(providerId: String, seriesId: String, seasonNumber: Int): Result<List<EpisodeItem>> {
-        if (providerId == DevelopmentMoviesFixtureProvider.PROVIDER_ID) {
-            return fixtureProvider.getEpisodes(seriesId, seasonNumber)
+        val (resolvedProviderId, resolvedSeriesId) = mediaResolver.resolveConcreteTarget(
+            providerId = providerId,
+            titleId = seriesId,
+            preferPlayable = false
+        )
+        if (resolvedProviderId == DevelopmentMoviesFixtureProvider.PROVIDER_ID) {
+            return fixtureProvider.getEpisodes(resolvedSeriesId, seasonNumber)
         }
         val currentMs = nowMs()
-        val cacheKey = "episodes:$providerId:$seriesId:$seasonNumber"
+        val cacheKey = "episodes:$resolvedProviderId:$resolvedSeriesId:$seasonNumber"
         val cachedEntry = moviesDao.getCacheEntry(cacheKey)
         if (cachedEntry != null && cachedEntry.expiresAt > currentMs) {
             MoviesCacheJsonCodec.decodeEpisodes(cachedEntry.payloadJson)?.let { return Result.success(it) }
         }
 
-        val result = when (providerId) {
-            MovieBoxProvider.PROVIDER_ID -> movieBoxProvider?.getEpisodes(seriesId, seasonNumber)
+        val result = when (resolvedProviderId) {
+            MovieBoxProvider.PROVIDER_ID -> movieBoxProvider?.getEpisodes(resolvedSeriesId, seasonNumber)
                 ?: Result.failure(IllegalStateException("MovieBox provider is not configured."))
-            TvMazeSeriesProvider.PROVIDER_ID -> tvMazeProvider.getEpisodes(seriesId, seasonNumber)
-            TmdbOptionalMoviesProvider.PROVIDER_ID -> tmdbProvider.getEpisodes(seriesId, seasonNumber)
+            TvMazeSeriesProvider.PROVIDER_ID -> tvMazeProvider.getEpisodes(resolvedSeriesId, seasonNumber)
+            TmdbOptionalMoviesProvider.PROVIDER_ID -> tmdbProvider.getEpisodes(resolvedSeriesId, seasonNumber)
             else -> Result.success(emptyList())
         }
 
-        return result.fold(
-            onSuccess = { episodes ->
-                moviesDao.upsertCacheEntry(
-                    MovieCacheEntryEntity(
-                        cacheKey = cacheKey,
-                        providerId = providerId,
-                        payloadJson = MoviesCacheJsonCodec.encodeEpisodes(episodes),
-                        updatedAt = currentMs,
-                        expiresAt = currentMs + CACHE_TTL_MS
-                    )
+        if (result.isSuccess) {
+            val episodes = result.getOrThrow()
+            moviesDao.upsertCacheEntry(
+                MovieCacheEntryEntity(
+                    cacheKey = cacheKey,
+                    providerId = resolvedProviderId,
+                    payloadJson = MoviesCacheJsonCodec.encodeEpisodes(episodes),
+                    updatedAt = currentMs,
+                    expiresAt = currentMs + CACHE_TTL_MS
                 )
-                Result.success(episodes)
-            },
-            onFailure = { error ->
-                cachedEntry?.let { MoviesCacheJsonCodec.decodeEpisodes(it.payloadJson) }
-                    ?.let { Result.success(it) }
-                    ?: Result.failure(error)
+            )
+            return Result.success(episodes)
+        }
+
+        val linkedAlternates = mediaResolver.getLinksForTitle(resolvedProviderId, resolvedSeriesId)
+            .filterNot { it.providerId == resolvedProviderId }
+        for (alt in linkedAlternates) {
+            if (alt.providerId == TvMazeSeriesProvider.PROVIDER_ID) {
+                val altRes = tvMazeProvider.getEpisodes(alt.providerTitleId, seasonNumber)
+                if (altRes.isSuccess) return altRes
             }
-        )
+        }
+
+        val error = result.exceptionOrNull() ?: IllegalStateException("Unable to load season episodes.")
+        return cachedEntry?.let { MoviesCacheJsonCodec.decodeEpisodes(it.payloadJson) }
+            ?.let { Result.success(it) }
+            ?: Result.failure(error)
     }
 
     override suspend fun resolvePlayback(
@@ -540,24 +600,29 @@ class MoviesRepositoryImpl(
         seasonNumber: Int?,
         episodeNumber: Int?
     ): Result<PlaybackResolution> {
-        val result = when (providerId) {
+        val (resolvedProviderId, resolvedTitleId) = mediaResolver.resolveConcreteTarget(
+            providerId = providerId,
+            titleId = titleId,
+            preferPlayable = true
+        )
+        val result = when (resolvedProviderId) {
             MovieBoxProvider.PROVIDER_ID ->
-                movieBoxProvider?.resolvePlaybackSources(titleId, seasonNumber, episodeNumber)
+                movieBoxProvider?.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
                     ?: Result.failure(IllegalStateException("MovieBox provider is not configured."))
             InternetArchiveMoviesProvider.PROVIDER_ID ->
-                internetArchiveProvider.resolvePlaybackSources(titleId, seasonNumber, episodeNumber)
+                internetArchiveProvider.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
             TvMazeSeriesProvider.PROVIDER_ID ->
-                tvMazeProvider.resolvePlaybackSources(titleId, seasonNumber, episodeNumber)
+                tvMazeProvider.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
             TmdbOptionalMoviesProvider.PROVIDER_ID ->
-                tmdbProvider.resolvePlaybackSources(titleId, seasonNumber, episodeNumber)
+                tmdbProvider.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
             DevelopmentMoviesFixtureProvider.PROVIDER_ID ->
-                fixtureProvider.resolvePlaybackSources(titleId, seasonNumber, episodeNumber)
-            else -> Result.failure(IllegalArgumentException("Unknown provider '$providerId'"))
+                fixtureProvider.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
+            else -> Result.failure(IllegalArgumentException("Unknown provider '$resolvedProviderId'"))
         }
 
         return result.map { resolution ->
             if (resolution is PlaybackResolution.Available) {
-                val savedPos = getSavedPositionMs(providerId, titleId, seasonNumber, episodeNumber)
+                val savedPos = getSavedPositionMs(resolvedProviderId, resolvedTitleId, seasonNumber, episodeNumber)
                 resolution.copy(startPositionMs = savedPos)
             } else {
                 resolution
@@ -570,15 +635,22 @@ class MoviesRepositoryImpl(
         titleId: String,
         seasonNumber: Int?,
         episodeNumber: Int?
-    ): Result<List<SubtitleTrack>> = when (providerId) {
-        MovieBoxProvider.PROVIDER_ID ->
-            movieBoxProvider?.getSubtitles(titleId, seasonNumber, episodeNumber)
-                ?: Result.success(emptyList())
-        InternetArchiveMoviesProvider.PROVIDER_ID ->
-            internetArchiveProvider.getSubtitles(titleId, seasonNumber, episodeNumber)
-        DevelopmentMoviesFixtureProvider.PROVIDER_ID ->
-            fixtureProvider.getSubtitles(titleId, seasonNumber, episodeNumber)
-        else -> Result.success(emptyList())
+    ): Result<List<SubtitleTrack>> {
+        val (resolvedProviderId, resolvedTitleId) = mediaResolver.resolveConcreteTarget(
+            providerId = providerId,
+            titleId = titleId,
+            preferPlayable = true
+        )
+        return when (resolvedProviderId) {
+            MovieBoxProvider.PROVIDER_ID ->
+                movieBoxProvider?.getSubtitles(resolvedTitleId, seasonNumber, episodeNumber)
+                    ?: Result.success(emptyList())
+            InternetArchiveMoviesProvider.PROVIDER_ID ->
+                internetArchiveProvider.getSubtitles(resolvedTitleId, seasonNumber, episodeNumber)
+            DevelopmentMoviesFixtureProvider.PROVIDER_ID ->
+                fixtureProvider.getSubtitles(resolvedTitleId, seasonNumber, episodeNumber)
+            else -> Result.success(emptyList())
+        }
     }
 
     override fun observeWatchlist(): Flow<List<MovieTitleSummary>> =
@@ -588,12 +660,16 @@ class MoviesRepositoryImpl(
         moviesDao.observeIsInWatchlist(compositeId)
 
     override suspend fun toggleWatchlist(item: MovieTitleSummary): Boolean {
-        val existing = moviesDao.getWatchlistItem(item.compositeId)
+        val resolved = mediaResolver.resolveOrRegister(item)
+        val cid = resolved.canonicalId
+        val existing = moviesDao.getWatchlistItem(resolved.compositeId)
+            ?: cid?.let { moviesDao.getWatchlistItemByCanonical(it) }
         return if (existing != null) {
-            moviesDao.deleteWatchlistItem(item.compositeId)
+            moviesDao.deleteWatchlistItem(existing.compositeId)
+            cid?.let { moviesDao.deleteWatchlistItemsByCanonical(it) }
             false
         } else {
-            moviesDao.insertWatchlistItem(item.toWatchlistEntity(nowMs()))
+            moviesDao.insertWatchlistItem(resolved.toWatchlistEntity(nowMs()))
             true
         }
     }
@@ -609,22 +685,24 @@ class MoviesRepositoryImpl(
         episodeNumber: Int?,
         episodeLabel: String?
     ) {
-        val key = buildHistoryKey(item.providerId, item.id, seasonNumber, episodeNumber)
+        val resolved = if (item.canonicalId != null) item else mediaResolver.resolveOrRegister(item)
+        val key = buildHistoryKey(resolved.providerId, resolved.id, seasonNumber, episodeNumber)
         moviesDao.upsertWatchHistory(
             MovieWatchHistoryEntity(
                 historyKey = key,
-                compositeId = item.compositeId,
-                providerId = item.providerId,
-                titleId = item.id,
-                kind = item.kind.wireValue,
-                title = item.title,
+                compositeId = resolved.compositeId,
+                providerId = resolved.providerId,
+                titleId = resolved.id,
+                kind = resolved.kind.wireValue,
+                title = resolved.title,
                 episodeLabel = episodeLabel,
                 seasonNumber = seasonNumber,
                 episodeNumber = episodeNumber,
-                posterUrl = item.posterUrl,
+                posterUrl = resolved.posterUrl,
                 positionMs = positionMs.coerceAtLeast(0L),
                 durationMs = durationMs.coerceAtLeast(0L),
-                lastWatchedAt = nowMs()
+                lastWatchedAt = nowMs(),
+                canonicalId = resolved.canonicalId
             )
         )
     }
@@ -635,8 +713,14 @@ class MoviesRepositoryImpl(
         seasonNumber: Int?,
         episodeNumber: Int?
     ): Long {
-        val key = buildHistoryKey(providerId, titleId, seasonNumber, episodeNumber)
-        val entry = moviesDao.getWatchHistoryByKey(key) ?: return 0L
+        val (resolvedProviderId, resolvedTitleId) = mediaResolver.resolveConcreteTarget(providerId, titleId, preferPlayable = false)
+        val key = buildHistoryKey(resolvedProviderId, resolvedTitleId, seasonNumber, episodeNumber)
+        val entry = moviesDao.getWatchHistoryByKey(key) ?: run {
+            val cid = mediaResolver.resolveCanonicalIdForProvider(providerId, titleId)
+            if (cid != null) {
+                moviesDao.getWatchHistoryByCanonical(cid, seasonNumber ?: 0, episodeNumber ?: 0)
+            } else null
+        } ?: return 0L
         // Start from beginning if user reached >= 96% completion
         if (entry.durationMs > 0L && entry.positionMs.toFloat() / entry.durationMs.toFloat() >= 0.96f) {
             return 0L
@@ -659,10 +743,27 @@ class MoviesRepositoryImpl(
         moviesDao.clearSearchHistory()
     }
 
-    private suspend fun buildHomeCacheKey(): String {
-        val tmdbFlag = if (tmdbProvider.isConfigured()) "tmdb1" else "tmdb0"
-        return "home_feed:$tmdbFlag"
+    override suspend fun getProviderLinks(providerId: String, titleId: String): List<ProviderLinkRecord> =
+        mediaResolver.getLinksForTitle(providerId, titleId)
+
+    override suspend fun unlinkProviderTitle(providerId: String, titleId: String): String? =
+        mediaResolver.unlinkProviderTitle(providerId, titleId)
+
+    private suspend fun registerSummariesCanonical(items: List<MovieTitleSummary>): List<MovieTitleSummary> =
+        items.map { mediaResolver.resolveOrRegister(it) }
+
+    private suspend fun registerFeedCanonical(feed: MoviesHomeFeed): MoviesHomeFeed {
+        val registeredBanners = registerSummariesCanonical(feed.featuredBanners)
+        val registeredSections = feed.sections.map { section ->
+            section.copy(items = registerSummariesCanonical(section.items))
+        }
+        return feed.copy(
+            featuredBanners = registeredBanners,
+            sections = registeredSections
+        )
     }
+
+    private fun buildHomeCacheKey(): String = "home_feed:composite"
 
     private fun buildMovieBoxHomeCacheKey(baseUrl: String): String {
         val normalized = baseUrl.trim().trimEnd('/').lowercase()
@@ -704,7 +805,8 @@ class MoviesRepositoryImpl(
         genres = genresCsv.split(",").map { it.trim() }.filter { it.isNotBlank() },
         summary = summary,
         sourceBadge = DataSourceBadge.fromName(sourceBadge),
-        isPlayableHint = isPlayableHint
+        isPlayableHint = isPlayableHint,
+        canonicalId = canonicalId
     )
 
     private fun MovieTitleSummary.toWatchlistEntity(addedAt: Long): MovieWatchlistEntity = MovieWatchlistEntity(
@@ -721,7 +823,8 @@ class MoviesRepositoryImpl(
         summary = summary,
         sourceBadge = sourceBadge.name,
         isPlayableHint = isPlayableHint,
-        addedAt = addedAt
+        addedAt = addedAt,
+        canonicalId = canonicalId
     )
 
     private fun MovieWatchHistoryEntity.toDomain(): WatchHistoryItem = WatchHistoryItem(
@@ -742,5 +845,7 @@ class MoviesRepositoryImpl(
     companion object {
         const val CACHE_TTL_MS = 6L * 60 * 60 * 1000L
         const val STALE_RETENTION_MS = 7L * 24 * 60 * 60 * 1000L
+        const val MOVIEBOX_FALLBACK_NOTICE =
+            "MovieBox unavailable — showing Internet Archive & TVMaze catalogue"
     }
 }

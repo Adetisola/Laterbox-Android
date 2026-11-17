@@ -221,6 +221,9 @@ object MoviesCacheJsonCodec {
         put("trailerUrl", item.trailerUrl ?: JSONObject.NULL)
         put("sourceBadge", item.sourceBadge.name)
         put("isPlayableHint", item.isPlayableHint)
+        put("imdbId", item.imdbId ?: JSONObject.NULL)
+        put("tvmazeId", item.tvmazeId ?: JSONObject.NULL)
+        put("canonicalId", item.canonicalId ?: JSONObject.NULL)
     }
 
     private fun decodeSummary(o: JSONObject): MovieTitleSummary = MovieTitleSummary(
@@ -240,7 +243,10 @@ object MoviesCacheJsonCodec {
         detailPath = o.optNullableString("detailPath"),
         trailerUrl = o.optNullableString("trailerUrl"),
         sourceBadge = DataSourceBadge.fromName(o.optString("sourceBadge")),
-        isPlayableHint = o.optBoolean("isPlayableHint", false)
+        isPlayableHint = o.optBoolean("isPlayableHint", false),
+        imdbId = o.optNullableString("imdbId"),
+        tvmazeId = o.optNullableString("tvmazeId"),
+        canonicalId = o.optNullableString("canonicalId")
     )
 
     private fun JSONArray?.toSummaryList(): List<MovieTitleSummary> {

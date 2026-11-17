@@ -348,11 +348,6 @@ class MoviesViewModelsTest {
         vm.resetFilters()
         assertFalse(vm.uiState.value.isFilteredMode)
         assertTrue(vm.uiState.value.filteredItems.isEmpty())
-
-        // Dismiss TMDB prompt
-        assertFalse(vm.uiState.value.tmdbPromptDismissed)
-        vm.dismissTmdbPrompt()
-        assertTrue(vm.uiState.value.tmdbPromptDismissed)
     }
 
     @Test
@@ -439,7 +434,7 @@ class MoviesViewModelsTest {
     }
 
     @Test
-    fun homeViewModel_updatesProviderModeAndMovieBoxConfig() = runTest {
+    fun homeViewModel_updatesMovieBoxConfigAndTriggersRefresh() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val prefs = UserPreferencesRepository(context)
         val repo = FakeMoviesRepository()
@@ -453,12 +448,34 @@ class MoviesViewModelsTest {
         }
         assertEquals("secret-key", updatedConfigState.movieBoxApiKey)
         assertTrue(repo.homeCallCount > callsBefore)
+    }
 
-        vm.setProviderMode(com.laterbox.app.data.preferences.MoviesProviderMode.OPEN_ARCHIVE_AND_TVMAZE)
-        val openArchiveState = vm.uiState.first {
-            it.providerMode == com.laterbox.app.data.preferences.MoviesProviderMode.OPEN_ARCHIVE_AND_TVMAZE
+    @Test
+    fun detailViewModel_loadsDebugProviderLinksAndUnlinksSelectedProvider() = runTest {
+        val baseFake = FakeMoviesRepository()
+        val linksState = MutableStateFlow(
+            listOf(
+                com.laterbox.app.movies.domain.model.ProviderLinkRecord("cid_1", "moviebox", "mb_1", "T1", 100L),
+                com.laterbox.app.movies.domain.model.ProviderLinkRecord("cid_1", "tvmaze", "169", "T1", 100L)
+            )
+        )
+        val customRepo = object : MoviesRepository by baseFake {
+            override suspend fun getProviderLinks(providerId: String, titleId: String) = linksState.value
+            override suspend fun unlinkProviderTitle(providerId: String, titleId: String): String {
+                linksState.value = linksState.value.filterNot { it.providerId == providerId && it.providerTitleId == titleId }
+                return "cid_isolated"
+            }
         }
-        assertFalse(openArchiveState.useSampleFixturesOnly)
+
+        val vm = MovieDetailViewModel(customRepo)
+        vm.load("moviebox", "mb_1")
+        advanceUntilIdle()
+        assertEquals(2, vm.uiState.value.providerLinks.size)
+
+        vm.unlinkProviderLink("tvmaze", "169")
+        advanceUntilIdle()
+        assertEquals(1, vm.uiState.value.providerLinks.size)
+        assertEquals("moviebox", vm.uiState.value.providerLinks.first().providerId)
     }
 
     @Test

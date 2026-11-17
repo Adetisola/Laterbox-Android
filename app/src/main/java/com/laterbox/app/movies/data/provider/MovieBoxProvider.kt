@@ -518,7 +518,8 @@ class MovieBoxProvider(
                 detailPath = dp,
                 trailerUrl = trailerUrl,
                 sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
-                isPlayableHint = true
+                isPlayableHint = true,
+                imdbId = root.optCleanString("imdbId") ?: root.optCleanString("imdb_id")
             )
 
             MediaDetails(
@@ -759,7 +760,8 @@ class MovieBoxProvider(
             detailPath = dp,
             trailerUrl = trailerUrl,
             sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
-            isPlayableHint = hasResource
+            isPlayableHint = hasResource,
+            imdbId = obj.optCleanString("imdbId") ?: obj.optCleanString("imdb_id")
         )
     }
 

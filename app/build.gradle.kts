@@ -177,6 +177,17 @@ android {
         disable += listOf("ProtectedPermissions", "StartActivityAndCollapseDeprecated")
         abortOnError = true
     }
+
+    sourceSets {
+        getByName("debug").assets.srcDirs("$projectDir/schemas")
+        getByName("test").assets.srcDirs("$projectDir/schemas")
+    }
+}
+
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+    arg("room.incremental", "true")
+    arg("room.generateKotlin", "true")
 }
 
 dependencies {
@@ -232,6 +243,7 @@ dependencies {
     // Unit & Local Testing
     testImplementation(libs.junit)
     testImplementation(libs.androidx.test.core)
+    testImplementation(libs.room.testing)
     testImplementation(platform(libs.compose.bom))
     testImplementation(libs.compose.ui.test.junit4)
     testImplementation(libs.robolectric)

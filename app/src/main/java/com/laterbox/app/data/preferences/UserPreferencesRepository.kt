@@ -64,20 +64,6 @@ enum class CardTapAction(val label: String, val description: String) {
     EXTERNAL_BROWSER("Open in Browser", "Launch directly in your external browser tab")
 }
 
-enum class MoviesProviderMode(val wireValue: String, val label: String) {
-    MOVIEBOX("moviebox", "MovieBox (Primary)"),
-    OPEN_ARCHIVE_AND_TVMAZE("open_archive_tvmaze", "Internet Archive & TVMaze"),
-    SAMPLE_FIXTURES("sample_fixtures", "Offline Sample Fixtures");
-
-    companion object {
-        fun fromWire(value: String?): MoviesProviderMode =
-            entries.firstOrNull {
-                it.name.equals(value, ignoreCase = true) ||
-                    it.wireValue.equals(value, ignoreCase = true)
-            } ?: MOVIEBOX
-    }
-}
-
 object MovieBoxEndpointConfig {
     const val DEFAULT_PRODUCTION_BASE_URL = "https://laterbox-moviebox-api.vercel.app/"
     private val DEBUG_LOOPBACK_HOSTS = setOf("10.0.2.2", "localhost", "127.0.0.1")
@@ -187,7 +173,6 @@ data class UserPreferences(
     val manualCapturesCount: Int = 0,
     val tmdbApiKey: String = "",
     val moviesUseSampleFixturesOnly: Boolean = false,
-    val moviesProviderMode: MoviesProviderMode = MoviesProviderMode.MOVIEBOX,
     val movieBoxApiBaseUrl: String = "",
     val movieBoxApiKey: String = ""
 ) {
@@ -316,6 +301,8 @@ class UserPreferencesRepository(private val context: Context) {
         val TMDB_API_KEY = stringPreferencesKey("tmdb_api_key")
         val MOVIES_USE_SAMPLE_FIXTURES_ONLY = booleanPreferencesKey("movies_use_sample_fixtures_only")
         val MOVIES_PROVIDER_MODE = stringPreferencesKey("movies_provider_mode")
+        val DEBUG_MOVIES_SAMPLE_FIXTURES = booleanPreferencesKey("debug_movies_sample_fixtures")
+        val MOVIES_PREFS_MIGRATED_V2 = booleanPreferencesKey("movies_prefs_migrated_v2")
         val MOVIEBOX_API_BASE_URL = stringPreferencesKey("moviebox_api_base_url")
         val MOVIEBOX_API_KEY = stringPreferencesKey("moviebox_api_key")
     }
@@ -446,13 +433,8 @@ class UserPreferencesRepository(private val context: Context) {
         val ytDlpVersion = preferences[PreferencesKeys.YTDLP_VERSION] ?: ""
         val lastYtDlpUpdateCheck = preferences[PreferencesKeys.LAST_YTDLP_UPDATE_CHECK] ?: 0L
 
-        val legacySampleFixturesOnly = preferences[PreferencesKeys.MOVIES_USE_SAMPLE_FIXTURES_ONLY] ?: false
-        val rawProviderMode = preferences[PreferencesKeys.MOVIES_PROVIDER_MODE]
-        val moviesProviderMode = when {
-            rawProviderMode != null -> MoviesProviderMode.fromWire(rawProviderMode)
-            legacySampleFixturesOnly -> MoviesProviderMode.SAMPLE_FIXTURES
-            else -> MoviesProviderMode.MOVIEBOX
-        }
+        val debugSampleFixturesOnly = com.laterbox.app.BuildConfig.DEBUG &&
+            (preferences[PreferencesKeys.DEBUG_MOVIES_SAMPLE_FIXTURES] ?: false)
         val movieBoxApiBaseUrl = MovieBoxEndpointConfig.normalizeBaseUrl(
             preferences[PreferencesKeys.MOVIEBOX_API_BASE_URL] ?: ""
         )
@@ -528,8 +510,7 @@ class UserPreferencesRepository(private val context: Context) {
             quickTileCapturesCount = preferences[PreferencesKeys.QUICK_TILE_CAPTURES_COUNT] ?: 0,
             manualCapturesCount = preferences[PreferencesKeys.MANUAL_CAPTURES_COUNT] ?: 0,
             tmdbApiKey = preferences[PreferencesKeys.TMDB_API_KEY] ?: "",
-            moviesUseSampleFixturesOnly = moviesProviderMode == MoviesProviderMode.SAMPLE_FIXTURES,
-            moviesProviderMode = moviesProviderMode,
+            moviesUseSampleFixturesOnly = debugSampleFixturesOnly,
             movieBoxApiBaseUrl = movieBoxApiBaseUrl,
             movieBoxApiKey = movieBoxApiKey
         )
@@ -990,23 +971,27 @@ class UserPreferencesRepository(private val context: Context) {
 
     suspend fun setMoviesUseSampleFixturesOnly(enabled: Boolean) {
         context.userDataStore.edit { preferences ->
-            preferences[PreferencesKeys.MOVIES_USE_SAMPLE_FIXTURES_ONLY] = enabled
-            if (enabled) {
-                preferences[PreferencesKeys.MOVIES_PROVIDER_MODE] = MoviesProviderMode.SAMPLE_FIXTURES.wireValue
+            if (com.laterbox.app.BuildConfig.DEBUG) {
+                preferences[PreferencesKeys.DEBUG_MOVIES_SAMPLE_FIXTURES] = enabled
             } else {
-                val current = preferences[PreferencesKeys.MOVIES_PROVIDER_MODE]
-                if (current == null || MoviesProviderMode.fromWire(current) == MoviesProviderMode.SAMPLE_FIXTURES) {
-                    preferences[PreferencesKeys.MOVIES_PROVIDER_MODE] = MoviesProviderMode.MOVIEBOX.wireValue
-                }
+                preferences.remove(PreferencesKeys.DEBUG_MOVIES_SAMPLE_FIXTURES)
             }
+            preferences.remove(PreferencesKeys.MOVIES_PROVIDER_MODE)
+            preferences.remove(PreferencesKeys.MOVIES_USE_SAMPLE_FIXTURES_ONLY)
+            preferences[PreferencesKeys.MOVIES_PREFS_MIGRATED_V2] = true
         }
     }
 
-    suspend fun setMoviesProviderMode(mode: MoviesProviderMode) {
+    suspend fun migrateLegacyMoviesPreferences() {
         context.userDataStore.edit { preferences ->
-            preferences[PreferencesKeys.MOVIES_PROVIDER_MODE] = mode.wireValue
-            preferences[PreferencesKeys.MOVIES_USE_SAMPLE_FIXTURES_ONLY] =
-                (mode == MoviesProviderMode.SAMPLE_FIXTURES)
+            val alreadyMigrated = preferences[PreferencesKeys.MOVIES_PREFS_MIGRATED_V2] ?: false
+            val hasLegacyKeys = preferences.contains(PreferencesKeys.MOVIES_PROVIDER_MODE) ||
+                preferences.contains(PreferencesKeys.MOVIES_USE_SAMPLE_FIXTURES_ONLY)
+            if (!alreadyMigrated || hasLegacyKeys) {
+                preferences.remove(PreferencesKeys.MOVIES_PROVIDER_MODE)
+                preferences.remove(PreferencesKeys.MOVIES_USE_SAMPLE_FIXTURES_ONLY)
+                preferences[PreferencesKeys.MOVIES_PREFS_MIGRATED_V2] = true
+            }
         }
     }
 

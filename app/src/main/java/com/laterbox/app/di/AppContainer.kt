@@ -262,12 +262,11 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             tmdbProvider = tmdbProvider,
             fixtureProvider = com.laterbox.app.movies.data.fixtures.DevelopmentMoviesFixtureProvider(),
             movieBoxProvider = movieBoxProvider,
-            providerModeProvider = {
-                userPreferencesRepository.userPreferencesFlow.first().moviesProviderMode
-            },
             useSampleFixturesOnlyProvider = {
-                userPreferencesRepository.userPreferencesFlow.first().moviesUseSampleFixturesOnly
-            }
+                com.laterbox.app.BuildConfig.DEBUG &&
+                    userPreferencesRepository.userPreferencesFlow.first().moviesUseSampleFixturesOnly
+            },
+            mediaResolver = com.laterbox.app.movies.data.resolver.MediaResolver(database.moviesDao())
         )
     }
 

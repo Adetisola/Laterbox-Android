@@ -8,6 +8,7 @@ import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.model.MoviesHomeFeed
 import com.laterbox.app.movies.domain.model.PlaybackResolution
+import com.laterbox.app.movies.domain.model.ProviderLinkRecord
 import com.laterbox.app.movies.domain.model.SearchSuggestion
 import com.laterbox.app.movies.domain.model.SeasonSummary
 import com.laterbox.app.movies.domain.model.SubtitleTrack
@@ -81,4 +82,7 @@ interface MoviesRepository {
     fun observeRecentSearches(limit: Int = 10): Flow<List<String>>
     suspend fun recordSearchQuery(query: String)
     suspend fun clearSearchHistory()
+
+    suspend fun getProviderLinks(providerId: String, titleId: String): List<ProviderLinkRecord> = emptyList()
+    suspend fun unlinkProviderTitle(providerId: String, titleId: String): String? = null
 }

@@ -74,10 +74,21 @@ data class MovieTitleSummary(
     val detailPath: String? = null,
     val trailerUrl: String? = null,
     val sourceBadge: DataSourceBadge = DataSourceBadge.LIVE_INTERNET_ARCHIVE,
-    val isPlayableHint: Boolean = false
+    val isPlayableHint: Boolean = false,
+    val imdbId: String? = null,
+    val tvmazeId: String? = null,
+    val canonicalId: String? = null
 ) {
     val compositeId: String get() = "$providerId:$id"
 }
+
+data class ProviderLinkRecord(
+    val canonicalId: String,
+    val providerId: String,
+    val providerTitleId: String,
+    val confidence: String,
+    val updatedAt: Long
+)
 
 data class BrowseSection(
     val id: String,

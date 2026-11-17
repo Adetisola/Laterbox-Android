@@ -56,7 +56,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.laterbox.app.data.preferences.MoviesProviderMode
+import com.laterbox.app.BuildConfig
 import com.laterbox.app.movies.domain.model.CatalogueSort
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
@@ -75,8 +75,6 @@ fun MoviesScreen(
     onOpenPlayer: (providerId: String, titleId: String, seasonNumber: Int?, episodeNumber: Int?) -> Unit,
     onToggleWatchlist: (MovieTitleSummary) -> Unit,
     onToggleSampleFixtures: (Boolean) -> Unit,
-    onSaveTmdbApiKey: (String) -> Unit,
-    onSelectProviderMode: (MoviesProviderMode) -> Unit = {},
     onSaveMovieBoxConfig: (baseUrl: String, apiKey: String) -> Unit = { _, _ -> },
     onSearchQueryChange: (String) -> Unit = {},
     onSearchFocusChange: (Boolean) -> Unit = {},
@@ -90,8 +88,6 @@ fun MoviesScreen(
     onSelectSort: (CatalogueSort) -> Unit = {},
     onResetFilters: () -> Unit = {},
     onLoadMoreFiltered: () -> Unit = {},
-    onDismissTmdbPrompt: () -> Unit = {},
-    onOpenExternalUrl: (String) -> Unit = {},
     onOpenCatalogueWithSort: (kind: MediaKind?, genre: String?, sort: CatalogueSort?, country: String?) -> Unit = { k, g, _, _ ->
         onOpenCatalogue(k, g)
     },
@@ -118,16 +114,11 @@ fun MoviesScreen(
     if (showSourcesDialog) {
         MoviesProviderSourceDialog(
             useSampleFixturesOnly = uiState.useSampleFixturesOnly,
-            currentTmdbKey = uiState.currentTmdbApiKey,
             onToggleSampleFixtures = onToggleSampleFixtures,
-            onSaveTmdbKey = onSaveTmdbApiKey,
             onDismiss = { showSourcesDialog = false },
-            onOpenExternalUrl = onOpenExternalUrl,
-            providerMode = uiState.providerMode,
             currentMovieBoxBaseUrl = uiState.movieBoxApiBaseUrl,
             effectiveMovieBoxBaseUrl = uiState.effectiveMovieBoxBaseUrl,
             currentMovieBoxApiKey = uiState.movieBoxApiKey,
-            onSelectProviderMode = onSelectProviderMode,
             onSaveMovieBoxConfig = onSaveMovieBoxConfig
         )
     }
@@ -336,11 +327,13 @@ fun MoviesScreen(
                                 ) {
                                     Text("Sources", color = colors.textPrimary)
                                 }
-                                OutlinedButton(
-                                    onClick = { onToggleSampleFixtures(true) },
-                                    border = BorderStroke(1.dp, colors.borderSubtle)
-                                ) {
-                                    Text("Fixtures", color = colors.textPrimary)
+                                if (BuildConfig.DEBUG) {
+                                    OutlinedButton(
+                                        onClick = { onToggleSampleFixtures(true) },
+                                        border = BorderStroke(1.dp, colors.borderSubtle)
+                                    ) {
+                                        Text("Fixtures", color = colors.textPrimary)
+                                    }
                                 }
                             }
                         }
@@ -674,8 +667,8 @@ fun MoviesScreen(
                         contentPadding = PaddingValues(top = 6.dp, bottom = bottomPaddingDp.dp),
                         verticalArrangement = Arrangement.spacedBy(20.dp)
                     ) {
-                        // Notice banner for offline cache / sample fixtures
-                        if (feed.isOfflineCached || feed.containsSampleFixtures) {
+                        // Notice banner for offline cache / provider fallback / sample fixtures
+                        if (feed.isOfflineCached || feed.containsSampleFixtures || !feed.activeProviderNotice.isNullOrBlank()) {
                             item(key = "notice_banner") {
                                 Surface(
                                     shape = RoundedCornerShape(12.dp),
@@ -733,88 +726,6 @@ fun MoviesScreen(
                                     },
                                     onToggleWatchlist = onToggleWatchlist
                                 )
-                            }
-                        }
-
-                        // Dismissible Guided Free TMDB API Setup Card (secondary Open Archive mode only)
-                        if (uiState.providerMode == MoviesProviderMode.OPEN_ARCHIVE_AND_TVMAZE &&
-                            !uiState.tmdbApiKeyConfigured &&
-                            !uiState.useSampleFixturesOnly &&
-                            !uiState.tmdbPromptDismissed
-                        ) {
-                            item(key = "tmdb_setup_card") {
-                                Surface(
-                                    shape = RoundedCornerShape(14.dp),
-                                    color = colors.surfacePrimary,
-                                    border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.32f)),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 16.dp)
-                                        .testTag("movies_tmdb_setup_card")
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(14.dp),
-                                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text(
-                                                text = "Unlock Trending Cinema with Free TMDB",
-                                                style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
-                                                color = colors.textPrimary,
-                                                modifier = Modifier.weight(1f)
-                                            )
-                                            IconButton(
-                                                onClick = onDismissTmdbPrompt,
-                                                modifier = Modifier
-                                                    .size(28.dp)
-                                                    .testTag("movies_tmdb_dismiss_button")
-                                            ) {
-                                                Icon(
-                                                    painter = painterResource(LaterboxIcons.Close),
-                                                    contentDescription = "Dismiss TMDB prompt",
-                                                    tint = colors.textSecondary,
-                                                    modifier = Modifier.size(15.dp)
-                                                )
-                                            }
-                                        }
-                                        Text(
-                                            text = "Connect a free personal TMDB v3 developer key to add mainstream theatrical releases, posters, and recommendations.",
-                                            style = typography.metaText,
-                                            color = colors.textSecondary
-                                        )
-                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                            Button(
-                                                onClick = { showSourcesDialog = true },
-                                                colors = ButtonDefaults.buttonColors(containerColor = colors.accentPrimary),
-                                                shape = RoundedCornerShape(10.dp),
-                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                                                modifier = Modifier.height(34.dp)
-                                            ) {
-                                                Text(
-                                                    text = "Add TMDB Key",
-                                                    style = typography.caption.copy(fontWeight = FontWeight.SemiBold)
-                                                )
-                                            }
-                                            OutlinedButton(
-                                                onClick = { onOpenExternalUrl("https://www.themoviedb.org/settings/api") },
-                                                border = BorderStroke(0.75.dp, colors.borderSubtle),
-                                                shape = RoundedCornerShape(10.dp),
-                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                                                modifier = Modifier.height(34.dp)
-                                            ) {
-                                                Text(
-                                                    text = "Get Free Key",
-                                                    style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
-                                                    color = colors.textPrimary
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
                             }
                         }
 

@@ -52,6 +52,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.laterbox.app.BuildConfig
 import com.laterbox.app.movies.domain.model.EpisodeItem
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.PlaybackResolution
@@ -74,6 +75,7 @@ fun MovieDetailScreen(
     onDownloadSource: (PlaybackSource) -> Unit = {},
     onDismissDownloadStatus: () -> Unit = {},
     onRetryPlaybackCheck: () -> Unit = onRetry,
+    onUnlinkProviderLink: (providerId: String, titleId: String) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -801,6 +803,66 @@ fun MovieDetailScreen(
                                         color = colors.textSecondary,
                                         modifier = Modifier.padding(14.dp)
                                     )
+                                }
+                            }
+                        }
+                    }
+
+                    // Debug-only Canonical Provider Links & Unlink
+                    if (BuildConfig.DEBUG && uiState.providerLinks.isNotEmpty()) {
+                        item(key = "detail_debug_provider_links") {
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = colors.surfaceSecondary,
+                                border = BorderStroke(0.75.dp, colors.borderSubtle),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp)
+                                    .testTag("detail_debug_provider_links")
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = "Canonical Provider Links (Debug)",
+                                        style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
+                                        color = colors.textPrimary
+                                    )
+                                    uiState.providerLinks.forEach { link ->
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = "${link.providerId}:${link.providerTitleId}",
+                                                    style = typography.metaText.copy(fontWeight = FontWeight.Medium),
+                                                    color = colors.textPrimary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Text(
+                                                    text = "Confidence: ${link.confidence}",
+                                                    style = typography.caption,
+                                                    color = colors.textSecondary
+                                                )
+                                            }
+                                            if (uiState.providerLinks.size > 1) {
+                                                TextButton(
+                                                    onClick = {
+                                                        onUnlinkProviderLink(link.providerId, link.providerTitleId)
+                                                    },
+                                                    modifier = Modifier.testTag(
+                                                        "debug_unlink_${link.providerId}_${link.providerTitleId}"
+                                                    )
+                                                ) {
+                                                    Text("Unlink", color = colors.statusDanger)
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

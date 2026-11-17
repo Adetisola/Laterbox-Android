@@ -64,7 +64,6 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.laterbox.app.BuildConfig
 import com.laterbox.app.data.preferences.MovieBoxEndpointConfig
-import com.laterbox.app.data.preferences.MoviesProviderMode
 import com.laterbox.app.movies.domain.model.DataSourceBadge
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
@@ -576,25 +575,18 @@ fun MoviesHomeSkeleton(modifier: Modifier = Modifier) {
 @Composable
 fun MoviesProviderSourceDialog(
     useSampleFixturesOnly: Boolean,
-    currentTmdbKey: String,
     onToggleSampleFixtures: (Boolean) -> Unit,
-    onSaveTmdbKey: (String) -> Unit,
     onDismiss: () -> Unit,
-    onOpenExternalUrl: (String) -> Unit = {},
-    providerMode: MoviesProviderMode = MoviesProviderMode.MOVIEBOX,
     currentMovieBoxBaseUrl: String = "",
     effectiveMovieBoxBaseUrl: String = "",
     currentMovieBoxApiKey: String = "",
-    onSelectProviderMode: (MoviesProviderMode) -> Unit = {},
     onSaveMovieBoxConfig: (baseUrl: String, apiKey: String) -> Unit = { _, _ -> }
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
-    var selectedMode by remember(providerMode) { mutableStateOf(providerMode) }
     var movieBoxUrlInput by remember(currentMovieBoxBaseUrl) { mutableStateOf(currentMovieBoxBaseUrl) }
     var movieBoxApiKeyInput by remember(currentMovieBoxApiKey) { mutableStateOf(currentMovieBoxApiKey) }
     var showMovieBoxApiKey by remember { mutableStateOf(false) }
-    var tmdbInput by remember(currentTmdbKey) { mutableStateOf(currentTmdbKey) }
     val isUrlValid = MovieBoxEndpointConfig.isValidBaseUrl(
         rawUrl = movieBoxUrlInput,
         allowDebugCleartextLoopback = BuildConfig.DEBUG
@@ -616,54 +608,10 @@ fun MoviesProviderSourceDialog(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    text = "Choose your primary catalogue & playback provider:",
+                    text = "MovieBox streams and metadata are unified with Internet Archive and TVMaze automatic fallback.",
                     style = typography.bodySecondary,
                     color = colors.textSecondary
                 )
-
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(colors.surfaceSecondary)
-                        .padding(vertical = 4.dp)
-                ) {
-                    listOf(
-                        MoviesProviderMode.MOVIEBOX to "Hosted FastAPI catalogue, search, episodes & 1080p streams",
-                        MoviesProviderMode.OPEN_ARCHIVE_AND_TVMAZE to "Public domain Cinema + TVMaze guide + optional TMDB"
-                    ).forEach { (mode, desc) ->
-                        val isSelected = selectedMode == mode && !useSampleFixturesOnly
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    selectedMode = mode
-                                    onSelectProviderMode(mode)
-                                }
-                                .padding(horizontal = 10.dp, vertical = 8.dp)
-                                .testTag("provider_mode_${mode.wireValue}"),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            androidx.compose.material3.RadioButton(
-                                selected = isSelected,
-                                onClick = null
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = mode.label,
-                                    style = typography.uiLabel,
-                                    color = colors.textPrimary
-                                )
-                                Text(
-                                    text = desc,
-                                    style = typography.caption,
-                                    color = colors.textSecondary
-                                )
-                            }
-                        }
-                    }
-                }
 
                 // MovieBox Server Configuration
                 Column(
@@ -750,7 +698,7 @@ fun MoviesProviderSourceDialog(
                                 movieBoxApiKeyInput.isNotBlank() -> "Using custom API key stored locally on this device."
                                 BuildConfig.DEBUG && BuildConfig.MOVIEBOX_API_KEY.isNotBlank() ->
                                     "Using debug build-config key (never bundled in release APKs)."
-                                else -> "Leave blank for open servers, or paste X-API-Key."
+                                else -> "Leave blank when using verified App Check, or paste fallback X-API-Key."
                             }
                             Text(keyStatus, color = colors.textSecondary)
                         },
@@ -761,94 +709,41 @@ fun MoviesProviderSourceDialog(
                     )
                 }
 
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(colors.surfaceSecondary)
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-                        Text(
-                            text = "Offline Sample Fixture Mode",
-                            style = typography.uiLabel,
-                            color = colors.textPrimary
-                        )
-                        Text(
-                            text = "Use local Creative Commons sample titles only",
-                            style = typography.metaText,
-                            color = colors.textSecondary
-                        )
-                    }
-                    Switch(
-                        checked = useSampleFixturesOnly,
-                        onCheckedChange = onToggleSampleFixtures,
-                        modifier = Modifier.testTag("toggle_sample_fixtures_switch")
-                    )
-                }
-
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = colors.accentContainer.copy(alpha = 0.55f),
-                    border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.25f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                if (BuildConfig.DEBUG) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(colors.surfaceSecondary)
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text(
-                            text = "Optional TMDB Key (for Open Archive mode):",
-                            style = typography.uiLabel.copy(fontSize = 12.sp, fontWeight = FontWeight.SemiBold),
-                            color = colors.textPrimary
-                        )
-                        Text(
-                            text = "1. Sign in at themoviedb.org/settings/api\n" +
-                                "2. Request a free personal Developer v3 API Key\n" +
-                                "3. Paste the key below and tap Save",
-                            style = typography.metaText,
-                            color = colors.textSecondary
-                        )
-                        OutlinedButton(
-                            onClick = { onOpenExternalUrl("https://www.themoviedb.org/settings/api") },
-                            shape = RoundedCornerShape(8.dp),
-                            border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.5f)),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                            modifier = Modifier.height(32.dp)
-                        ) {
-                            Icon(
-                                painter = painterResource(LaterboxIcons.ArrowUpRight),
-                                contentDescription = null,
-                                tint = colors.accentPrimary,
-                                modifier = Modifier.size(13.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
+                        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
                             Text(
-                                text = "Get Free TMDB Key",
-                                style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
-                                color = colors.accentPrimary
+                                text = "Offline Sample Fixture Mode (Debug)",
+                                style = typography.uiLabel,
+                                color = colors.textPrimary
+                            )
+                            Text(
+                                text = "Use local Creative Commons sample titles only",
+                                style = typography.metaText,
+                                color = colors.textSecondary
                             )
                         }
+                        Switch(
+                            checked = useSampleFixturesOnly,
+                            onCheckedChange = onToggleSampleFixtures,
+                            modifier = Modifier.testTag("toggle_sample_fixtures_switch")
+                        )
                     }
                 }
-
-                OutlinedTextField(
-                    value = tmdbInput,
-                    onValueChange = { tmdbInput = it },
-                    label = { Text("Optional TMDB v3 API Key") },
-                    placeholder = { Text("Leave blank to disable TMDB") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
             }
         },
         confirmButton = {
             Button(
                 onClick = {
                     onSaveMovieBoxConfig(movieBoxUrlInput, movieBoxApiKeyInput)
-                    onSaveTmdbKey(tmdbInput)
                     onDismiss()
                 },
                 enabled = isUrlValid,

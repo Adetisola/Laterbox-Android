@@ -2,12 +2,14 @@ package com.laterbox.app.movies.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.laterbox.app.BuildConfig
 import com.laterbox.app.movies.data.download.MoviesDownloadBridge
 import com.laterbox.app.movies.domain.model.EpisodeItem
 import com.laterbox.app.movies.domain.model.MediaDetails
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.PlaybackResolution
 import com.laterbox.app.movies.domain.model.PlaybackSource
+import com.laterbox.app.movies.domain.model.ProviderLinkRecord
 import com.laterbox.app.movies.domain.repository.MoviesRepository
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,6 +32,7 @@ data class MovieDetailUiState(
     val savedPositionMs: Long = 0L,
     val isEnqueuingDownload: Boolean = false,
     val downloadStatusMessage: String? = null,
+    val providerLinks: List<ProviderLinkRecord> = emptyList(),
     val errorMessage: String? = null
 )
 
@@ -77,20 +80,31 @@ class MovieDetailViewModel(
                         details.seasons.firstOrNull()?.seasonNumber ?: 1
                     } else null
                     val defaultEp = if (isSeries) 1 else null
-                    val savedPos = moviesRepository.getSavedPositionMs(providerId, titleId, firstSeason, defaultEp)
+                    val savedPos = moviesRepository.getSavedPositionMs(
+                        details.summary.providerId,
+                        details.summary.id,
+                        firstSeason,
+                        defaultEp
+                    )
+                    val links = if (BuildConfig.DEBUG) {
+                        moviesRepository.getProviderLinks(details.summary.providerId, details.summary.id)
+                    } else {
+                        emptyList()
+                    }
                     _uiState.update {
                         it.copy(
                             isLoading = false,
                             details = details,
                             selectedSeasonNumber = firstSeason,
                             savedPositionMs = savedPos,
+                            providerLinks = links,
                             errorMessage = null
                         )
                     }
                     if (isSeries && firstSeason != null) {
-                        loadEpisodes(providerId, titleId, firstSeason)
+                        loadEpisodes(details.summary.providerId, details.summary.id, firstSeason)
                     }
-                    checkPlayback(providerId, titleId, firstSeason, defaultEp)
+                    checkPlayback(details.summary.providerId, details.summary.id, firstSeason, defaultEp)
                 },
                 onFailure = { error ->
                     _uiState.update {
@@ -105,8 +119,19 @@ class MovieDetailViewModel(
         }
     }
 
+    fun unlinkProviderLink(providerId: String, titleId: String) {
+        val summary = _uiState.value.details?.summary ?: return
+        viewModelScope.launch {
+            moviesRepository.unlinkProviderTitle(providerId, titleId)
+            val refreshedLinks = moviesRepository.getProviderLinks(summary.providerId, summary.id)
+            _uiState.update { it.copy(providerLinks = refreshedLinks) }
+        }
+    }
+
     fun selectSeason(seasonNumber: Int) {
-        val (providerId, titleId) = currentKey ?: return
+        val (rawProviderId, rawTitleId) = currentKey ?: return
+        val providerId = _uiState.value.details?.summary?.providerId ?: rawProviderId
+        val titleId = _uiState.value.details?.summary?.id ?: rawTitleId
         if (_uiState.value.selectedSeasonNumber == seasonNumber) return
         _uiState.update { it.copy(selectedSeasonNumber = seasonNumber) }
         loadEpisodes(providerId, titleId, seasonNumber)
@@ -120,7 +145,9 @@ class MovieDetailViewModel(
     }
 
     fun retryPlaybackCheck() {
-        val (providerId, titleId) = currentKey ?: return
+        val (rawProviderId, rawTitleId) = currentKey ?: return
+        val providerId = _uiState.value.details?.summary?.providerId ?: rawProviderId
+        val titleId = _uiState.value.details?.summary?.id ?: rawTitleId
         val isSeries = _uiState.value.details?.summary?.kind == MediaKind.TV_SERIES
         val season = if (isSeries) _uiState.value.selectedSeasonNumber ?: 1 else null
         val firstEp = if (isSeries) _uiState.value.episodes.firstOrNull()?.episodeNumber ?: 1 else null

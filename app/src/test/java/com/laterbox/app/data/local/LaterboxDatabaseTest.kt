@@ -1644,4 +1644,69 @@ class LaterboxDatabaseTest {
         moviesDao.clearSearchHistory()
         assertTrue(moviesDao.observeRecentSearches(5).first().isEmpty())
     }
+
+    @Test
+    fun migration12To13_preservesExistingDataAndCreatesCanonicalTables() {
+        val instrumentation = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+        val helper = androidx.room.testing.MigrationTestHelper(
+            instrumentation,
+            LaterboxDatabase::class.java
+        )
+        val dbName = "migration_12_13_test.db"
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        context.deleteDatabase(dbName)
+
+        helper.createDatabase(dbName, 12).use { v12Db ->
+            v12Db.execSQL(
+                "INSERT INTO `saved_links` (`id`, `original_url`, `normalized_url`, `title`, `domain`, `content_type`, `is_read`, `is_archived`, `metadata_status`, `retry_count`, `nudge_count`, `nudge_dismissed`, `created_at`, `updated_at`) " +
+                    "VALUES (10, 'https://laterbox.app', 'https://laterbox.app', 'Laterbox Home', 'laterbox.app', 'ARTICLE', 0, 0, 'COMPLETE', 0, 0, 0, 1000, 1000)"
+            )
+            v12Db.execSQL(
+                "INSERT INTO `movie_watchlist_items` (`composite_id`, `provider_id`, `title_id`, `kind`, `title`, `genres_csv`, `source_badge`, `is_playable_hint`, `added_at`) " +
+                    "VALUES ('ia:hgf', 'ia', 'hgf', 'movie', 'His Girl Friday', 'Comedy', 'LIVE_INTERNET_ARCHIVE', 1, 1000)"
+            )
+            v12Db.execSQL(
+                "INSERT INTO `movie_watch_history` (`history_key`, `composite_id`, `provider_id`, `title_id`, `kind`, `title`, `position_ms`, `duration_ms`, `last_watched_at`) " +
+                    "VALUES ('ia:hgf:0:0', 'ia:hgf', 'ia', 'hgf', 'movie', 'His Girl Friday', 30000, 5500000, 2000)"
+            )
+        }
+
+        val migratedDb = helper.runMigrationsAndValidate(
+            dbName,
+            13,
+            true,
+            LaterboxDatabase.MIGRATION_12_13
+        )
+        try {
+            migratedDb.query("SELECT title FROM `saved_links` WHERE id = 10").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("Laterbox Home", c.getString(0))
+            }
+            migratedDb.query("SELECT title, canonical_id FROM `movie_watchlist_items` WHERE composite_id = 'ia:hgf'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("His Girl Friday", c.getString(0))
+                assertNull(c.getString(1))
+            }
+            migratedDb.query("SELECT position_ms, canonical_id FROM `movie_watch_history` WHERE history_key = 'ia:hgf:0:0'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals(30_000L, c.getLong(0))
+                assertNull(c.getString(1))
+            }
+            migratedDb.execSQL(
+                "INSERT INTO `canonical_media` (`canonical_id`, `kind`, `title`, `norm_title`, `release_year`, `imdb_id`, `tvmaze_id`, `updated_at`) " +
+                    "VALUES ('cid_1', 'movie', 'His Girl Friday', 'his girl friday', 1940, 'tt0032599', NULL, 5000)"
+            )
+            migratedDb.execSQL(
+                "INSERT INTO `media_provider_links` (`canonical_id`, `provider_id`, `provider_title_id`, `confidence`, `updated_at`) " +
+                    "VALUES ('cid_1', 'ia', 'hgf', 'T1', 5000)"
+            )
+            migratedDb.query("SELECT canonical_id FROM `media_provider_links` WHERE provider_id = 'ia' AND provider_title_id = 'hgf'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("cid_1", c.getString(0))
+            }
+        } finally {
+            migratedDb.close()
+            context.deleteDatabase(dbName)
+        }
+    }
 }

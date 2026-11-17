@@ -4,7 +4,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.laterbox.app.BuildConfig
 import com.laterbox.app.data.preferences.MovieBoxEndpointConfig
-import com.laterbox.app.data.preferences.MoviesProviderMode
 import com.laterbox.app.data.preferences.UserPreferencesRepository
 import com.laterbox.app.movies.data.provider.MovieBoxProvider
 import com.laterbox.app.movies.domain.model.CatalogueSort
@@ -36,14 +35,10 @@ data class MoviesHomeUiState(
     val watchlist: List<MovieTitleSummary> = emptyList(),
     val continueWatching: List<WatchHistoryItem> = emptyList(),
     val errorMessage: String? = null,
-    val providerMode: MoviesProviderMode = MoviesProviderMode.MOVIEBOX,
     val movieBoxApiBaseUrl: String = "",
     val effectiveMovieBoxBaseUrl: String = BuildConfig.MOVIEBOX_API_BASE_URL,
     val movieBoxApiKey: String = "",
     val useSampleFixturesOnly: Boolean = false,
-    val tmdbApiKeyConfigured: Boolean = false,
-    val currentTmdbApiKey: String = "",
-    val tmdbPromptDismissed: Boolean = false,
     // Inline Search, Suggestions & Recent Searches
     val searchQuery: String = "",
     val activeSearchQuery: String = "",
@@ -84,10 +79,9 @@ data class MoviesHomeUiState(
 }
 
 private data class MoviesConfigSnapshot(
-    val providerMode: MoviesProviderMode,
+    val useSampleFixturesOnly: Boolean,
     val movieBoxBaseUrl: String,
-    val movieBoxApiKey: String,
-    val tmdbApiKey: String
+    val movieBoxApiKey: String
 )
 
 class MoviesHomeViewModel(
@@ -120,13 +114,13 @@ class MoviesHomeViewModel(
             }
         }
         viewModelScope.launch {
+            userPreferencesRepository.migrateLegacyMoviesPreferences()
             userPreferencesRepository.userPreferencesFlow
                 .map { prefs ->
                     MoviesConfigSnapshot(
-                        providerMode = prefs.moviesProviderMode,
+                        useSampleFixturesOnly = BuildConfig.DEBUG && prefs.moviesUseSampleFixturesOnly,
                         movieBoxBaseUrl = prefs.movieBoxApiBaseUrl,
-                        movieBoxApiKey = prefs.movieBoxApiKey,
-                        tmdbApiKey = prefs.tmdbApiKey
+                        movieBoxApiKey = prefs.movieBoxApiKey
                     )
                 }
                 .distinctUntilChanged()
@@ -136,13 +130,10 @@ class MoviesHomeViewModel(
                     val effectiveBase = config.movieBoxBaseUrl.ifBlank { BuildConfig.MOVIEBOX_API_BASE_URL }
                     _uiState.update {
                         it.copy(
-                            providerMode = config.providerMode,
                             movieBoxApiBaseUrl = config.movieBoxBaseUrl,
                             effectiveMovieBoxBaseUrl = effectiveBase,
                             movieBoxApiKey = config.movieBoxApiKey,
-                            useSampleFixturesOnly = config.providerMode == MoviesProviderMode.SAMPLE_FIXTURES,
-                            tmdbApiKeyConfigured = config.tmdbApiKey.isNotBlank(),
-                            currentTmdbApiKey = config.tmdbApiKey,
+                            useSampleFixturesOnly = config.useSampleFixturesOnly,
                             isRefreshing = if (changed && it.feed != null) true else it.isRefreshing
                         )
                     }
@@ -540,12 +531,6 @@ class MoviesHomeViewModel(
         }
     }
 
-    fun setProviderMode(mode: MoviesProviderMode) {
-        viewModelScope.launch {
-            userPreferencesRepository.setMoviesProviderMode(mode)
-        }
-    }
-
     fun setMovieBoxConfig(baseUrl: String, apiKey: String) {
         if (!MovieBoxEndpointConfig.isValidBaseUrl(baseUrl, BuildConfig.DEBUG)) return
         viewModelScope.launch {
@@ -554,18 +539,9 @@ class MoviesHomeViewModel(
     }
 
     fun setSampleFixturesOnly(enabled: Boolean) {
+        if (!BuildConfig.DEBUG) return
         viewModelScope.launch {
             userPreferencesRepository.setMoviesUseSampleFixturesOnly(enabled)
         }
-    }
-
-    fun setTmdbApiKey(apiKey: String) {
-        viewModelScope.launch {
-            userPreferencesRepository.setTmdbApiKey(apiKey)
-        }
-    }
-
-    fun dismissTmdbPrompt() {
-        _uiState.update { it.copy(tmdbPromptDismissed = true) }
     }
 }

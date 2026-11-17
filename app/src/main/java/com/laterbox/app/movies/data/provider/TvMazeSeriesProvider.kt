@@ -399,6 +399,8 @@ class TvMazeSeriesProvider(
         val rawSummary = obj.optString("summary").takeIf { it.isNotBlank() && it != "null" }.orEmpty()
         val cleanSummary = if (rawSummary.isNotBlank()) Jsoup.parse(rawSummary).text().trim() else null
 
+        val imdbId = obj.optJSONObject("externals")?.optString("imdb")?.takeIf { it.isNotBlank() && it != "null" }
+
         return MovieTitleSummary(
             id = id,
             providerId = providerId,
@@ -414,7 +416,9 @@ class TvMazeSeriesProvider(
             language = obj.optString("language").takeIf { it.isNotBlank() && it != "null" },
             country = countryName,
             sourceBadge = sourceBadge,
-            isPlayableHint = false
+            isPlayableHint = false,
+            imdbId = imdbId,
+            tvmazeId = id
         )
     }
 

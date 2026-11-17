@@ -1021,8 +1021,6 @@ fun LaterboxApp(
                                 },
                                 onToggleWatchlist = moviesHomeViewModel::toggleWatchlist,
                                 onToggleSampleFixtures = moviesHomeViewModel::setSampleFixturesOnly,
-                                onSaveTmdbApiKey = moviesHomeViewModel::setTmdbApiKey,
-                                onSelectProviderMode = moviesHomeViewModel::setProviderMode,
                                 onSaveMovieBoxConfig = moviesHomeViewModel::setMovieBoxConfig,
                                 onSearchQueryChange = moviesHomeViewModel::onSearchQueryChange,
                                 onSearchFocusChange = moviesHomeViewModel::setSearchFocused,
@@ -1036,10 +1034,6 @@ fun LaterboxApp(
                                 onSelectSort = moviesHomeViewModel::selectSort,
                                 onResetFilters = moviesHomeViewModel::resetFilters,
                                 onLoadMoreFiltered = moviesHomeViewModel::loadMoreFiltered,
-                                onDismissTmdbPrompt = moviesHomeViewModel::dismissTmdbPrompt,
-                                onOpenExternalUrl = { url ->
-                                    BrowserLauncher.openUrl(context, url, colors)
-                                },
                                 onMenuClick = openMenuHandler,
                                 bottomPaddingDp = if (showHandsetBottomBar) 96 else 24
                             )
@@ -1141,10 +1135,11 @@ fun LaterboxApp(
                                 onRetry = { movieDetailViewModel.load(providerId, titleId, forceRefresh = true) },
                                 onToggleWatchlist = movieDetailViewModel::toggleWatchlist,
                                 onPlayClick = { seasonNum, epNum ->
+                                    val resolvedSummary = detailState.details?.summary
                                     navController.navigate(
                                         LaterboxDestination.MoviePlayer.createRoute(
-                                            providerId = providerId,
-                                            titleId = titleId,
+                                            providerId = resolvedSummary?.providerId ?: providerId,
+                                            titleId = resolvedSummary?.id ?: titleId,
                                             seasonNumber = seasonNum,
                                             episodeNumber = epNum
                                         )
@@ -1161,7 +1156,8 @@ fun LaterboxApp(
                                 },
                                 onDownloadSource = movieDetailViewModel::downloadSource,
                                 onDismissDownloadStatus = movieDetailViewModel::clearDownloadStatus,
-                                onRetryPlaybackCheck = movieDetailViewModel::retryPlaybackCheck
+                                onRetryPlaybackCheck = movieDetailViewModel::retryPlaybackCheck,
+                                onUnlinkProviderLink = movieDetailViewModel::unlinkProviderLink
                             )
                         }
 

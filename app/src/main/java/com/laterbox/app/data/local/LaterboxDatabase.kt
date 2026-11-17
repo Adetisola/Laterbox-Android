@@ -25,6 +25,8 @@ import com.laterbox.app.media.data.db.entity.DownloadedAssetEntity
 import com.laterbox.app.media.data.db.entity.DownloadTaskEntity
 import com.laterbox.app.media.data.db.entity.MediaInspectionEntity
 import com.laterbox.app.movies.data.local.dao.MoviesDao
+import com.laterbox.app.movies.data.local.entity.CanonicalMediaEntity
+import com.laterbox.app.movies.data.local.entity.MediaProviderLinkEntity
 import com.laterbox.app.movies.data.local.entity.MovieCacheEntryEntity
 import com.laterbox.app.movies.data.local.entity.MovieSearchHistoryEntity
 import com.laterbox.app.movies.data.local.entity.MovieWatchHistoryEntity
@@ -46,10 +48,12 @@ import com.laterbox.app.movies.data.local.entity.MovieWatchlistEntity
         MovieCacheEntryEntity::class,
         MovieWatchlistEntity::class,
         MovieWatchHistoryEntity::class,
-        MovieSearchHistoryEntity::class
+        MovieSearchHistoryEntity::class,
+        CanonicalMediaEntity::class,
+        MediaProviderLinkEntity::class
     ],
-    version = 12,
-    exportSchema = false
+    version = 13,
+    exportSchema = true
 )
 @TypeConverters(Converters::class)
 abstract class LaterboxDatabase : RoomDatabase() {
@@ -625,6 +629,55 @@ abstract class LaterboxDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Non-destructive migration from version 12 to version 13:
+         * Adds canonical_media and media_provider_links tables plus nullable canonical_id
+         * columns on movie_watchlist_items and movie_watch_history for lazy backfill.
+         */
+        val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `canonical_media` (
+                        `canonical_id` TEXT NOT NULL,
+                        `kind` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `norm_title` TEXT NOT NULL,
+                        `release_year` INTEGER,
+                        `imdb_id` TEXT,
+                        `tvmaze_id` TEXT,
+                        `updated_at` INTEGER NOT NULL,
+                        PRIMARY KEY(`canonical_id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_canonical_media_norm_title` ON `canonical_media` (`norm_title`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_canonical_media_imdb_id` ON `canonical_media` (`imdb_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_canonical_media_tvmaze_id` ON `canonical_media` (`tvmaze_id`)")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `media_provider_links` (
+                        `canonical_id` TEXT NOT NULL,
+                        `provider_id` TEXT NOT NULL,
+                        `provider_title_id` TEXT NOT NULL,
+                        `confidence` TEXT NOT NULL,
+                        `updated_at` INTEGER NOT NULL,
+                        PRIMARY KEY(`provider_id`, `provider_title_id`),
+                        FOREIGN KEY(`canonical_id`) REFERENCES `canonical_media`(`canonical_id`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_media_provider_links_canonical_id` ON `media_provider_links` (`canonical_id`)")
+
+                db.execSQL("ALTER TABLE `movie_watchlist_items` ADD COLUMN `canonical_id` TEXT DEFAULT NULL")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movie_watchlist_items_canonical_id` ON `movie_watchlist_items` (`canonical_id`)")
+
+                db.execSQL("ALTER TABLE `movie_watch_history` ADD COLUMN `canonical_id` TEXT DEFAULT NULL")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movie_watch_history_canonical_id` ON `movie_watch_history` (`canonical_id`)")
+            }
+        }
+
         @Volatile
         private var INSTANCE: LaterboxDatabase? = null
 
@@ -646,7 +699,8 @@ abstract class LaterboxDatabase : RoomDatabase() {
                         MIGRATION_8_9,
                         MIGRATION_9_10,
                         MIGRATION_10_11,
-                        MIGRATION_11_12
+                        MIGRATION_11_12,
+                        MIGRATION_12_13
                     )
                     .build()
                     .also { INSTANCE = it }

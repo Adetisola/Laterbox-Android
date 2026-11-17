@@ -154,8 +154,9 @@ class MoviesRepositoryTest {
     }
 
     @Test
-    fun movieBoxMode_routesAllOperationsToMovieBox_andNeverSilentlyFallsBackToOpenArchive() = runTest {
+    fun unifiedResolver_prefersMovieBoxAndFallsBackToLiveOpenArchiveOrMovieBoxStaleCache() = runTest {
         var failMovieBox = false
+        var failOpenArchive = false
         val iaOrTvMazeHits = mutableListOf<String>()
 
         server.dispatcher = object : Dispatcher() {
@@ -163,7 +164,14 @@ class MoviesRepositoryTest {
                 val path = request.path.orEmpty()
                 if (path.startsWith("/advancedsearch.php") || path.startsWith("/shows") || path.startsWith("/schedule")) {
                     iaOrTvMazeHits.add(path)
-                    return MockResponse().setResponseCode(200).setBody("""{"response":{"numFound":0,"docs":[]}}""")
+                    if (failOpenArchive) return MockResponse().setResponseCode(503)
+                    return when {
+                        path.startsWith("/advancedsearch.php") -> MockResponse().setResponseCode(200).setBody(
+                            """{"response":{"numFound":1,"docs":[{"identifier":"ia_fallback","title":"Fallback Classic","year":1950}]}}"""
+                        )
+                        path.startsWith("/shows") -> MockResponse().setResponseCode(200).setBody("[]")
+                        else -> MockResponse().setResponseCode(200).setBody("[]")
+                    }
                 }
                 if (failMovieBox) {
                     return MockResponse().setResponseCode(502).setBody("""{"detail":"MovieBox upstream offline"}""")
@@ -212,38 +220,134 @@ class MoviesRepositoryTest {
             tvMazeProvider = TvMazeSeriesProvider(client, base),
             tmdbProvider = TmdbOptionalMoviesProvider(client, apiKeyProvider = { "" }, baseUrl = base),
             movieBoxProvider = mbProvider,
-            providerModeProvider = { com.laterbox.app.data.preferences.MoviesProviderMode.MOVIEBOX },
             useSampleFixturesOnlyProvider = { false },
             nowMs = { fakeClockMs }
         )
 
-        // When MovieBox fails initially with no cache, must return failure and NEVER silently call IA/TVMaze
+        // When MovieBox fails initially while IA is up, unified resolver falls back cleanly with notice
         failMovieBox = true
-        val initialErr = repo.getHomeFeed(forceRefresh = false)
-        assertTrue(initialErr.isFailure)
-        assertTrue("IA/TVMaze must not be hit in MovieBox mode: $iaOrTvMazeHits", iaOrTvMazeHits.isEmpty())
+        failOpenArchive = false
+        val fallbackFeed = repo.getHomeFeed(forceRefresh = false).getOrThrow()
+        assertFalse(fallbackFeed.isOfflineCached)
+        assertEquals(MoviesRepositoryImpl.MOVIEBOX_FALLBACK_NOTICE, fallbackFeed.activeProviderNotice)
+        assertTrue(fallbackFeed.featuredBanners.any { it.providerId == "ia" })
+        assertTrue(iaOrTvMazeHits.isNotEmpty())
 
-        // Recover MovieBox: caches MovieBox response in Room
+        // Recover MovieBox: caches MovieBox response in Room and clears fallback notice
+        iaOrTvMazeHits.clear()
         failMovieBox = false
         val liveFeed = repo.getHomeFeed(forceRefresh = true).getOrThrow()
         assertFalse(liveFeed.isOfflineCached)
         assertEquals("777", liveFeed.featuredBanners.first().id)
         assertEquals("moviebox", liveFeed.featuredBanners.first().providerId)
         assertEquals(DataSourceBadge.LIVE_MOVIEBOX, liveFeed.featuredBanners.first().sourceBadge)
+        assertTrue(iaOrTvMazeHits.isEmpty())
 
-        // Search routes strictly to MovieBox
+        // Search routes to MovieBox first
         val searchPage = repo.search("Feature").getOrThrow()
         assertEquals(1, searchPage.items.size)
         assertEquals("moviebox", searchPage.items.first().providerId)
 
-        // Break MovieBox after stale TTL -> returns MovieBox's own offline cache, still zero IA/TVMaze calls
+        // Break BOTH MovieBox and Open Archive after stale TTL -> returns MovieBox's own stale offline cache
         failMovieBox = true
+        failOpenArchive = true
         fakeClockMs += MoviesRepositoryImpl.CACHE_TTL_MS + 60_000L
         val staleFeed = repo.getHomeFeed(forceRefresh = false).getOrThrow()
         assertTrue(staleFeed.isOfflineCached)
         assertEquals("moviebox", staleFeed.featuredBanners.first().providerId)
         assertTrue(staleFeed.activeProviderNotice.orEmpty().contains("MovieBox"))
-        assertTrue(iaOrTvMazeHits.isEmpty())
+    }
+
+    @Test
+    fun canonicalIdentity_linksAcrossProvidersPromotesPlayableWatchlistAndUnlinksCleanly() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/shows/169") && !path.contains("/seasons") && !path.contains("/episodes") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "id": 169,
+                          "name": "Breaking Bad",
+                          "premiered": "2008-01-20",
+                          "runtime": 47,
+                          "externals": {"imdb": "tt0903747"},
+                          "rating": {"average": 9.5},
+                          "genres": ["Drama"],
+                          "_embedded": {"seasons": [{"id": 1, "number": 1, "name": "Season 1", "episodeOrder": 7}]}
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/detail/mb_bb") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "subject_id": "mb_bb",
+                          "subject_type": 2,
+                          "title": "Breaking Bad",
+                          "release_date": "2008-01-20",
+                          "duration": 2820,
+                          "imdb_id": "tt0903747",
+                          "description": "Linked MovieBox entry.",
+                          "dubs": []
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/episodes/mb_bb") -> MockResponse().setResponseCode(200).setBody(
+                        """{"subject_id":"mb_bb","seasons":[{"season":1,"episode_count":7}]}"""
+                    )
+                    path.startsWith("/api/stream/mb_bb/captions") -> MockResponse().setResponseCode(200).setBody(
+                        """{"subject_id":"mb_bb","captions":[]}"""
+                    )
+                    path.startsWith("/api/stream/mb_bb") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "streams": [
+                            {"id": "s1", "url": "https://cdn.example/bb_720.mp4", "format": "MP4", "quality": "720p", "quality_value": 720}
+                          ]
+                        }
+                        """.trimIndent()
+                    )
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val client = OkHttpClient()
+        val base = server.url("/").toString().trimEnd('/')
+        val repo = MoviesRepositoryImpl(
+            moviesDao = db.moviesDao(),
+            internetArchiveProvider = InternetArchiveMoviesProvider(client, base),
+            tvMazeProvider = TvMazeSeriesProvider(client, base),
+            tmdbProvider = TmdbOptionalMoviesProvider(client, apiKeyProvider = { "" }, baseUrl = base),
+            movieBoxProvider = com.laterbox.app.movies.data.provider.MovieBoxProvider(client, baseUrlProvider = { base }),
+            useSampleFixturesOnlyProvider = { false },
+            nowMs = { fakeClockMs }
+        )
+
+        val tvDetails = repo.getDetails("tvmaze", "169").getOrThrow()
+        val mbDetails = repo.getDetails("moviebox", "mb_bb").getOrThrow()
+        assertEquals(tvDetails.summary.canonicalId, mbDetails.summary.canonicalId)
+
+        val links = repo.getProviderLinks("tvmaze", "169")
+        assertEquals(2, links.size)
+
+        // Watchlist saved on MovieBox matches TVMaze & canonical composite IDs
+        assertTrue(repo.toggleWatchlist(mbDetails.summary))
+        assertTrue(repo.observeIsInWatchlist("tvmaze:169").first())
+        assertTrue(repo.observeIsInWatchlist("canonical:${mbDetails.summary.canonicalId}").first())
+
+        // Playback on TVMaze promoted automatically to linked MovieBox source
+        val promotedPlayback = repo.resolvePlayback("tvmaze", "169", seasonNumber = 1, episodeNumber = 1).getOrThrow()
+        assertTrue(promotedPlayback is PlaybackResolution.Available)
+
+        // Unlink TVMaze separates canonical identity and stops playback promotion
+        val newCanonical = repo.unlinkProviderTitle("tvmaze", "169")
+        assertTrue(!newCanonical.isNullOrBlank() && newCanonical != mbDetails.summary.canonicalId)
+        assertEquals(1, repo.getProviderLinks("tvmaze", "169").size)
+        assertEquals(1, repo.getProviderLinks("moviebox", "mb_bb").size)
+        assertFalse(repo.observeIsInWatchlist("tvmaze:169").first())
+        val unlinkedPlayback = repo.resolvePlayback("tvmaze", "169", seasonNumber = 1, episodeNumber = 1).getOrThrow()
+        assertTrue(unlinkedPlayback is PlaybackResolution.Unavailable)
     }
 
     @Test

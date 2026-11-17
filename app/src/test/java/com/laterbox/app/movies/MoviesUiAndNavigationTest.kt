@@ -12,7 +12,6 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.unit.dp
-import com.laterbox.app.data.preferences.MoviesProviderMode
 import com.laterbox.app.movies.data.cache.MoviesMediaCache
 import com.laterbox.app.movies.domain.model.BrowseSection
 import com.laterbox.app.movies.domain.model.CastMember
@@ -164,8 +163,7 @@ class MoviesUiAndNavigationTest {
                     onOpenDetail = { _, _ -> },
                     onOpenPlayer = { _, _, _, _ -> },
                     onToggleWatchlist = {},
-                    onToggleSampleFixtures = {},
-                    onSaveTmdbApiKey = {}
+                    onToggleSampleFixtures = {}
                 )
             }
         }
@@ -312,20 +310,16 @@ class MoviesUiAndNavigationTest {
     }
 
     @Test
-    fun moviesScreen_inlineSearchFiltersAndTmdbPromptInteractProperly() {
+    fun moviesScreen_inlineSearchFiltersInteractProperlyWithoutTmdbPrompt() {
         var selectedKind: MediaKind? = null
         var selectedSort: CatalogueSort? = null
-        var tmdbDismissed = false
 
         composeTestRule.setContent {
             LaterboxTheme {
                 MoviesScreen(
                     uiState = MoviesHomeUiState(
                         isLoading = false,
-                        providerMode = MoviesProviderMode.OPEN_ARCHIVE_AND_TVMAZE,
-                        tmdbApiKeyConfigured = false,
                         useSampleFixturesOnly = false,
-                        tmdbPromptDismissed = false,
                         feed = MoviesHomeFeed(
                             featuredBanners = listOf(sampleMovie),
                             sections = listOf(
@@ -340,10 +334,8 @@ class MoviesUiAndNavigationTest {
                     onOpenPlayer = { _, _, _, _ -> },
                     onToggleWatchlist = {},
                     onToggleSampleFixtures = {},
-                    onSaveTmdbApiKey = {},
                     onSelectKind = { selectedKind = it },
-                    onSelectSort = { selectedSort = it },
-                    onDismissTmdbPrompt = { tmdbDismissed = true }
+                    onSelectSort = { selectedSort = it }
                 )
             }
         }
@@ -354,11 +346,7 @@ class MoviesUiAndNavigationTest {
 
         composeTestRule.onNodeWithTag("movies_home_sort_top_rated").assertIsDisplayed().performClick()
         assertEquals(CatalogueSort.TOP_RATED, selectedSort)
-
-        composeTestRule.onNodeWithTag("movies_home_list").performScrollToNode(hasTestTag("movies_tmdb_setup_card"))
-        composeTestRule.onNodeWithTag("movies_tmdb_setup_card").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("movies_tmdb_dismiss_button").performClick()
-        assertTrue(tmdbDismissed)
+        composeTestRule.onNodeWithTag("movies_tmdb_setup_card").assertDoesNotExist()
     }
 
     @Test
@@ -453,17 +441,14 @@ class MoviesUiAndNavigationTest {
     }
 
     @Test
-    fun moviesScreen_movieBoxModeHidesTmdbPromptAndOpensServerConfigDialog() {
+    fun moviesScreen_opensServerConfigDialogWithoutModeRadioButtons() {
         composeTestRule.setContent {
             LaterboxTheme {
                 MoviesScreen(
                     uiState = MoviesHomeUiState(
                         isLoading = false,
-                        providerMode = MoviesProviderMode.MOVIEBOX,
                         movieBoxApiBaseUrl = "https://movies.example.com/",
                         effectiveMovieBoxBaseUrl = "https://movies.example.com/",
-                        tmdbApiKeyConfigured = false,
-                        tmdbPromptDismissed = false,
                         feed = MoviesHomeFeed(
                             featuredBanners = listOf(
                                 sampleMovie.copy(
@@ -483,8 +468,7 @@ class MoviesUiAndNavigationTest {
                     onOpenDetail = { _, _ -> },
                     onOpenPlayer = { _, _, _, _ -> },
                     onToggleWatchlist = {},
-                    onToggleSampleFixtures = {},
-                    onSaveTmdbApiKey = {}
+                    onToggleSampleFixtures = {}
                 )
             }
         }
@@ -492,8 +476,9 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithText("Discover films & series").assertIsDisplayed()
         composeTestRule.onNodeWithTag("movies_tmdb_setup_card").assertDoesNotExist()
         composeTestRule.onNodeWithTag("movies_sources_button").performClick()
-        composeTestRule.onNodeWithTag("provider_mode_moviebox").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("provider_mode_moviebox").assertDoesNotExist()
         composeTestRule.onNodeWithTag("moviebox_base_url_input").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("moviebox_api_key_input").performScrollTo().assertIsDisplayed()
     }
 
     @Test
@@ -787,7 +772,6 @@ class MoviesUiAndNavigationTest {
                     onOpenPlayer = { _, _, _, _ -> },
                     onToggleWatchlist = {},
                     onToggleSampleFixtures = {},
-                    onSaveTmdbApiKey = {},
                     onSearchFocusChange = { focusState = it }
                 )
             }
@@ -826,7 +810,6 @@ class MoviesUiAndNavigationTest {
                     onOpenPlayer = { _, _, _, _ -> },
                     onToggleWatchlist = {},
                     onToggleSampleFixtures = {},
-                    onSaveTmdbApiKey = {},
                     onSelectCountry = { clickedCountry = it },
                     onSelectShortcut = { clickedShortcut = it },
                     onOpenCatalogueWithSort = { _, _, sort, _ -> clickedSortSeeAll = sort }

@@ -1,10 +1,22 @@
 package com.laterbox.app.data.preferences
 
+import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.test.core.app.ApplicationProvider
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
 class UserPreferencesTest {
 
     @Test
@@ -65,5 +77,36 @@ class UserPreferencesTest {
         assertEquals(setOf(1, 3, 5), settings.custom.daysOfWeek)
         assertEquals(14, settings.custom.hour)
         assertEquals(SmartReminderPersistence.THRICE, settings.persistence)
+    }
+
+    @Test
+    fun migrateLegacyMoviesPreferences_removesLegacyModeAndFixtureKeysWhilePreservingMovieBoxConfig() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val legacyModeKey = stringPreferencesKey("movies_provider_mode")
+        val legacyFixtureKey = booleanPreferencesKey("movies_use_sample_fixtures_only")
+        val migratedV2Key = booleanPreferencesKey("movies_prefs_migrated_v2")
+        val mbUrlKey = stringPreferencesKey("moviebox_api_base_url")
+        val mbKeyKey = stringPreferencesKey("moviebox_api_key")
+
+        context.userDataStore.edit { prefs ->
+            prefs[legacyModeKey] = "OPEN_ARCHIVE_AND_TVMAZE"
+            prefs[legacyFixtureKey] = true
+            prefs[mbUrlKey] = "https://custom.moviebox.example/"
+            prefs[mbKeyKey] = "custom-api-key"
+            prefs.remove(migratedV2Key)
+        }
+
+        val repo = UserPreferencesRepository(context)
+        repo.migrateLegacyMoviesPreferences()
+
+        val rawAfter = context.userDataStore.data.first()
+        assertFalse(rawAfter.contains(legacyModeKey))
+        assertFalse(rawAfter.contains(legacyFixtureKey))
+        assertTrue(rawAfter[migratedV2Key] == true)
+
+        val mapped = repo.userPreferencesFlow.first()
+        assertEquals("https://custom.moviebox.example/", mapped.movieBoxApiBaseUrl)
+        assertEquals("custom-api-key", mapped.movieBoxApiKey)
+        assertFalse(mapped.moviesUseSampleFixturesOnly)
     }
 }
