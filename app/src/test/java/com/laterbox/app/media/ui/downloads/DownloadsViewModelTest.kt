@@ -61,6 +61,32 @@ class DownloadsViewModelTest {
         override fun getAssetsForLink(linkId: Long): Flow<List<MediaAsset>> = flowOf(emptyList())
         override fun getAllAssets(): Flow<List<MediaAsset>> = assetsFlow
         override fun filterAssets(mediaType: MediaType?, query: String): Flow<List<MediaAsset>> = assetsFlow
+        override fun filterAssetsByCategory(
+            category: com.laterbox.app.media.domain.model.DownloadsFilterCategory,
+            query: String
+        ): Flow<List<MediaAsset>> = kotlinx.coroutines.flow.flow {
+            assetsFlow.collect { list ->
+                emit(
+                    list.filter { asset ->
+                        val catMatch = when (category) {
+                            com.laterbox.app.media.domain.model.DownloadsFilterCategory.ALL -> true
+                            com.laterbox.app.media.domain.model.DownloadsFilterCategory.MOVIES ->
+                                asset.contentCategory == "MOVIE" || asset.contentCategory == "EPISODE"
+                            com.laterbox.app.media.domain.model.DownloadsFilterCategory.VIDEO ->
+                                asset.mediaType == MediaType.VIDEO && asset.contentCategory != "MOVIE" && asset.contentCategory != "EPISODE"
+                            com.laterbox.app.media.domain.model.DownloadsFilterCategory.IMAGE -> asset.mediaType == MediaType.IMAGE
+                            com.laterbox.app.media.domain.model.DownloadsFilterCategory.AUDIO -> asset.mediaType == MediaType.AUDIO
+                            com.laterbox.app.media.domain.model.DownloadsFilterCategory.DOCUMENTS -> asset.mediaType == MediaType.DOCUMENT
+                        }
+                        val q = query.trim()
+                        val queryMatch = q.isEmpty() ||
+                            asset.title.orEmpty().contains(q, ignoreCase = true) ||
+                            asset.originalSourceUrl.contains(q, ignoreCase = true)
+                        catMatch && queryMatch
+                    }
+                )
+            }
+        }
         override fun getAssetById(id: String): Flow<MediaAsset?> = flowOf(null)
         override fun getTasksForLink(linkId: Long): Flow<List<DownloadTask>> = flowOf(emptyList())
         override fun getQueueTasks(): Flow<List<DownloadTask>> = flowOf(emptyList())
@@ -251,5 +277,97 @@ class DownloadsViewModelTest {
         testScheduler.advanceUntilIdle()
         assertFalse(viewModel.uiState.value.isQueueSelectionMode)
         assertTrue(viewModel.uiState.value.selectedTaskIds.isEmpty())
+    }
+
+    @Test
+    fun filterCategory_separatesMoviesFromGeneralVideosInViewModelAndRoom() = runTest {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(context, com.laterbox.app.data.local.LaterboxDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val assetDao = db.downloadedAssetDao()
+            val taskDao = db.downloadTaskDao()
+            val now = System.currentTimeMillis()
+            assetDao.insertAsset(
+                com.laterbox.app.media.data.db.entity.DownloadedAssetEntity(
+                    id = "a_movie",
+                    savedLinkId = null,
+                    sourcePlatform = "MovieBox",
+                    originalSourceUrl = "https://cdn.example/movie.mp4",
+                    title = "His Girl Friday",
+                    mimeType = "video/mp4",
+                    mediaType = MediaType.VIDEO.name,
+                    localPath = "video/movie.mp4",
+                    fileSize = 1000L,
+                    checksum = "m1",
+                    createdAt = now,
+                    contentCategory = "MOVIE"
+                )
+            )
+            assetDao.insertAsset(
+                com.laterbox.app.media.data.db.entity.DownloadedAssetEntity(
+                    id = "a_ep",
+                    savedLinkId = null,
+                    sourcePlatform = "MovieBox",
+                    originalSourceUrl = "https://cdn.example/ep1.mp4",
+                    title = "Severance S1E1",
+                    mimeType = "video/mp4",
+                    mediaType = MediaType.VIDEO.name,
+                    localPath = "video/ep1.mp4",
+                    fileSize = 900L,
+                    checksum = "m2",
+                    createdAt = now - 10,
+                    contentCategory = "EPISODE"
+                )
+            )
+            assetDao.insertAsset(
+                com.laterbox.app.media.data.db.entity.DownloadedAssetEntity(
+                    id = "a_clip",
+                    savedLinkId = null,
+                    sourcePlatform = "YouTube",
+                    originalSourceUrl = "https://youtube.com/watch?v=x",
+                    title = "Conference Talk",
+                    mimeType = "video/mp4",
+                    mediaType = MediaType.VIDEO.name,
+                    localPath = "video/talk.mp4",
+                    fileSize = 500L,
+                    checksum = "v1",
+                    createdAt = now - 20,
+                    contentCategory = null
+                )
+            )
+
+            val repo = com.laterbox.app.media.data.repository.MediaRepositoryImpl(context, assetDao, taskDao)
+            val viewModel = DownloadsViewModel(repo, FakeMediaInspectionDao())
+            val collectJob = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+                viewModel.uiState.collect()
+            }
+            try {
+                suspend fun awaitAssetIds(expected: Set<String>) {
+                    val deadline = System.currentTimeMillis() + 5_000L
+                    while (System.currentTimeMillis() < deadline) {
+                        val current = viewModel.uiState.value.assets.map { it.id }.toSet()
+                        if (current == expected) return
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                            kotlinx.coroutines.delay(25L)
+                        }
+                    }
+                    assertEquals(expected, viewModel.uiState.value.assets.map { it.id }.toSet())
+                }
+
+                awaitAssetIds(setOf("a_movie", "a_ep", "a_clip"))
+
+                viewModel.onCategorySelected(com.laterbox.app.media.domain.model.DownloadsFilterCategory.MOVIES)
+                awaitAssetIds(setOf("a_movie", "a_ep"))
+
+                viewModel.onCategorySelected(com.laterbox.app.media.domain.model.DownloadsFilterCategory.VIDEO)
+                awaitAssetIds(setOf("a_clip"))
+            } finally {
+                collectJob.cancel()
+            }
+        } finally {
+            db.close()
+        }
     }
 }

@@ -184,27 +184,91 @@ class DownloadWorker(
                     progressChannel.trySend(ProgressEvent(bytes, total, percent, stage))
                 }
 
-                val result = if (task.formatSelector != null) {
+                var activeTask = task
+                var refreshedSourceThisAttempt = false
+
+                val result = if (activeTask.formatSelector != null) {
                     val ytDlpDownloader = YtDlpDownloader(appContext)
-                    val infoJsonFile = InfoJsonCache.getValidInfoJson(appContext, task.sourceUrl, task.savedLinkId)
+                    val infoJsonFile = InfoJsonCache.getValidInfoJson(appContext, activeTask.sourceUrl, activeTask.savedLinkId)
                     ytDlpDownloader.download(
-                        url = task.sourceUrl,
-                        formatSelector = task.formatSelector,
+                        url = activeTask.sourceUrl,
+                        formatSelector = activeTask.formatSelector!!,
                         destinationFile = partFile,
                         taskId = taskId,
                         infoJsonFile = infoJsonFile,
                         onProgress = onProgressCallback
                     )
                 } else {
-                    val httpDownloader = HttpDownloader()
-                    httpDownloader.download(
-                        url = task.sourceUrl,
-                        destinationFile = partFile,
-                        headers = task.toDomain().headers,
-                        onProgress = { bytes, total, percent, stage ->
-                            onProgressCallback(bytes, total, percent, stage)
+                    val moviesRepo = container?.moviesRepository
+                    if (moviesRepo != null &&
+                        activeTask.sourceRef != null &&
+                        DownloadSourceRefresher.isUrlExpiredOrExpiring(activeTask.urlExpiresAt)
+                    ) {
+                        val refreshed = DownloadSourceRefresher.refreshTaskSource(
+                            task = activeTask,
+                            taskDao = taskDao,
+                            resolvePlayback = { pId, tId, se, ep ->
+                                moviesRepo.resolvePlayback(pId, tId, se, ep)
+                            }
+                        )
+                        if (refreshed != null) {
+                            activeTask = refreshed
+                            refreshedSourceThisAttempt = true
                         }
-                    )
+                    }
+
+                    val httpDownloader = HttpDownloader()
+                    var lastPersistedEtag = activeTask.etag
+                    var lastTelemetryPersistTime = 0L
+
+                    suspend fun executeHttpDownload(currentTask: com.laterbox.app.media.data.db.entity.DownloadTaskEntity): DownloadResult {
+                        return httpDownloader.download(
+                            url = currentTask.sourceUrl,
+                            destinationFile = partFile,
+                            headers = currentTask.toDomain().headers,
+                            expectedETag = currentTask.etag,
+                            onTelemetry = { speedBps, etaSeconds, etag ->
+                                if (!etag.isNullOrBlank() && etag != lastPersistedEtag) {
+                                    lastPersistedEtag = etag
+                                    taskDao.updateEtag(taskId, etag)
+                                }
+                                val now = System.currentTimeMillis()
+                                val isTerminalClear = speedBps == null && etaSeconds == 0L
+                                if (isTerminalClear || (speedBps != null && now - lastTelemetryPersistTime >= 500L)) {
+                                    lastTelemetryPersistTime = now
+                                    taskDao.updateTelemetry(taskId, speedBps, etaSeconds)
+                                }
+                            },
+                            onProgress = { bytes, total, percent, stage ->
+                                onProgressCallback(bytes, total, percent, stage)
+                            }
+                        )
+                    }
+
+                    val initialResult = executeHttpDownload(activeTask)
+                    if (initialResult is DownloadResult.Failure &&
+                        (initialResult.httpStatus == 403 || initialResult.httpStatus == 410) &&
+                        !refreshedSourceThisAttempt &&
+                        moviesRepo != null &&
+                        activeTask.sourceRef != null
+                    ) {
+                        val refreshed = DownloadSourceRefresher.refreshTaskSource(
+                            task = activeTask,
+                            taskDao = taskDao,
+                            resolvePlayback = { pId, tId, se, ep ->
+                                moviesRepo.resolvePlayback(pId, tId, se, ep)
+                            }
+                        )
+                        if (refreshed != null) {
+                            activeTask = refreshed
+                            refreshedSourceThisAttempt = true
+                            executeHttpDownload(activeTask)
+                        } else {
+                            initialResult
+                        }
+                    } else {
+                        initialResult
+                    }
                 }
 
                 progressChannel.close()
@@ -334,7 +398,7 @@ class DownloadWorker(
                             id = assetId,
                             savedLinkId = task.savedLinkId,
                             sourcePlatform = task.sourcePlatform,
-                            originalSourceUrl = task.sourceUrl,
+                            originalSourceUrl = activeTask.sourceUrl,
                             title = task.title,
                             mimeType = finalized.mimeType,
                             mediaType = mediaType.name,
@@ -539,5 +603,86 @@ class DownloadWorker(
         val downloadSemaphore = Semaphore(permits = 2)
 
         fun uniqueWorkName(taskId: String): String = "media_download_$taskId"
+    }
+}
+
+internal data class ParsedSourceRef(
+    val providerId: String,
+    val titleId: String,
+    val seasonNumber: Int?,
+    val episodeNumber: Int?,
+    val qualityLabel: String
+)
+
+internal object DownloadSourceRefresher {
+    private const val EXPIRY_BUFFER_MS = 60_000L
+
+    fun isUrlExpiredOrExpiring(
+        urlExpiresAt: Long?,
+        nowMs: Long = System.currentTimeMillis(),
+        bufferMs: Long = EXPIRY_BUFFER_MS
+    ): Boolean = urlExpiresAt != null && urlExpiresAt <= nowMs + bufferMs
+
+    fun parseSourceRef(sourceRef: String?): ParsedSourceRef? {
+        if (sourceRef.isNullOrBlank()) return null
+        val parts = sourceRef.split("|")
+        if (parts.size < 5) return null
+        val providerId = parts[0].trim()
+        val titleId = parts[1].trim()
+        if (providerId.isEmpty() || titleId.isEmpty()) return null
+        val season = parts[2].trim().toIntOrNull()?.takeIf { it > 0 }
+        val episode = parts[3].trim().toIntOrNull()?.takeIf { it > 0 }
+        val qualityLabel = parts.subList(4, parts.size).joinToString("|").trim()
+        return ParsedSourceRef(
+            providerId = providerId,
+            titleId = titleId,
+            seasonNumber = season,
+            episodeNumber = episode,
+            qualityLabel = qualityLabel
+        )
+    }
+
+    suspend fun refreshTaskSource(
+        task: com.laterbox.app.media.data.db.entity.DownloadTaskEntity,
+        taskDao: com.laterbox.app.media.data.db.dao.DownloadTaskDao,
+        resolvePlayback: suspend (providerId: String, titleId: String, seasonNumber: Int?, episodeNumber: Int?) -> Result<com.laterbox.app.movies.domain.model.PlaybackResolution>
+    ): com.laterbox.app.media.data.db.entity.DownloadTaskEntity? {
+        val parsed = parseSourceRef(task.sourceRef) ?: return null
+        val resolution = resolvePlayback(
+            parsed.providerId,
+            parsed.titleId,
+            parsed.seasonNumber,
+            parsed.episodeNumber
+        ).getOrNull() as? com.laterbox.app.movies.domain.model.PlaybackResolution.Available ?: return null
+
+        val progressiveSources = resolution.sources.filter { src ->
+            src.isAuthorised &&
+                !src.format.equals("DASH", ignoreCase = true) &&
+                !src.format.equals("HLS", ignoreCase = true) &&
+                !src.url.contains(".mpd", ignoreCase = true) &&
+                !src.url.contains(".m3u8", ignoreCase = true)
+        }
+        val selected = progressiveSources.firstOrNull {
+            parsed.qualityLabel.isNotBlank() && it.qualityLabel.equals(parsed.qualityLabel, ignoreCase = true)
+        } ?: progressiveSources.maxByOrNull { it.qualityHeight } ?: return null
+
+        val headersJson = if (selected.headers.isNotEmpty()) {
+            val obj = org.json.JSONObject()
+            selected.headers.forEach { (k, v) -> obj.put(k, v) }
+            obj.toString()
+        } else null
+        val newExpiresAt = com.laterbox.app.movies.data.download.MoviesDownloadBridge.parseUrlExpiryMillis(selected.url)
+
+        taskDao.updateResolvedSource(
+            id = task.id,
+            sourceUrl = selected.url,
+            headersJson = headersJson,
+            urlExpiresAt = newExpiresAt
+        )
+        return task.copy(
+            sourceUrl = selected.url,
+            headersJson = headersJson,
+            urlExpiresAt = newExpiresAt
+        )
     }
 }

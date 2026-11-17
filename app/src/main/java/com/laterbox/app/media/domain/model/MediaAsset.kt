@@ -5,6 +5,15 @@ enum class AssetFileStatus {
     MISSING
 }
 
+enum class DownloadsFilterCategory(val label: String) {
+    ALL("All"),
+    IMAGE("Image"),
+    VIDEO("Video"),
+    MOVIES("Movies"),
+    AUDIO("Audio"),
+    DOCUMENTS("Documents")
+}
+
 data class MediaAsset(
     val id: String,
     val savedLinkId: Long?,

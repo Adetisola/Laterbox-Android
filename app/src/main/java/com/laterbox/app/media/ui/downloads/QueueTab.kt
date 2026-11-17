@@ -272,15 +272,20 @@ fun QueueTaskCard(
                     ) {
                         val stageLabel = stage?.label ?: if (task.status == DownloadState.PROCESSING) "Processing..." else "Downloading..."
                         val detail = if (!task.stageDetail.isNullOrBlank()) " · ${task.stageDetail}" else ""
+                        val speedPart = task.speedBps?.takeIf { it > 0L }?.let { " · ${formatSpeed(it)}" }.orEmpty()
+                        val etaPart = task.etaSeconds?.takeIf { it > 0L }?.let { " · ${formatEta(it)} left" }.orEmpty()
                         val progressText = if (isIndeterminate) {
                             "$stageLabel$detail"
                         } else {
-                            "$stageLabel · ${task.progress}% · ${formatBytes(task.downloadedBytes)}$detail"
+                            "$stageLabel · ${task.progress}% · ${formatBytes(task.downloadedBytes)}$speedPart$etaPart$detail"
                         }
                         Text(
                             text = progressText,
                             style = typography.caption,
-                            color = colors.textSecondary
+                            color = colors.textSecondary,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
                         )
                         TextButton(onClick = onPauseTask) {
                             Text(text = "Pause", color = colors.accentPrimary, fontSize = 12.sp)
@@ -399,4 +404,21 @@ fun formatBytes(bytes: Long): String {
     if (digitGroups >= units.size) digitGroups = units.size - 1
     val formatted = bytes / Math.pow(1024.0, digitGroups.toDouble())
     return "%.1f %s".format(formatted, units[digitGroups])
+}
+
+fun formatSpeed(bytesPerSec: Long): String {
+    if (bytesPerSec <= 0L) return "0 B/s"
+    return "${formatBytes(bytesPerSec)}/s"
+}
+
+fun formatEta(seconds: Long): String {
+    if (seconds <= 0L) return "0s"
+    val hrs = seconds / 3600L
+    val mins = (seconds % 3600L) / 60L
+    val secs = seconds % 60L
+    return when {
+        hrs > 0L -> "${hrs}h ${mins}m"
+        mins > 0L -> "${mins}m ${secs}s"
+        else -> "${secs}s"
+    }
 }

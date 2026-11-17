@@ -1,6 +1,7 @@
 package com.laterbox.app.media.domain.repository
 
 import com.laterbox.app.media.domain.model.DownloadTask
+import com.laterbox.app.media.domain.model.DownloadsFilterCategory
 import com.laterbox.app.media.domain.model.MediaAsset
 import com.laterbox.app.media.domain.model.MediaCandidate
 import com.laterbox.app.media.domain.model.MediaType
@@ -10,6 +11,16 @@ interface MediaRepository {
     fun getAssetsForLink(linkId: Long): Flow<List<MediaAsset>>
     fun getAllAssets(): Flow<List<MediaAsset>>
     fun filterAssets(mediaType: MediaType?, query: String): Flow<List<MediaAsset>>
+    fun filterAssetsByCategory(category: DownloadsFilterCategory, query: String): Flow<List<MediaAsset>> {
+        val legacyType = when (category) {
+            DownloadsFilterCategory.ALL -> null
+            DownloadsFilterCategory.IMAGE -> MediaType.IMAGE
+            DownloadsFilterCategory.VIDEO, DownloadsFilterCategory.MOVIES -> MediaType.VIDEO
+            DownloadsFilterCategory.AUDIO -> MediaType.AUDIO
+            DownloadsFilterCategory.DOCUMENTS -> MediaType.DOCUMENT
+        }
+        return filterAssets(legacyType, query)
+    }
     fun getAssetById(id: String): Flow<MediaAsset?>
 
     fun getTasksForLink(linkId: Long): Flow<List<DownloadTask>>

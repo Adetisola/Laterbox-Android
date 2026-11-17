@@ -17,6 +17,7 @@ import com.laterbox.app.media.domain.model.AcquisitionSource
 import com.laterbox.app.media.domain.model.AssetFileStatus
 import com.laterbox.app.media.domain.model.DownloadState
 import com.laterbox.app.media.domain.model.DownloadTask
+import com.laterbox.app.media.domain.model.DownloadsFilterCategory
 import com.laterbox.app.media.domain.model.MediaAsset
 import com.laterbox.app.media.domain.model.MediaCandidate
 import com.laterbox.app.media.domain.model.MediaType
@@ -48,6 +49,10 @@ class MediaRepositoryImpl(
 
     override fun filterAssets(mediaType: MediaType?, query: String): Flow<List<MediaAsset>> {
         return assetDao.filterAssets(mediaType?.name, query.trim()).map { list -> list.map { it.toDomain() } }
+    }
+
+    override fun filterAssetsByCategory(category: DownloadsFilterCategory, query: String): Flow<List<MediaAsset>> {
+        return assetDao.filterAssetsByCategory(category.name, query.trim()).map { list -> list.map { it.toDomain() } }
     }
 
     override fun getAssetById(id: String): Flow<MediaAsset?> {

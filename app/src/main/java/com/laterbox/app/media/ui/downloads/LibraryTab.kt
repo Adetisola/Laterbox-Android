@@ -50,6 +50,8 @@ import com.laterbox.app.ui.components.LaterboxShapeTokens
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Surface
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.getValue
@@ -57,6 +59,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import com.laterbox.app.ui.components.LaterboxConfirmDialog
 import com.laterbox.app.ui.theme.LaterboxTheme
 import java.io.File
@@ -384,21 +387,72 @@ fun LibraryAssetCard(
             }
 
             if (!isInSelectionMode) {
-                LaterboxIconButton(
-                    iconRes = LaterboxIcons.Download,
-                    contentDescription = "Export to shared storage",
-                    onClick = onExport,
-                    modifier = Modifier.size(36.dp)
-                )
-
-                Spacer(modifier = Modifier.width(spacing.xxs))
-
-                LaterboxIconButton(
-                    iconRes = LaterboxIcons.Delete,
-                    contentDescription = "Delete",
-                    onClick = onDelete,
-                    modifier = Modifier.size(36.dp)
-                )
+                var showMoreMenu by remember { mutableStateOf(false) }
+                Box {
+                    IconButton(
+                        onClick = { showMoreMenu = true },
+                        modifier = Modifier
+                            .size(36.dp)
+                            .testTag("asset_more_button_${asset.id}")
+                    ) {
+                        Icon(
+                            painter = painterResource(LaterboxIcons.MoreVertical),
+                            contentDescription = "More actions",
+                            tint = colors.textSecondary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = showMoreMenu,
+                        onDismissRequest = { showMoreMenu = false },
+                        containerColor = colors.surfaceElevated
+                    ) {
+                        DropdownMenuItem(
+                            modifier = Modifier.testTag("asset_menu_export_${asset.id}"),
+                            text = {
+                                Text(
+                                    text = "Save to device",
+                                    style = typography.bodyPrimary,
+                                    color = colors.textPrimary
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    painter = painterResource(LaterboxIcons.Download),
+                                    contentDescription = null,
+                                    tint = colors.accentPrimary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            },
+                            onClick = {
+                                showMoreMenu = false
+                                onExport()
+                            }
+                        )
+                        DropdownMenuItem(
+                            modifier = Modifier.testTag("asset_menu_delete_${asset.id}"),
+                            text = {
+                                Text(
+                                    text = "Delete",
+                                    style = typography.bodyPrimary,
+                                    color = colors.statusDanger
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    painter = painterResource(LaterboxIcons.Delete),
+                                    contentDescription = null,
+                                    tint = colors.statusDanger,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            },
+                            onClick = {
+                                showMoreMenu = false
+                                onDelete()
+                            }
+                        )
+                    }
+                }
             }
         }
     }

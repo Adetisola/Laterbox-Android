@@ -79,4 +79,24 @@ interface DownloadedAssetDao {
         ORDER BY createdAt DESC
     """)
     fun filterAssets(mediaType: String?, query: String): Flow<List<DownloadedAssetEntity>>
+
+    @Query("""
+        SELECT * FROM downloaded_asset
+        WHERE (
+            :category = 'ALL'
+            OR (:category = 'MOVIES' AND contentCategory IN ('MOVIE', 'EPISODE'))
+            OR (:category = 'VIDEO' AND mediaType = 'VIDEO' AND (contentCategory IS NULL OR contentCategory NOT IN ('MOVIE', 'EPISODE')))
+            OR (:category = 'IMAGE' AND mediaType = 'IMAGE')
+            OR (:category = 'AUDIO' AND mediaType = 'AUDIO')
+            OR (:category = 'DOCUMENTS' AND mediaType = 'DOCUMENT')
+        )
+        AND (:query = '' OR (
+            title LIKE '%' || :query || '%'
+            OR artist LIKE '%' || :query || '%'
+            OR album LIKE '%' || :query || '%'
+            OR originalSourceUrl LIKE '%' || :query || '%'
+        ))
+        ORDER BY createdAt DESC
+    """)
+    fun filterAssetsByCategory(category: String, query: String): Flow<List<DownloadedAssetEntity>>
 }

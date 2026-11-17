@@ -224,4 +224,67 @@ class MoviesDownloadBridgeTest {
         assertTrue(res3.exceptionOrNull()?.message.orEmpty().contains("Adaptive"))
         assertTrue(fakeMediaRepository.enqueued.isEmpty())
     }
+
+    @Test
+    fun downloadSourceRefresher_detectsExpiryParsesRefAndUpdatesTaskInRoom() = runTest {
+        val now = 1_700_000_000_000L
+        assertTrue(com.laterbox.app.media.data.download.DownloadSourceRefresher.isUrlExpiredOrExpiring(now + 30_000L, nowMs = now))
+        assertTrue(!com.laterbox.app.media.data.download.DownloadSourceRefresher.isUrlExpiredOrExpiring(now + 120_000L, nowMs = now))
+        assertTrue(!com.laterbox.app.media.data.download.DownloadSourceRefresher.isUrlExpiredOrExpiring(null, nowMs = now))
+
+        val taskDao = database.downloadTaskDao()
+        val initialEntity = com.laterbox.app.media.data.db.entity.DownloadTaskEntity(
+            id = "task_refresh_1",
+            savedLinkId = null,
+            sourceUrl = "https://cdn.example/old.mp4?exp=1700000010",
+            sourcePlatform = "MovieBox",
+            candidateId = "c1",
+            formatSelector = null,
+            mediaType = MediaType.VIDEO.name,
+            qualityLabel = "720p · MP4",
+            title = "Severance · S1E2 (720p)",
+            status = com.laterbox.app.media.domain.model.DownloadState.DOWNLOADING.name,
+            createdAt = now - 10_000L,
+            updatedAt = now - 10_000L,
+            sourceRef = "moviebox|mb_series_1|1|2|720p",
+            urlExpiresAt = 1_700_000_010_000L
+        )
+        taskDao.insertTask(initialEntity)
+
+        val refreshed = com.laterbox.app.media.data.download.DownloadSourceRefresher.refreshTaskSource(
+            task = initialEntity,
+            taskDao = taskDao,
+            resolvePlayback = { providerId, titleId, season, episode ->
+                assertEquals("moviebox", providerId)
+                assertEquals("mb_series_1", titleId)
+                assertEquals(1, season)
+                assertEquals(2, episode)
+                Result.success(
+                    com.laterbox.app.movies.domain.model.PlaybackResolution.Available(
+                        title = "Severance (S1E2)",
+                        sources = listOf(
+                            PlaybackSource(
+                                id = "s720_new",
+                                url = "https://cdn.example/fresh.mp4?exp=1850000000",
+                                format = "MP4",
+                                qualityLabel = "720p",
+                                qualityHeight = 720,
+                                headers = mapOf("Referer" to "https://api3.aoneroom.com/"),
+                                providerName = "MovieBox",
+                                isAuthorised = true
+                            )
+                        )
+                    )
+                )
+            }
+        )
+
+        assertTrue(refreshed != null)
+        assertEquals("https://cdn.example/fresh.mp4?exp=1850000000", refreshed!!.sourceUrl)
+        assertEquals(1_850_000_000_000L, refreshed.urlExpiresAt)
+        val persisted = taskDao.getEntityById("task_refresh_1")!!
+        assertEquals("https://cdn.example/fresh.mp4?exp=1850000000", persisted.sourceUrl)
+        assertEquals(1_850_000_000_000L, persisted.urlExpiresAt)
+        assertEquals("https://api3.aoneroom.com/", persisted.toDomain().headers["Referer"])
+    }
 }

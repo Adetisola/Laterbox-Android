@@ -6,6 +6,7 @@ import com.laterbox.app.media.data.adapters.InspectionResultJsonAdapter
 import com.laterbox.app.media.data.db.dao.MediaInspectionDao
 import com.laterbox.app.media.domain.model.AcquisitionSource
 import com.laterbox.app.media.domain.model.DownloadTask
+import com.laterbox.app.media.domain.model.DownloadsFilterCategory
 import com.laterbox.app.media.domain.model.InspectionResult
 import com.laterbox.app.media.domain.model.MediaAsset
 import com.laterbox.app.media.domain.model.MediaType
@@ -37,6 +38,7 @@ data class ReadyToDownloadItem(
 
 data class DownloadsUiState(
     val selectedTab: DownloadsTab = DownloadsTab.LIBRARY,
+    val selectedCategory: DownloadsFilterCategory = DownloadsFilterCategory.ALL,
     val selectedMediaType: MediaType? = null,
     val searchQuery: String = "",
     val assets: List<MediaAsset> = emptyList(),
@@ -52,7 +54,7 @@ data class DownloadsUiState(
 
 private data class ViewSelections(
     val selectedTab: DownloadsTab,
-    val selectedMediaType: MediaType?,
+    val selectedCategory: DownloadsFilterCategory,
     val searchQuery: String,
     val selectedAssetIds: Set<String>,
     val isSelectionMode: Boolean,
@@ -67,7 +69,7 @@ class DownloadsViewModel(
 ) : ViewModel() {
 
     private val _selectedTab = MutableStateFlow(DownloadsTab.LIBRARY)
-    private val _selectedMediaType = MutableStateFlow<MediaType?>(null)
+    private val _selectedCategory = MutableStateFlow(DownloadsFilterCategory.ALL)
     private val _searchQuery = MutableStateFlow("")
     private val _selectedAssetIds = MutableStateFlow<Set<String>>(emptySet())
     private val _isSelectionMode = MutableStateFlow(false)
@@ -76,7 +78,7 @@ class DownloadsViewModel(
 
     private val _selections = combine(
         _selectedTab,
-        _selectedMediaType,
+        _selectedCategory,
         _searchQuery,
         _selectedAssetIds,
         _isSelectionMode,
@@ -85,7 +87,7 @@ class DownloadsViewModel(
     ) { args: Array<Any?> ->
         ViewSelections(
             selectedTab = args[0] as DownloadsTab,
-            selectedMediaType = args[1] as MediaType?,
+            selectedCategory = args[1] as DownloadsFilterCategory,
             searchQuery = args[2] as String,
             selectedAssetIds = args[3] as Set<String>,
             isSelectionMode = args[4] as Boolean,
@@ -94,10 +96,10 @@ class DownloadsViewModel(
         )
     }
 
-    private val _assets = combine(_selectedMediaType, _searchQuery) { type, query ->
-        type to query
-    }.flatMapLatest { (type, query) ->
-        mediaRepository.filterAssets(type, query)
+    private val _assets = combine(_selectedCategory, _searchQuery) { category, query ->
+        category to query
+    }.flatMapLatest { (category, query) ->
+        mediaRepository.filterAssetsByCategory(category, query)
     }
 
     private val _queueTasks = mediaRepository.getQueueTasks()
@@ -132,9 +134,18 @@ class DownloadsViewModel(
             } else null
         }.filter { !downloadedLinkIds.contains(it.savedLinkId) }
 
+        val mappedLegacyType = when (selections.selectedCategory) {
+            DownloadsFilterCategory.ALL -> null
+            DownloadsFilterCategory.IMAGE -> MediaType.IMAGE
+            DownloadsFilterCategory.VIDEO, DownloadsFilterCategory.MOVIES -> MediaType.VIDEO
+            DownloadsFilterCategory.AUDIO -> MediaType.AUDIO
+            DownloadsFilterCategory.DOCUMENTS -> MediaType.DOCUMENT
+        }
+
         DownloadsUiState(
             selectedTab = selections.selectedTab,
-            selectedMediaType = selections.selectedMediaType,
+            selectedCategory = selections.selectedCategory,
+            selectedMediaType = mappedLegacyType,
             searchQuery = selections.searchQuery,
             assets = assets,
             queueTasks = tasks,
@@ -156,8 +167,19 @@ class DownloadsViewModel(
         _selectedTab.value = tab
     }
 
+    fun onCategorySelected(category: DownloadsFilterCategory) {
+        _selectedCategory.value = category
+    }
+
     fun onMediaTypeSelected(type: MediaType?) {
-        _selectedMediaType.value = type
+        _selectedCategory.value = when (type) {
+            null -> DownloadsFilterCategory.ALL
+            MediaType.IMAGE -> DownloadsFilterCategory.IMAGE
+            MediaType.VIDEO -> DownloadsFilterCategory.VIDEO
+            MediaType.AUDIO -> DownloadsFilterCategory.AUDIO
+            MediaType.DOCUMENT -> DownloadsFilterCategory.DOCUMENTS
+            MediaType.OTHER -> DownloadsFilterCategory.ALL
+        }
     }
 
     fun onSearchQueryChange(query: String) {
