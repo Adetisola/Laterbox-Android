@@ -139,12 +139,16 @@ class MovieBoxProviderTest {
         assertEquals(162, banner.durationMinutes)
         assertEquals("https://cdn.example/avatar-trailer.mp4", banner.trailerUrl)
         assertEquals("avatar-2009", banner.detailPath)
+        assertEquals("https://cdn.example/banner-avatar.jpg", banner.backdropUrl)
+        assertEquals("https://cdn.example/poster-avatar.jpg", banner.posterUrl)
         assertEquals(DataSourceBadge.LIVE_MOVIEBOX, banner.sourceBadge)
 
         assertEquals(1, feed.sections.size)
         assertEquals("Trending Now", feed.sections.first().title)
         assertEquals(SectionStyle.RAIL, feed.sections.first().style)
         assertEquals(MediaKind.TV_SERIES, feed.sections.first().items.first().kind)
+        assertEquals("https://cdn.example/bb.jpg", feed.sections.first().items.first().posterUrl)
+        assertEquals(null, feed.sections.first().items.first().backdropUrl)
         assertEquals(listOf("All", "Action", "Sci-Fi", "Drama"), feed.genres)
         assertFalse(feed.containsSampleFixtures)
     }

@@ -84,6 +84,8 @@ class InternetArchiveMoviesProviderTest {
         assertTrue(feed.sections.isNotEmpty())
         assertEquals(DataSourceBadge.LIVE_INTERNET_ARCHIVE, feed.featuredBanners.first().sourceBadge)
         assertEquals("His Girl Friday", feed.featuredBanners.first().title)
+        assertTrue(feed.featuredBanners.first().posterUrl?.endsWith("/services/img/his_girl_friday") == true)
+        assertEquals(null, feed.featuredBanners.first().backdropUrl)
 
         val catalogue = provider.getCatalogue(
             kind = MediaKind.MOVIE,
@@ -94,6 +96,7 @@ class InternetArchiveMoviesProviderTest {
         ).getOrThrow()
         assertEquals(2, catalogue.items.size)
         assertEquals("detour_1945", catalogue.items[1].id)
+        assertEquals(null, catalogue.items[1].backdropUrl)
     }
 
     @Test

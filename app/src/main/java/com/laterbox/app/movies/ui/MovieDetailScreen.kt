@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -134,8 +135,84 @@ fun MovieDetailScreen(
     ) {
         when {
             uiState.isLoading -> {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = colors.accentPrimary)
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .testTag("detail_loading_skeleton"),
+                    verticalArrangement = Arrangement.spacedBy(18.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(16f / 9f)
+                            .heightIn(min = 252.dp, max = 320.dp)
+                            .background(colors.surfaceSecondary)
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color.Black.copy(alpha = 0.50f),
+                            modifier = Modifier
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                                .align(Alignment.TopStart)
+                        ) {
+                            IconButton(
+                                onClick = onBackClick,
+                                modifier = Modifier.testTag("detail_back_button")
+                            ) {
+                                Icon(
+                                    painter = painterResource(LaterboxIcons.ArrowLeft),
+                                    contentDescription = "Back",
+                                    tint = Color.White
+                                )
+                            }
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp)
+                                .align(Alignment.BottomStart),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                            verticalAlignment = Alignment.Bottom
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .width(104.dp)
+                                    .aspectRatio(2f / 3f)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(colors.surfacePrimary)
+                                    .border(1.dp, colors.borderSubtle, RoundedCornerShape(12.dp))
+                            )
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(bottom = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .width(96.dp)
+                                        .height(18.dp)
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(colors.surfacePrimary)
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth(0.8f)
+                                        .height(24.dp)
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(colors.surfacePrimary)
+                                )
+                            }
+                        }
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(color = colors.accentPrimary)
+                    }
                 }
             }
             uiState.details == null -> {
@@ -185,18 +262,16 @@ fun MovieDetailScreen(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(290.dp)
+                                .aspectRatio(16f / 9f)
+                                .heightIn(min = 252.dp, max = 320.dp)
                                 .background(colors.surfaceSecondary)
                         ) {
-                            val backdrop = summary.backdropUrl ?: summary.posterUrl
-                            if (!backdrop.isNullOrBlank()) {
-                                AsyncImage(
-                                    model = backdrop,
-                                    contentDescription = summary.title,
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.fillMaxSize()
-                                )
-                            }
+                            BackdropArtworkBox(
+                                backdropUrl = summary.backdropUrl,
+                                posterUrl = summary.posterUrl,
+                                contentDescription = summary.title,
+                                modifier = Modifier.fillMaxSize()
+                            )
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
@@ -204,7 +279,7 @@ fun MovieDetailScreen(
                                         Brush.verticalGradient(
                                             listOf(
                                                 Color.Black.copy(alpha = 0.35f),
-                                                colors.backgroundPrimary.copy(alpha = 0.55f),
+                                                colors.backgroundPrimary.copy(alpha = 0.58f),
                                                 colors.backgroundPrimary
                                             )
                                         )
@@ -684,6 +759,7 @@ fun MovieDetailScreen(
                                             Box(
                                                 modifier = Modifier
                                                     .size(66.dp)
+                                                    .aspectRatio(1f)
                                                     .clip(CircleShape)
                                                     .background(colors.surfaceSecondary)
                                                     .border(0.75.dp, colors.borderSubtle, CircleShape),
@@ -968,8 +1044,8 @@ private fun EpisodeRowCard(
         ) {
             Box(
                 modifier = Modifier
-                    .width(98.dp)
-                    .height(62.dp)
+                    .width(112.dp)
+                    .aspectRatio(16f / 9f)
                     .clip(RoundedCornerShape(8.dp))
                     .background(colors.surfaceSecondary),
                 contentAlignment = Alignment.Center

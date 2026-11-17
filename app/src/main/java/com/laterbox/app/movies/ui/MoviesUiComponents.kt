@@ -56,6 +56,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -265,6 +267,63 @@ fun MoviePosterCard(
 }
 
 @Composable
+fun BackdropArtworkBox(
+    backdropUrl: String?,
+    posterUrl: String?,
+    contentDescription: String?,
+    modifier: Modifier = Modifier
+) {
+    val colors = LaterboxTheme.colors
+    Box(
+        modifier = modifier.background(colors.surfaceSecondary),
+        contentAlignment = Alignment.Center
+    ) {
+        when {
+            !backdropUrl.isNullOrBlank() -> {
+                AsyncImage(
+                    model = backdropUrl,
+                    contentDescription = contentDescription,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+            !posterUrl.isNullOrBlank() -> {
+                AsyncImage(
+                    model = posterUrl,
+                    contentDescription = contentDescription,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .blur(20.dp)
+                        .alpha(0.72f)
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.horizontalGradient(
+                                colors = listOf(
+                                    Color.Black.copy(alpha = 0.45f),
+                                    Color.Black.copy(alpha = 0.25f),
+                                    Color.Black.copy(alpha = 0.45f)
+                                )
+                            )
+                        )
+                )
+            }
+            else -> {
+                Icon(
+                    painter = painterResource(LaterboxIcons.Movies),
+                    contentDescription = null,
+                    modifier = Modifier.size(32.dp),
+                    tint = colors.textTertiary
+                )
+            }
+        }
+    }
+}
+
+@Composable
 fun ContinueWatchingCard(
     item: WatchHistoryItem,
     onClick: () -> Unit,
@@ -287,21 +346,19 @@ fun ContinueWatchingCard(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(104.dp)
+                    .aspectRatio(16f / 9f)
                     .background(colors.surfaceSecondary)
             ) {
-                if (!item.posterUrl.isNullOrBlank()) {
-                    AsyncImage(
-                        model = item.posterUrl,
-                        contentDescription = item.title,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
+                BackdropArtworkBox(
+                    backdropUrl = null,
+                    posterUrl = item.posterUrl,
+                    contentDescription = item.title,
+                    modifier = Modifier.fillMaxSize()
+                )
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.30f)),
+                        .background(Color.Black.copy(alpha = 0.28f)),
                     contentAlignment = Alignment.Center
                 ) {
                     Surface(
@@ -371,7 +428,8 @@ fun MoviesHeroCarousel(
             pageSpacing = 12.dp,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(256.dp)
+                .aspectRatio(16f / 9f)
+                .heightIn(min = 216.dp, max = 300.dp)
                 .testTag("movies_hero_pager")
         ) { page ->
             val item = banners[page]
@@ -386,15 +444,12 @@ fun MoviesHeroCarousel(
                     .clickable { onBannerClick(item) }
             ) {
                 Box(modifier = Modifier.fillMaxSize()) {
-                    val heroImage = item.backdropUrl ?: item.posterUrl
-                    if (!heroImage.isNullOrBlank()) {
-                        AsyncImage(
-                            model = heroImage,
-                            contentDescription = item.title,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
+                    BackdropArtworkBox(
+                        backdropUrl = item.backdropUrl,
+                        posterUrl = item.posterUrl,
+                        contentDescription = item.title,
+                        modifier = Modifier.fillMaxSize()
+                    )
 
                     Box(
                         modifier = Modifier
@@ -402,9 +457,9 @@ fun MoviesHeroCarousel(
                             .background(
                                 Brush.verticalGradient(
                                     colors = listOf(
-                                        Color.Black.copy(alpha = 0.20f),
-                                        Color.Black.copy(alpha = 0.55f),
-                                        Color.Black.copy(alpha = 0.90f)
+                                        Color.Black.copy(alpha = 0.24f),
+                                        Color.Black.copy(alpha = 0.58f),
+                                        Color.Black.copy(alpha = 0.92f)
                                     )
                                 )
                             )
@@ -561,7 +616,8 @@ fun MoviesHomeSkeleton(modifier: Modifier = Modifier) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(240.dp)
+                .aspectRatio(16f / 9f)
+                .heightIn(min = 216.dp, max = 300.dp)
                 .clip(RoundedCornerShape(20.dp))
                 .background(colors.surfaceSecondary)
         )
@@ -577,7 +633,7 @@ fun MoviesHomeSkeleton(modifier: Modifier = Modifier) {
                 repeat(3) {
                     Box(
                         modifier = Modifier
-                            .width(128.dp)
+                            .width(132.dp)
                             .aspectRatio(2f / 3f)
                             .clip(RoundedCornerShape(14.dp))
                             .background(colors.surfaceSecondary)
@@ -966,6 +1022,7 @@ fun PersonFilmographyBottomSheet(
                 Box(
                     modifier = Modifier
                         .size(64.dp)
+                        .aspectRatio(1f)
                         .clip(CircleShape)
                         .background(colors.surfaceSecondary)
                         .border(0.75.dp, colors.borderSubtle, CircleShape),

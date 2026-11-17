@@ -98,6 +98,8 @@ class TvMazeSeriesProviderTest {
         assertEquals(MediaKind.TV_SERIES, details.summary.kind)
         assertEquals(DataSourceBadge.LIVE_TVMAZE, details.summary.sourceBadge)
         assertEquals("Breaking Bad", details.summary.title)
+        assertEquals("https://img.tvmaze.com/o.jpg", details.summary.posterUrl)
+        assertEquals(null, details.summary.backdropUrl)
         assertEquals("AMC", details.networkOrStudio)
         assertEquals(2, details.seasons.size)
         assertEquals("Season 2", details.seasons[1].title)

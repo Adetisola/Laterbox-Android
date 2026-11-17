@@ -145,7 +145,7 @@ class MovieBoxProvider(
                                             ),
                                             title = title,
                                             posterUrl = cover,
-                                            backdropUrl = bannerImage ?: cover,
+                                            backdropUrl = bannerImage,
                                             detailPath = dp,
                                             trailerUrl = trailerUrl,
                                             sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
