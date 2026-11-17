@@ -244,6 +244,9 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             apiKeyProvider = {
                 userPreferencesRepository.userPreferencesFlow.first().movieBoxApiKey
                     .ifBlank { com.laterbox.app.BuildConfig.MOVIEBOX_API_KEY }
+            },
+            appCheckTokenProvider = { forceRefresh ->
+                fetchFirebaseAppCheckToken(forceRefresh)
             }
         )
         val iaProvider = com.laterbox.app.movies.data.provider.InternetArchiveMoviesProvider(moviesOkHttpClient)
@@ -273,5 +276,43 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             linkRepository = linkRepository,
             mediaRepository = mediaRepository
         )
+    }
+
+    private suspend fun fetchFirebaseAppCheckToken(forceRefresh: Boolean): String? {
+        if (android.os.Build.FINGERPRINT.equals("robolectric", ignoreCase = true)) {
+            return null
+        }
+        if (com.google.firebase.FirebaseApp.getApps(context).isEmpty()) {
+            return null
+        }
+        return kotlinx.coroutines.withTimeoutOrNull(5_000L) {
+            kotlinx.coroutines.suspendCancellableCoroutine<String?> { cont ->
+                try {
+                    com.google.firebase.appcheck.FirebaseAppCheck.getInstance()
+                        .getAppCheckToken(forceRefresh)
+                        .addOnSuccessListener { result ->
+                            if (cont.isActive) {
+                                cont.resumeWith(Result.success(result.token.takeIf { it.isNotBlank() }))
+                            }
+                        }
+                        .addOnFailureListener { err ->
+                            android.util.Log.w("DefaultAppContainer", "App Check token fetch failed: ${err.message}")
+                            if (cont.isActive) {
+                                cont.resumeWith(Result.success(null))
+                            }
+                        }
+                        .addOnCanceledListener {
+                            if (cont.isActive) {
+                                cont.resumeWith(Result.success(null))
+                            }
+                        }
+                } catch (t: Throwable) {
+                    android.util.Log.w("DefaultAppContainer", "App Check unavailable: ${t.message}")
+                    if (cont.isActive) {
+                        cont.resumeWith(Result.success(null))
+                    }
+                }
+            }
+        }
     }
 }

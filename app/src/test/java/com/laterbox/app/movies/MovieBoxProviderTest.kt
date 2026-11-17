@@ -706,4 +706,78 @@ class MovieBoxProviderTest {
             )
         )
     }
+
+    @Test
+    fun appCheckToken_attachesHeaderWithLegacyFallbackAndHandlesUnavailableProvider() = runTest {
+        val capturedHeaders = mutableListOf<Pair<String?, String?>>()
+        var shouldThrow = false
+        val dualProvider = MovieBoxProvider(
+            okHttpClient = OkHttpClient(),
+            baseUrlProvider = { server.url("/").toString() },
+            apiKeyProvider = { "legacy-key-123" },
+            retryDelayMs = 0L,
+            appCheckTokenProvider = { forceRefresh ->
+                assertFalse(forceRefresh)
+                if (shouldThrow) error("App Check offline") else "appcheck.jwt.1"
+            }
+        )
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                capturedHeaders.add(
+                    request.getHeader("X-Firebase-AppCheck") to request.getHeader("X-API-Key")
+                )
+                return MockResponse().setResponseCode(200).setBody("""{"data":{"operatingList":[]}}""")
+            }
+        }
+
+        dualProvider.getHomeFeed().getOrThrow()
+        shouldThrow = true
+        dualProvider.getHomeFeed().getOrThrow()
+
+        assertEquals(2, capturedHeaders.size)
+        assertEquals("appcheck.jwt.1" to "legacy-key-123", capturedHeaders[0])
+        assertEquals(null to "legacy-key-123", capturedHeaders[1])
+    }
+
+    @Test
+    fun appCheckToken_refreshesOnceOn401AndSurfacesFailureIfStillRejected() = runTest {
+        val forceFlags = mutableListOf<Boolean>()
+        val sentTokens = mutableListOf<String?>()
+        var failSecondAttemptToo = false
+        val appCheckProvider = MovieBoxProvider(
+            okHttpClient = OkHttpClient(),
+            baseUrlProvider = { server.url("/").toString() },
+            apiKeyProvider = { "" },
+            retryDelayMs = 0L,
+            appCheckTokenProvider = { forceRefresh ->
+                forceFlags.add(forceRefresh)
+                if (forceRefresh) "fresh.appcheck.jwt" else "stale.appcheck.jwt"
+            }
+        )
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val token = request.getHeader("X-Firebase-AppCheck")
+                sentTokens.add(token)
+                return if (!failSecondAttemptToo && token == "fresh.appcheck.jwt") {
+                    MockResponse().setResponseCode(200).setBody("""{"data":{"operatingList":[]}}""")
+                } else {
+                    MockResponse().setResponseCode(401).setBody("""{"detail":"Expired App Check token"}""")
+                }
+            }
+        }
+
+        appCheckProvider.getHomeFeed().getOrThrow()
+        assertEquals(listOf(false, true), forceFlags)
+        assertEquals(listOf("stale.appcheck.jwt", "fresh.appcheck.jwt"), sentTokens)
+
+        forceFlags.clear()
+        sentTokens.clear()
+        failSecondAttemptToo = true
+        val err = appCheckProvider.getHomeFeed().exceptionOrNull()
+        assertEquals(listOf(false, true), forceFlags)
+        assertEquals(listOf("stale.appcheck.jwt", "fresh.appcheck.jwt"), sentTokens)
+        assertTrue(err is com.laterbox.app.movies.data.provider.MovieBoxApiException)
+        assertTrue((err as com.laterbox.app.movies.data.provider.MovieBoxApiException).isAuthFailure)
+        assertTrue(err.message.orEmpty().contains("App Check", ignoreCase = true))
+    }
 }

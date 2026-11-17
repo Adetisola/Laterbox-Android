@@ -52,7 +52,8 @@ class MovieBoxProvider(
     private val okHttpClient: OkHttpClient,
     private val baseUrlProvider: suspend () -> String,
     private val apiKeyProvider: suspend () -> String = { "" },
-    private val retryDelayMs: Long = 250L
+    private val retryDelayMs: Long = 250L,
+    private val appCheckTokenProvider: suspend (forceRefresh: Boolean) -> String? = { null }
 ) : MoviesCatalogueProvider,
     MoviesSearchProvider,
     MovieDetailsProvider,
@@ -798,14 +799,24 @@ class MovieBoxProvider(
 
     private suspend fun executeGet(url: HttpUrl): String {
         val redactedPath = url.encodedPath
-        val maxAttempts = 2
+        val maxTransientAttempts = 2
+        var transientAttempt = 1
+        var authRefreshAvailable = true
+        var pendingRefreshedToken: String? = null
         var lastError: IOException? = null
 
-        for (attempt in 1..maxAttempts) {
+        while (transientAttempt <= maxTransientAttempts) {
+            val sentAppCheckToken = pendingRefreshedToken?.also { pendingRefreshedToken = null }
+                ?: runCatching { appCheckTokenProvider(false) }.getOrNull()?.trim().orEmpty()
+
             val requestBuilder = Request.Builder()
                 .url(url)
                 .header("Accept", "application/json")
                 .get()
+
+            if (sentAppCheckToken.isNotBlank()) {
+                requestBuilder.header("X-Firebase-AppCheck", sentAppCheckToken)
+            }
 
             val apiKey = apiKeyProvider().trim()
             if (apiKey.isNotBlank()) {
@@ -814,6 +825,9 @@ class MovieBoxProvider(
 
             val startNs = System.nanoTime()
             try {
+                var shouldRetryAuthRefresh = false
+                var shouldRetryTransient = false
+
                 okHttpClient.newCall(requestBuilder.build()).execute().use { response ->
                     val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
                     val body = response.body?.string().orEmpty()
@@ -821,15 +835,32 @@ class MovieBoxProvider(
                         val detail = runCatching { JSONObject(body).optCleanString("detail") }.getOrNull()
                         safeLogWarn("GET $redactedPath -> HTTP ${response.code} (${elapsedMs}ms)")
 
+                        if (response.code in setOf(401, 403) && authRefreshAvailable) {
+                            authRefreshAvailable = false
+                            val refreshed = runCatching { appCheckTokenProvider(true) }
+                                .getOrNull()
+                                ?.trim()
+                                .orEmpty()
+                            if (refreshed.isNotBlank() && refreshed != sentAppCheckToken) {
+                                pendingRefreshedToken = refreshed
+                                shouldRetryAuthRefresh = true
+                                return@use
+                            }
+                        }
+
                         val isRetryableStatus = response.code in setOf(502, 503, 504)
-                        if (isRetryableStatus && attempt < maxAttempts) {
-                            if (retryDelayMs > 0L) delay(retryDelayMs)
+                        if (isRetryableStatus && transientAttempt < maxTransientAttempts) {
+                            shouldRetryTransient = true
                             return@use
                         }
 
                         throw MovieBoxApiException(
                             httpCode = response.code,
-                            message = buildHttpErrorMessage(response.code, detail)
+                            message = buildHttpErrorMessage(
+                                code = response.code,
+                                detail = detail,
+                                sentAppCheckToken = sentAppCheckToken.isNotBlank()
+                            )
                         )
                     }
 
@@ -844,13 +875,23 @@ class MovieBoxProvider(
                     safeLogInfo("GET $redactedPath -> HTTP ${response.code} (${elapsedMs}ms)")
                     return body
                 }
+
+                if (shouldRetryAuthRefresh) {
+                    continue
+                }
+                if (shouldRetryTransient) {
+                    transientAttempt++
+                    if (retryDelayMs > 0L) delay(retryDelayMs)
+                    continue
+                }
             } catch (e: MovieBoxApiException) {
                 throw e
             } catch (e: IOException) {
                 lastError = e
                 val isNonRetryableNetwork = e is UnknownHostException || e is SSLException
                 safeLogWarn("GET $redactedPath -> network error (${e.javaClass.simpleName})")
-                if (!isNonRetryableNetwork && attempt < maxAttempts) {
+                if (!isNonRetryableNetwork && transientAttempt < maxTransientAttempts) {
+                    transientAttempt++
                     if (retryDelayMs > 0L) delay(retryDelayMs)
                     continue
                 }
@@ -868,10 +909,18 @@ class MovieBoxProvider(
         )
     }
 
-    private fun buildHttpErrorMessage(code: Int, detail: String?): String = when (code) {
+    private fun buildHttpErrorMessage(
+        code: Int,
+        detail: String?,
+        sentAppCheckToken: Boolean = false
+    ): String = when (code) {
         401, 403 -> buildString {
             append("MovieBox authentication failed (HTTP ").append(code).append("). ")
-            append("Set or update your MovieBox X-API-Key in Data Sources.")
+            if (sentAppCheckToken) {
+                append("Check Firebase App Check verification or update your MovieBox X-API-Key in Data Sources.")
+            } else {
+                append("Set or update your MovieBox X-API-Key in Data Sources.")
+            }
             if (!detail.isNullOrBlank()) {
                 append(" Detail: ").append(detail)
             }
