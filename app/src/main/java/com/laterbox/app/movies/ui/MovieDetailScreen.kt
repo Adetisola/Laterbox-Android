@@ -33,7 +33,12 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -50,6 +55,7 @@ import coil.compose.AsyncImage
 import com.laterbox.app.movies.domain.model.EpisodeItem
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.PlaybackResolution
+import com.laterbox.app.movies.domain.model.PlaybackSource
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.theme.LaterboxTheme
 import java.util.Locale
@@ -65,10 +71,24 @@ fun MovieDetailScreen(
     onSelectSeason: (Int) -> Unit,
     onOpenRelated: (providerId: String, titleId: String) -> Unit,
     onOpenExternalUrl: (String) -> Unit,
+    onDownloadSource: (PlaybackSource) -> Unit = {},
+    onDismissDownloadStatus: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
+    var showDownloadDialog by remember { mutableStateOf(false) }
+
+    val availableRes = uiState.playbackResolution as? PlaybackResolution.Available
+    if (showDownloadDialog && availableRes != null && uiState.details != null) {
+        DownloadResolutionDialog(
+            title = uiState.details.summary.title,
+            sources = availableRes.sources,
+            isEnqueuing = uiState.isEnqueuingDownload,
+            onSelectSource = onDownloadSource,
+            onDismiss = { showDownloadDialog = false }
+        )
+    }
 
     Box(
         modifier = modifier
@@ -286,27 +306,98 @@ fun MovieDetailScreen(
                                 }
                                 resolution is PlaybackResolution.Available -> {
                                     val isResume = uiState.savedPositionMs >= 5_000L
-                                    Button(
-                                        onClick = { onPlayClick(null, null) },
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = colors.accentPrimary,
-                                            contentColor = colors.onAccentPrimary
-                                        ),
-                                        shape = RoundedCornerShape(14.dp),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(48.dp)
-                                            .testTag("detail_watch_button")
+                                    val hasAuthorisedDownloads = resolution.sources.any { it.isAuthorised }
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Icon(
-                                            painter = painterResource(LaterboxIcons.Play),
-                                            contentDescription = null,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        val maxQual = resolution.sources.firstOrNull()?.qualityLabel ?: "Stream"
-                                        val ctaLabel = if (isResume) "Resume (${maxQual})" else "Watch Now (${maxQual})"
-                                        Text(text = ctaLabel, style = typography.buttonLabel)
+                                        Button(
+                                            onClick = { onPlayClick(null, null) },
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = colors.accentPrimary,
+                                                contentColor = colors.onAccentPrimary
+                                            ),
+                                            shape = RoundedCornerShape(14.dp),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(48.dp)
+                                                .testTag("detail_watch_button")
+                                        ) {
+                                            Icon(
+                                                painter = painterResource(LaterboxIcons.Play),
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            val maxQual = resolution.sources.firstOrNull()?.qualityLabel ?: "Stream"
+                                            val ctaLabel = if (isResume) "Resume (${maxQual})" else "Watch Now (${maxQual})"
+                                            Text(text = ctaLabel, style = typography.buttonLabel, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        }
+
+                                        if (hasAuthorisedDownloads) {
+                                            OutlinedButton(
+                                                onClick = { showDownloadDialog = true },
+                                                enabled = !uiState.isEnqueuingDownload,
+                                                border = BorderStroke(1.dp, colors.borderSubtle),
+                                                shape = RoundedCornerShape(14.dp),
+                                                contentPadding = PaddingValues(horizontal = 14.dp),
+                                                modifier = Modifier
+                                                    .height(48.dp)
+                                                    .testTag("detail_download_button")
+                                            ) {
+                                                if (uiState.isEnqueuingDownload) {
+                                                    CircularProgressIndicator(
+                                                        modifier = Modifier.size(16.dp),
+                                                        strokeWidth = 2.dp,
+                                                        color = colors.accentPrimary
+                                                    )
+                                                } else {
+                                                    Icon(
+                                                        painter = painterResource(LaterboxIcons.Download),
+                                                        contentDescription = "Download",
+                                                        tint = colors.accentPrimary,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                }
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text(
+                                                    text = "Download",
+                                                    style = typography.buttonLabel,
+                                                    color = colors.textPrimary
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    uiState.downloadStatusMessage?.let { statusMsg ->
+                                        Surface(
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = colors.accentContainer.copy(alpha = 0.7f),
+                                            border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.3f)),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .testTag("detail_download_status")
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Text(
+                                                    text = statusMsg,
+                                                    style = typography.metaText,
+                                                    color = colors.textPrimary,
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                                TextButton(
+                                                    onClick = onDismissDownloadStatus,
+                                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                                                ) {
+                                                    Text("OK", style = typography.caption, color = colors.accentPrimary)
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                                 resolution is PlaybackResolution.Unavailable -> {

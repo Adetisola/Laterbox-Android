@@ -55,6 +55,7 @@ import coil.compose.AsyncImage
 import com.laterbox.app.movies.domain.model.DataSourceBadge
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
+import com.laterbox.app.movies.domain.model.PlaybackSource
 import com.laterbox.app.movies.domain.model.WatchHistoryItem
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.theme.LaterboxTheme
@@ -558,7 +559,8 @@ fun MoviesProviderSourceDialog(
     currentTmdbKey: String,
     onToggleSampleFixtures: (Boolean) -> Unit,
     onSaveTmdbKey: (String) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onOpenExternalUrl: (String) -> Unit = {}
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -580,7 +582,7 @@ fun MoviesProviderSourceDialog(
                     text = "Laterbox Movies connects exclusively to open, authorised providers:\n" +
                         "• Internet Archive Cinema (open-license streams & captions)\n" +
                         "• TVMaze Series Guide (metadata, cast & episodes)\n" +
-                        "• Optional TMDB API (user-supplied key)",
+                        "• Optional TMDB API (free personal developer key)",
                     style = typography.bodySecondary,
                     color = colors.textSecondary
                 )
@@ -613,6 +615,51 @@ fun MoviesProviderSourceDialog(
                     )
                 }
 
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = colors.accentContainer.copy(alpha = 0.55f),
+                    border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.25f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "How to unlock trending TMDB cinema (Free):",
+                            style = typography.uiLabel.copy(fontSize = 12.sp, fontWeight = FontWeight.SemiBold),
+                            color = colors.textPrimary
+                        )
+                        Text(
+                            text = "1. Sign in at themoviedb.org/settings/api\n" +
+                                "2. Request a free personal Developer v3 API Key\n" +
+                                "3. Paste the key below and tap Save",
+                            style = typography.metaText,
+                            color = colors.textSecondary
+                        )
+                        OutlinedButton(
+                            onClick = { onOpenExternalUrl("https://www.themoviedb.org/settings/api") },
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.5f)),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier.height(32.dp)
+                        ) {
+                            Icon(
+                                painter = painterResource(LaterboxIcons.ArrowUpRight),
+                                contentDescription = null,
+                                tint = colors.accentPrimary,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Get Free TMDB Key",
+                                style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                color = colors.accentPrimary
+                            )
+                        }
+                    }
+                }
+
                 OutlinedTextField(
                     value = tmdbInput,
                     onValueChange = { tmdbInput = it },
@@ -635,6 +682,103 @@ fun MoviesProviderSourceDialog(
             }
         },
         dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close", color = colors.textSecondary)
+            }
+        }
+    )
+}
+
+@Composable
+fun DownloadResolutionDialog(
+    title: String,
+    sources: List<PlaybackSource>,
+    isEnqueuing: Boolean = false,
+    onSelectSource: (PlaybackSource) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val colors = LaterboxTheme.colors
+    val typography = LaterboxTheme.typography
+    val authorisedSources = remember(sources) { sources.filter { it.isAuthorised } }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = colors.surfaceElevated,
+        modifier = Modifier.testTag("download_resolution_dialog"),
+        title = {
+            Text(
+                text = "Download Offline Copy",
+                style = typography.sheetTitle,
+                color = colors.textPrimary
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Choose an authorised stream resolution for \"$title\". Downloads are saved to your Laterbox Downloads tab.",
+                    style = typography.bodySecondary,
+                    color = colors.textSecondary
+                )
+                if (authorisedSources.isEmpty()) {
+                    Text(
+                        text = "No downloadable authorised video streams are available for this title.",
+                        style = typography.metaText,
+                        color = colors.textSecondary
+                    )
+                } else {
+                    authorisedSources.forEach { source ->
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = colors.surfaceSecondary,
+                            border = BorderStroke(0.75.dp, colors.borderSubtle),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable(enabled = !isEnqueuing) {
+                                    onSelectSource(source)
+                                    onDismiss()
+                                }
+                                .testTag("download_quality_option_${source.id}")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "${source.qualityLabel} · ${source.format}",
+                                        style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
+                                        color = colors.textPrimary
+                                    )
+                                    val metaParts = buildList {
+                                        source.codec?.takeIf { it.isNotBlank() }?.let { add(it) }
+                                        source.sizeMb?.takeIf { it > 0.0 }?.let { mb ->
+                                            add(String.format(Locale.US, "%.0f MB", mb))
+                                        }
+                                        add(source.providerName)
+                                    }
+                                    Text(
+                                        text = metaParts.joinToString(" · "),
+                                        style = typography.caption,
+                                        color = colors.textSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Icon(
+                                    painter = painterResource(LaterboxIcons.Download),
+                                    contentDescription = "Download ${source.qualityLabel}",
+                                    tint = colors.accentPrimary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
             TextButton(onClick = onDismiss) {
                 Text("Close", color = colors.textSecondary)
             }

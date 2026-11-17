@@ -140,4 +140,58 @@ class TvMazeSeriesProviderTest {
         assertEquals("82", suggestions.first().id)
         assertEquals(MediaKind.TV_SERIES, suggestions.first().kind)
     }
+
+    @Test
+    fun homeFeed_mergesWebStreamingAndBroadcastSchedules() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/shows?page=0") -> MockResponse().setResponseCode(200).setBody("[]")
+                    path.startsWith("/schedule/web") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        [
+                          {
+                            "id": 9001,
+                            "_embedded": {
+                              "show": {
+                                "id": 5001,
+                                "name": "Severance",
+                                "genres": ["Drama", "Science-Fiction"],
+                                "premiered": "2022-02-18",
+                                "rating": {"average": 8.7}
+                              }
+                            }
+                          }
+                        ]
+                        """.trimIndent()
+                    )
+                    path.startsWith("/schedule") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        [
+                          {
+                            "id": 9002,
+                            "show": {
+                              "id": 5002,
+                              "name": "Abbott Elementary",
+                              "genres": ["Comedy"],
+                              "premiered": "2021-12-07",
+                              "rating": {"average": 8.2}
+                            }
+                          }
+                        ]
+                        """.trimIndent()
+                    )
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val feed = provider.getHomeFeed().getOrThrow()
+        val trending = feed.sections.firstOrNull { it.id == "tvmaze_trending_tonight" }
+        assertTrue(trending != null)
+        val titles = trending!!.items.map { it.title }
+        assertTrue("Severance" in titles)
+        assertTrue("Abbott Elementary" in titles)
+    }
 }

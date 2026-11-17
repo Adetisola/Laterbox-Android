@@ -11,8 +11,10 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.unit.dp
+import com.laterbox.app.movies.data.cache.MoviesMediaCache
 import com.laterbox.app.movies.domain.model.BrowseSection
 import com.laterbox.app.movies.domain.model.CastMember
+import com.laterbox.app.movies.domain.model.CatalogueSort
 import com.laterbox.app.movies.domain.model.DataSourceBadge
 import com.laterbox.app.movies.domain.model.EpisodeItem
 import com.laterbox.app.movies.domain.model.MediaDetails
@@ -24,6 +26,7 @@ import com.laterbox.app.movies.domain.model.PlaybackSource
 import com.laterbox.app.movies.domain.model.SearchSuggestion
 import com.laterbox.app.movies.domain.model.SeasonSummary
 import com.laterbox.app.movies.domain.model.SectionStyle
+import com.laterbox.app.movies.domain.model.SubtitleTrack
 import com.laterbox.app.movies.domain.model.WatchHistoryItem
 import com.laterbox.app.movies.ui.MovieDetailScreen
 import com.laterbox.app.movies.ui.MovieDetailUiState
@@ -39,6 +42,7 @@ import com.laterbox.app.ui.components.LaterboxBottomBar
 import com.laterbox.app.ui.components.LaterboxDrawerContent
 import com.laterbox.app.ui.components.sectionForRoute
 import com.laterbox.app.ui.theme.LaterboxTheme
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -53,6 +57,11 @@ class MoviesUiAndNavigationTest {
 
     @get:Rule
     val composeTestRule = createComposeRule()
+
+    @After
+    fun tearDown() {
+        MoviesMediaCache.releaseForTesting()
+    }
 
     private val sampleMovie = MovieTitleSummary(
         id = "his_girl_friday",
@@ -298,5 +307,145 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithText("Open Official Guide").assertIsDisplayed()
         composeTestRule.onNodeWithText("Back").assertIsDisplayed().performClick()
         assertTrue(backClicked)
+    }
+
+    @Test
+    fun moviesScreen_inlineSearchFiltersAndTmdbPromptInteractProperly() {
+        var selectedKind: MediaKind? = null
+        var selectedSort: CatalogueSort? = null
+        var tmdbDismissed = false
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MoviesScreen(
+                    uiState = MoviesHomeUiState(
+                        isLoading = false,
+                        tmdbApiKeyConfigured = false,
+                        useSampleFixturesOnly = false,
+                        tmdbPromptDismissed = false,
+                        feed = MoviesHomeFeed(
+                            featuredBanners = listOf(sampleMovie),
+                            sections = listOf(
+                                BrowseSection("s1", "Playable Classic Cinema", "Public domain", SectionStyle.RAIL, listOf(sampleMovie))
+                            ),
+                            genres = listOf("All", "Comedy", "Drama")
+                        )
+                    ),
+                    onRefresh = {},
+                    onOpenCatalogue = { _, _ -> },
+                    onOpenDetail = { _, _ -> },
+                    onOpenPlayer = { _, _, _, _ -> },
+                    onToggleWatchlist = {},
+                    onToggleSampleFixtures = {},
+                    onSaveTmdbApiKey = {},
+                    onSelectKind = { selectedKind = it },
+                    onSelectSort = { selectedSort = it },
+                    onDismissTmdbPrompt = { tmdbDismissed = true }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("movies_home_search_field").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("movies_home_kind_movie").assertIsDisplayed().performClick()
+        assertEquals(MediaKind.MOVIE, selectedKind)
+
+        composeTestRule.onNodeWithTag("movies_home_sort_top_rated").assertIsDisplayed().performClick()
+        assertEquals(CatalogueSort.TOP_RATED, selectedSort)
+
+        composeTestRule.onNodeWithTag("movies_home_list").performScrollToNode(hasTestTag("movies_tmdb_setup_card"))
+        composeTestRule.onNodeWithTag("movies_tmdb_setup_card").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("movies_tmdb_dismiss_button").performClick()
+        assertTrue(tmdbDismissed)
+    }
+
+    @Test
+    fun movieDetailScreen_opensDownloadResolutionDialogAndSelectsQuality() {
+        var downloadedSource: PlaybackSource? = null
+        val src720 = PlaybackSource("s720", "https://archive.org/720.mp4", "MP4", "720p", 720, sizeMb = 520.0, providerName = "Internet Archive", isAuthorised = true)
+        val src480 = PlaybackSource("s480", "https://archive.org/480.mp4", "MP4", "480p", 480, sizeMb = 280.0, providerName = "Internet Archive", isAuthorised = true)
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MovieDetailScreen(
+                    uiState = MovieDetailUiState(
+                        isLoading = false,
+                        details = MediaDetails(summary = sampleMovie, fullDescription = "Screwball classic."),
+                        playbackResolution = PlaybackResolution.Available(
+                            title = "His Girl Friday",
+                            sources = listOf(src720, src480)
+                        )
+                    ),
+                    onBackClick = {},
+                    onRetry = {},
+                    onToggleWatchlist = {},
+                    onPlayClick = { _, _ -> },
+                    onSelectSeason = {},
+                    onOpenRelated = { _, _ -> },
+                    onOpenExternalUrl = {},
+                    onDownloadSource = { downloadedSource = it }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("detail_download_button").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("download_resolution_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("download_quality_option_s480").assertIsDisplayed().performClick()
+        assertEquals("s480", downloadedSource?.id)
+    }
+
+    @Test
+    fun moviePlayerScreen_displaysFullCinemaControlsAndSubtitlesLockSpeedDialogs() {
+        val src720 = PlaybackSource("s720", "https://archive.org/720.mp4", "MP4", "720p", 720, providerName = "Internet Archive", isAuthorised = true)
+        val subEn = SubtitleTrack("sub_en", "English", "en", "English (SRT)", "https://archive.org/en.srt")
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MoviePlayerScreen(
+                    uiState = MoviePlayerUiState(
+                        isLoading = false,
+                        resolution = PlaybackResolution.Available(
+                            title = "His Girl Friday",
+                            sources = listOf(src720),
+                            subtitles = listOf(subEn)
+                        ),
+                        selectedSource = src720,
+                        selectedSubtitleTrack = subEn
+                    ),
+                    onBackClick = {},
+                    onRetry = {},
+                    onSelectSource = { _, _ -> },
+                    onSelectSubtitle = { _, _ -> },
+                    onSaveProgress = { _, _ -> },
+                    onOpenExternalUrl = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("player_controls_overlay").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_back_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_subtitles_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_quality_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_download_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_play_pause_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_replay_10_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_forward_10_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_seek_slider").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_speed_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_resize_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_fullscreen_button").assertIsDisplayed()
+
+        // Test Lock & Unlock
+        composeTestRule.onNodeWithTag("player_lock_button").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("player_unlock_button").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("player_lock_button").assertIsDisplayed()
+
+        // Test Speed Dialog
+        composeTestRule.onNodeWithTag("player_speed_button").performClick()
+        composeTestRule.onNodeWithTag("player_speed_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_speed_option_1.5").performClick()
+
+        // Test Subtitles Dialog
+        composeTestRule.onNodeWithTag("player_subtitles_button").performClick()
+        composeTestRule.onNodeWithTag("player_subtitles_dialog").assertIsDisplayed()
     }
 }

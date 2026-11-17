@@ -39,6 +39,7 @@ interface AppContainer {
     val youTubeTranscriptExtractor: com.laterbox.app.transcript.data.YouTubeTranscriptExtractor
     val transcriptExportManager: com.laterbox.app.transcript.export.TranscriptExportManager
     val moviesRepository: com.laterbox.app.movies.domain.repository.MoviesRepository
+    val moviesDownloadBridge: com.laterbox.app.movies.data.download.MoviesDownloadBridge
 }
 
 class DefaultAppContainer(private val context: Context) : AppContainer {
@@ -247,6 +248,13 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             useSampleFixturesOnlyProvider = {
                 userPreferencesRepository.userPreferencesFlow.first().moviesUseSampleFixturesOnly
             }
+        )
+    }
+
+    override val moviesDownloadBridge: com.laterbox.app.movies.data.download.MoviesDownloadBridge by lazy {
+        com.laterbox.app.movies.data.download.MoviesDownloadBridge(
+            linkRepository = linkRepository,
+            mediaRepository = mediaRepository
         )
     }
 }

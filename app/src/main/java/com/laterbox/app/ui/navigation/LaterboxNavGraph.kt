@@ -979,10 +979,12 @@ fun LaterboxApp(
                                 uiState = moviesUiState,
                                 onRefresh = moviesHomeViewModel::refresh,
                                 onOpenCatalogue = { kind, genre ->
+                                    val queryArg = moviesUiState.activeSearchQuery.takeIf { it.isNotBlank() }
                                     navController.navigate(
                                         LaterboxDestination.MoviesCatalogue.createRoute(
                                             kind = kind?.wireValue,
-                                            genre = genre
+                                            genre = genre,
+                                            query = queryArg
                                         )
                                     )
                                 },
@@ -1004,6 +1006,20 @@ fun LaterboxApp(
                                 onToggleWatchlist = moviesHomeViewModel::toggleWatchlist,
                                 onToggleSampleFixtures = moviesHomeViewModel::setSampleFixturesOnly,
                                 onSaveTmdbApiKey = moviesHomeViewModel::setTmdbApiKey,
+                                onSearchQueryChange = moviesHomeViewModel::onSearchQueryChange,
+                                onSearchFocusChange = moviesHomeViewModel::setSearchFocused,
+                                onSubmitSearch = moviesHomeViewModel::submitInlineSearch,
+                                onClearSearch = moviesHomeViewModel::clearInlineSearch,
+                                onClearSearchHistory = moviesHomeViewModel::clearSearchHistory,
+                                onSelectKind = moviesHomeViewModel::selectKind,
+                                onSelectGenre = moviesHomeViewModel::selectGenre,
+                                onSelectSort = moviesHomeViewModel::selectSort,
+                                onResetFilters = moviesHomeViewModel::resetFilters,
+                                onLoadMoreFiltered = moviesHomeViewModel::loadMoreFiltered,
+                                onDismissTmdbPrompt = moviesHomeViewModel::dismissTmdbPrompt,
+                                onOpenExternalUrl = { url ->
+                                    BrowserLauncher.openUrl(context, url, colors)
+                                },
                                 onMenuClick = openMenuHandler,
                                 bottomPaddingDp = if (showHandsetBottomBar) 96 else 24
                             )
@@ -1108,7 +1124,9 @@ fun LaterboxApp(
                                 },
                                 onOpenExternalUrl = { url ->
                                     BrowserLauncher.openUrl(context, url, colors)
-                                }
+                                },
+                                onDownloadSource = movieDetailViewModel::downloadSource,
+                                onDismissDownloadStatus = movieDetailViewModel::clearDownloadStatus
                             )
                         }
 
@@ -1150,7 +1168,9 @@ fun LaterboxApp(
                                 onSaveProgress = moviePlayerViewModel::saveProgress,
                                 onOpenExternalUrl = { url ->
                                     BrowserLauncher.openUrl(context, url, colors)
-                                }
+                                },
+                                onDownloadSource = moviePlayerViewModel::downloadSource,
+                                onDismissDownloadStatus = moviePlayerViewModel::clearDownloadStatus
                             )
                         }
 

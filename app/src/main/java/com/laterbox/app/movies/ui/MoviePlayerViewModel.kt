@@ -2,6 +2,7 @@ package com.laterbox.app.movies.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.laterbox.app.movies.data.download.MoviesDownloadBridge
 import com.laterbox.app.movies.domain.model.DataSourceBadge
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
@@ -26,11 +27,14 @@ data class MoviePlayerUiState(
     val seasonNumber: Int? = null,
     val episodeNumber: Int? = null,
     val episodeLabel: String? = null,
+    val isEnqueuingDownload: Boolean = false,
+    val downloadStatusMessage: String? = null,
     val errorMessage: String? = null
 )
 
 class MoviePlayerViewModel(
-    private val moviesRepository: MoviesRepository
+    private val moviesRepository: MoviesRepository,
+    private val moviesDownloadBridge: MoviesDownloadBridge? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MoviePlayerUiState())
@@ -153,5 +157,42 @@ class MoviePlayerViewModel(
                 episodeLabel = state.episodeLabel
             )
         }
+    }
+
+    fun downloadSource(source: PlaybackSource) {
+        val bridge = moviesDownloadBridge ?: return
+        val state = _uiState.value
+        val summary = state.summary ?: return
+        if (state.isEnqueuingDownload) return
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isEnqueuingDownload = true, downloadStatusMessage = null) }
+            bridge.enqueueAuthorisedDownload(
+                summary = summary,
+                source = source,
+                episodeLabel = state.episodeLabel
+            ).fold(
+                onSuccess = {
+                    _uiState.update {
+                        it.copy(
+                            isEnqueuingDownload = false,
+                            downloadStatusMessage = "Queued ${source.qualityLabel} download in Laterbox Downloads."
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    _uiState.update {
+                        it.copy(
+                            isEnqueuingDownload = false,
+                            downloadStatusMessage = error.message ?: "Could not enqueue download."
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    fun clearDownloadStatus() {
+        _uiState.update { it.copy(downloadStatusMessage = null) }
     }
 }

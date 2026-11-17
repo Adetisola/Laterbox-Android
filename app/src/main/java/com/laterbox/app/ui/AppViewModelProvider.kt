@@ -111,13 +111,15 @@ object AppViewModelProvider {
         initializer {
             val app = laterboxApplication()
             com.laterbox.app.movies.ui.MovieDetailViewModel(
-                moviesRepository = app.container.moviesRepository
+                moviesRepository = app.container.moviesRepository,
+                moviesDownloadBridge = app.container.moviesDownloadBridge
             )
         }
         initializer {
             val app = laterboxApplication()
             com.laterbox.app.movies.ui.MoviePlayerViewModel(
-                moviesRepository = app.container.moviesRepository
+                moviesRepository = app.container.moviesRepository,
+                moviesDownloadBridge = app.container.moviesDownloadBridge
             )
         }
     }

@@ -43,6 +43,14 @@ object LaterboxIcons {
     @DrawableRes val Mic = R.drawable.ic_huge_mic
     @DrawableRes val Movies = R.drawable.ic_huge_movies
     @DrawableRes val Play = R.drawable.ic_huge_play
+    @DrawableRes val Pause = R.drawable.ic_huge_pause
+    @DrawableRes val Fullscreen = R.drawable.ic_huge_fullscreen
+    @DrawableRes val FullscreenExit = R.drawable.ic_huge_fullscreen_exit
+    @DrawableRes val Lock = R.drawable.ic_huge_lock
+    @DrawableRes val Unlock = R.drawable.ic_huge_unlock
+    @DrawableRes val Replay10 = R.drawable.ic_huge_replay_10
+    @DrawableRes val Forward10 = R.drawable.ic_huge_forward_10
+    @DrawableRes val Speed = R.drawable.ic_huge_speed
     @DrawableRes val Subtitles = R.drawable.ic_huge_subtitles
     @DrawableRes val Bookmark = R.drawable.ic_huge_bookmark
 }

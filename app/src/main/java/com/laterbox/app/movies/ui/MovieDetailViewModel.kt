@@ -2,10 +2,12 @@ package com.laterbox.app.movies.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.laterbox.app.movies.data.download.MoviesDownloadBridge
 import com.laterbox.app.movies.domain.model.EpisodeItem
 import com.laterbox.app.movies.domain.model.MediaDetails
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.PlaybackResolution
+import com.laterbox.app.movies.domain.model.PlaybackSource
 import com.laterbox.app.movies.domain.repository.MoviesRepository
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,11 +27,14 @@ data class MovieDetailUiState(
     val isCheckingPlayback: Boolean = false,
     val isInWatchlist: Boolean = false,
     val savedPositionMs: Long = 0L,
+    val isEnqueuingDownload: Boolean = false,
+    val downloadStatusMessage: String? = null,
     val errorMessage: String? = null
 )
 
 class MovieDetailViewModel(
-    private val moviesRepository: MoviesRepository
+    private val moviesRepository: MoviesRepository,
+    private val moviesDownloadBridge: MoviesDownloadBridge? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MovieDetailUiState())
@@ -138,6 +143,38 @@ class MovieDetailViewModel(
                 }
             )
         }
+    }
+
+    fun downloadSource(source: PlaybackSource) {
+        val bridge = moviesDownloadBridge ?: return
+        val summary = _uiState.value.details?.summary ?: return
+        if (_uiState.value.isEnqueuingDownload) return
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isEnqueuingDownload = true, downloadStatusMessage = null) }
+            bridge.enqueueAuthorisedDownload(summary = summary, source = source).fold(
+                onSuccess = {
+                    _uiState.update {
+                        it.copy(
+                            isEnqueuingDownload = false,
+                            downloadStatusMessage = "Queued ${source.qualityLabel} download in Laterbox Downloads."
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    _uiState.update {
+                        it.copy(
+                            isEnqueuingDownload = false,
+                            downloadStatusMessage = error.message ?: "Could not enqueue download."
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    fun clearDownloadStatus() {
+        _uiState.update { it.copy(downloadStatusMessage = null) }
     }
 
     private fun checkPlayback(

@@ -301,4 +301,129 @@ class MoviesViewModelsTest {
         advanceUntilIdle()
         assertEquals(listOf(90_000L to 500_000L), repo.savedProgressCalls)
     }
+
+    @Test
+    fun homeViewModel_handlesInlineSearchSuggestionsFiltersAndTmdbPromptDismiss() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = UserPreferencesRepository(context)
+        val repo = FakeMoviesRepository()
+        val vm = MoviesHomeViewModel(repo, prefs)
+        vm.uiState.first { !it.isLoading }
+
+        // Select Kind filter -> enters filtered mode and loads catalogue
+        vm.selectKind(MediaKind.MOVIE)
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.isFilteredMode)
+        assertEquals(1, vm.uiState.value.filteredItems.size)
+        assertTrue(vm.uiState.value.filteredHasMore)
+
+        // Load more filtered
+        vm.loadMoreFiltered()
+        advanceUntilIdle()
+        assertEquals(2, vm.uiState.value.filteredItems.size)
+        assertFalse(vm.uiState.value.filteredHasMore)
+
+        // Inline suggestions + submit search
+        vm.onSearchQueryChange("His")
+        advanceUntilIdle()
+        assertEquals(1, vm.uiState.value.suggestions.size)
+
+        vm.submitInlineSearch()
+        advanceUntilIdle()
+        assertEquals("His", vm.uiState.value.activeSearchQuery)
+        assertEquals(1, vm.uiState.value.filteredItems.size)
+
+        // Reset filters exits filtered mode
+        vm.resetFilters()
+        assertFalse(vm.uiState.value.isFilteredMode)
+        assertTrue(vm.uiState.value.filteredItems.isEmpty())
+
+        // Dismiss TMDB prompt
+        assertFalse(vm.uiState.value.tmdbPromptDismissed)
+        vm.dismissTmdbPrompt()
+        assertTrue(vm.uiState.value.tmdbPromptDismissed)
+    }
+
+    @Test
+    fun detailAndPlayerViewModels_enqueueDownloadsViaBridgeAndUpdateStatus() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(context, com.laterbox.app.data.local.LaterboxDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val linkRepo = com.laterbox.app.data.repository.LinkRepository(db.savedLinkDao())
+            val enqueuedTitles = mutableListOf<String?>()
+            val fakeMediaRepo = object : com.laterbox.app.media.domain.repository.MediaRepository {
+                override fun getAssetsForLink(linkId: Long) = kotlinx.coroutines.flow.flowOf(emptyList<com.laterbox.app.media.domain.model.MediaAsset>())
+                override fun getAllAssets() = kotlinx.coroutines.flow.flowOf(emptyList<com.laterbox.app.media.domain.model.MediaAsset>())
+                override fun filterAssets(mediaType: com.laterbox.app.media.domain.model.MediaType?, query: String) = kotlinx.coroutines.flow.flowOf(emptyList<com.laterbox.app.media.domain.model.MediaAsset>())
+                override fun getAssetById(id: String) = kotlinx.coroutines.flow.flowOf(null)
+                override fun getTasksForLink(linkId: Long) = kotlinx.coroutines.flow.flowOf(emptyList<com.laterbox.app.media.domain.model.DownloadTask>())
+                override fun getQueueTasks() = kotlinx.coroutines.flow.flowOf(emptyList<com.laterbox.app.media.domain.model.DownloadTask>())
+                override fun getTaskById(taskId: String) = kotlinx.coroutines.flow.flowOf(null)
+                override fun getStorageBreakdown() = kotlinx.coroutines.flow.flowOf(emptyMap<com.laterbox.app.media.domain.model.MediaType, Long>())
+                override fun getAssetCount() = kotlinx.coroutines.flow.flowOf(0)
+                override suspend fun enqueueDownload(
+                    linkId: Long,
+                    candidate: com.laterbox.app.media.domain.model.MediaCandidate,
+                    sourcePlatform: String,
+                    title: String?,
+                    artist: String?,
+                    album: String?,
+                    artworkUrl: String?,
+                    spotifyTrackId: String?,
+                    versionTag: String?
+                ): String {
+                    enqueuedTitles.add(title)
+                    return "dl_${enqueuedTitles.size}"
+                }
+                override suspend fun overrideCellularRequirement(taskId: String) {}
+                override suspend fun pauseDownload(taskId: String) {}
+                override suspend fun resumeDownload(taskId: String) {}
+                override suspend fun cancelDownload(taskId: String) {}
+                override suspend fun dismissTask(taskId: String) {}
+                override suspend fun clearTerminalTasks() {}
+                override suspend fun retryDownload(taskId: String) {}
+                override suspend fun deleteAsset(assetId: String) {}
+                override suspend fun exportAsset(assetId: String) = Result.success("")
+                override suspend fun deleteAssetsForLink(linkId: Long, deleteFiles: Boolean) {}
+                override suspend fun runOrphanSweep() {}
+                override suspend fun recoverInterruptedTasks() {}
+                override fun getInspectionForLink(linkId: Long) = kotlinx.coroutines.flow.flowOf(null)
+                override fun isInspectingLink(linkId: Long) = kotlinx.coroutines.flow.flowOf(false)
+                override fun startInspection(linkId: Long, url: String, previewImageUrl: String?, forceRefresh: Boolean) {}
+                override suspend fun cancelInspection(linkId: Long) {}
+            }
+
+            val bridge = com.laterbox.app.movies.data.download.MoviesDownloadBridge(linkRepo, fakeMediaRepo)
+            val repo = FakeMoviesRepository()
+
+            val detailVm = MovieDetailViewModel(repo, bridge)
+            detailVm.load("ia", "his_girl_friday")
+            advanceUntilIdle()
+            val src720 = (detailVm.uiState.value.playbackResolution as PlaybackResolution.Available).sources.first()
+            detailVm.downloadSource(src720)
+            val detailDownloaded = detailVm.uiState.first { it.downloadStatusMessage != null }
+            assertTrue(
+                "Unexpected status: ${detailDownloaded.downloadStatusMessage}",
+                detailDownloaded.downloadStatusMessage?.contains("720p") == true
+            )
+            detailVm.clearDownloadStatus()
+            assertNull(detailVm.uiState.value.downloadStatusMessage)
+
+            val playerVm = MoviePlayerViewModel(repo, bridge)
+            playerVm.load("ia", "his_girl_friday")
+            advanceUntilIdle()
+            val src480 = (playerVm.uiState.value.resolution as PlaybackResolution.Available).sources[1]
+            playerVm.downloadSource(src480)
+            val playerDownloaded = playerVm.uiState.first { it.downloadStatusMessage != null }
+            assertTrue(
+                "Unexpected status: ${playerDownloaded.downloadStatusMessage}",
+                playerDownloaded.downloadStatusMessage?.contains("480p") == true
+            )
+            assertEquals(listOf("His Girl Friday (720p)", "His Girl Friday (480p)"), enqueuedTitles)
+        } finally {
+            db.close()
+        }
+    }
 }

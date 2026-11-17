@@ -50,9 +50,15 @@ class TvMazeSeriesProvider(
             coroutineScope {
                 val showsDeferred = async { fetchShowIndex(apiPage = 0) }
                 val scheduleDeferred = async { fetchTrendingSchedule() }
+                val webScheduleDeferred = async { fetchWebStreamingSchedule() }
 
                 val allShows = showsDeferred.await()
-                val trendingToday = scheduleDeferred.await().getOrDefault(emptyList())
+                val broadcastToday = scheduleDeferred.await().getOrDefault(emptyList())
+                val webToday = webScheduleDeferred.await().getOrDefault(emptyList())
+                val trendingToday = (webToday + broadcastToday)
+                    .distinctBy { it.id }
+                    .sortedByDescending { it.rating ?: 0.0 }
+                    .take(18)
 
                 val popularShows = allShows
                     .sortedByDescending { it.weight }
@@ -75,7 +81,7 @@ class TvMazeSeriesProvider(
                             BrowseSection(
                                 id = "tvmaze_trending_tonight",
                                 title = "Trending TV Series",
-                                subtitle = "On air & trending via TVMaze guide",
+                                subtitle = "Streaming & on air via TVMaze guide",
                                 style = SectionStyle.RAIL,
                                 items = trendingToday
                             )
@@ -317,6 +323,24 @@ class TvMazeSeriesProvider(
             for (i in 0 until arr.length()) {
                 val entry = arr.optJSONObject(i) ?: continue
                 val show = entry.optJSONObject("show") ?: continue
+                val summary = parseShowSummary(show)
+                if (seen.add(summary.id)) {
+                    add(summary)
+                }
+            }
+        }.take(15)
+    }
+
+    private fun fetchWebStreamingSchedule(): Result<List<MovieTitleSummary>> = runCatching {
+        val raw = executeGet("$normalizedBaseUrl/schedule/web")
+        val arr = JSONArray(raw)
+        val seen = mutableSetOf<String>()
+        buildList {
+            for (i in 0 until arr.length()) {
+                val entry = arr.optJSONObject(i) ?: continue
+                val show = entry.optJSONObject("_embedded")?.optJSONObject("show")
+                    ?: entry.optJSONObject("show")
+                    ?: continue
                 val summary = parseShowSummary(show)
                 if (seen.add(summary.id)) {
                     add(summary)
