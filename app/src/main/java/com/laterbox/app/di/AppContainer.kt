@@ -229,6 +229,8 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
         sharedOkHttpClient.newBuilder()
             .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(35, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .callTimeout(45, java.util.concurrent.TimeUnit.SECONDS)
             .build()
     }
 

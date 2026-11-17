@@ -46,7 +46,8 @@ object MoviesMediaCache {
 
     fun createDataSourceFactory(
         context: Context,
-        headers: Map<String, String> = emptyMap()
+        headers: Map<String, String> = emptyMap(),
+        useDiskCache: Boolean = true
     ): DataSource.Factory {
         val customUserAgent = headers.entries
             .firstOrNull { it.key.equals("User-Agent", ignoreCase = true) }
@@ -65,6 +66,9 @@ object MoviesMediaCache {
         }
 
         val upstreamFactory = DefaultDataSource.Factory(context.applicationContext, httpFactory)
+        if (!useDiskCache) {
+            return upstreamFactory
+        }
 
         return runCatching {
             CacheDataSource.Factory()
@@ -78,9 +82,10 @@ object MoviesMediaCache {
 
     fun createMediaSourceFactory(
         context: Context,
-        headers: Map<String, String> = emptyMap()
+        headers: Map<String, String> = emptyMap(),
+        useDiskCache: Boolean = true
     ): DefaultMediaSourceFactory {
-        return DefaultMediaSourceFactory(createDataSourceFactory(context, headers))
+        return DefaultMediaSourceFactory(createDataSourceFactory(context, headers, useDiskCache))
     }
 
     fun releaseForTesting() {

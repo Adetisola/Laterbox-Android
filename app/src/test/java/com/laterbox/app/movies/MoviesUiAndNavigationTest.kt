@@ -620,4 +620,107 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithText("Retry Stream Check").performClick()
         assertTrue(retried)
     }
+
+    @Test
+    fun movieDetailScreen_rendersInteractiveAudioDubChipsAndEpisodesErrorRetry() {
+        var openedRelatedId: String? = null
+        var retriedSeason: Int? = null
+        val seriesSummary = sampleMovie.copy(
+            id = "mb_series_1",
+            providerId = "moviebox",
+            kind = MediaKind.TV_SERIES,
+            title = "Avatar",
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+        )
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MovieDetailScreen(
+                    uiState = MovieDetailUiState(
+                        isLoading = false,
+                        details = MediaDetails(
+                            summary = seriesSummary,
+                            fullDescription = "Pandora epic.",
+                            audioDubs = listOf(
+                                com.laterbox.app.movies.domain.model.AudioDubInfo(language = "en", label = "English", referenceId = "mb_series_1"),
+                                com.laterbox.app.movies.domain.model.AudioDubInfo(language = "fr", label = "French dub", referenceId = "mb_series_fr")
+                            ),
+                            seasons = listOf(SeasonSummary(1, "Season 1", 8))
+                        ),
+                        selectedSeasonNumber = 1,
+                        episodesError = "Failed to load episodes",
+                        playbackResolution = PlaybackResolution.Available(
+                            title = "Avatar",
+                            sources = listOf(PlaybackSource("s1", "https://cdn.example/1.mp4", "MP4", "720p", 720, providerName = "MovieBox"))
+                        )
+                    ),
+                    onBackClick = {},
+                    onRetry = {},
+                    onToggleWatchlist = {},
+                    onPlayClick = { _, _ -> },
+                    onSelectSeason = { retriedSeason = it },
+                    onOpenRelated = { _, id -> openedRelatedId = id },
+                    onOpenExternalUrl = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("movie_detail_list").performScrollToNode(hasTestTag("detail_dub_chip_mb_series_fr"))
+        composeTestRule.onNodeWithTag("detail_dub_chip_mb_series_fr").assertIsDisplayed().performClick()
+        assertEquals("mb_series_fr", openedRelatedId)
+
+        composeTestRule.onNodeWithTag("movie_detail_list").performScrollToNode(hasTestTag("detail_episodes_error"))
+        composeTestRule.onNodeWithTag("detail_episodes_error").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Failed to load episodes").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Retry").performClick()
+        assertEquals(1, retriedSeason)
+    }
+
+    @Test
+    fun moviePlayerScreen_opensAudioDialogSwitchesDubAndTriggersNextEpisode() {
+        val src720 = PlaybackSource("s720", "https://cdn.example/s1e1.mp4", "MP4", "720p", 720, providerName = "MovieBox")
+        val dubs = listOf(
+            com.laterbox.app.movies.domain.model.AudioDubInfo(language = "en", label = "English", referenceId = "id_en"),
+            com.laterbox.app.movies.domain.model.AudioDubInfo(language = "fr", label = "French dub", referenceId = "id_fr")
+        )
+        var selectedDubId: String? = null
+        var nextEpisodeClicked = false
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MoviePlayerScreen(
+                    uiState = MoviePlayerUiState(
+                        isLoading = false,
+                        resolution = PlaybackResolution.Available(
+                            title = "Severance",
+                            subtitleHeading = "S1 · E1",
+                            sources = listOf(src720)
+                        ),
+                        selectedSource = src720,
+                        activeTitleId = "id_en",
+                        availableDubs = dubs,
+                        seasons = listOf(SeasonSummary(1, "Season 1", 9)),
+                        seasonNumber = 1,
+                        episodeNumber = 1
+                    ),
+                    onBackClick = {},
+                    onRetry = {},
+                    onSelectSource = { _, _ -> },
+                    onSelectSubtitle = { _, _ -> },
+                    onSaveProgress = { _, _ -> },
+                    onOpenExternalUrl = {},
+                    onSelectAudioDub = { dub, _ -> selectedDubId = dub.referenceId },
+                    onNextEpisode = { nextEpisodeClicked = true }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("player_next_episode_button").assertIsDisplayed().performClick()
+        assertTrue(nextEpisodeClicked)
+
+        composeTestRule.onNodeWithTag("player_audio_button").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("player_audio_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_audio_dub_id_fr").assertIsDisplayed().performClick()
+        assertEquals("id_fr", selectedDubId)
+    }
 }

@@ -267,7 +267,7 @@ fun MoviesScreen(
                                         keyboardController?.hide()
                                         focusManager.clearFocus()
                                         onSearchFocusChange(false)
-                                        if (suggestion.id.isNotBlank()) {
+                                        if (suggestion.hasNavigableId) {
                                             onOpenDetail(suggestion.providerId, suggestion.id)
                                         } else {
                                             onSubmitSearch(suggestion.title)
@@ -286,10 +286,14 @@ fun MoviesScreen(
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
-                                    val subMeta = listOfNotNull(
-                                        suggestion.kind.label,
-                                        suggestion.releaseYear?.toString()
-                                    ).joinToString(" · ")
+                                    val subMeta = if (!suggestion.hasNavigableId) {
+                                        "Search MovieBox"
+                                    } else {
+                                        listOfNotNull(
+                                            suggestion.kind.label,
+                                            suggestion.releaseYear?.toString()
+                                        ).joinToString(" · ")
+                                    }
                                     Text(
                                         text = subMeta,
                                         style = typography.caption,

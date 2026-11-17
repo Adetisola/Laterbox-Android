@@ -1173,7 +1173,9 @@ fun LaterboxApp(
                                     BrowserLauncher.openUrl(context, url, colors)
                                 },
                                 onDownloadSource = moviePlayerViewModel::downloadSource,
-                                onDismissDownloadStatus = moviePlayerViewModel::clearDownloadStatus
+                                onDismissDownloadStatus = moviePlayerViewModel::clearDownloadStatus,
+                                onSelectAudioDub = moviePlayerViewModel::selectAudioDub,
+                                onNextEpisode = moviePlayerViewModel::playNextEpisode
                             )
                         }
 

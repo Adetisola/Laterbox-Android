@@ -224,12 +224,12 @@ fun MoviesCatalogueScreen(
                         }
                     } else {
                         uiState.suggestions.forEachIndexed { idx, suggestion ->
-                            val suggestionTagSuffix = suggestion.id.ifBlank { "idx_$idx" }
+                            val suggestionTagSuffix = if (suggestion.hasNavigableId) suggestion.id else "idx_$idx"
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable {
-                                        if (suggestion.id.isNotBlank()) {
+                                        if (suggestion.hasNavigableId) {
                                             onOpenDetail(suggestion.providerId, suggestion.id)
                                         } else {
                                             onSubmitSearch(suggestion.title)

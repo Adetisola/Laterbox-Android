@@ -93,7 +93,12 @@ data class SearchSuggestion(
     val kind: MediaKind = MediaKind.MOVIE,
     val releaseYear: Int? = null,
     val posterUrl: String? = null
-)
+) {
+    val hasNavigableId: Boolean
+        get() = id.isNotBlank() &&
+            !id.equals("None", ignoreCase = true) &&
+            !id.equals("null", ignoreCase = true)
+}
 
 data class CastMember(
     val name: String,

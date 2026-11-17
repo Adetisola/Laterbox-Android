@@ -439,6 +439,7 @@ class MoviesViewModelsTest {
         vm.setMovieBoxConfig("https://movies.example.com/", "secret-key")
         val updatedConfigState = vm.uiState.first { it.movieBoxApiBaseUrl == "https://movies.example.com/" }
         assertEquals("secret-key", updatedConfigState.movieBoxApiKey)
+        advanceUntilIdle()
         assertTrue(repo.homeCallCount > callsBefore)
 
         vm.setProviderMode(com.laterbox.app.data.preferences.MoviesProviderMode.OPEN_ARCHIVE_AND_TVMAZE)
@@ -567,5 +568,87 @@ class MoviesViewModelsTest {
         } finally {
             db.close()
         }
+    }
+
+    @Test
+    fun playerViewModel_switchesAudioDubPreservingPositionAndAdvancesNextEpisode() = runTest {
+        val baseFake = FakeMoviesRepository()
+        val seriesSummary = MovieTitleSummary(
+            id = "mb_series_en",
+            providerId = "moviebox",
+            kind = MediaKind.TV_SERIES,
+            title = "Severance",
+            releaseYear = 2022,
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+            isPlayableHint = true
+        )
+        val frenchSummary = seriesSummary.copy(id = "mb_series_fr", title = "Severance (VF)")
+        val dubs = listOf(
+            com.laterbox.app.movies.domain.model.AudioDubInfo(language = "en", label = "English", referenceId = "mb_series_en"),
+            com.laterbox.app.movies.domain.model.AudioDubInfo(language = "fr", label = "French", referenceId = "mb_series_fr")
+        )
+        val seasons = listOf(SeasonSummary(1, "Season 1", 2), SeasonSummary(2, "Season 2", 4))
+        val customRepo = object : MoviesRepository by baseFake {
+            override suspend fun getDetails(providerId: String, titleId: String, forceRefresh: Boolean) =
+                Result.success(
+                    MediaDetails(
+                        summary = if (titleId == "mb_series_fr") frenchSummary else seriesSummary,
+                        fullDescription = "Series synopsis.",
+                        audioDubs = dubs,
+                        seasons = seasons
+                    )
+                )
+
+            override suspend fun resolvePlayback(
+                providerId: String,
+                titleId: String,
+                seasonNumber: Int?,
+                episodeNumber: Int?
+            ): Result<PlaybackResolution> {
+                return Result.success(
+                    PlaybackResolution.Available(
+                        title = if (titleId == "mb_series_fr") "Severance (VF)" else "Severance",
+                        subtitleHeading = "S$seasonNumber · E$episodeNumber",
+                        sources = listOf(
+                            PlaybackSource("${titleId}_720", "https://cdn.example/$titleId/s${seasonNumber}e${episodeNumber}.mp4", "MP4", "720p", 720, providerName = "MovieBox")
+                        ),
+                        subtitles = listOf(
+                            SubtitleTrack("sub_en", "English", "en", "English", "https://cdn.example/en.srt")
+                        ),
+                        startPositionMs = 12_000L,
+                        providerName = "MovieBox",
+                        sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+                    )
+                )
+            }
+        }
+
+        val vm = MoviePlayerViewModel(customRepo)
+        vm.load("moviebox", "mb_series_en", seasonNumber = 1, episodeNumber = 1)
+        advanceUntilIdle()
+
+        assertEquals("mb_series_en", vm.uiState.value.activeTitleId)
+        assertEquals(2, vm.uiState.value.availableDubs.size)
+        assertEquals(1 to 2, vm.uiState.value.nextEpisodeTarget)
+
+        // Switch audio dub while preserving playback position
+        vm.selectAudioDub(dubs[1], currentPositionMs = 95_000L)
+        advanceUntilIdle()
+        assertEquals("mb_series_fr", vm.uiState.value.activeTitleId)
+        assertEquals(95_000L, vm.uiState.value.startPositionMs)
+        assertEquals("mb_series_fr_720", vm.uiState.value.selectedSource?.id)
+
+        // Advance to S1E2, then across boundary to S2E1
+        vm.playNextEpisode()
+        advanceUntilIdle()
+        assertEquals(1, vm.uiState.value.seasonNumber)
+        assertEquals(2, vm.uiState.value.episodeNumber)
+        assertEquals(2 to 1, vm.uiState.value.nextEpisodeTarget)
+
+        vm.playNextEpisode()
+        advanceUntilIdle()
+        assertEquals(2, vm.uiState.value.seasonNumber)
+        assertEquals(1, vm.uiState.value.episodeNumber)
+        assertEquals(2 to 2, vm.uiState.value.nextEpisodeTarget)
     }
 }

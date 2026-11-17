@@ -1,5 +1,8 @@
 package com.laterbox.app.movies.data.provider
 
+import android.util.Log
+import com.laterbox.app.BuildConfig
+import com.laterbox.app.data.preferences.MovieBoxEndpointConfig
 import com.laterbox.app.movies.domain.model.AudioDubInfo
 import com.laterbox.app.movies.domain.model.BrowseSection
 import com.laterbox.app.movies.domain.model.CataloguePage
@@ -23,6 +26,7 @@ import com.laterbox.app.movies.domain.provider.PlaybackSourceProvider
 import com.laterbox.app.movies.domain.provider.SubtitleProvider
 import com.laterbox.app.movies.domain.provider.SeriesEpisodeProvider
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -31,13 +35,24 @@ import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import javax.net.ssl.SSLException
+
+class MovieBoxApiException(
+    val httpCode: Int?,
+    message: String,
+    val isAuthFailure: Boolean = (httpCode == 401 || httpCode == 403),
+    cause: Throwable? = null
+) : IOException(message, cause)
 
 class MovieBoxProvider(
     private val okHttpClient: OkHttpClient,
     private val baseUrlProvider: suspend () -> String,
-    private val apiKeyProvider: suspend () -> String = { "" }
+    private val apiKeyProvider: suspend () -> String = { "" },
+    private val retryDelayMs: Long = 250L
 ) : MoviesCatalogueProvider,
     MoviesSearchProvider,
     MovieDetailsProvider,
@@ -602,7 +617,9 @@ class MovieBoxProvider(
                     .thenBy { it.format == "DASH" || it.format == "HLS" }
             )
 
-            val resolvedTitle = titleCache[titleId] ?: "MovieBox Stream"
+            val resolvedTitle = titleCache[titleId]
+                ?: root.optCleanString("title")
+                ?: "MovieBox Stream"
             if (sources.isEmpty()) {
                 PlaybackResolution.Unavailable(
                     title = resolvedTitle,
@@ -733,31 +750,118 @@ class MovieBoxProvider(
                 "MovieBox API server URL is not configured. Open Data Sources to set your MovieBox server URL."
             )
         }
+        if (!MovieBoxEndpointConfig.isValidBaseUrl(raw, allowDebugCleartextLoopback = BuildConfig.DEBUG)) {
+            throw IllegalStateException(
+                "Invalid MovieBox API URL scheme. HTTPS is required in release builds."
+            )
+        }
         return runCatching { raw.toHttpUrl() }.getOrElse { err ->
-            throw IllegalStateException("Invalid MovieBox API URL '$raw': ${err.message}", err)
+            throw IllegalStateException("Invalid MovieBox API URL '${raw.substringBefore("?")}': ${err.message}", err)
         }
     }
 
     private suspend fun executeGet(url: HttpUrl): String {
-        val requestBuilder = Request.Builder()
-            .url(url)
-            .header("Accept", "application/json")
-            .get()
+        val redactedPath = url.encodedPath
+        val maxAttempts = 2
+        var lastError: IOException? = null
 
-        val apiKey = apiKeyProvider().trim()
-        if (apiKey.isNotBlank()) {
-            requestBuilder.header("X-API-Key", apiKey)
-        }
+        for (attempt in 1..maxAttempts) {
+            val requestBuilder = Request.Builder()
+                .url(url)
+                .header("Accept", "application/json")
+                .get()
 
-        okHttpClient.newCall(requestBuilder.build()).execute().use { response ->
-            val body = response.body?.string().orEmpty()
-            if (!response.isSuccessful) {
-                val detail = runCatching { JSONObject(body).optCleanString("detail") }.getOrNull()
-                val msg = detail ?: "MovieBox API returned HTTP ${response.code}"
-                throw IOException(msg)
+            val apiKey = apiKeyProvider().trim()
+            if (apiKey.isNotBlank()) {
+                requestBuilder.header("X-API-Key", apiKey)
             }
-            return body
+
+            val startNs = System.nanoTime()
+            try {
+                okHttpClient.newCall(requestBuilder.build()).execute().use { response ->
+                    val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
+                    val body = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) {
+                        val detail = runCatching { JSONObject(body).optCleanString("detail") }.getOrNull()
+                        safeLogWarn("GET $redactedPath -> HTTP ${response.code} (${elapsedMs}ms)")
+
+                        val isRetryableStatus = response.code in setOf(502, 503, 504)
+                        if (isRetryableStatus && attempt < maxAttempts) {
+                            if (retryDelayMs > 0L) delay(retryDelayMs)
+                            return@use
+                        }
+
+                        throw MovieBoxApiException(
+                            httpCode = response.code,
+                            message = buildHttpErrorMessage(response.code, detail)
+                        )
+                    }
+
+                    if (body.isBlank()) {
+                        safeLogWarn("GET $redactedPath -> HTTP ${response.code} empty body (${elapsedMs}ms)")
+                        throw MovieBoxApiException(
+                            httpCode = response.code,
+                            message = "MovieBox API returned an empty response for $redactedPath."
+                        )
+                    }
+
+                    safeLogInfo("GET $redactedPath -> HTTP ${response.code} (${elapsedMs}ms)")
+                    return body
+                }
+            } catch (e: MovieBoxApiException) {
+                throw e
+            } catch (e: IOException) {
+                lastError = e
+                val isNonRetryableNetwork = e is UnknownHostException || e is SSLException
+                safeLogWarn("GET $redactedPath -> network error (${e.javaClass.simpleName})")
+                if (!isNonRetryableNetwork && attempt < maxAttempts) {
+                    if (retryDelayMs > 0L) delay(retryDelayMs)
+                    continue
+                }
+                throw MovieBoxApiException(
+                    httpCode = null,
+                    message = buildNetworkErrorMessage(e),
+                    cause = e
+                )
+            }
         }
+
+        throw lastError ?: MovieBoxApiException(
+            httpCode = null,
+            message = "Unable to reach MovieBox API ($redactedPath)."
+        )
+    }
+
+    private fun buildHttpErrorMessage(code: Int, detail: String?): String = when (code) {
+        401, 403 -> buildString {
+            append("MovieBox authentication failed (HTTP ").append(code).append("). ")
+            append("Set or update your MovieBox X-API-Key in Data Sources.")
+            if (!detail.isNullOrBlank()) {
+                append(" Detail: ").append(detail)
+            }
+        }
+        404 -> detail ?: "Requested MovieBox item or endpoint was not found (HTTP 404)."
+        502, 503, 504 -> detail ?: "MovieBox upstream error (HTTP $code). Please retry shortly."
+        else -> detail ?: "MovieBox API returned HTTP $code"
+    }
+
+    private fun buildNetworkErrorMessage(error: IOException): String = when (error) {
+        is SocketTimeoutException ->
+            "Timed out waiting for MovieBox server. Please retry."
+        is UnknownHostException ->
+            "Cannot resolve MovieBox server hostname. Check your internet connection or Data Sources URL."
+        is SSLException ->
+            "Secure TLS connection to MovieBox server failed."
+        else ->
+            "Network error reaching MovieBox server: ${error.message ?: error.javaClass.simpleName}"
+    }
+
+    private fun safeLogInfo(message: String) {
+        runCatching { Log.i(TAG, message) }
+    }
+
+    private fun safeLogWarn(message: String) {
+        runCatching { Log.w(TAG, message) }
     }
 
     private fun parseMediaKind(subjectType: Int?, typeLabel: String?): MediaKind = when {
@@ -826,6 +930,7 @@ class MovieBoxProvider(
     }
 
     companion object {
+        private const val TAG = "MovieBoxProvider"
         const val PROVIDER_ID = "moviebox"
 
         private val DEFAULT_GENRES = listOf(

@@ -572,6 +572,47 @@ fun MovieDetailScreen(
                                     }
                                 }
                             }
+                            if (details.audioDubs.isNotEmpty()) {
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text(
+                                        text = "Audio & Language Dubs",
+                                        style = typography.uiLabel.copy(fontSize = 12.sp, fontWeight = FontWeight.SemiBold),
+                                        color = colors.textPrimary
+                                    )
+                                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        items(
+                                            details.audioDubs,
+                                            key = { dub -> "${dub.language}_${dub.referenceId ?: dub.label}" }
+                                        ) { dub ->
+                                            val refId = dub.referenceId
+                                            val isActiveDub = refId == null || refId == summary.id
+                                            Surface(
+                                                shape = RoundedCornerShape(12.dp),
+                                                color = if (isActiveDub) colors.accentPrimary else colors.surfacePrimary,
+                                                border = BorderStroke(
+                                                    0.75.dp,
+                                                    if (isActiveDub) colors.accentPrimary else colors.borderSubtle
+                                                ),
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(12.dp))
+                                                    .clickable(enabled = !refId.isNullOrBlank() && refId != summary.id) {
+                                                        if (!refId.isNullOrBlank()) {
+                                                            onOpenRelated(summary.providerId, refId)
+                                                        }
+                                                    }
+                                                    .testTag("detail_dub_chip_${refId ?: dub.language}")
+                                            ) {
+                                                Text(
+                                                    text = dub.label,
+                                                    style = typography.caption.copy(fontWeight = FontWeight.Medium),
+                                                    color = if (isActiveDub) colors.onAccentPrimary else colors.textPrimary,
+                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -643,68 +684,124 @@ fun MovieDetailScreen(
                     }
 
                     // TV Series Seasons & Episodes
-                    if (summary.kind == MediaKind.TV_SERIES && details.seasons.isNotEmpty()) {
-                        item(key = "detail_seasons") {
-                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Text(
-                                    text = "Seasons & Episodes",
-                                    style = typography.titleLarge,
-                                    color = colors.textPrimary,
-                                    modifier = Modifier.padding(horizontal = 16.dp)
-                                )
-                                LazyRow(
-                                    contentPadding = PaddingValues(horizontal = 16.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    items(details.seasons, key = { it.seasonNumber }) { season ->
-                                        val selected = uiState.selectedSeasonNumber == season.seasonNumber
-                                        Surface(
-                                            shape = RoundedCornerShape(12.dp),
-                                            color = if (selected) colors.accentPrimary else colors.surfacePrimary,
-                                            border = BorderStroke(
-                                                0.75.dp,
-                                                if (selected) colors.accentPrimary else colors.borderSubtle
-                                            ),
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(12.dp))
-                                                .clickable { onSelectSeason(season.seasonNumber) }
-                                                .testTag("season_chip_${season.seasonNumber}")
-                                        ) {
-                                            Text(
-                                                text = if (season.episodeCount > 0) {
-                                                    "${season.title} (${season.episodeCount})"
-                                                } else season.title,
-                                                style = typography.uiLabel.copy(fontSize = 12.sp, fontWeight = FontWeight.SemiBold),
-                                                color = if (selected) colors.onAccentPrimary else colors.textPrimary,
-                                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                                            )
+                    if (summary.kind == MediaKind.TV_SERIES) {
+                        if (details.seasons.isNotEmpty()) {
+                            item(key = "detail_seasons") {
+                                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Text(
+                                        text = "Seasons & Episodes",
+                                        style = typography.titleLarge,
+                                        color = colors.textPrimary,
+                                        modifier = Modifier.padding(horizontal = 16.dp)
+                                    )
+                                    LazyRow(
+                                        contentPadding = PaddingValues(horizontal = 16.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        items(details.seasons, key = { it.seasonNumber }) { season ->
+                                            val selected = uiState.selectedSeasonNumber == season.seasonNumber
+                                            Surface(
+                                                shape = RoundedCornerShape(12.dp),
+                                                color = if (selected) colors.accentPrimary else colors.surfacePrimary,
+                                                border = BorderStroke(
+                                                    0.75.dp,
+                                                    if (selected) colors.accentPrimary else colors.borderSubtle
+                                                ),
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(12.dp))
+                                                    .clickable { onSelectSeason(season.seasonNumber) }
+                                                    .testTag("season_chip_${season.seasonNumber}")
+                                            ) {
+                                                Text(
+                                                    text = if (season.episodeCount > 0) {
+                                                        "${season.title} (${season.episodeCount})"
+                                                    } else season.title,
+                                                    style = typography.uiLabel.copy(fontSize = 12.sp, fontWeight = FontWeight.SemiBold),
+                                                    color = if (selected) colors.onAccentPrimary else colors.textPrimary,
+                                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                                                )
+                                            }
                                         }
                                     }
                                 }
                             }
-                        }
 
-                        if (uiState.isLoadingEpisodes) {
-                            item(key = "episodes_loading") {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(16.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(24.dp),
-                                        color = colors.accentPrimary
-                                    )
+                            when {
+                                uiState.isLoadingEpisodes -> {
+                                    item(key = "episodes_loading") {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(16.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(24.dp),
+                                                color = colors.accentPrimary
+                                            )
+                                        }
+                                    }
+                                }
+                                uiState.episodesError != null -> {
+                                    item(key = "episodes_error") {
+                                        Surface(
+                                            shape = RoundedCornerShape(14.dp),
+                                            color = colors.surfaceSecondary,
+                                            border = BorderStroke(0.75.dp, colors.borderSubtle),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 16.dp)
+                                                .testTag("detail_episodes_error")
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(12.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Text(
+                                                    text = uiState.episodesError,
+                                                    style = typography.bodySecondary,
+                                                    color = colors.textSecondary,
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                                TextButton(
+                                                    onClick = {
+                                                        onSelectSeason(uiState.selectedSeasonNumber ?: 1)
+                                                    }
+                                                ) {
+                                                    Text("Retry", color = colors.accentPrimary)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                uiState.episodes.isNotEmpty() -> {
+                                    items(uiState.episodes, key = { "ep_${it.id}_${it.seasonNumber}_${it.episodeNumber}" }) { ep ->
+                                        EpisodeRowCard(
+                                            episode = ep,
+                                            onClick = { onPlayClick(ep.seasonNumber, ep.episodeNumber) },
+                                            modifier = Modifier.padding(horizontal = 16.dp)
+                                        )
+                                    }
                                 }
                             }
-                        } else if (uiState.episodes.isNotEmpty()) {
-                            items(uiState.episodes, key = { "ep_${it.id}_${it.seasonNumber}_${it.episodeNumber}" }) { ep ->
-                                EpisodeRowCard(
-                                    episode = ep,
-                                    onClick = { onPlayClick(ep.seasonNumber, ep.episodeNumber) },
-                                    modifier = Modifier.padding(horizontal = 16.dp)
-                                )
+                        } else {
+                            item(key = "episodes_unavailable") {
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = colors.surfaceSecondary,
+                                    border = BorderStroke(0.75.dp, colors.borderSubtle),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp)
+                                ) {
+                                    Text(
+                                        text = "No season breakdown was returned for this series.",
+                                        style = typography.bodySecondary,
+                                        color = colors.textSecondary,
+                                        modifier = Modifier.padding(14.dp)
+                                    )
+                                }
                             }
                         }
                     }

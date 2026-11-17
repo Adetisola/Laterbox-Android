@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
+import android.graphics.Color as AndroidColor
 import android.net.Uri
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
@@ -29,8 +30,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -79,11 +82,17 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.TrackGroup
+import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import com.laterbox.app.movies.data.cache.MoviesMediaCache
+import com.laterbox.app.movies.domain.model.AudioDubInfo
 import com.laterbox.app.movies.domain.model.PlaybackResolution
 import com.laterbox.app.movies.domain.model.PlaybackSource
 import com.laterbox.app.movies.domain.model.SubtitleTrack
@@ -105,6 +114,8 @@ fun MoviePlayerScreen(
     onOpenExternalUrl: (String) -> Unit,
     onDownloadSource: (PlaybackSource) -> Unit = {},
     onDismissDownloadStatus: () -> Unit = {},
+    onSelectAudioDub: (dub: AudioDubInfo, currentPosMs: Long) -> Unit = { _, _ -> },
+    onNextEpisode: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -164,11 +175,16 @@ fun MoviePlayerScreen(
                     selectedSource = uiState.selectedSource,
                     selectedSubtitle = uiState.selectedSubtitleTrack,
                     startPositionMs = uiState.startPositionMs,
+                    activeTitleId = uiState.activeTitleId,
+                    availableDubs = uiState.availableDubs,
+                    nextEpisodeTarget = uiState.nextEpisodeTarget,
                     isEnqueuingDownload = uiState.isEnqueuingDownload,
                     downloadStatusMessage = uiState.downloadStatusMessage,
                     onBackClick = onBackClick,
                     onSelectSource = onSelectSource,
                     onSelectSubtitle = onSelectSubtitle,
+                    onSelectAudioDub = onSelectAudioDub,
+                    onNextEpisode = onNextEpisode,
                     onSaveProgress = onSaveProgress,
                     onOpenExternalUrl = onOpenExternalUrl,
                     onDownloadSource = onDownloadSource,
@@ -197,6 +213,14 @@ fun MoviePlayerScreen(
     }
 }
 
+private data class PlayerAudioTrackOption(
+    val group: TrackGroup,
+    val trackIndex: Int,
+    val label: String,
+    val languageCode: String?,
+    val isSelected: Boolean
+)
+
 @OptIn(UnstableApi::class)
 @Composable
 private fun ActiveVideoPlayerContent(
@@ -204,11 +228,16 @@ private fun ActiveVideoPlayerContent(
     selectedSource: PlaybackSource,
     selectedSubtitle: SubtitleTrack?,
     startPositionMs: Long,
+    activeTitleId: String,
+    availableDubs: List<AudioDubInfo>,
+    nextEpisodeTarget: Pair<Int, Int>?,
     isEnqueuingDownload: Boolean,
     downloadStatusMessage: String?,
     onBackClick: () -> Unit,
     onSelectSource: (PlaybackSource, Long) -> Unit,
     onSelectSubtitle: (SubtitleTrack?, Long) -> Unit,
+    onSelectAudioDub: (AudioDubInfo, Long) -> Unit,
+    onNextEpisode: () -> Unit,
     onSaveProgress: (Long, Long) -> Unit,
     onOpenExternalUrl: (String) -> Unit,
     onDownloadSource: (PlaybackSource) -> Unit,
@@ -229,14 +258,19 @@ private fun ActiveVideoPlayerContent(
     var resizeMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
 
     var isPlaying by remember { mutableStateOf(true) }
+    var isBuffering by remember { mutableStateOf(true) }
     var currentPositionMs by remember { mutableLongStateOf(startPositionMs.coerceAtLeast(0L)) }
     var durationMs by remember { mutableLongStateOf(0L) }
     var isSeeking by remember { mutableStateOf(false) }
     var seekSliderPosMs by remember { mutableFloatStateOf(0f) }
     var seekFeedbackText by remember { mutableStateOf<String?>(null) }
 
+    var inStreamAudioTracks by remember { mutableStateOf<List<PlayerAudioTrackOption>>(emptyList()) }
+    var hasManualAudioOverride by remember { mutableStateOf(false) }
+
     var showQualityDialog by remember { mutableStateOf(false) }
     var showSubtitleDialog by remember { mutableStateOf(false) }
+    var showAudioDialog by remember { mutableStateOf(false) }
     var showSpeedDialog by remember { mutableStateOf(false) }
     var showDownloadDialog by remember { mutableStateOf(false) }
     var playerErrorText by remember { mutableStateOf<String?>(null) }
@@ -245,8 +279,19 @@ private fun ActiveVideoPlayerContent(
     val latestSelectedSpeed by rememberUpdatedState(selectedSpeed)
     val latestIsLocked by rememberUpdatedState(isLocked)
 
-    val exoPlayer = remember(resolution.title, selectedSource.headers) {
-        val mediaSourceFactory = MoviesMediaCache.createMediaSourceFactory(context, selectedSource.headers)
+    val isAdaptiveSource = remember(selectedSource.id, selectedSource.format, selectedSource.url) {
+        selectedSource.format.equals("DASH", ignoreCase = true) ||
+            selectedSource.format.equals("HLS", ignoreCase = true) ||
+            selectedSource.url.contains(".mpd", ignoreCase = true) ||
+            selectedSource.url.contains(".m3u8", ignoreCase = true)
+    }
+
+    val exoPlayer = remember(resolution.title, selectedSource.headers, isAdaptiveSource) {
+        val mediaSourceFactory = MoviesMediaCache.createMediaSourceFactory(
+            context = context,
+            headers = selectedSource.headers,
+            useDiskCache = !isAdaptiveSource
+        )
         ExoPlayer.Builder(context)
             .setMediaSourceFactory(mediaSourceFactory)
             .build()
@@ -279,6 +324,8 @@ private fun ActiveVideoPlayerContent(
 
     LaunchedEffect(exoPlayer, selectedSource.id, selectedSubtitle?.id) {
         playerErrorText = null
+        isBuffering = true
+        hasManualAudioOverride = false
         val itemBuilder = MediaItem.Builder()
             .setUri(Uri.parse(selectedSource.url))
 
@@ -309,6 +356,7 @@ private fun ActiveVideoPlayerContent(
         }
 
         exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, selectedSubtitle == null)
             .build()
 
@@ -323,8 +371,17 @@ private fun ActiveVideoPlayerContent(
 
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                isBuffering = playbackState == Player.STATE_BUFFERING
+            }
+
+            override fun onTracksChanged(tracks: Tracks) {
+                inStreamAudioTracks = extractAudioTracks(tracks)
+            }
+
             override fun onPlayerError(error: PlaybackException) {
-                playerErrorText = error.message ?: "Stream playback failed."
+                isBuffering = false
+                playerErrorText = formatPlayerErrorMessage(error)
             }
 
             override fun onIsPlayingChanged(playing: Boolean) {
@@ -365,12 +422,15 @@ private fun ActiveVideoPlayerContent(
         isLocked,
         showQualityDialog,
         showSubtitleDialog,
+        showAudioDialog,
         showSpeedDialog,
         showDownloadDialog,
-        isSeeking
+        isSeeking,
+        playerErrorText
     ) {
-        if (showControls && isPlaying && !isLocked &&
-            !showQualityDialog && !showSubtitleDialog && !showSpeedDialog && !showDownloadDialog && !isSeeking
+        if (showControls && isPlaying && !isLocked && playerErrorText == null &&
+            !showQualityDialog && !showSubtitleDialog && !showAudioDialog &&
+            !showSpeedDialog && !showDownloadDialog && !isSeeking
         ) {
             delay(3_500L)
             showControls = false
@@ -463,13 +523,40 @@ private fun ActiveVideoPlayerContent(
                     useController = false
                     keepScreenOn = true
                     this.resizeMode = resizeMode
+                    subtitleView?.apply {
+                        setApplyEmbeddedStyles(true)
+                        setApplyEmbeddedFontSizes(true)
+                        setStyle(
+                            CaptionStyleCompat(
+                                AndroidColor.WHITE,
+                                AndroidColor.argb(170, 0, 0, 0),
+                                AndroidColor.TRANSPARENT,
+                                CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW,
+                                AndroidColor.BLACK,
+                                null
+                            )
+                        )
+                    }
                 }
             },
             update = { view ->
+                if (view.player !== exoPlayer) {
+                    view.player = exoPlayer
+                }
                 view.resizeMode = resizeMode
             },
             modifier = Modifier.fillMaxSize()
         )
+
+        if (isBuffering && playerErrorText == null) {
+            CircularProgressIndicator(
+                color = colors.accentPrimary,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(40.dp)
+                    .testTag("player_buffering_indicator")
+            )
+        }
 
         // Tap-and-Hold 2x Speed Indicator Pill
         AnimatedVisibility(
@@ -642,6 +729,31 @@ private fun ActiveVideoPlayerContent(
                                     color = Color.White
                                 )
                             }
+                        }
+
+                        // Audio Track / Dub Selector
+                        val activeAudioBadge = inStreamAudioTracks.firstOrNull { it.isSelected }?.languageCode?.uppercase(Locale.US)
+                            ?: availableDubs.firstOrNull { it.referenceId == activeTitleId }
+                                ?.language?.takeIf { it.isNotBlank() }?.uppercase(Locale.US)
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (hasManualAudioOverride || availableDubs.size > 1 || inStreamAudioTracks.size > 1) {
+                                colors.accentPrimary.copy(alpha = 0.85f)
+                            } else {
+                                Color.White.copy(alpha = 0.16f)
+                            },
+                            modifier = Modifier
+                                .padding(end = 6.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { showAudioDialog = true }
+                                .testTag("player_audio_button")
+                        ) {
+                            Text(
+                                text = activeAudioBadge?.let { "Audio · $it" } ?: "Audio",
+                                style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                color = Color.White,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                            )
                         }
 
                         // Quality Selector
@@ -910,41 +1022,72 @@ private fun ActiveVideoPlayerContent(
                                     )
                                 }
 
-                                Text(
-                                    text = "Hold video for 2x",
-                                    style = typography.caption,
-                                    color = Color.White.copy(alpha = 0.58f),
-                                    maxLines = 1
-                                )
+                                if (nextEpisodeTarget == null) {
+                                    Text(
+                                        text = "Hold video for 2x",
+                                        style = typography.caption,
+                                        color = Color.White.copy(alpha = 0.58f),
+                                        maxLines = 1
+                                    )
+                                }
                             }
 
-                            // Fullscreen / Landscape Rotation Toggle
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = if (isFullscreen) colors.accentPrimary else Color.White.copy(alpha = 0.16f),
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .clickable { isFullscreen = !isFullscreen }
-                                    .testTag("player_fullscreen_button")
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                if (nextEpisodeTarget != null) {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = colors.accentPrimary,
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable {
+                                                latestSaveProgress(
+                                                    exoPlayer.currentPosition,
+                                                    exoPlayer.duration.coerceAtLeast(0L)
+                                                )
+                                                onNextEpisode()
+                                            }
+                                            .testTag("player_next_episode_button")
+                                    ) {
+                                        Text(
+                                            text = "Next S${nextEpisodeTarget.first}·E${nextEpisodeTarget.second}",
+                                            style = typography.caption.copy(fontWeight = FontWeight.Bold),
+                                            color = colors.onAccentPrimary,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                        )
+                                    }
+                                }
+
+                                // Fullscreen / Landscape Rotation Toggle
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (isFullscreen) colors.accentPrimary else Color.White.copy(alpha = 0.16f),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable { isFullscreen = !isFullscreen }
+                                        .testTag("player_fullscreen_button")
                                 ) {
-                                    Icon(
-                                        painter = painterResource(
-                                            if (isFullscreen) LaterboxIcons.FullscreenExit else LaterboxIcons.Fullscreen
-                                        ),
-                                        contentDescription = if (isFullscreen) "Exit fullscreen" else "Fullscreen landscape",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Text(
-                                        text = if (isFullscreen) "Portrait" else "Fullscreen",
-                                        style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
-                                        color = Color.White
-                                    )
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(
+                                                if (isFullscreen) LaterboxIcons.FullscreenExit else LaterboxIcons.Fullscreen
+                                            ),
+                                            contentDescription = if (isFullscreen) "Exit fullscreen" else "Fullscreen landscape",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Text(
+                                            text = if (isFullscreen) "Portrait" else "Fullscreen",
+                                            style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                            color = Color.White
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -992,11 +1135,21 @@ private fun ActiveVideoPlayerContent(
                 primaryLabel = "Retry Stream",
                 onPrimaryClick = {
                     playerErrorText = null
+                    isBuffering = true
                     exoPlayer.prepare()
                     exoPlayer.playWhenReady = true
                 },
-                secondaryLabel = "Open Stream URL",
-                onSecondaryClick = { onOpenExternalUrl(selectedSource.url) }
+                secondaryLabel = if (resolution.sources.size > 1) "Switch Source" else "Open Stream URL",
+                onSecondaryClick = {
+                    if (resolution.sources.size > 1) {
+                        showQualityDialog = true
+                    } else {
+                        onOpenExternalUrl(selectedSource.url)
+                    }
+                },
+                tertiaryLabel = "Back",
+                onTertiaryClick = onBackClick,
+                modifier = Modifier.testTag("player_stream_error_overlay")
             )
         }
     }
@@ -1005,15 +1158,20 @@ private fun ActiveVideoPlayerContent(
         AlertDialog(
             onDismissRequest = { showQualityDialog = false },
             containerColor = colors.surfaceElevated,
+            modifier = Modifier.testTag("player_quality_dialog"),
             title = { Text("Playback Quality", style = typography.sheetTitle, color = colors.textPrimary) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
                     resolution.sources.forEach { source ->
                         val isSelected = source.id == selectedSource.id
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
+                                    playerErrorText = null
                                     onSelectSource(source, exoPlayer.currentPosition)
                                     showQualityDialog = false
                                 }
@@ -1048,6 +1206,121 @@ private fun ActiveVideoPlayerContent(
         )
     }
 
+    if (showAudioDialog) {
+        AlertDialog(
+            onDismissRequest = { showAudioDialog = false },
+            containerColor = colors.surfaceElevated,
+            modifier = Modifier.testTag("player_audio_dialog"),
+            title = { Text("Audio Track & Dubs", style = typography.sheetTitle, color = colors.textPrimary) },
+            text = {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (inStreamAudioTracks.isNotEmpty()) {
+                        Text(
+                            text = "Stream Audio Tracks",
+                            style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                            color = colors.textSecondary
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    hasManualAudioOverride = false
+                                    exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                                        .buildUpon()
+                                        .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+                                        .build()
+                                    showAudioDialog = false
+                                }
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(selected = !hasManualAudioOverride, onClick = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Auto / Default", style = typography.uiLabel, color = colors.textPrimary)
+                        }
+                        inStreamAudioTracks.forEachIndexed { idx, option ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        hasManualAudioOverride = true
+                                        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                                            .buildUpon()
+                                            .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+                                            .addOverride(TrackSelectionOverride(option.group, option.trackIndex))
+                                            .build()
+                                        showAudioDialog = false
+                                    }
+                                    .padding(vertical = 6.dp)
+                                    .testTag("player_audio_track_$idx"),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = hasManualAudioOverride && option.isSelected,
+                                    onClick = null
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(option.label, style = typography.uiLabel, color = colors.textPrimary)
+                            }
+                        }
+                    }
+
+                    if (availableDubs.isNotEmpty()) {
+                        if (inStreamAudioTracks.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                        }
+                        Text(
+                            text = "Language Dubs",
+                            style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                            color = colors.textSecondary
+                        )
+                        availableDubs.forEach { dub ->
+                            val hasRef = !dub.referenceId.isNullOrBlank()
+                            val isSelectedDub = hasRef && dub.referenceId == activeTitleId
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable(enabled = hasRef) {
+                                        showAudioDialog = false
+                                        if (!isSelectedDub) {
+                                            onSelectAudioDub(dub, exoPlayer.currentPosition)
+                                        }
+                                    }
+                                    .padding(vertical = 6.dp)
+                                    .testTag("player_audio_dub_${dub.referenceId ?: dub.language}"),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(selected = isSelectedDub, onClick = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = dub.label,
+                                    style = typography.uiLabel,
+                                    color = if (hasRef) colors.textPrimary else colors.textSecondary
+                                )
+                            }
+                        }
+                    }
+
+                    if (inStreamAudioTracks.isEmpty() && availableDubs.isEmpty()) {
+                        Text(
+                            text = "Only a single default audio track is available for this stream.",
+                            style = typography.metaText,
+                            color = colors.textSecondary
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showAudioDialog = false }) {
+                    Text("Close", color = colors.accentPrimary)
+                }
+            }
+        )
+    }
+
     if (showSubtitleDialog) {
         AlertDialog(
             onDismissRequest = { showSubtitleDialog = false },
@@ -1055,7 +1328,10 @@ private fun ActiveVideoPlayerContent(
             modifier = Modifier.testTag("player_subtitles_dialog"),
             title = { Text("Subtitles", style = typography.sheetTitle, color = colors.textPrimary) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1167,6 +1443,8 @@ private fun PlayerMessageOverlay(
     onPrimaryClick: () -> Unit,
     secondaryLabel: String?,
     onSecondaryClick: () -> Unit,
+    tertiaryLabel: String? = null,
+    onTertiaryClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -1206,10 +1484,62 @@ private fun PlayerMessageOverlay(
                             Text(secondaryLabel, color = colors.textPrimary)
                         }
                     }
+                    if (tertiaryLabel != null) {
+                        TextButton(onClick = onTertiaryClick) {
+                            Text(tertiaryLabel, color = colors.textSecondary)
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+private fun extractAudioTracks(tracks: Tracks): List<PlayerAudioTrackOption> {
+    val options = mutableListOf<PlayerAudioTrackOption>()
+    tracks.groups.forEachIndexed { groupIdx, group ->
+        if (group.type != C.TRACK_TYPE_AUDIO) return@forEachIndexed
+        for (i in 0 until group.length) {
+            if (!group.isTrackSupported(i)) continue
+            val format = group.getTrackFormat(i)
+            val lang = format.language?.takeIf { it.isNotBlank() && it != C.LANGUAGE_UNDETERMINED }
+            val readableLang = lang?.let {
+                Locale.forLanguageTag(it).getDisplayLanguage(Locale.ENGLISH).takeIf { name -> name.isNotBlank() }
+                    ?: it.uppercase(Locale.US)
+            }
+            val baseLabel = format.label?.takeIf { it.isNotBlank() }
+                ?: readableLang
+                ?: "Audio Track ${options.size + 1}"
+            val channels = if (format.channelCount > 2) " · ${format.channelCount}ch" else ""
+            options += PlayerAudioTrackOption(
+                group = group.mediaTrackGroup,
+                trackIndex = i,
+                label = "$baseLabel$channels",
+                languageCode = lang,
+                isSelected = group.isTrackSelected(i)
+            )
+        }
+    }
+    return options
+}
+
+private fun formatPlayerErrorMessage(error: PlaybackException): String {
+    var cause: Throwable? = error.cause
+    while (cause != null) {
+        if (cause is HttpDataSource.InvalidResponseCodeException) {
+            return when (cause.responseCode) {
+                401, 403 -> "Stream CDN rejected authorization (HTTP ${cause.responseCode}). Try switching source or refreshing."
+                404, 410 -> "Stream link expired or unavailable (HTTP ${cause.responseCode}). Retry or switch source."
+                else -> "Stream server returned HTTP ${cause.responseCode}."
+            }
+        }
+        if (cause is HttpDataSource.HttpDataSourceException) {
+            return "Network interruption while loading video stream. Check your connection or try another source."
+        }
+        cause = cause.cause
+    }
+    val detail = error.message?.takeIf { it.isNotBlank() } ?: "Playback failed (${error.errorCodeName})."
+    return detail
 }
 
 private fun formatPlaybackClock(ms: Long): String {

@@ -79,6 +79,7 @@ enum class MoviesProviderMode(val wireValue: String, val label: String) {
 }
 
 object MovieBoxEndpointConfig {
+    const val DEFAULT_PRODUCTION_BASE_URL = "https://laterbox-moviebox-api.vercel.app/"
     private val DEBUG_LOOPBACK_HOSTS = setOf("10.0.2.2", "localhost", "127.0.0.1")
 
     fun normalizeBaseUrl(rawUrl: String): String {

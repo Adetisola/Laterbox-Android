@@ -554,4 +554,89 @@ class MovieBoxProviderTest {
         val details = provider.getDetails("2845168888013275776").getOrThrow()
         assertEquals("https://cdn.example/percy-trailer.mp4", details.summary.trailerUrl)
     }
+
+    @Test
+    fun authFailures401And403_doNotRetryAndSurfaceAuthException() = runTest {
+        var requestCount = 0
+        val fastProvider = MovieBoxProvider(
+            okHttpClient = OkHttpClient(),
+            baseUrlProvider = { server.url("/").toString() },
+            apiKeyProvider = { "wrong-key" },
+            retryDelayMs = 0L
+        )
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                requestCount++
+                return MockResponse()
+                    .setResponseCode(401)
+                    .setBody("""{"detail":"Invalid API key"}""")
+            }
+        }
+
+        val err = fastProvider.getHomeFeed().exceptionOrNull()
+        assertEquals(1, requestCount)
+        assertTrue(err is com.laterbox.app.movies.data.provider.MovieBoxApiException)
+        assertTrue((err as com.laterbox.app.movies.data.provider.MovieBoxApiException).isAuthFailure)
+        assertTrue(err.message.orEmpty().contains("authentication", ignoreCase = true))
+    }
+
+    @Test
+    fun transient502RetriesOnceAndEmptyBodySurfacesActionableError() = runTest {
+        var attempt = 0
+        val fastProvider = MovieBoxProvider(
+            okHttpClient = OkHttpClient(),
+            baseUrlProvider = { server.url("/").toString() },
+            apiKeyProvider = { "" },
+            retryDelayMs = 0L
+        )
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                return when {
+                    request.path == "/home" -> {
+                        attempt++
+                        if (attempt == 1) {
+                            MockResponse().setResponseCode(502).setBody("""{"detail":"Bad gateway"}""")
+                        } else {
+                            MockResponse().setResponseCode(200).setBody("""{"data":{"operatingList":[]}}""")
+                        }
+                    }
+                    request.path?.startsWith("/movies") == true -> MockResponse().setResponseCode(200).setBody("")
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val feed = fastProvider.getHomeFeed().getOrThrow()
+        assertEquals(2, attempt)
+        assertTrue(feed.featuredBanners.isEmpty())
+
+        val emptyErr = fastProvider.getCatalogue(kind = MediaKind.MOVIE).exceptionOrNull()
+        assertTrue(emptyErr?.message.orEmpty().contains("empty response", ignoreCase = true))
+    }
+
+    @Test
+    fun endpointConfig_defaultsToVercelHttpsAndValidatesReleaseUrls() {
+        assertEquals(
+            "https://laterbox-moviebox-api.vercel.app/",
+            com.laterbox.app.data.preferences.MovieBoxEndpointConfig.DEFAULT_PRODUCTION_BASE_URL
+        )
+        assertTrue(
+            com.laterbox.app.data.preferences.MovieBoxEndpointConfig.isValidBaseUrl(
+                "https://laterbox-moviebox-api.vercel.app",
+                allowDebugCleartextLoopback = false
+            )
+        )
+        assertFalse(
+            com.laterbox.app.data.preferences.MovieBoxEndpointConfig.isValidBaseUrl(
+                "http://10.0.2.2:8000/",
+                allowDebugCleartextLoopback = false
+            )
+        )
+        assertTrue(
+            com.laterbox.app.data.preferences.MovieBoxEndpointConfig.isValidBaseUrl(
+                "http://10.0.2.2:8000/",
+                allowDebugCleartextLoopback = true
+            )
+        )
+    }
 }

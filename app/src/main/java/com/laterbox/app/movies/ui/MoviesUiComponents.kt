@@ -49,6 +49,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -578,6 +580,7 @@ fun MoviesProviderSourceDialog(
     var selectedMode by remember(providerMode) { mutableStateOf(providerMode) }
     var movieBoxUrlInput by remember(currentMovieBoxBaseUrl) { mutableStateOf(currentMovieBoxBaseUrl) }
     var movieBoxApiKeyInput by remember(currentMovieBoxApiKey) { mutableStateOf(currentMovieBoxApiKey) }
+    var showMovieBoxApiKey by remember { mutableStateOf(false) }
     var tmdbInput by remember(currentTmdbKey) { mutableStateOf(currentTmdbKey) }
     val isUrlValid = MovieBoxEndpointConfig.isValidBaseUrl(
         rawUrl = movieBoxUrlInput,
@@ -683,7 +686,7 @@ fun MoviesProviderSourceDialog(
                         label = { Text("Server Base URL") },
                         placeholder = {
                             Text(
-                                effectiveMovieBoxBaseUrl.ifBlank { "https://your-moviebox-api.example/" }
+                                effectiveMovieBoxBaseUrl.ifBlank { MovieBoxEndpointConfig.DEFAULT_PRODUCTION_BASE_URL }
                             )
                         },
                         isError = !isUrlValid,
@@ -709,8 +712,35 @@ fun MoviesProviderSourceDialog(
                     OutlinedTextField(
                         value = movieBoxApiKeyInput,
                         onValueChange = { movieBoxApiKeyInput = it },
-                        label = { Text("Optional MovieBox API Key") },
-                        placeholder = { Text("X-API-Key if protected") },
+                        label = { Text("MovieBox API Key") },
+                        placeholder = { Text("X-API-Key (stored locally only)") },
+                        visualTransformation = if (showMovieBoxApiKey) {
+                            VisualTransformation.None
+                        } else {
+                            PasswordVisualTransformation()
+                        },
+                        trailingIcon = {
+                            TextButton(
+                                onClick = { showMovieBoxApiKey = !showMovieBoxApiKey },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                modifier = Modifier.testTag("moviebox_api_key_toggle")
+                            ) {
+                                Text(
+                                    text = if (showMovieBoxApiKey) "Hide" else "Show",
+                                    style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                    color = colors.accentPrimary
+                                )
+                            }
+                        },
+                        supportingText = {
+                            val keyStatus = when {
+                                movieBoxApiKeyInput.isNotBlank() -> "Using custom API key stored locally on this device."
+                                BuildConfig.DEBUG && BuildConfig.MOVIEBOX_API_KEY.isNotBlank() ->
+                                    "Using debug build-config key (never bundled in release APKs)."
+                                else -> "Leave blank for open servers, or paste X-API-Key."
+                            }
+                            Text(keyStatus, color = colors.textSecondary)
+                        },
                         singleLine = true,
                         modifier = Modifier
                             .fillMaxWidth()

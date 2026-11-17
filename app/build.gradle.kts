@@ -108,6 +108,7 @@ android {
         }
     }
 
+    val defaultMovieBoxBaseUrl = "https://laterbox-moviebox-api.vercel.app/"
     val configuredMovieBoxUrl = resolveMovieBoxApiBaseUrl(project)
     val configuredMovieBoxKey = resolveMovieBoxApiKey(project)
 
@@ -119,10 +120,11 @@ android {
             val releaseMovieBoxUrl = if (configuredMovieBoxUrl.startsWith("https://", ignoreCase = true)) {
                 configuredMovieBoxUrl
             } else {
-                ""
+                defaultMovieBoxBaseUrl
             }
             buildConfigField("String", "MOVIEBOX_API_BASE_URL", "\"${escapeBuildConfigString(releaseMovieBoxUrl)}\"")
-            buildConfigField("String", "MOVIEBOX_API_KEY", "\"${escapeBuildConfigString(configuredMovieBoxKey)}\"")
+            // Never embed local/debug MOVIEBOX_API_KEY values into release APKs.
+            buildConfigField("String", "MOVIEBOX_API_KEY", "\"\"")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -131,7 +133,7 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             isDebuggable = true
-            val debugMovieBoxUrl = configuredMovieBoxUrl.ifBlank { "http://10.0.2.2:8000/" }
+            val debugMovieBoxUrl = configuredMovieBoxUrl.ifBlank { defaultMovieBoxBaseUrl }
             buildConfigField("String", "MOVIEBOX_API_BASE_URL", "\"${escapeBuildConfigString(debugMovieBoxUrl)}\"")
             buildConfigField("String", "MOVIEBOX_API_KEY", "\"${escapeBuildConfigString(configuredMovieBoxKey)}\"")
         }
