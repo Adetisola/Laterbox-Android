@@ -165,6 +165,10 @@ fun LaterboxApp(
     val downloadsViewModel: com.laterbox.app.media.ui.downloads.DownloadsViewModel = viewModel(factory = AppViewModelProvider.Factory)
     val chatViewModel: ChatViewModel = viewModel(factory = AppViewModelProvider.Factory)
     val youTubeTranscriptViewModel: com.laterbox.app.transcript.ui.YouTubeTranscriptViewModel = viewModel(factory = AppViewModelProvider.Factory)
+    val moviesHomeViewModel: com.laterbox.app.movies.ui.MoviesHomeViewModel = viewModel(factory = AppViewModelProvider.Factory)
+    val moviesCatalogueViewModel: com.laterbox.app.movies.ui.MoviesCatalogueViewModel = viewModel(factory = AppViewModelProvider.Factory)
+    val movieDetailViewModel: com.laterbox.app.movies.ui.MovieDetailViewModel = viewModel(factory = AppViewModelProvider.Factory)
+    val moviePlayerViewModel: com.laterbox.app.movies.ui.MoviePlayerViewModel = viewModel(factory = AppViewModelProvider.Factory)
 
     // Current route & shared state observation
     val navBackStackEntry by navController.currentBackStackEntryAsState()
@@ -445,6 +449,7 @@ fun LaterboxApp(
             setOf(
                 LaterboxDestination.Inbox.route,
                 LaterboxDestination.Collections.route,
+                LaterboxDestination.Movies.route,
                 LaterboxDestination.Downloads.route,
                 LaterboxDestination.Archive.route
             )
@@ -567,6 +572,7 @@ fun LaterboxApp(
                         setOf(
                             LaterboxDestination.Inbox.route,
                             LaterboxDestination.Collections.route,
+                            LaterboxDestination.Movies.route,
                             LaterboxDestination.Downloads.route,
                             LaterboxDestination.Archive.route,
                             LaterboxDestination.NotificationHistory.route,
@@ -966,6 +972,188 @@ fun LaterboxApp(
                             )
                         }
 
+                        // Movies & TV Discovery Home
+                        composable(LaterboxDestination.Movies.route) {
+                            val moviesUiState by moviesHomeViewModel.uiState.collectAsState()
+                            com.laterbox.app.movies.ui.MoviesScreen(
+                                uiState = moviesUiState,
+                                onRefresh = moviesHomeViewModel::refresh,
+                                onOpenCatalogue = { kind, genre ->
+                                    navController.navigate(
+                                        LaterboxDestination.MoviesCatalogue.createRoute(
+                                            kind = kind?.wireValue,
+                                            genre = genre
+                                        )
+                                    )
+                                },
+                                onOpenDetail = { providerId, titleId ->
+                                    navController.navigate(
+                                        LaterboxDestination.MovieDetail.createRoute(providerId, titleId)
+                                    )
+                                },
+                                onOpenPlayer = { providerId, titleId, seasonNumber, episodeNumber ->
+                                    navController.navigate(
+                                        LaterboxDestination.MoviePlayer.createRoute(
+                                            providerId = providerId,
+                                            titleId = titleId,
+                                            seasonNumber = seasonNumber,
+                                            episodeNumber = episodeNumber
+                                        )
+                                    )
+                                },
+                                onToggleWatchlist = moviesHomeViewModel::toggleWatchlist,
+                                onToggleSampleFixtures = moviesHomeViewModel::setSampleFixturesOnly,
+                                onSaveTmdbApiKey = moviesHomeViewModel::setTmdbApiKey,
+                                onMenuClick = openMenuHandler,
+                                bottomPaddingDp = if (showHandsetBottomBar) 96 else 24
+                            )
+                        }
+
+                        // Movies & TV Catalogue + Search
+                        composable(
+                            route = LaterboxDestination.MoviesCatalogue.route,
+                            arguments = listOf(
+                                navArgument("kind") { type = NavType.StringType; defaultValue = ""; nullable = true },
+                                navArgument("genre") { type = NavType.StringType; defaultValue = ""; nullable = true },
+                                navArgument("query") { type = NavType.StringType; defaultValue = ""; nullable = true }
+                            )
+                        ) { backStackEntry ->
+                            val rawKind = java.net.URLDecoder.decode(
+                                backStackEntry.arguments?.getString("kind").orEmpty(),
+                                "UTF-8"
+                            ).takeIf { it.isNotBlank() }
+                            val rawGenre = java.net.URLDecoder.decode(
+                                backStackEntry.arguments?.getString("genre").orEmpty(),
+                                "UTF-8"
+                            ).takeIf { it.isNotBlank() }
+                            val rawQuery = java.net.URLDecoder.decode(
+                                backStackEntry.arguments?.getString("query").orEmpty(),
+                                "UTF-8"
+                            ).takeIf { it.isNotBlank() }
+                            val initialKind = rawKind?.let { com.laterbox.app.movies.domain.model.MediaKind.fromWire(it) }
+
+                            LaunchedEffect(backStackEntry.id) {
+                                moviesCatalogueViewModel.initialize(
+                                    sessionKey = backStackEntry.id,
+                                    initialKind = initialKind,
+                                    initialGenre = rawGenre,
+                                    initialQuery = rawQuery
+                                )
+                            }
+
+                            val catState by moviesCatalogueViewModel.uiState.collectAsState()
+                            com.laterbox.app.movies.ui.MoviesCatalogueScreen(
+                                uiState = catState,
+                                onBackClick = { navController.popBackStack() },
+                                onQueryChange = moviesCatalogueViewModel::onQueryChange,
+                                onSearchFocusChange = { focused ->
+                                    if (focused) moviesCatalogueViewModel.setSuggestionsVisible(true)
+                                },
+                                onSubmitSearch = moviesCatalogueViewModel::submitSearch,
+                                onClearSearch = moviesCatalogueViewModel::clearSearch,
+                                onSelectKind = moviesCatalogueViewModel::selectKind,
+                                onSelectGenre = moviesCatalogueViewModel::selectGenre,
+                                onSelectSort = moviesCatalogueViewModel::selectSort,
+                                onLoadNextPage = moviesCatalogueViewModel::loadNextPage,
+                                onRetry = moviesCatalogueViewModel::retry,
+                                onClearSearchHistory = moviesCatalogueViewModel::clearSearchHistory,
+                                onOpenDetail = { providerId, titleId ->
+                                    navController.navigate(
+                                        LaterboxDestination.MovieDetail.createRoute(providerId, titleId)
+                                    )
+                                }
+                            )
+                        }
+
+                        // Movie & Series Detail
+                        composable(
+                            route = LaterboxDestination.MovieDetail.route,
+                            arguments = listOf(
+                                navArgument("providerId") { type = NavType.StringType },
+                                navArgument("titleId") { type = NavType.StringType }
+                            )
+                        ) { backStackEntry ->
+                            val providerId = java.net.URLDecoder.decode(
+                                backStackEntry.arguments?.getString("providerId").orEmpty(),
+                                "UTF-8"
+                            )
+                            val titleId = java.net.URLDecoder.decode(
+                                backStackEntry.arguments?.getString("titleId").orEmpty(),
+                                "UTF-8"
+                            )
+                            LaunchedEffect(providerId, titleId) {
+                                movieDetailViewModel.load(providerId, titleId)
+                            }
+                            val detailState by movieDetailViewModel.uiState.collectAsState()
+                            com.laterbox.app.movies.ui.MovieDetailScreen(
+                                uiState = detailState,
+                                onBackClick = { navController.popBackStack() },
+                                onRetry = { movieDetailViewModel.load(providerId, titleId, forceRefresh = true) },
+                                onToggleWatchlist = movieDetailViewModel::toggleWatchlist,
+                                onPlayClick = { seasonNum, epNum ->
+                                    navController.navigate(
+                                        LaterboxDestination.MoviePlayer.createRoute(
+                                            providerId = providerId,
+                                            titleId = titleId,
+                                            seasonNumber = seasonNum,
+                                            episodeNumber = epNum
+                                        )
+                                    )
+                                },
+                                onSelectSeason = movieDetailViewModel::selectSeason,
+                                onOpenRelated = { relProvider, relId ->
+                                    navController.navigate(
+                                        LaterboxDestination.MovieDetail.createRoute(relProvider, relId)
+                                    )
+                                },
+                                onOpenExternalUrl = { url ->
+                                    BrowserLauncher.openUrl(context, url, colors)
+                                }
+                            )
+                        }
+
+                        // Fullscreen Video Player
+                        composable(
+                            route = LaterboxDestination.MoviePlayer.route,
+                            arguments = listOf(
+                                navArgument("providerId") { type = NavType.StringType },
+                                navArgument("titleId") { type = NavType.StringType },
+                                navArgument("season") { type = NavType.IntType; defaultValue = -1 },
+                                navArgument("episode") { type = NavType.IntType; defaultValue = -1 }
+                            )
+                        ) { backStackEntry ->
+                            val providerId = java.net.URLDecoder.decode(
+                                backStackEntry.arguments?.getString("providerId").orEmpty(),
+                                "UTF-8"
+                            )
+                            val titleId = java.net.URLDecoder.decode(
+                                backStackEntry.arguments?.getString("titleId").orEmpty(),
+                                "UTF-8"
+                            )
+                            val rawSeason = backStackEntry.arguments?.getInt("season") ?: -1
+                            val rawEpisode = backStackEntry.arguments?.getInt("episode") ?: -1
+                            val seasonNum = rawSeason.takeIf { it > 0 }
+                            val episodeNum = rawEpisode.takeIf { it > 0 }
+
+                            LaunchedEffect(providerId, titleId, seasonNum, episodeNum) {
+                                moviePlayerViewModel.load(providerId, titleId, seasonNum, episodeNum)
+                            }
+                            val playerState by moviePlayerViewModel.uiState.collectAsState()
+                            com.laterbox.app.movies.ui.MoviePlayerScreen(
+                                uiState = playerState,
+                                onBackClick = { navController.popBackStack() },
+                                onRetry = {
+                                    moviePlayerViewModel.load(providerId, titleId, seasonNum, episodeNum, forceReload = true)
+                                },
+                                onSelectSource = moviePlayerViewModel::selectSource,
+                                onSelectSubtitle = moviePlayerViewModel::selectSubtitle,
+                                onSaveProgress = moviePlayerViewModel::saveProgress,
+                                onOpenExternalUrl = { url ->
+                                    BrowserLauncher.openUrl(context, url, colors)
+                                }
+                            )
+                        }
+
                         // Settings Screen (Landing Hub)
                         composable(LaterboxDestination.Settings.route) {
                             SettingsScreen(
@@ -1242,6 +1430,7 @@ fun LaterboxApp(
                             if (showHandsetBottomBar) {
                                 val bottomDestination = when (currentRoute) {
                                     LaterboxDestination.Collections.route -> BottomBarDestination.COLLECTIONS
+                                    LaterboxDestination.Movies.route -> BottomBarDestination.MOVIES
                                     LaterboxDestination.Downloads.route -> BottomBarDestination.DOWNLOADS
                                     LaterboxDestination.Archive.route -> BottomBarDestination.ARCHIVE
                                     else -> BottomBarDestination.INBOX
@@ -1253,6 +1442,7 @@ fun LaterboxApp(
                                         val targetRoute = when (dest) {
                                             BottomBarDestination.INBOX -> LaterboxDestination.Inbox.route
                                             BottomBarDestination.COLLECTIONS -> LaterboxDestination.Collections.route
+                                            BottomBarDestination.MOVIES -> LaterboxDestination.Movies.route
                                             BottomBarDestination.DOWNLOADS -> LaterboxDestination.Downloads.route
                                             BottomBarDestination.ARCHIVE -> LaterboxDestination.Archive.route
                                         }
@@ -1287,6 +1477,7 @@ fun LaterboxApp(
                     userName = preferences.userName,
                     onNavigateInbox = { navigateTopLevel(LaterboxDestination.Inbox.route) },
                     onNavigateCollections = { navigateTopLevel(LaterboxDestination.Collections.route) },
+                    onNavigateMovies = { navigateTopLevel(LaterboxDestination.Movies.route) },
                     onNavigateDownloads = { navigateTopLevel(LaterboxDestination.Downloads.route) },
                     onNavigateArchive = { navigateTopLevel(LaterboxDestination.Archive.route) },
                     onNavigateNotifications = { navigateTopLevel(LaterboxDestination.NotificationHistory.route) },
@@ -1301,7 +1492,8 @@ fun LaterboxApp(
             }
         } else {
             val gesturesEnabled = currentRoute?.startsWith("settings") != true &&
-                currentRoute?.startsWith("collection/") != true
+                currentRoute?.startsWith("collection/") != true &&
+                currentRoute?.startsWith("movies/") != true
             ModalNavigationDrawer(
                 drawerState = drawerState,
                 gesturesEnabled = gesturesEnabled,
@@ -1314,6 +1506,7 @@ fun LaterboxApp(
                         userName = preferences.userName,
                         onNavigateInbox = { navigateTopLevel(LaterboxDestination.Inbox.route) },
                         onNavigateCollections = { navigateTopLevel(LaterboxDestination.Collections.route) },
+                        onNavigateMovies = { navigateTopLevel(LaterboxDestination.Movies.route) },
                         onNavigateDownloads = { navigateTopLevel(LaterboxDestination.Downloads.route) },
                         onNavigateArchive = { navigateTopLevel(LaterboxDestination.Archive.route) },
                         onNavigateNotifications = { navigateTopLevel(LaterboxDestination.NotificationHistory.route) },

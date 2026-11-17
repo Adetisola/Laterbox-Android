@@ -95,6 +95,31 @@ object AppViewModelProvider {
                 userPreferencesRepository = app.container.userPreferencesRepository
             )
         }
+        initializer {
+            val app = laterboxApplication()
+            com.laterbox.app.movies.ui.MoviesHomeViewModel(
+                moviesRepository = app.container.moviesRepository,
+                userPreferencesRepository = app.container.userPreferencesRepository
+            )
+        }
+        initializer {
+            val app = laterboxApplication()
+            com.laterbox.app.movies.ui.MoviesCatalogueViewModel(
+                moviesRepository = app.container.moviesRepository
+            )
+        }
+        initializer {
+            val app = laterboxApplication()
+            com.laterbox.app.movies.ui.MovieDetailViewModel(
+                moviesRepository = app.container.moviesRepository
+            )
+        }
+        initializer {
+            val app = laterboxApplication()
+            com.laterbox.app.movies.ui.MoviePlayerViewModel(
+                moviesRepository = app.container.moviesRepository
+            )
+        }
     }
 }
 

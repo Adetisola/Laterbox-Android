@@ -48,6 +48,7 @@ import com.laterbox.app.ui.theme.LaterboxTheme
 enum class DrawerPrimarySection {
     INBOX,
     COLLECTIONS,
+    MOVIES,
     DOWNLOADS,
     ARCHIVE,
     NOTIFICATIONS,
@@ -64,6 +65,7 @@ fun LaterboxModalDrawerSheet(
     userName: String,
     onNavigateInbox: () -> Unit,
     onNavigateCollections: () -> Unit,
+    onNavigateMovies: () -> Unit = {},
     onNavigateDownloads: () -> Unit,
     onNavigateArchive: () -> Unit,
     onNavigateNotifications: () -> Unit,
@@ -87,6 +89,7 @@ fun LaterboxModalDrawerSheet(
             userName = userName,
             onNavigateInbox = onNavigateInbox,
             onNavigateCollections = onNavigateCollections,
+            onNavigateMovies = onNavigateMovies,
             onNavigateDownloads = onNavigateDownloads,
             onNavigateArchive = onNavigateArchive,
             onNavigateNotifications = onNavigateNotifications,
@@ -107,6 +110,7 @@ fun LaterboxPersistentSidePanel(
     userName: String,
     onNavigateInbox: () -> Unit,
     onNavigateCollections: () -> Unit,
+    onNavigateMovies: () -> Unit = {},
     onNavigateDownloads: () -> Unit,
     onNavigateArchive: () -> Unit,
     onNavigateNotifications: () -> Unit,
@@ -133,6 +137,7 @@ fun LaterboxPersistentSidePanel(
                 userName = userName,
                 onNavigateInbox = onNavigateInbox,
                 onNavigateCollections = onNavigateCollections,
+                onNavigateMovies = onNavigateMovies,
                 onNavigateDownloads = onNavigateDownloads,
                 onNavigateArchive = onNavigateArchive,
                 onNavigateNotifications = onNavigateNotifications,
@@ -161,6 +166,7 @@ fun LaterboxDrawerContent(
     userName: String,
     onNavigateInbox: () -> Unit,
     onNavigateCollections: () -> Unit,
+    onNavigateMovies: () -> Unit = {},
     onNavigateDownloads: () -> Unit,
     onNavigateArchive: () -> Unit,
     onNavigateNotifications: () -> Unit,
@@ -260,6 +266,12 @@ fun LaterboxDrawerContent(
                     iconRes = LaterboxIcons.Folder,
                     selected = currentSection == DrawerPrimarySection.COLLECTIONS,
                     onClick = onNavigateCollections
+                )
+                DrawerNavItem(
+                    label = "Movies & TV",
+                    iconRes = LaterboxIcons.Movies,
+                    selected = currentSection == DrawerPrimarySection.MOVIES,
+                    onClick = onNavigateMovies
                 )
                 DrawerNavItem(
                     label = "Downloads",
@@ -419,6 +431,7 @@ fun sectionForRoute(route: String?): DrawerPrimarySection {
     return when {
         route == LaterboxDestination.Collections.route || route?.startsWith("collection/") == true ->
             DrawerPrimarySection.COLLECTIONS
+        route?.startsWith("movies") == true -> DrawerPrimarySection.MOVIES
         route == LaterboxDestination.Downloads.route -> DrawerPrimarySection.DOWNLOADS
         route == LaterboxDestination.Archive.route -> DrawerPrimarySection.ARCHIVE
         route == LaterboxDestination.NotificationHistory.route -> DrawerPrimarySection.NOTIFICATIONS

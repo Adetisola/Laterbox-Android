@@ -1,0 +1,302 @@
+package com.laterbox.app.movies
+
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.unit.dp
+import com.laterbox.app.movies.domain.model.BrowseSection
+import com.laterbox.app.movies.domain.model.CastMember
+import com.laterbox.app.movies.domain.model.DataSourceBadge
+import com.laterbox.app.movies.domain.model.EpisodeItem
+import com.laterbox.app.movies.domain.model.MediaDetails
+import com.laterbox.app.movies.domain.model.MediaKind
+import com.laterbox.app.movies.domain.model.MovieTitleSummary
+import com.laterbox.app.movies.domain.model.MoviesHomeFeed
+import com.laterbox.app.movies.domain.model.PlaybackResolution
+import com.laterbox.app.movies.domain.model.PlaybackSource
+import com.laterbox.app.movies.domain.model.SearchSuggestion
+import com.laterbox.app.movies.domain.model.SeasonSummary
+import com.laterbox.app.movies.domain.model.SectionStyle
+import com.laterbox.app.movies.domain.model.WatchHistoryItem
+import com.laterbox.app.movies.ui.MovieDetailScreen
+import com.laterbox.app.movies.ui.MovieDetailUiState
+import com.laterbox.app.movies.ui.MoviePlayerScreen
+import com.laterbox.app.movies.ui.MoviePlayerUiState
+import com.laterbox.app.movies.ui.MoviesCatalogueScreen
+import com.laterbox.app.movies.ui.MoviesCatalogueUiState
+import com.laterbox.app.movies.ui.MoviesHomeUiState
+import com.laterbox.app.movies.ui.MoviesScreen
+import com.laterbox.app.ui.components.BottomBarDestination
+import com.laterbox.app.ui.components.DrawerPrimarySection
+import com.laterbox.app.ui.components.LaterboxBottomBar
+import com.laterbox.app.ui.components.LaterboxDrawerContent
+import com.laterbox.app.ui.components.sectionForRoute
+import com.laterbox.app.ui.theme.LaterboxTheme
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
+class MoviesUiAndNavigationTest {
+
+    @get:Rule
+    val composeTestRule = createComposeRule()
+
+    private val sampleMovie = MovieTitleSummary(
+        id = "his_girl_friday",
+        providerId = "ia",
+        kind = MediaKind.MOVIE,
+        title = "His Girl Friday",
+        releaseYear = 1940,
+        rating = 8.8,
+        genres = listOf("Comedy"),
+        sourceBadge = DataSourceBadge.LIVE_INTERNET_ARCHIVE,
+        isPlayableHint = true
+    )
+
+    @Test
+    fun bottomBar_displaysAllFiveDestinationsIncludingMovies() {
+        var selected: BottomBarDestination? = null
+        composeTestRule.setContent {
+            LaterboxTheme {
+                LaterboxBottomBar(
+                    currentDestination = BottomBarDestination.INBOX,
+                    onDestinationSelected = { selected = it }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("bottom_bar_inbox").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("bottom_bar_collections").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("bottom_bar_movies").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("bottom_bar_downloads").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("bottom_bar_archive").assertIsDisplayed()
+
+        assertEquals(BottomBarDestination.MOVIES, selected)
+    }
+
+    @Test
+    fun drawerContent_showsMoviesSectionAndRoutesCorrectly() {
+        var navigatedToMovies = false
+        composeTestRule.setContent {
+            LaterboxTheme {
+                LaterboxDrawerContent(
+                    currentSection = DrawerPrimarySection.MOVIES,
+                    activeConversationId = null,
+                    recentConversations = emptyList(),
+                    unreadNotificationCount = 0,
+                    userName = "Timi",
+                    onNavigateInbox = {},
+                    onNavigateCollections = {},
+                    onNavigateMovies = { navigatedToMovies = true },
+                    onNavigateDownloads = {},
+                    onNavigateArchive = {},
+                    onNavigateNotifications = {},
+                    onNavigateSettings = {},
+                    onNewChatClick = {},
+                    onConversationClick = {},
+                    onDeleteConversation = {},
+                    modifier = Modifier.width(304.dp)
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithText("Movies & TV").assertIsDisplayed().performClick()
+        assertTrue(navigatedToMovies)
+        assertEquals(DrawerPrimarySection.MOVIES, sectionForRoute("movies"))
+        assertEquals(DrawerPrimarySection.MOVIES, sectionForRoute("movies/detail/ia/his_girl_friday"))
+    }
+
+    @Test
+    fun moviesScreen_rendersLoadingErrorAndPopulatedHeroContinueWatchingRails() {
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MoviesScreen(
+                    uiState = MoviesHomeUiState(
+                        isLoading = false,
+                        feed = MoviesHomeFeed(
+                            featuredBanners = listOf(sampleMovie),
+                            sections = listOf(
+                                BrowseSection("s1", "Playable Classic Cinema", "Public domain", SectionStyle.RAIL, listOf(sampleMovie))
+                            ),
+                            genres = listOf("All", "Comedy"),
+                            activeProviderNotice = "Development Sample Mode",
+                            containsSampleFixtures = true
+                        ),
+                        continueWatching = listOf(
+                            WatchHistoryItem(
+                                compositeId = "ia:his_girl_friday",
+                                providerId = "ia",
+                                titleId = "his_girl_friday",
+                                kind = MediaKind.MOVIE,
+                                title = "His Girl Friday",
+                                positionMs = 300_000L,
+                                durationMs = 5_500_000L,
+                                lastWatchedAt = 1000L
+                            )
+                        )
+                    ),
+                    onRefresh = {},
+                    onOpenCatalogue = { _, _ -> },
+                    onOpenDetail = { _, _ -> },
+                    onOpenPlayer = { _, _, _, _ -> },
+                    onToggleWatchlist = {},
+                    onToggleSampleFixtures = {},
+                    onSaveTmdbApiKey = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("movies_notice_banner").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("movies_hero_pager").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("movies_home_list").performScrollToNode(hasText("Continue Watching"))
+        composeTestRule.onNodeWithText("Continue Watching").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("movies_home_list").performScrollToNode(hasText("Playable Classic Cinema"))
+        composeTestRule.onNodeWithText("Playable Classic Cinema").assertIsDisplayed()
+    }
+
+    @Test
+    fun moviesCatalogueScreen_rendersSuggestionsFiltersAndGrid() {
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MoviesCatalogueScreen(
+                    uiState = MoviesCatalogueUiState(
+                        query = "His",
+                        showSuggestionsDropdown = true,
+                        suggestions = listOf(SearchSuggestion("his_girl_friday", "ia", "His Girl Friday", MediaKind.MOVIE, 1940)),
+                        items = listOf(sampleMovie)
+                    ),
+                    onBackClick = {},
+                    onQueryChange = {},
+                    onSearchFocusChange = {},
+                    onSubmitSearch = {},
+                    onClearSearch = {},
+                    onSelectKind = {},
+                    onSelectGenre = {},
+                    onSelectSort = {},
+                    onLoadNextPage = {},
+                    onRetry = {},
+                    onClearSearchHistory = {},
+                    onOpenDetail = { _, _ -> }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("catalogue_suggestions_box").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("suggestion_item_his_girl_friday").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("filter_kind_movie").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("catalogue_grid").assertIsDisplayed()
+    }
+
+    @Test
+    fun movieDetailScreen_showsWatchButtonForPlayableMovie_andSeasonsUnavailableForTvMazeSeries() {
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MovieDetailScreen(
+                    uiState = MovieDetailUiState(
+                        isLoading = false,
+                        details = MediaDetails(
+                            summary = sampleMovie.copy(kind = MediaKind.TV_SERIES, providerId = "tvmaze", title = "Breaking Bad", isPlayableHint = false, sourceBadge = DataSourceBadge.LIVE_TVMAZE),
+                            fullDescription = "Chemistry teacher series.",
+                            cast = listOf(CastMember("Bryan Cranston", "Walter White")),
+                            seasons = listOf(SeasonSummary(1, "Season 1", 7), SeasonSummary(2, "Season 2", 13))
+                        ),
+                        selectedSeasonNumber = 1,
+                        episodes = listOf(EpisodeItem("ep1", 1, 1, "Pilot", "Opening episode", 58, "2008-01-20")),
+                        playbackResolution = PlaybackResolution.Unavailable(
+                            title = "Breaking Bad",
+                            reason = "Metadata guide only.",
+                            providerName = "TVMaze Series Guide",
+                            externalReferenceUrl = "https://www.tvmaze.com/shows/169"
+                        )
+                    ),
+                    onBackClick = {},
+                    onRetry = {},
+                    onToggleWatchlist = {},
+                    onPlayClick = { _, _ -> },
+                    onSelectSeason = {},
+                    onOpenRelated = { _, _ -> },
+                    onOpenExternalUrl = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("detail_playback_unavailable").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("movie_detail_list").performScrollToNode(hasText("Seasons & Episodes"))
+        composeTestRule.onNodeWithTag("season_chip_2").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("movie_detail_list").performScrollToNode(hasTestTag("episode_row_1_1"))
+        composeTestRule.onNodeWithTag("episode_row_1_1").assertIsDisplayed()
+    }
+
+    @Test
+    fun movieDetailScreen_showsWatchNowCtaWhenPlaybackAvailable() {
+        var playClicked = false
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MovieDetailScreen(
+                    uiState = MovieDetailUiState(
+                        isLoading = false,
+                        details = MediaDetails(summary = sampleMovie, fullDescription = "Screwball classic."),
+                        playbackResolution = PlaybackResolution.Available(
+                            title = "His Girl Friday",
+                            sources = listOf(PlaybackSource("s1", "https://archive.org/hgf.mp4", "MP4", "720p", 720, providerName = "IA"))
+                        )
+                    ),
+                    onBackClick = {},
+                    onRetry = {},
+                    onToggleWatchlist = {},
+                    onPlayClick = { _, _ -> playClicked = true },
+                    onSelectSeason = {},
+                    onOpenRelated = { _, _ -> },
+                    onOpenExternalUrl = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("detail_watch_button").assertIsDisplayed().performClick()
+        assertTrue(playClicked)
+    }
+
+    @Test
+    fun moviePlayerScreen_rendersUnavailableOverlayClearly() {
+        var backClicked = false
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MoviePlayerScreen(
+                    uiState = MoviePlayerUiState(
+                        isLoading = false,
+                        resolution = PlaybackResolution.Unavailable(
+                            title = "TV Series",
+                            reason = "Authorised stream unavailable for this title.",
+                            providerName = "TVMaze",
+                            externalReferenceUrl = "https://www.tvmaze.com/shows/1"
+                        )
+                    ),
+                    onBackClick = { backClicked = true },
+                    onRetry = {},
+                    onSelectSource = { _, _ -> },
+                    onSelectSubtitle = { _, _ -> },
+                    onSaveProgress = { _, _ -> },
+                    onOpenExternalUrl = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("player_unavailable_state").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Open Official Guide").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Back").assertIsDisplayed().performClick()
+        assertTrue(backClicked)
+    }
+}

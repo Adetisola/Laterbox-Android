@@ -1545,4 +1545,103 @@ class LaterboxDatabaseTest {
         assertEquals(1, hits.size)
         assertEquals("Special Match", hits[0].link.title)
     }
+
+    @Test
+    fun migration11To12_createsIsolatedMoviesTablesAndPreservesExistingLinks() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val config = androidx.sqlite.db.SupportSQLiteOpenHelper.Configuration.builder(context)
+            .name(null)
+            .callback(object : androidx.sqlite.db.SupportSQLiteOpenHelper.Callback(11) {
+                override fun onCreate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                    db.execSQL("CREATE TABLE IF NOT EXISTS `saved_links` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `original_url` TEXT NOT NULL, `normalized_url` TEXT NOT NULL, `title` TEXT NOT NULL, `domain` TEXT NOT NULL)")
+                }
+                override fun onUpgrade(db: androidx.sqlite.db.SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+            }).build()
+        val helper = androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory().create(config)
+        val sqliteDb = helper.writableDatabase
+        sqliteDb.execSQL("INSERT INTO `saved_links` (`id`, `original_url`, `normalized_url`, `title`, `domain`) VALUES (1, 'https://laterbox.app', 'https://laterbox.app', 'Saved Article', 'laterbox.app')")
+
+        LaterboxDatabase.MIGRATION_11_12.migrate(sqliteDb)
+
+        val linkCursor = sqliteDb.query("SELECT title FROM `saved_links` WHERE id = 1")
+        assertTrue(linkCursor.moveToFirst())
+        assertEquals("Saved Article", linkCursor.getString(0))
+        linkCursor.close()
+
+        sqliteDb.execSQL("INSERT INTO `movie_cache_entries` (`cache_key`, `provider_id`, `payload_json`, `updated_at`, `expires_at`) VALUES ('k1', 'ia', '{}', 1000, 2000)")
+        sqliteDb.execSQL("INSERT INTO `movie_watchlist_items` (`composite_id`, `provider_id`, `title_id`, `kind`, `title`, `genres_csv`, `source_badge`, `is_playable_hint`, `added_at`) VALUES ('ia:hgf', 'ia', 'hgf', 'movie', 'His Girl Friday', 'Comedy', 'LIVE_INTERNET_ARCHIVE', 1, 1000)")
+        sqliteDb.execSQL("INSERT INTO `movie_watch_history` (`history_key`, `composite_id`, `provider_id`, `title_id`, `kind`, `title`, `position_ms`, `duration_ms`, `last_watched_at`) VALUES ('ia:hgf:0:0', 'ia:hgf', 'ia', 'hgf', 'movie', 'His Girl Friday', 30000, 5500000, 2000)")
+        sqliteDb.execSQL("INSERT INTO `movie_search_history` (`query`, `searched_at`) VALUES ('noir', 3000)")
+
+        val wlCursor = sqliteDb.query("SELECT title FROM `movie_watchlist_items` WHERE `composite_id` = 'ia:hgf'")
+        assertTrue(wlCursor.moveToFirst())
+        assertEquals("His Girl Friday", wlCursor.getString(0))
+        wlCursor.close()
+
+        helper.close()
+    }
+
+    @Test
+    fun moviesDao_crudCacheWatchlistHistoryAndSearches() = runTest {
+        val moviesDao = db.moviesDao()
+        moviesDao.upsertCacheEntry(
+            com.laterbox.app.movies.data.local.entity.MovieCacheEntryEntity(
+                cacheKey = "home_feed",
+                providerId = "composite",
+                payloadJson = "{\"ok\":true}",
+                updatedAt = 100L,
+                expiresAt = 200L
+            )
+        )
+        assertNotNull(moviesDao.getCacheEntry("home_feed"))
+        moviesDao.pruneExpiredCache(300L)
+        assertNull(moviesDao.getCacheEntry("home_feed"))
+
+        val wl = com.laterbox.app.movies.data.local.entity.MovieWatchlistEntity(
+            compositeId = "ia:detour_1945",
+            providerId = "ia",
+            titleId = "detour_1945",
+            kind = "movie",
+            title = "Detour",
+            posterUrl = null,
+            backdropUrl = null,
+            releaseYear = 1945,
+            rating = 8.0,
+            genresCsv = "Film Noir",
+            summary = "Classic noir",
+            sourceBadge = "LIVE_INTERNET_ARCHIVE",
+            isPlayableHint = true,
+            addedAt = 500L
+        )
+        moviesDao.insertWatchlistItem(wl)
+        assertTrue(moviesDao.observeIsInWatchlist("ia:detour_1945").first())
+        moviesDao.deleteWatchlistItem("ia:detour_1945")
+        assertFalse(moviesDao.observeIsInWatchlist("ia:detour_1945").first())
+
+        moviesDao.upsertWatchHistory(
+            com.laterbox.app.movies.data.local.entity.MovieWatchHistoryEntity(
+                historyKey = "ia:detour_1945:0:0",
+                compositeId = "ia:detour_1945",
+                providerId = "ia",
+                titleId = "detour_1945",
+                kind = "movie",
+                title = "Detour",
+                episodeLabel = null,
+                seasonNumber = null,
+                episodeNumber = null,
+                posterUrl = null,
+                positionMs = 15_000L,
+                durationMs = 4_000_000L,
+                lastWatchedAt = 999L
+            )
+        )
+        assertEquals(1, moviesDao.observeContinueWatching(5).first().size)
+
+        moviesDao.upsertSearchQuery(
+            com.laterbox.app.movies.data.local.entity.MovieSearchHistoryEntity("chaplin", 100L)
+        )
+        assertEquals(listOf("chaplin"), moviesDao.observeRecentSearches(5).first())
+        moviesDao.clearSearchHistory()
+        assertTrue(moviesDao.observeRecentSearches(5).first().isEmpty())
+    }
 }

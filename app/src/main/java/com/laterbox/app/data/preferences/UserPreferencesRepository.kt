@@ -139,7 +139,9 @@ data class UserPreferences(
     val readerOpensCount: Int = 0,
     val shareCapturesCount: Int = 0,
     val quickTileCapturesCount: Int = 0,
-    val manualCapturesCount: Int = 0
+    val manualCapturesCount: Int = 0,
+    val tmdbApiKey: String = "",
+    val moviesUseSampleFixturesOnly: Boolean = false
 ) {
     val allowSystemBackup: Boolean get() = includeInBackup
 
@@ -263,6 +265,8 @@ class UserPreferencesRepository(private val context: Context) {
         val SHARE_CAPTURES_COUNT = intPreferencesKey("share_captures_count")
         val QUICK_TILE_CAPTURES_COUNT = intPreferencesKey("quick_tile_captures_count")
         val MANUAL_CAPTURES_COUNT = intPreferencesKey("manual_captures_count")
+        val TMDB_API_KEY = stringPreferencesKey("tmdb_api_key")
+        val MOVIES_USE_SAMPLE_FIXTURES_ONLY = booleanPreferencesKey("movies_use_sample_fixtures_only")
     }
 
     val userPreferencesFlow: Flow<UserPreferences> = context.userDataStore.data.map { preferences ->
@@ -459,7 +463,9 @@ class UserPreferencesRepository(private val context: Context) {
             readerOpensCount = preferences[PreferencesKeys.READER_OPENS_COUNT] ?: 0,
             shareCapturesCount = preferences[PreferencesKeys.SHARE_CAPTURES_COUNT] ?: 0,
             quickTileCapturesCount = preferences[PreferencesKeys.QUICK_TILE_CAPTURES_COUNT] ?: 0,
-            manualCapturesCount = preferences[PreferencesKeys.MANUAL_CAPTURES_COUNT] ?: 0
+            manualCapturesCount = preferences[PreferencesKeys.MANUAL_CAPTURES_COUNT] ?: 0,
+            tmdbApiKey = preferences[PreferencesKeys.TMDB_API_KEY] ?: "",
+            moviesUseSampleFixturesOnly = preferences[PreferencesKeys.MOVIES_USE_SAMPLE_FIXTURES_ONLY] ?: false
         )
     }
 
@@ -902,6 +908,23 @@ class UserPreferencesRepository(private val context: Context) {
             preferences.remove(PreferencesKeys.SHARE_CAPTURES_COUNT)
             preferences.remove(PreferencesKeys.QUICK_TILE_CAPTURES_COUNT)
             preferences.remove(PreferencesKeys.MANUAL_CAPTURES_COUNT)
+        }
+    }
+
+    suspend fun setTmdbApiKey(apiKey: String) {
+        context.userDataStore.edit { preferences ->
+            val trimmed = apiKey.trim()
+            if (trimmed.isNotBlank()) {
+                preferences[PreferencesKeys.TMDB_API_KEY] = trimmed
+            } else {
+                preferences.remove(PreferencesKeys.TMDB_API_KEY)
+            }
+        }
+    }
+
+    suspend fun setMoviesUseSampleFixturesOnly(enabled: Boolean) {
+        context.userDataStore.edit { preferences ->
+            preferences[PreferencesKeys.MOVIES_USE_SAMPLE_FIXTURES_ONLY] = enabled
         }
     }
 }

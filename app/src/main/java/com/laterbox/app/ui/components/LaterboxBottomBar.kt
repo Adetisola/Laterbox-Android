@@ -47,6 +47,7 @@ enum class BottomBarDestination(
 ) {
     INBOX("Inbox", LaterboxIcons.Inbox),
     COLLECTIONS("Collections", LaterboxIcons.Folder),
+    MOVIES("Movies", LaterboxIcons.Movies),
     DOWNLOADS("Downloads", LaterboxIcons.Download),
     ARCHIVE("Archive", LaterboxIcons.Archive)
 }
@@ -67,13 +68,13 @@ fun LaterboxBottomBar(
         modifier = modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(start = 20.dp, end = 20.dp, bottom = 10.dp)
+            .padding(start = 12.dp, end = 12.dp, bottom = 10.dp)
             .testTag("laterbox_bottom_bar"),
         contentAlignment = Alignment.Center
     ) {
         Surface(
             modifier = Modifier
-                .widthIn(max = 420.dp)
+                .widthIn(max = 460.dp)
                 .fillMaxWidth()
                 .shadow(
                     elevation = 8.dp,
@@ -93,7 +94,7 @@ fun LaterboxBottomBar(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(64.dp)
-                    .padding(horizontal = 8.dp),
+                    .padding(horizontal = 6.dp),
                 horizontalArrangement = Arrangement.SpaceAround,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -161,7 +162,9 @@ fun LaterboxBottomBar(
                             text = destination.label,
                             style = LaterboxTheme.typography.uiLabel,
                             color = labelColor,
-                            fontSize = 11.sp,
+                            fontSize = 10.sp,
+                            maxLines = 1,
+                            softWrap = false,
                             fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium
                         )
 

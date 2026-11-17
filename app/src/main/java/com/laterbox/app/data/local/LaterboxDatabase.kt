@@ -24,6 +24,11 @@ import com.laterbox.app.media.data.db.dao.MediaInspectionDao
 import com.laterbox.app.media.data.db.entity.DownloadedAssetEntity
 import com.laterbox.app.media.data.db.entity.DownloadTaskEntity
 import com.laterbox.app.media.data.db.entity.MediaInspectionEntity
+import com.laterbox.app.movies.data.local.dao.MoviesDao
+import com.laterbox.app.movies.data.local.entity.MovieCacheEntryEntity
+import com.laterbox.app.movies.data.local.entity.MovieSearchHistoryEntity
+import com.laterbox.app.movies.data.local.entity.MovieWatchHistoryEntity
+import com.laterbox.app.movies.data.local.entity.MovieWatchlistEntity
 
 @Database(
     entities = [
@@ -37,9 +42,13 @@ import com.laterbox.app.media.data.db.entity.MediaInspectionEntity
         ChatConversationEntity::class,
         ChatMessageEntity::class,
         ActivityEventEntity::class,
-        com.laterbox.app.data.local.entity.ChatActionPermissionEntity::class
+        com.laterbox.app.data.local.entity.ChatActionPermissionEntity::class,
+        MovieCacheEntryEntity::class,
+        MovieWatchlistEntity::class,
+        MovieWatchHistoryEntity::class,
+        MovieSearchHistoryEntity::class
     ],
-    version = 11,
+    version = 12,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -53,6 +62,7 @@ abstract class LaterboxDatabase : RoomDatabase() {
     abstract fun mediaInspectionDao(): MediaInspectionDao
     abstract fun chatDao(): ChatDao
     abstract fun activityEventDao(): ActivityEventDao
+    abstract fun moviesDao(): MoviesDao
 
     companion object {
         private const val DATABASE_NAME = "laterbox.db"
@@ -533,6 +543,88 @@ abstract class LaterboxDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Non-destructive migration from version 11 to version 12:
+         * Adds dedicated Movies & TV tables (metadata cache, watchlist, watch progress history, search history)
+         * completely isolated from saved_links.
+         */
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `movie_cache_entries` (
+                        `cache_key` TEXT NOT NULL,
+                        `provider_id` TEXT NOT NULL,
+                        `payload_json` TEXT NOT NULL,
+                        `updated_at` INTEGER NOT NULL,
+                        `expires_at` INTEGER NOT NULL,
+                        PRIMARY KEY(`cache_key`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movie_cache_entries_provider_id` ON `movie_cache_entries` (`provider_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movie_cache_entries_expires_at` ON `movie_cache_entries` (`expires_at`)")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `movie_watchlist_items` (
+                        `composite_id` TEXT NOT NULL,
+                        `provider_id` TEXT NOT NULL,
+                        `title_id` TEXT NOT NULL,
+                        `kind` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `poster_url` TEXT,
+                        `backdrop_url` TEXT,
+                        `release_year` INTEGER,
+                        `rating` REAL,
+                        `genres_csv` TEXT NOT NULL,
+                        `summary` TEXT,
+                        `source_badge` TEXT NOT NULL,
+                        `is_playable_hint` INTEGER NOT NULL,
+                        `added_at` INTEGER NOT NULL,
+                        PRIMARY KEY(`composite_id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movie_watchlist_items_added_at` ON `movie_watchlist_items` (`added_at`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movie_watchlist_items_kind` ON `movie_watchlist_items` (`kind`)")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `movie_watch_history` (
+                        `history_key` TEXT NOT NULL,
+                        `composite_id` TEXT NOT NULL,
+                        `provider_id` TEXT NOT NULL,
+                        `title_id` TEXT NOT NULL,
+                        `kind` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `episode_label` TEXT,
+                        `season_number` INTEGER,
+                        `episode_number` INTEGER,
+                        `poster_url` TEXT,
+                        `position_ms` INTEGER NOT NULL,
+                        `duration_ms` INTEGER NOT NULL,
+                        `last_watched_at` INTEGER NOT NULL,
+                        PRIMARY KEY(`history_key`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movie_watch_history_composite_id` ON `movie_watch_history` (`composite_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movie_watch_history_last_watched_at` ON `movie_watch_history` (`last_watched_at`)")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `movie_search_history` (
+                        `query` TEXT NOT NULL,
+                        `searched_at` INTEGER NOT NULL,
+                        PRIMARY KEY(`query`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movie_search_history_searched_at` ON `movie_search_history` (`searched_at`)")
+            }
+        }
+
         @Volatile
         private var INSTANCE: LaterboxDatabase? = null
 
@@ -553,7 +645,8 @@ abstract class LaterboxDatabase : RoomDatabase() {
                         MIGRATION_7_8,
                         MIGRATION_8_9,
                         MIGRATION_9_10,
-                        MIGRATION_10_11
+                        MIGRATION_10_11,
+                        MIGRATION_11_12
                     )
                     .build()
                     .also { INSTANCE = it }

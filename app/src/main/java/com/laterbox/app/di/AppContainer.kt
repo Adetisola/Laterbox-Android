@@ -38,6 +38,7 @@ interface AppContainer {
     val youTubeTranscriptDataSource: com.laterbox.app.transcript.data.YouTubeTranscriptDataSource
     val youTubeTranscriptExtractor: com.laterbox.app.transcript.data.YouTubeTranscriptExtractor
     val transcriptExportManager: com.laterbox.app.transcript.export.TranscriptExportManager
+    val moviesRepository: com.laterbox.app.movies.domain.repository.MoviesRepository
 }
 
 class DefaultAppContainer(private val context: Context) : AppContainer {
@@ -220,6 +221,32 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
         com.laterbox.app.transcript.export.TranscriptExportManager(
             context = context.applicationContext,
             mediaRepository = mediaRepository
+        )
+    }
+
+    private val moviesOkHttpClient: okhttp3.OkHttpClient by lazy {
+        sharedOkHttpClient.newBuilder()
+            .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    }
+
+    override val moviesRepository: com.laterbox.app.movies.domain.repository.MoviesRepository by lazy {
+        val iaProvider = com.laterbox.app.movies.data.provider.InternetArchiveMoviesProvider(moviesOkHttpClient)
+        val tvMazeProvider = com.laterbox.app.movies.data.provider.TvMazeSeriesProvider(moviesOkHttpClient)
+        val tmdbProvider = com.laterbox.app.movies.data.provider.TmdbOptionalMoviesProvider(
+            okHttpClient = moviesOkHttpClient,
+            apiKeyProvider = { userPreferencesRepository.userPreferencesFlow.first().tmdbApiKey }
+        )
+        com.laterbox.app.movies.data.repository.MoviesRepositoryImpl(
+            moviesDao = database.moviesDao(),
+            internetArchiveProvider = iaProvider,
+            tvMazeProvider = tvMazeProvider,
+            tmdbProvider = tmdbProvider,
+            fixtureProvider = com.laterbox.app.movies.data.fixtures.DevelopmentMoviesFixtureProvider(),
+            useSampleFixturesOnlyProvider = {
+                userPreferencesRepository.userPreferencesFlow.first().moviesUseSampleFixturesOnly
+            }
         )
     }
 }

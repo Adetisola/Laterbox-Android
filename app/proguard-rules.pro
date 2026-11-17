@@ -61,3 +61,9 @@
 
 # Application Update System
 -keep class com.laterbox.app.update.** { *; }
+
+# Laterbox Movies Models & Room Tables
+-keep class com.laterbox.app.movies.domain.model.** { *; }
+-keep class com.laterbox.app.movies.data.local.entity.** { *; }
+-keep class com.laterbox.app.movies.data.local.dao.** { *; }
+

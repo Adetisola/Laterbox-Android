@@ -30,4 +30,38 @@ sealed class LaterboxDestination(val route: String) {
             return "chat?conversationId=$encodedConv&initialPrompt=$encodedPrompt"
         }
     }
+
+    object Movies : LaterboxDestination("movies")
+
+    object MoviesCatalogue : LaterboxDestination("movies/catalogue?kind={kind}&genre={genre}&query={query}") {
+        fun createRoute(kind: String? = null, genre: String? = null, query: String? = null): String {
+            val encodedKind = java.net.URLEncoder.encode(kind.orEmpty(), "UTF-8")
+            val encodedGenre = java.net.URLEncoder.encode(genre.orEmpty(), "UTF-8")
+            val encodedQuery = java.net.URLEncoder.encode(query.orEmpty(), "UTF-8")
+            return "movies/catalogue?kind=$encodedKind&genre=$encodedGenre&query=$encodedQuery"
+        }
+    }
+
+    object MovieDetail : LaterboxDestination("movies/detail/{providerId}/{titleId}") {
+        fun createRoute(providerId: String, titleId: String): String {
+            val encodedProvider = java.net.URLEncoder.encode(providerId, "UTF-8")
+            val encodedId = java.net.URLEncoder.encode(titleId, "UTF-8")
+            return "movies/detail/$encodedProvider/$encodedId"
+        }
+    }
+
+    object MoviePlayer : LaterboxDestination("movies/player/{providerId}/{titleId}?season={season}&episode={episode}") {
+        fun createRoute(
+            providerId: String,
+            titleId: String,
+            seasonNumber: Int? = null,
+            episodeNumber: Int? = null
+        ): String {
+            val encodedProvider = java.net.URLEncoder.encode(providerId, "UTF-8")
+            val encodedId = java.net.URLEncoder.encode(titleId, "UTF-8")
+            val s = seasonNumber ?: -1
+            val e = episodeNumber ?: -1
+            return "movies/player/$encodedProvider/$encodedId?season=$s&episode=$e"
+        }
+    }
 }

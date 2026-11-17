@@ -41,4 +41,8 @@ object LaterboxIcons {
     @DrawableRes val Stop = R.drawable.ic_huge_stop
     @DrawableRes val Health = R.drawable.ic_huge_health
     @DrawableRes val Mic = R.drawable.ic_huge_mic
+    @DrawableRes val Movies = R.drawable.ic_huge_movies
+    @DrawableRes val Play = R.drawable.ic_huge_play
+    @DrawableRes val Subtitles = R.drawable.ic_huge_subtitles
+    @DrawableRes val Bookmark = R.drawable.ic_huge_bookmark
 }
