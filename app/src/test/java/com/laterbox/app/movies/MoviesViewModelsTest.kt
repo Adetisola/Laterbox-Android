@@ -455,11 +455,11 @@ class MoviesViewModelsTest {
         vm.uiState.first { !it.isLoading }
 
         val callsBefore = repo.homeCallCount
-        vm.setMovieBoxConfig("https://movies.example.com/", "secret-key")
+        vm.setMovieBoxBaseUrl("https://movies.example.com/")
         val updatedConfigState = vm.uiState.first {
             it.movieBoxApiBaseUrl == "https://movies.example.com/" && !it.isRefreshing
         }
-        assertEquals("secret-key", updatedConfigState.movieBoxApiKey)
+        assertEquals("https://movies.example.com/", updatedConfigState.effectiveMovieBoxBaseUrl)
         assertTrue(repo.homeCallCount > callsBefore)
     }
 

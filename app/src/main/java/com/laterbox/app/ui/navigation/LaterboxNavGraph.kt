@@ -1021,7 +1021,7 @@ fun LaterboxApp(
                                 },
                                 onToggleWatchlist = moviesHomeViewModel::toggleWatchlist,
                                 onToggleSampleFixtures = moviesHomeViewModel::setSampleFixturesOnly,
-                                onSaveMovieBoxConfig = moviesHomeViewModel::setMovieBoxConfig,
+                                onSaveMovieBoxBaseUrl = moviesHomeViewModel::setMovieBoxBaseUrl,
                                 onSearchQueryChange = moviesHomeViewModel::onSearchQueryChange,
                                 onSearchFocusChange = moviesHomeViewModel::setSearchFocused,
                                 onSubmitSearch = moviesHomeViewModel::submitInlineSearch,

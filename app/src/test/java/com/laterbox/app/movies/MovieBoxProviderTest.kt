@@ -29,7 +29,6 @@ class MovieBoxProviderTest {
 
     private lateinit var server: MockWebServer
     private lateinit var provider: MovieBoxProvider
-    private var apiKey: String = ""
 
     @Before
     fun setUp() {
@@ -38,8 +37,7 @@ class MovieBoxProviderTest {
         val baseUrl = server.url("/").toString()
         provider = MovieBoxProvider(
             okHttpClient = OkHttpClient(),
-            baseUrlProvider = { baseUrl },
-            apiKeyProvider = { apiKey }
+            baseUrlProvider = { baseUrl }
         )
     }
 
@@ -154,8 +152,7 @@ class MovieBoxProviderTest {
     }
 
     @Test
-    fun catalogueMoviesAndSeries_mapSortPaginationAndApiKeyHeader() = runTest {
-        apiKey = "secret-test-key"
+    fun catalogueMoviesAndSeries_mapSortPaginationWithoutLegacyApiKeyHeader() = runTest {
         val paths = mutableListOf<String>()
         val apiKeys = mutableListOf<String?>()
 
@@ -206,7 +203,7 @@ class MovieBoxProviderTest {
         assertEquals(2, moviesPage.items.size)
         assertTrue(moviesPage.hasMore)
         assertTrue(paths.first().contains("/movies?page=1&per_page=2&sort=Rating&genre=Action"))
-        assertEquals("secret-test-key", apiKeys.first())
+        assertNull(apiKeys.first())
 
         val seriesPage = provider.getCatalogue(
             kind = MediaKind.TV_SERIES,
@@ -632,7 +629,6 @@ class MovieBoxProviderTest {
         val fastProvider = MovieBoxProvider(
             okHttpClient = OkHttpClient(),
             baseUrlProvider = { server.url("/").toString() },
-            apiKeyProvider = { "wrong-key" },
             retryDelayMs = 0L
         )
         server.dispatcher = object : Dispatcher() {
@@ -640,7 +636,7 @@ class MovieBoxProviderTest {
                 requestCount++
                 return MockResponse()
                     .setResponseCode(401)
-                    .setBody("""{"detail":"Invalid API key"}""")
+                    .setBody("""{"detail":"Unauthorized"}""")
             }
         }
 
@@ -649,6 +645,7 @@ class MovieBoxProviderTest {
         assertTrue(err is com.laterbox.app.movies.data.provider.MovieBoxApiException)
         assertTrue((err as com.laterbox.app.movies.data.provider.MovieBoxApiException).isAuthFailure)
         assertTrue(err.message.orEmpty().contains("authentication", ignoreCase = true))
+        assertTrue(err.message.orEmpty().contains("App Check", ignoreCase = true))
     }
 
     @Test
@@ -657,7 +654,6 @@ class MovieBoxProviderTest {
         val fastProvider = MovieBoxProvider(
             okHttpClient = OkHttpClient(),
             baseUrlProvider = { server.url("/").toString() },
-            apiKeyProvider = { "" },
             retryDelayMs = 0L
         )
         server.dispatcher = object : Dispatcher() {
@@ -712,13 +708,12 @@ class MovieBoxProviderTest {
     }
 
     @Test
-    fun appCheckToken_attachesHeaderWithLegacyFallbackAndHandlesUnavailableProvider() = runTest {
+    fun appCheckToken_attachesHeaderAndNeverSendsLegacyApiKey() = runTest {
         val capturedHeaders = mutableListOf<Pair<String?, String?>>()
         var shouldThrow = false
-        val dualProvider = MovieBoxProvider(
+        val appCheckOnlyProvider = MovieBoxProvider(
             okHttpClient = OkHttpClient(),
             baseUrlProvider = { server.url("/").toString() },
-            apiKeyProvider = { "legacy-key-123" },
             retryDelayMs = 0L,
             appCheckTokenProvider = { forceRefresh ->
                 assertFalse(forceRefresh)
@@ -734,13 +729,13 @@ class MovieBoxProviderTest {
             }
         }
 
-        dualProvider.getHomeFeed().getOrThrow()
+        appCheckOnlyProvider.getHomeFeed().getOrThrow()
         shouldThrow = true
-        dualProvider.getHomeFeed().getOrThrow()
+        appCheckOnlyProvider.getHomeFeed().getOrThrow()
 
         assertEquals(2, capturedHeaders.size)
-        assertEquals("appcheck.jwt.1" to "legacy-key-123", capturedHeaders[0])
-        assertEquals(null to "legacy-key-123", capturedHeaders[1])
+        assertEquals("appcheck.jwt.1" to null, capturedHeaders[0])
+        assertEquals(null to null, capturedHeaders[1])
     }
 
     @Test
@@ -751,7 +746,6 @@ class MovieBoxProviderTest {
         val appCheckProvider = MovieBoxProvider(
             okHttpClient = OkHttpClient(),
             baseUrlProvider = { server.url("/").toString() },
-            apiKeyProvider = { "" },
             retryDelayMs = 0L,
             appCheckTokenProvider = { forceRefresh ->
                 forceFlags.add(forceRefresh)

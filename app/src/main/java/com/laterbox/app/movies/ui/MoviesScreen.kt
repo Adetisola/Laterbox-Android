@@ -75,7 +75,7 @@ fun MoviesScreen(
     onOpenPlayer: (providerId: String, titleId: String, seasonNumber: Int?, episodeNumber: Int?) -> Unit,
     onToggleWatchlist: (MovieTitleSummary) -> Unit,
     onToggleSampleFixtures: (Boolean) -> Unit,
-    onSaveMovieBoxConfig: (baseUrl: String, apiKey: String) -> Unit = { _, _ -> },
+    onSaveMovieBoxBaseUrl: (baseUrl: String) -> Unit = {},
     onSearchQueryChange: (String) -> Unit = {},
     onSearchFocusChange: (Boolean) -> Unit = {},
     onSubmitSearch: (String?) -> Unit = {},
@@ -118,8 +118,7 @@ fun MoviesScreen(
             onDismiss = { showSourcesDialog = false },
             currentMovieBoxBaseUrl = uiState.movieBoxApiBaseUrl,
             effectiveMovieBoxBaseUrl = uiState.effectiveMovieBoxBaseUrl,
-            currentMovieBoxApiKey = uiState.movieBoxApiKey,
-            onSaveMovieBoxConfig = onSaveMovieBoxConfig
+            onSaveMovieBoxBaseUrl = onSaveMovieBoxBaseUrl
         )
     }
 

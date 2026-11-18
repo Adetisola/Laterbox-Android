@@ -173,8 +173,7 @@ data class UserPreferences(
     val manualCapturesCount: Int = 0,
     val tmdbApiKey: String = "",
     val moviesUseSampleFixturesOnly: Boolean = false,
-    val movieBoxApiBaseUrl: String = "",
-    val movieBoxApiKey: String = ""
+    val movieBoxApiBaseUrl: String = ""
 ) {
     val allowSystemBackup: Boolean get() = includeInBackup
 
@@ -438,7 +437,6 @@ class UserPreferencesRepository(private val context: Context) {
         val movieBoxApiBaseUrl = MovieBoxEndpointConfig.normalizeBaseUrl(
             preferences[PreferencesKeys.MOVIEBOX_API_BASE_URL] ?: ""
         )
-        val movieBoxApiKey = (preferences[PreferencesKeys.MOVIEBOX_API_KEY] ?: "").trim()
 
         UserPreferences(
             themeMode = themeMode,
@@ -511,8 +509,7 @@ class UserPreferencesRepository(private val context: Context) {
             manualCapturesCount = preferences[PreferencesKeys.MANUAL_CAPTURES_COUNT] ?: 0,
             tmdbApiKey = preferences[PreferencesKeys.TMDB_API_KEY] ?: "",
             moviesUseSampleFixturesOnly = debugSampleFixturesOnly,
-            movieBoxApiBaseUrl = movieBoxApiBaseUrl,
-            movieBoxApiKey = movieBoxApiKey
+            movieBoxApiBaseUrl = movieBoxApiBaseUrl
         )
     }
 
@@ -978,6 +975,7 @@ class UserPreferencesRepository(private val context: Context) {
             }
             preferences.remove(PreferencesKeys.MOVIES_PROVIDER_MODE)
             preferences.remove(PreferencesKeys.MOVIES_USE_SAMPLE_FIXTURES_ONLY)
+            preferences.remove(PreferencesKeys.MOVIEBOX_API_KEY)
             preferences[PreferencesKeys.MOVIES_PREFS_MIGRATED_V2] = true
         }
     }
@@ -986,10 +984,12 @@ class UserPreferencesRepository(private val context: Context) {
         context.userDataStore.edit { preferences ->
             val alreadyMigrated = preferences[PreferencesKeys.MOVIES_PREFS_MIGRATED_V2] ?: false
             val hasLegacyKeys = preferences.contains(PreferencesKeys.MOVIES_PROVIDER_MODE) ||
-                preferences.contains(PreferencesKeys.MOVIES_USE_SAMPLE_FIXTURES_ONLY)
+                preferences.contains(PreferencesKeys.MOVIES_USE_SAMPLE_FIXTURES_ONLY) ||
+                preferences.contains(PreferencesKeys.MOVIEBOX_API_KEY)
             if (!alreadyMigrated || hasLegacyKeys) {
                 preferences.remove(PreferencesKeys.MOVIES_PROVIDER_MODE)
                 preferences.remove(PreferencesKeys.MOVIES_USE_SAMPLE_FIXTURES_ONLY)
+                preferences.remove(PreferencesKeys.MOVIEBOX_API_KEY)
                 preferences[PreferencesKeys.MOVIES_PREFS_MIGRATED_V2] = true
             }
         }
@@ -1002,34 +1002,6 @@ class UserPreferencesRepository(private val context: Context) {
                 preferences[PreferencesKeys.MOVIEBOX_API_BASE_URL] = normalized
             } else {
                 preferences.remove(PreferencesKeys.MOVIEBOX_API_BASE_URL)
-            }
-        }
-    }
-
-    suspend fun setMovieBoxApiKey(apiKey: String) {
-        val trimmed = apiKey.trim()
-        context.userDataStore.edit { preferences ->
-            if (trimmed.isNotBlank()) {
-                preferences[PreferencesKeys.MOVIEBOX_API_KEY] = trimmed
-            } else {
-                preferences.remove(PreferencesKeys.MOVIEBOX_API_KEY)
-            }
-        }
-    }
-
-    suspend fun setMovieBoxConfig(baseUrl: String, apiKey: String) {
-        val normalized = MovieBoxEndpointConfig.normalizeBaseUrl(baseUrl)
-        val trimmedKey = apiKey.trim()
-        context.userDataStore.edit { preferences ->
-            if (normalized.isNotBlank()) {
-                preferences[PreferencesKeys.MOVIEBOX_API_BASE_URL] = normalized
-            } else {
-                preferences.remove(PreferencesKeys.MOVIEBOX_API_BASE_URL)
-            }
-            if (trimmedKey.isNotBlank()) {
-                preferences[PreferencesKeys.MOVIEBOX_API_KEY] = trimmedKey
-            } else {
-                preferences.remove(PreferencesKeys.MOVIEBOX_API_KEY)
             }
         }
     }

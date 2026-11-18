@@ -480,7 +480,8 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithTag("movies_sources_button").performClick()
         composeTestRule.onNodeWithTag("provider_mode_moviebox").assertDoesNotExist()
         composeTestRule.onNodeWithTag("moviebox_base_url_input").performScrollTo().assertIsDisplayed()
-        composeTestRule.onNodeWithTag("moviebox_api_key_input").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("moviebox_api_key_input").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("moviebox_api_key_toggle").assertDoesNotExist()
     }
 
     @Test

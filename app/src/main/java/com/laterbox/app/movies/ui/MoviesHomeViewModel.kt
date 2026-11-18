@@ -37,7 +37,6 @@ data class MoviesHomeUiState(
     val errorMessage: String? = null,
     val movieBoxApiBaseUrl: String = "",
     val effectiveMovieBoxBaseUrl: String = BuildConfig.MOVIEBOX_API_BASE_URL,
-    val movieBoxApiKey: String = "",
     val useSampleFixturesOnly: Boolean = false,
     // Inline Search, Suggestions & Recent Searches
     val searchQuery: String = "",
@@ -80,8 +79,7 @@ data class MoviesHomeUiState(
 
 private data class MoviesConfigSnapshot(
     val useSampleFixturesOnly: Boolean,
-    val movieBoxBaseUrl: String,
-    val movieBoxApiKey: String
+    val movieBoxBaseUrl: String
 )
 
 class MoviesHomeViewModel(
@@ -119,8 +117,7 @@ class MoviesHomeViewModel(
                 .map { prefs ->
                     MoviesConfigSnapshot(
                         useSampleFixturesOnly = BuildConfig.DEBUG && prefs.moviesUseSampleFixturesOnly,
-                        movieBoxBaseUrl = prefs.movieBoxApiBaseUrl,
-                        movieBoxApiKey = prefs.movieBoxApiKey
+                        movieBoxBaseUrl = prefs.movieBoxApiBaseUrl
                     )
                 }
                 .distinctUntilChanged()
@@ -132,7 +129,6 @@ class MoviesHomeViewModel(
                         it.copy(
                             movieBoxApiBaseUrl = config.movieBoxBaseUrl,
                             effectiveMovieBoxBaseUrl = effectiveBase,
-                            movieBoxApiKey = config.movieBoxApiKey,
                             useSampleFixturesOnly = config.useSampleFixturesOnly,
                             isRefreshing = if (changed && it.feed != null) true else it.isRefreshing
                         )
@@ -531,10 +527,10 @@ class MoviesHomeViewModel(
         }
     }
 
-    fun setMovieBoxConfig(baseUrl: String, apiKey: String) {
+    fun setMovieBoxBaseUrl(baseUrl: String) {
         if (!MovieBoxEndpointConfig.isValidBaseUrl(baseUrl, BuildConfig.DEBUG)) return
         viewModelScope.launch {
-            userPreferencesRepository.setMovieBoxConfig(baseUrl, apiKey)
+            userPreferencesRepository.setMovieBoxApiBaseUrl(baseUrl)
         }
     }
 

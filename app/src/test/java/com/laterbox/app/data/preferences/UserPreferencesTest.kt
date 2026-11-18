@@ -102,11 +102,11 @@ class UserPreferencesTest {
         val rawAfter = context.userDataStore.data.first()
         assertFalse(rawAfter.contains(legacyModeKey))
         assertFalse(rawAfter.contains(legacyFixtureKey))
+        assertFalse(rawAfter.contains(mbKeyKey))
         assertTrue(rawAfter[migratedV2Key] == true)
 
         val mapped = repo.userPreferencesFlow.first()
         assertEquals("https://custom.moviebox.example/", mapped.movieBoxApiBaseUrl)
-        assertEquals("custom-api-key", mapped.movieBoxApiKey)
         assertFalse(mapped.moviesUseSampleFixturesOnly)
     }
 }

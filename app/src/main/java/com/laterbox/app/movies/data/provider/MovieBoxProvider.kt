@@ -53,7 +53,6 @@ class MovieBoxApiException(
 class MovieBoxProvider(
     private val okHttpClient: OkHttpClient,
     private val baseUrlProvider: suspend () -> String,
-    private val apiKeyProvider: suspend () -> String = { "" },
     private val retryDelayMs: Long = 250L,
     private val appCheckTokenProvider: suspend (forceRefresh: Boolean) -> String? = { null }
 ) : MoviesCatalogueProvider,
@@ -939,11 +938,6 @@ class MovieBoxProvider(
                 requestBuilder.header("X-Firebase-AppCheck", sentAppCheckToken)
             }
 
-            val apiKey = apiKeyProvider().trim()
-            if (apiKey.isNotBlank()) {
-                requestBuilder.header("X-API-Key", apiKey)
-            }
-
             val startNs = System.nanoTime()
             try {
                 var shouldRetryAuthRefresh = false
@@ -1038,9 +1032,9 @@ class MovieBoxProvider(
         401, 403 -> buildString {
             append("MovieBox authentication failed (HTTP ").append(code).append("). ")
             if (sentAppCheckToken) {
-                append("Check Firebase App Check verification or update your MovieBox X-API-Key in Data Sources.")
+                append("Firebase App Check verification failed.")
             } else {
-                append("Set or update your MovieBox X-API-Key in Data Sources.")
+                append("Firebase App Check token is unavailable on this device.")
             }
             if (!detail.isNullOrBlank()) {
                 append(" Detail: ").append(detail)

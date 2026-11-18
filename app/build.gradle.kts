@@ -57,9 +57,6 @@ fun resolveMovieBoxApiBaseUrl(project: Project): String =
         resolveProjectConfigValue(project, listOf("MOVIEBOX_API_BASE_URL", "moviebox.api.baseUrl"))
     )
 
-fun resolveMovieBoxApiKey(project: Project): String =
-    resolveProjectConfigValue(project, listOf("MOVIEBOX_API_KEY", "moviebox.api.key"))
-
 fun escapeBuildConfigString(value: String): String =
     value.replace("\\", "\\\\").replace("\"", "\\\"")
 
@@ -110,7 +107,6 @@ android {
 
     val defaultMovieBoxBaseUrl = "https://laterbox-moviebox-api.vercel.app/"
     val configuredMovieBoxUrl = resolveMovieBoxApiBaseUrl(project)
-    val configuredMovieBoxKey = resolveMovieBoxApiKey(project)
 
     buildTypes {
         release {
@@ -123,8 +119,6 @@ android {
                 defaultMovieBoxBaseUrl
             }
             buildConfigField("String", "MOVIEBOX_API_BASE_URL", "\"${escapeBuildConfigString(releaseMovieBoxUrl)}\"")
-            // Never embed local/debug MOVIEBOX_API_KEY values into release APKs.
-            buildConfigField("String", "MOVIEBOX_API_KEY", "\"\"")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -135,7 +129,6 @@ android {
             isDebuggable = true
             val debugMovieBoxUrl = configuredMovieBoxUrl.ifBlank { defaultMovieBoxBaseUrl }
             buildConfigField("String", "MOVIEBOX_API_BASE_URL", "\"${escapeBuildConfigString(debugMovieBoxUrl)}\"")
-            buildConfigField("String", "MOVIEBOX_API_KEY", "\"${escapeBuildConfigString(configuredMovieBoxKey)}\"")
         }
     }
 

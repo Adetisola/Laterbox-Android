@@ -241,10 +241,6 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
                 userPreferencesRepository.userPreferencesFlow.first().movieBoxApiBaseUrl
                     .ifBlank { com.laterbox.app.BuildConfig.MOVIEBOX_API_BASE_URL }
             },
-            apiKeyProvider = {
-                userPreferencesRepository.userPreferencesFlow.first().movieBoxApiKey
-                    .ifBlank { com.laterbox.app.BuildConfig.MOVIEBOX_API_KEY }
-            },
             appCheckTokenProvider = { forceRefresh ->
                 fetchFirebaseAppCheckToken(forceRefresh)
             }
