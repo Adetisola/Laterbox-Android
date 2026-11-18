@@ -3,6 +3,7 @@ package com.laterbox.app.movies
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -12,6 +13,8 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.unit.dp
+import com.laterbox.app.data.preferences.SubtitleStyleConfig
+import com.laterbox.app.data.preferences.UserPreferences
 import com.laterbox.app.movies.data.cache.MoviesMediaCache
 import com.laterbox.app.movies.domain.model.BrowseSection
 import com.laterbox.app.movies.domain.model.CastMember
@@ -37,14 +40,19 @@ import com.laterbox.app.movies.ui.MoviesCatalogueScreen
 import com.laterbox.app.movies.ui.MoviesCatalogueUiState
 import com.laterbox.app.movies.ui.MoviesHomeUiState
 import com.laterbox.app.movies.ui.MoviesScreen
+import com.laterbox.app.movies.ui.MoviesViewingHistoryScreen
+import com.laterbox.app.movies.ui.NextEpisodePreview
 import com.laterbox.app.ui.components.BottomBarDestination
 import com.laterbox.app.ui.components.DrawerPrimarySection
 import com.laterbox.app.ui.components.LaterboxBottomBar
 import com.laterbox.app.ui.components.LaterboxDrawerContent
 import com.laterbox.app.ui.components.sectionForRoute
+import com.laterbox.app.ui.settings.MoviesSettingsScreen
+import com.laterbox.app.ui.settings.SettingsScreen
 import com.laterbox.app.ui.theme.LaterboxTheme
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -453,7 +461,7 @@ class MoviesUiAndNavigationTest {
     }
 
     @Test
-    fun moviesScreen_opensServerConfigDialogWithoutModeRadioButtons() {
+    fun moviesScreen_hidesLegacyDataSourcesButtonAndDialog() {
         composeTestRule.setContent {
             LaterboxTheme {
                 MoviesScreen(
@@ -487,11 +495,7 @@ class MoviesUiAndNavigationTest {
 
         composeTestRule.onNodeWithText("Discover films & series").assertIsDisplayed()
         composeTestRule.onNodeWithTag("movies_tmdb_setup_card").assertDoesNotExist()
-        composeTestRule.onNodeWithTag("movies_sources_button").performClick()
-        composeTestRule.onNodeWithTag("provider_mode_moviebox").assertDoesNotExist()
-        composeTestRule.onNodeWithTag("moviebox_base_url_input").performScrollTo().assertIsDisplayed()
-        composeTestRule.onNodeWithTag("moviebox_api_key_input").assertDoesNotExist()
-        composeTestRule.onNodeWithTag("moviebox_api_key_toggle").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("movies_sources_button").assertDoesNotExist()
     }
 
     @Test
@@ -1069,5 +1073,354 @@ class MoviesUiAndNavigationTest {
 
         composeTestRule.onNodeWithTag("player_back_button").performClick()
         assertTrue(dismissed)
+    }
+
+    @Test
+    fun moviePlayerScreen_opensSubtitleStylerAndTogglesSystemCaptions() {
+        val src720 = PlaybackSource("s720", "https://archive.org/720.mp4", "MP4", "720p", 720, providerName = "Internet Archive", isAuthorised = true)
+        val subEn = SubtitleTrack("sub_en", "English", "en", "English (SRT)", "https://archive.org/en.srt")
+        var updatedStyle: SubtitleStyleConfig? = null
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MoviePlayerScreen(
+                    uiState = MoviePlayerUiState(
+                        isLoading = false,
+                        resolution = PlaybackResolution.Available(
+                            title = "His Girl Friday",
+                            sources = listOf(src720),
+                            subtitles = listOf(subEn)
+                        ),
+                        selectedSource = src720,
+                        selectedSubtitleTrack = subEn
+                    ),
+                    onBackClick = {},
+                    onRetry = {},
+                    onSelectSource = { _, _ -> },
+                    onSelectSubtitle = { _, _ -> },
+                    onSaveProgress = { _, _ -> },
+                    onOpenExternalUrl = {},
+                    onSubtitleStyleChange = { updatedStyle = it }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("player_subtitles_button").performClick()
+        composeTestRule.onNodeWithTag("player_subtitles_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_subtitle_set_style_button").assertIsDisplayed().performClick()
+
+        composeTestRule.onNodeWithTag("subtitle_style_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("subtitle_style_preview").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("subtitle_use_system_switch").assertIsDisplayed().performClick()
+        assertEquals(true, updatedStyle?.useSystemCaptions)
+    }
+
+    @Test
+    fun movieDetailScreen_displaysInlineTrailerForMovieAndSeriesWithoutAutoplayAndTogglesControls() {
+        var playTrailerCalls = 0
+        var stopTrailerCalls = 0
+        var expandCalls = 0
+        val seriesWithTrailer = sampleMovie.copy(
+            id = "mb_sev",
+            providerId = "moviebox",
+            kind = MediaKind.TV_SERIES,
+            title = "Severance",
+            trailerUrl = "https://cdn.example/severance_trailer.mp4",
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+        )
+
+        // 1. Before clicking Watch Trailer: button shown in hero, NO autoplay, NO duplicate outline button
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MovieDetailScreen(
+                    uiState = MovieDetailUiState(
+                        isLoading = false,
+                        details = MediaDetails(
+                            summary = seriesWithTrailer,
+                            fullDescription = "Workplace thriller.",
+                            seasons = listOf(SeasonSummary(1, "Season 1", 9))
+                        ),
+                        isTrailerPlaying = false
+                    ),
+                    onBackClick = {},
+                    onRetry = {},
+                    onToggleWatchlist = {},
+                    onPlayClick = { _, _ -> },
+                    onSelectSeason = {},
+                    onOpenRelated = { _, _ -> },
+                    onOpenExternalUrl = {},
+                    onPlayTrailerClick = { playTrailerCalls++ }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("detail_watch_trailer_button").assertIsDisplayed().performClick()
+        assertEquals(1, playTrailerCalls)
+        composeTestRule.onNodeWithTag("detail_inline_trailer_player").assertDoesNotExist()
+    }
+
+    @Test
+    fun movieDetailScreen_inlineTrailerPlayingShowsSoundMuteExpandAndClose() {
+        var stopTrailerCalls = 0
+        var muteToggleCalls = 0
+        var expandCalls = 0
+        val movieWithTrailer = sampleMovie.copy(
+            id = "mb_dune",
+            providerId = "moviebox",
+            kind = MediaKind.MOVIE,
+            title = "Dune: Part Two",
+            trailerUrl = "https://cdn.example/dune_trailer.mp4",
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+        )
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MovieDetailScreen(
+                    uiState = MovieDetailUiState(
+                        isLoading = false,
+                        details = MediaDetails(summary = movieWithTrailer, fullDescription = "Sci-fi epic."),
+                        isTrailerPlaying = true,
+                        trailerMuted = false
+                    ),
+                    onBackClick = {},
+                    onRetry = {},
+                    onToggleWatchlist = {},
+                    onPlayClick = { _, _ -> },
+                    onSelectSeason = {},
+                    onOpenRelated = { _, _ -> },
+                    onOpenExternalUrl = {},
+                    onStopTrailer = { stopTrailerCalls++ },
+                    onToggleTrailerMute = { muteToggleCalls++ },
+                    onSetTrailerFullscreen = { expand, _ -> if (expand) expandCalls++ }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("detail_inline_trailer_player").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("detail_trailer_mute_button").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Sound").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("detail_trailer_mute_button").performClick()
+        assertEquals(1, muteToggleCalls)
+
+        composeTestRule.onNodeWithTag("detail_trailer_expand_button").assertIsDisplayed().performClick()
+        assertEquals(1, expandCalls)
+
+        composeTestRule.onNodeWithTag("detail_trailer_close_button").assertIsDisplayed().performClick()
+        assertEquals(1, stopTrailerCalls)
+    }
+
+    @Test
+    fun moviePlayerScreen_seriesEndCardCancelsAutoplaySafely() {
+        val src720 = PlaybackSource("s720", "https://cdn.example/s1e1.mp4", "MP4", "720p", 720, providerName = "MovieBox")
+        var nextEpisodeCalls = 0
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MoviePlayerScreen(
+                    uiState = MoviePlayerUiState(
+                        isLoading = false,
+                        resolution = PlaybackResolution.Available(
+                            title = "Severance",
+                            subtitleHeading = "Season 1 · Episode 1",
+                            sources = listOf(src720),
+                            providerName = "MovieBox",
+                            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+                        ),
+                        selectedSource = src720,
+                        summary = sampleMovie.copy(kind = MediaKind.TV_SERIES, title = "Severance"),
+                        seasons = listOf(SeasonSummary(1, "Season 1", 4)),
+                        seasonNumber = 1,
+                        episodeNumber = 1,
+                        nextEpisodePreview = NextEpisodePreview(
+                            seasonNumber = 1,
+                            episodeNumber = 2,
+                            title = "Half Loop",
+                            episodeLabel = "S1 · E2",
+                            thumbnailUrl = null
+                        )
+                    ),
+                    onBackClick = {},
+                    onRetry = {},
+                    onSelectSource = { _, _ -> },
+                    onSelectSubtitle = { _, _ -> },
+                    onSaveProgress = { _, _ -> },
+                    onOpenExternalUrl = {},
+                    onNextEpisode = { nextEpisodeCalls++ },
+                    simulatePlaybackEndedForTest = true
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("player_next_episode_card").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Half Loop").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_end_play_now_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_end_cancel_button").assertIsDisplayed().performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("player_next_episode_card").assertDoesNotExist()
+        assertEquals(0, nextEpisodeCalls)
+    }
+
+    @Test
+    fun moviePlayerScreen_movieEndCardShowsReplayBackAndRelatedWithoutAutoplay() {
+        val src720 = PlaybackSource("s720", "https://cdn.example/film.mp4", "MP4", "720p", 720, providerName = "MovieBox")
+        var openedRelatedId: String? = null
+        var backClicked = false
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MoviePlayerScreen(
+                    uiState = MoviePlayerUiState(
+                        isLoading = false,
+                        resolution = PlaybackResolution.Available(
+                            title = "Dune: Part Two",
+                            sources = listOf(src720),
+                            providerName = "MovieBox",
+                            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+                        ),
+                        selectedSource = src720,
+                        summary = sampleMovie.copy(id = "dune_2", title = "Dune: Part Two"),
+                        relatedTitles = listOf(sampleMovie.copy(id = "blade_runner", title = "Blade Runner 2049"))
+                    ),
+                    onBackClick = { backClicked = true },
+                    onRetry = {},
+                    onSelectSource = { _, _ -> },
+                    onSelectSubtitle = { _, _ -> },
+                    onSaveProgress = { _, _ -> },
+                    onOpenExternalUrl = {},
+                    onOpenRelatedTitle = { _, id -> openedRelatedId = id },
+                    simulatePlaybackEndedForTest = true
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("player_movie_end_card").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_end_replay_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_end_related_row").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Blade Runner 2049").performClick()
+        assertEquals("blade_runner", openedRelatedId)
+        composeTestRule.onNodeWithTag("player_end_back_button").performClick()
+        assertTrue(backClicked)
+    }
+
+    @Test
+    fun settingsScreen_displaysMoviesAndTvCategoryAndNavigates() {
+        var navigatedToMoviesSettings = false
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                SettingsScreen(
+                    preferences = UserPreferences(),
+                    onThemeModeChange = {},
+                    onNavigateToAppearanceProfile = {},
+                    onNavigateToRemindersAi = {},
+                    onNavigateToCaptureShortcuts = {},
+                    onNavigateToReadingBehavior = {},
+                    onNavigateToMediaDownloads = {},
+                    onNavigateToDataStorage = {},
+                    onNavigateToAboutPrivacy = {},
+                    onBackClick = {},
+                    onNavigateToMoviesTv = { navigatedToMoviesSettings = true }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("settings_category_movies_tv").performScrollTo().assertIsDisplayed().performClick()
+        assertTrue(navigatedToMoviesSettings)
+    }
+
+    @Test
+    fun moviesSettingsScreen_rendersGestureQualityAutoplayAndHistoryControls() {
+        var doubleTapChangedTo: Int? = null
+        var historyOpened = false
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MoviesSettingsScreen(
+                    preferences = UserPreferences(),
+                    onDoubleTapSeekSecondsChange = { doubleTapChangedTo = it },
+                    onSwipeToSeekEnabledChange = {},
+                    onSwipeSeekSensitivityChange = {},
+                    onBrightnessGestureEnabledChange = {},
+                    onVolumeGestureEnabledChange = {},
+                    onAutoplayNextEpisodeChange = {},
+                    onAutoplayCountdownSecondsChange = {},
+                    onDefaultQualityHeightChange = {},
+                    onSubtitleStyleChange = {},
+                    onOpenViewingHistory = { historyOpened = true },
+                    onBackClick = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("movies_settings_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("movies_setting_double_tap_15").performClick()
+        assertEquals(15, doubleTapChangedTo)
+        composeTestRule.onNodeWithTag("movies_setting_viewing_history_row").performScrollTo().performClick()
+        assertTrue(historyOpened)
+    }
+
+    @Test
+    fun moviesViewingHistoryScreen_filtersTabsDeletesItemAndClearsTrailers() {
+        var deletedKey: String? = null
+        var clearedTrailersOnly: Boolean? = null
+        var clearCalled = false
+
+        val historyMovie = WatchHistoryItem(
+            compositeId = "moviebox:m1",
+            providerId = "moviebox",
+            titleId = "m1",
+            kind = MediaKind.MOVIE,
+            title = "Inception",
+            positionMs = 600_000L,
+            durationMs = 3_600_000L,
+            lastWatchedAt = 2_000L,
+            historyKey = "moviebox:m1:0:0",
+            isTrailer = false
+        )
+        val historyTrailer = WatchHistoryItem(
+            compositeId = "moviebox:m2",
+            providerId = "moviebox",
+            titleId = "m2",
+            kind = MediaKind.TV_SERIES,
+            title = "Severance",
+            positionMs = 30_000L,
+            durationMs = 120_000L,
+            lastWatchedAt = 3_000L,
+            historyKey = "trailer:moviebox:m2",
+            isTrailer = true
+        )
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MoviesViewingHistoryScreen(
+                    items = listOf(historyMovie, historyTrailer),
+                    onBackClick = {},
+                    onOpenDetail = { _, _ -> },
+                    onOpenPlayer = { _, _, _, _ -> },
+                    onDeleteItem = { deletedKey = it },
+                    onClearHistory = {
+                        clearCalled = true
+                        clearedTrailersOnly = it
+                    }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("viewing_history_item_moviebox:m1:0:0").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("viewing_history_item_trailer:moviebox:m2").assertIsDisplayed()
+
+        // Filter Trailers tab
+        composeTestRule.onNodeWithTag("viewing_history_tab_trailers").performClick()
+        composeTestRule.onNodeWithTag("viewing_history_item_trailer:moviebox:m2").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("viewing_history_item_moviebox:m1:0:0").assertDoesNotExist()
+
+        // Delete item & clear trailers
+        composeTestRule.onNodeWithTag("viewing_history_delete_trailer:moviebox:m2").performClick()
+        assertEquals("trailer:moviebox:m2", deletedKey)
+
+        composeTestRule.onNodeWithTag("viewing_history_clear_button").performClick()
+        composeTestRule.onNodeWithTag("viewing_history_confirm_clear_trailers").performClick()
+        assertTrue(clearCalled)
+        assertEquals(true, clearedTrailersOnly)
     }
 }

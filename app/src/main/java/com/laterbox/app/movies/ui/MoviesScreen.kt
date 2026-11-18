@@ -94,7 +94,6 @@ fun MoviesScreen(
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
     val focusManager = LocalFocusManager.current
-    var showSourcesDialog by remember { mutableStateOf(false) }
 
     val homeListState = rememberLazyListState()
     val filteredListState = rememberLazyListState()
@@ -124,17 +123,6 @@ fun MoviesScreen(
                 prevOffset = offset
             }
         }
-    }
-
-    if (showSourcesDialog) {
-        MoviesProviderSourceDialog(
-            useSampleFixturesOnly = uiState.useSampleFixturesOnly,
-            onToggleSampleFixtures = onToggleSampleFixtures,
-            onDismiss = { showSourcesDialog = false },
-            currentMovieBoxBaseUrl = uiState.movieBoxApiBaseUrl,
-            effectiveMovieBoxBaseUrl = uiState.effectiveMovieBoxBaseUrl,
-            onSaveMovieBoxBaseUrl = onSaveMovieBoxBaseUrl
-        )
     }
 
     Column(
@@ -190,16 +178,6 @@ fun MoviesScreen(
                 Icon(
                     painter = painterResource(LaterboxIcons.Search),
                     contentDescription = "Search movies and TV",
-                    tint = colors.textPrimary
-                )
-            }
-            IconButton(
-                onClick = { showSourcesDialog = true },
-                modifier = Modifier.testTag("movies_sources_button")
-            ) {
-                Icon(
-                    painter = painterResource(LaterboxIcons.Filter),
-                    contentDescription = "Server settings",
                     tint = colors.textPrimary
                 )
             }
@@ -262,12 +240,6 @@ fun MoviesScreen(
                                             modifier = Modifier.testTag("movies_retry_button")
                                         ) {
                                             Text("Retry")
-                                        }
-                                        OutlinedButton(
-                                            onClick = { showSourcesDialog = true },
-                                            border = BorderStroke(1.dp, colors.borderSubtle)
-                                        ) {
-                                            Text("Settings", color = colors.textPrimary)
                                         }
                                         if (BuildConfig.DEBUG) {
                                             OutlinedButton(

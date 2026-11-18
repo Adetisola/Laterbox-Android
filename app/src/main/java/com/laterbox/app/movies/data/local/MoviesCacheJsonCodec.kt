@@ -278,6 +278,11 @@ object MoviesCacheJsonCodec {
         put("country", item.country ?: JSONObject.NULL)
         put("detailPath", item.detailPath ?: JSONObject.NULL)
         put("trailerUrl", item.trailerUrl ?: JSONObject.NULL)
+        if (item.trailerHeaders.isNotEmpty()) {
+            put("trailerHeaders", JSONObject().apply {
+                item.trailerHeaders.forEach { (k, v) -> put(k, v) }
+            })
+        }
         put("sourceBadge", item.sourceBadge.name)
         put("isPlayableHint", item.isPlayableHint)
         put("imdbId", item.imdbId ?: JSONObject.NULL)
@@ -285,28 +290,41 @@ object MoviesCacheJsonCodec {
         put("canonicalId", item.canonicalId ?: JSONObject.NULL)
     }
 
-    private fun decodeSummary(o: JSONObject): MovieTitleSummary = MovieTitleSummary(
-        id = o.optString("id"),
-        providerId = o.optString("providerId"),
-        kind = MediaKind.fromWire(o.optString("kind")),
-        title = o.optString("title"),
-        releaseYear = if (o.isNull("releaseYear")) null else o.optInt("releaseYear"),
-        rating = if (o.isNull("rating")) null else o.optDouble("rating"),
-        durationMinutes = if (o.isNull("durationMinutes")) null else o.optInt("durationMinutes"),
-        posterUrl = o.optNullableString("posterUrl"),
-        backdropUrl = o.optNullableString("backdropUrl"),
-        genres = o.optJSONArray("genres").toStringList(),
-        summary = o.optNullableString("summary"),
-        language = o.optNullableString("language"),
-        country = o.optNullableString("country"),
-        detailPath = o.optNullableString("detailPath"),
-        trailerUrl = o.optNullableString("trailerUrl"),
-        sourceBadge = DataSourceBadge.fromName(o.optString("sourceBadge")),
-        isPlayableHint = o.optBoolean("isPlayableHint", false),
-        imdbId = o.optNullableString("imdbId"),
-        tvmazeId = o.optNullableString("tvmazeId"),
-        canonicalId = o.optNullableString("canonicalId")
-    )
+    private fun decodeSummary(o: JSONObject): MovieTitleSummary {
+        val trailerHeadersObj = o.optJSONObject("trailerHeaders")
+        val trailerHeaders = buildMap<String, String> {
+            if (trailerHeadersObj != null) {
+                val keys = trailerHeadersObj.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    trailerHeadersObj.optNullableString(key)?.let { put(key, it) }
+                }
+            }
+        }
+        return MovieTitleSummary(
+            id = o.optString("id"),
+            providerId = o.optString("providerId"),
+            kind = MediaKind.fromWire(o.optString("kind")),
+            title = o.optString("title"),
+            releaseYear = if (o.isNull("releaseYear")) null else o.optInt("releaseYear"),
+            rating = if (o.isNull("rating")) null else o.optDouble("rating"),
+            durationMinutes = if (o.isNull("durationMinutes")) null else o.optInt("durationMinutes"),
+            posterUrl = o.optNullableString("posterUrl"),
+            backdropUrl = o.optNullableString("backdropUrl"),
+            genres = o.optJSONArray("genres").toStringList(),
+            summary = o.optNullableString("summary"),
+            language = o.optNullableString("language"),
+            country = o.optNullableString("country"),
+            detailPath = o.optNullableString("detailPath"),
+            trailerUrl = o.optNullableString("trailerUrl"),
+            trailerHeaders = trailerHeaders,
+            sourceBadge = DataSourceBadge.fromName(o.optString("sourceBadge")),
+            isPlayableHint = o.optBoolean("isPlayableHint", false),
+            imdbId = o.optNullableString("imdbId"),
+            tvmazeId = o.optNullableString("tvmazeId"),
+            canonicalId = o.optNullableString("canonicalId")
+        )
+    }
 
     private fun JSONArray?.toSummaryList(): List<MovieTitleSummary> {
         if (this == null) return emptyList()

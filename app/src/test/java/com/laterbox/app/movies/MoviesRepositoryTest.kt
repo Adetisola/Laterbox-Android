@@ -378,4 +378,65 @@ class MoviesRepositoryTest {
                 }
             }
     }
+
+    @Test
+    fun viewingHistory_recordsTrailersIsolatedFromContinueWatchingAndSupportsSelectiveDeletes() = runTest {
+        val repo = createRepository()
+        val movie = MovieTitleSummary(
+            id = "dune_2",
+            providerId = "moviebox",
+            kind = MediaKind.MOVIE,
+            title = "Dune: Part Two",
+            posterUrl = "https://cdn.example/dune_poster.jpg",
+            backdropUrl = "https://cdn.example/dune_backdrop.jpg",
+            trailerUrl = "https://cdn.example/dune_trailer.mp4",
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+            isPlayableHint = true
+        )
+        val series = MovieTitleSummary(
+            id = "sev_1",
+            providerId = "moviebox",
+            kind = MediaKind.TV_SERIES,
+            title = "Severance",
+            backdropUrl = "https://cdn.example/sev_backdrop.jpg",
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+            isPlayableHint = true
+        )
+
+        // Save feature film progress & trailer watch
+        repo.saveWatchProgress(movie, positionMs = 240_000L, durationMs = 1_800_000L)
+        fakeClockMs += 5_000L
+        repo.recordTrailerWatch(series, positionMs = 18_000L, durationMs = 120_000L)
+
+        // Continue Watching strictly excludes trailers & preserves crisp 16:9 backdropUrl
+        val continueList = repo.observeContinueWatching().first()
+        assertEquals(1, continueList.size)
+        assertEquals("moviebox:dune_2", continueList.first().compositeId)
+        assertEquals("https://cdn.example/dune_backdrop.jpg", continueList.first().backdropUrl)
+        assertFalse(continueList.first().isTrailer)
+
+        // Viewing History includes both regular watch entries and trailers
+        val allHistory = repo.observeViewingHistory().first()
+        assertEquals(2, allHistory.size)
+        assertTrue(allHistory.any { it.compositeId == "moviebox:dune_2" && !it.isTrailer })
+        val trailerEntry = allHistory.first { it.compositeId == "moviebox:sev_1" && it.isTrailer }
+        assertEquals("https://cdn.example/sev_backdrop.jpg", trailerEntry.backdropUrl)
+
+        // Selective trailer clear leaves main movie entry intact
+        repo.clearViewingHistory(trailersOnly = true)
+        val afterClearTrailers = repo.observeViewingHistory().first()
+        assertEquals(1, afterClearTrailers.size)
+        assertEquals("moviebox:dune_2", afterClearTrailers.first().compositeId)
+
+        // Single-item delete & full clear
+        val movieKey = afterClearTrailers.first().historyKey
+        repo.deleteViewingHistoryEntry(movieKey)
+        assertTrue(repo.observeViewingHistory().first().isEmpty())
+
+        repo.saveWatchProgress(movie, positionMs = 300_000L, durationMs = 1_800_000L)
+        repo.recordTrailerWatch(series, positionMs = 10_000L, durationMs = 90_000L)
+        assertEquals(2, repo.observeViewingHistory().first().size)
+        repo.clearViewingHistory(trailersOnly = null)
+        assertTrue(repo.observeViewingHistory().first().isEmpty())
+    }
 }

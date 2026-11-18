@@ -73,7 +73,8 @@ data class MovieWatchlistEntity(
     indices = [
         Index(value = ["composite_id"]),
         Index(value = ["last_watched_at"]),
-        Index(value = ["canonical_id"])
+        Index(value = ["canonical_id"]),
+        Index(value = ["is_trailer"])
     ]
 )
 data class MovieWatchHistoryEntity(
@@ -98,6 +99,8 @@ data class MovieWatchHistoryEntity(
     val episodeNumber: Int?,
     @ColumnInfo(name = "poster_url")
     val posterUrl: String?,
+    @ColumnInfo(name = "backdrop_url")
+    val backdropUrl: String? = null,
     @ColumnInfo(name = "position_ms")
     val positionMs: Long,
     @ColumnInfo(name = "duration_ms")
@@ -105,7 +108,9 @@ data class MovieWatchHistoryEntity(
     @ColumnInfo(name = "last_watched_at")
     val lastWatchedAt: Long,
     @ColumnInfo(name = "canonical_id")
-    val canonicalId: String? = null
+    val canonicalId: String? = null,
+    @ColumnInfo(name = "is_trailer", defaultValue = "0")
+    val isTrailer: Boolean = false
 )
 
 @Entity(

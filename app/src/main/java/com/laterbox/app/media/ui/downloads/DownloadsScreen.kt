@@ -85,7 +85,9 @@ fun DownloadsScreen(
     modifier: Modifier = Modifier,
     onOpenLinkDetail: (Long) -> Unit = {},
     onMenuClick: (() -> Unit)? = null,
-    onOpenVideoAsset: ((MediaAsset) -> Unit)? = null
+    onOpenVideoAsset: ((MediaAsset) -> Unit)? = null,
+    playbackPreferences: com.laterbox.app.movies.ui.PlayerPlaybackPreferences = com.laterbox.app.movies.ui.PlayerPlaybackPreferences(),
+    onSubtitleStyleChange: (com.laterbox.app.data.preferences.SubtitleStyleConfig) -> Unit = {}
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
@@ -182,7 +184,9 @@ fun DownloadsScreen(
                                 Toast.LENGTH_SHORT
                             ).show()
                         }
-                    }
+                    },
+                    playbackPreferences = playbackPreferences,
+                    onSubtitleStyleChange = onSubtitleStyleChange
                 )
             }
             else -> {

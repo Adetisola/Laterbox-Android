@@ -3,6 +3,8 @@ package com.laterbox.app.movies.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.laterbox.app.BuildConfig
+import com.laterbox.app.data.preferences.SubtitleStyleConfig
+import com.laterbox.app.data.preferences.UserPreferencesRepository
 import com.laterbox.app.movies.data.download.MoviesDownloadBridge
 import com.laterbox.app.movies.domain.model.CastMember
 import com.laterbox.app.movies.domain.model.EpisodeItem
@@ -40,12 +42,19 @@ data class MovieDetailUiState(
     val selectedPerson: PersonFilmography? = null,
     val isLoadingPerson: Boolean = false,
     val personError: String? = null,
+    val isTrailerPlaying: Boolean = false,
+    val trailerMuted: Boolean = false,
+    val trailerPositionMs: Long = 0L,
+    val isTrailerFullscreen: Boolean = false,
+    val trailerError: String? = null,
+    val subtitleStyle: SubtitleStyleConfig = SubtitleStyleConfig(),
     val errorMessage: String? = null
 )
 
 class MovieDetailViewModel(
     private val moviesRepository: MoviesRepository,
-    private val moviesDownloadBridge: MoviesDownloadBridge? = null
+    private val moviesDownloadBridge: MoviesDownloadBridge? = null,
+    private val userPreferencesRepository: UserPreferencesRepository? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MovieDetailUiState())
@@ -58,6 +67,21 @@ class MovieDetailViewModel(
     private var playbackJob: Job? = null
     private var personJob: Job? = null
     private var currentKey: Pair<String, String>? = null
+
+    init {
+        userPreferencesRepository?.let { repo ->
+            viewModelScope.launch {
+                repo.userPreferencesFlow.collect { prefs ->
+                    _uiState.update {
+                        it.copy(
+                            trailerMuted = prefs.moviesTrailerMuted,
+                            subtitleStyle = prefs.toSubtitleStyleConfig()
+                        )
+                    }
+                }
+            }
+        }
+    }
 
     fun load(providerId: String, titleId: String, forceRefresh: Boolean = false) {
         val key = providerId to titleId
@@ -77,10 +101,14 @@ class MovieDetailViewModel(
         episodeSizesJob?.cancel()
         personJob?.cancel()
         loadJob = viewModelScope.launch {
+            val currentTrailerMuted = _uiState.value.trailerMuted
+            val currentSubStyle = _uiState.value.subtitleStyle
             _uiState.update {
                 MovieDetailUiState(
                     isLoading = true,
-                    isInWatchlist = _uiState.value.isInWatchlist
+                    isInWatchlist = _uiState.value.isInWatchlist,
+                    trailerMuted = currentTrailerMuted,
+                    subtitleStyle = currentSubStyle
                 )
             }
             val result = moviesRepository.getDetails(providerId, titleId, forceRefresh)
@@ -126,6 +154,82 @@ class MovieDetailViewModel(
                         )
                     }
                 }
+            )
+        }
+    }
+
+    fun onPlayTrailerClick() {
+        val summary = _uiState.value.details?.summary ?: return
+        val url = summary.trailerUrl?.trim().orEmpty()
+        if (!(url.startsWith("http://", ignoreCase = true) || url.startsWith("https://", ignoreCase = true))) {
+            return
+        }
+        _uiState.update {
+            it.copy(
+                isTrailerPlaying = true,
+                trailerError = null
+            )
+        }
+        viewModelScope.launch {
+            moviesRepository.recordTrailerWatch(
+                item = summary,
+                positionMs = _uiState.value.trailerPositionMs,
+                durationMs = 0L
+            )
+        }
+    }
+
+    fun onStopTrailer() {
+        _uiState.update {
+            it.copy(
+                isTrailerPlaying = false,
+                isTrailerFullscreen = false
+            )
+        }
+    }
+
+    fun onToggleTrailerMute() {
+        val newMuted = !_uiState.value.trailerMuted
+        _uiState.update { it.copy(trailerMuted = newMuted) }
+        userPreferencesRepository?.let { repo ->
+            viewModelScope.launch {
+                repo.setMoviesTrailerMuted(newMuted)
+            }
+        }
+    }
+
+    fun onSetTrailerFullscreen(fullscreen: Boolean, currentPositionMs: Long = _uiState.value.trailerPositionMs) {
+        _uiState.update {
+            it.copy(
+                isTrailerFullscreen = fullscreen,
+                trailerPositionMs = currentPositionMs.coerceAtLeast(0L)
+            )
+        }
+    }
+
+    fun onUpdateTrailerPosition(positionMs: Long) {
+        _uiState.update { it.copy(trailerPositionMs = positionMs.coerceAtLeast(0L)) }
+    }
+
+    fun onRecordTrailerProgress(positionMs: Long, durationMs: Long) {
+        val clampedPos = positionMs.coerceAtLeast(0L)
+        _uiState.update { it.copy(trailerPositionMs = clampedPos) }
+        val summary = _uiState.value.details?.summary ?: return
+        viewModelScope.launch {
+            moviesRepository.recordTrailerWatch(
+                item = summary,
+                positionMs = clampedPos,
+                durationMs = durationMs.coerceAtLeast(0L)
+            )
+        }
+    }
+
+    fun onTrailerPlaybackError(message: String?) {
+        _uiState.update {
+            it.copy(
+                isTrailerPlaying = false,
+                isTrailerFullscreen = false,
+                trailerError = message?.takeIf { m -> m.isNotBlank() } ?: "Trailer unavailable."
             )
         }
     }

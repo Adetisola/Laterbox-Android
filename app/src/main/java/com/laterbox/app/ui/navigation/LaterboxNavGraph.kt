@@ -1005,7 +1005,8 @@ fun LaterboxApp(
                                         } catch (_: Exception) {}
                                     }
                                 },
-                                onMenuClick = openMenuHandler
+                                onMenuClick = openMenuHandler,
+                                onOpenVideoAsset = { asset -> activeViewerAsset = asset }
                             )
                         }
 
@@ -1195,7 +1196,13 @@ fun LaterboxApp(
                                 onUnlinkProviderLink = movieDetailViewModel::unlinkProviderLink,
                                 onCastMemberClick = movieDetailViewModel::openCastMember,
                                 onDismissPersonSheet = movieDetailViewModel::dismissPersonSheet,
-                                onDownloadEpisodesBatch = movieDetailViewModel::downloadEpisodesBatch
+                                onDownloadEpisodesBatch = movieDetailViewModel::downloadEpisodesBatch,
+                                onPlayTrailerClick = movieDetailViewModel::onPlayTrailerClick,
+                                onStopTrailer = movieDetailViewModel::onStopTrailer,
+                                onToggleTrailerMute = movieDetailViewModel::onToggleTrailerMute,
+                                onSetTrailerFullscreen = movieDetailViewModel::onSetTrailerFullscreen,
+                                onRecordTrailerProgress = movieDetailViewModel::onRecordTrailerProgress,
+                                onTrailerPlaybackError = movieDetailViewModel::onTrailerPlaybackError
                             )
                         }
 
@@ -1241,7 +1248,13 @@ fun LaterboxApp(
                                 onDownloadSource = moviePlayerViewModel::downloadSource,
                                 onDismissDownloadStatus = moviePlayerViewModel::clearDownloadStatus,
                                 onSelectAudioDub = moviePlayerViewModel::selectAudioDub,
-                                onNextEpisode = moviePlayerViewModel::playNextEpisode
+                                onNextEpisode = moviePlayerViewModel::playNextEpisode,
+                                onSubtitleStyleChange = moviePlayerViewModel::updateSubtitleStyle,
+                                onOpenRelatedTitle = { relProvider, relId ->
+                                    navController.navigate(
+                                        LaterboxDestination.MovieDetail.createRoute(relProvider, relId)
+                                    )
+                                }
                             )
                         }
 
@@ -1255,6 +1268,7 @@ fun LaterboxApp(
                                 onNavigateToCaptureShortcuts = { navController.navigate(LaterboxDestination.SettingsCaptureShortcuts.route) },
                                 onNavigateToReadingBehavior = { navController.navigate(LaterboxDestination.SettingsReadingBehavior.route) },
                                 onNavigateToMediaDownloads = { navController.navigate(LaterboxDestination.SettingsMediaDownloads.route) },
+                                onNavigateToMoviesTv = { navController.navigate(LaterboxDestination.SettingsMoviesTv.route) },
                                 onNavigateToDataStorage = { navController.navigate(LaterboxDestination.SettingsDataStorage.route) },
                                 onNavigateToAboutPrivacy = { navController.navigate(LaterboxDestination.SettingsAboutPrivacy.route) },
                                 onBackClick = { navController.popBackStack() }
@@ -1358,6 +1372,54 @@ fun LaterboxApp(
                                 onSetCustomExportDirectory = settingsViewModel::setCustomExportDirectory,
                                 onClearCustomExportDirectory = settingsViewModel::clearCustomExportDirectory,
                                 onBackClick = { navController.popBackStack() }
+                            )
+                        }
+
+                        // Settings: Movies & TV
+                        composable(LaterboxDestination.SettingsMoviesTv.route) {
+                            com.laterbox.app.ui.settings.MoviesSettingsScreen(
+                                preferences = preferences,
+                                onDoubleTapSeekSecondsChange = settingsViewModel::setMoviesDoubleTapSeekSeconds,
+                                onSwipeToSeekEnabledChange = settingsViewModel::setMoviesSwipeToSeekEnabled,
+                                onSwipeSeekSensitivityChange = settingsViewModel::setMoviesSwipeSeekSensitivity,
+                                onBrightnessGestureEnabledChange = settingsViewModel::setMoviesBrightnessGestureEnabled,
+                                onVolumeGestureEnabledChange = settingsViewModel::setMoviesVolumeGestureEnabled,
+                                onAutoplayNextEpisodeChange = settingsViewModel::setMoviesAutoplayNextEpisode,
+                                onAutoplayCountdownSecondsChange = settingsViewModel::setMoviesAutoplayCountdownSeconds,
+                                onDefaultQualityHeightChange = settingsViewModel::setMoviesDefaultQualityHeight,
+                                onSubtitleStyleChange = settingsViewModel::setSubtitleStyleConfig,
+                                onOpenViewingHistory = {
+                                    navController.navigate(LaterboxDestination.MoviesViewingHistory.route)
+                                },
+                                onBackClick = { navController.popBackStack() }
+                            )
+                        }
+
+                        // Movies & TV Viewing History
+                        composable(LaterboxDestination.MoviesViewingHistory.route) {
+                            val historyItems by remember {
+                                settingsViewModel.observeViewingHistory(limit = 100)
+                            }.collectAsState(initial = emptyList())
+                            com.laterbox.app.movies.ui.MoviesViewingHistoryScreen(
+                                items = historyItems,
+                                onBackClick = { navController.popBackStack() },
+                                onOpenDetail = { histProviderId, histTitleId ->
+                                    navController.navigate(
+                                        LaterboxDestination.MovieDetail.createRoute(histProviderId, histTitleId)
+                                    )
+                                },
+                                onOpenPlayer = { histProviderId, histTitleId, histSeason, histEp ->
+                                    navController.navigate(
+                                        LaterboxDestination.MoviePlayer.createRoute(
+                                            providerId = histProviderId,
+                                            titleId = histTitleId,
+                                            seasonNumber = histSeason,
+                                            episodeNumber = histEp
+                                        )
+                                    )
+                                },
+                                onDeleteItem = settingsViewModel::deleteViewingHistoryEntry,
+                                onClearHistory = settingsViewModel::clearViewingHistory
                             )
                         }
 
@@ -1870,6 +1932,19 @@ fun LaterboxApp(
                 )
             }
             com.laterbox.app.media.domain.model.MediaType.VIDEO, com.laterbox.app.media.domain.model.MediaType.AUDIO -> {
+                val localPlaybackPrefs = remember(preferences) {
+                    com.laterbox.app.movies.ui.PlayerPlaybackPreferences(
+                        doubleTapSeekSeconds = preferences.moviesDoubleTapSeekSeconds,
+                        swipeToSeekEnabled = preferences.moviesSwipeToSeekEnabled,
+                        swipeSeekSensitivity = preferences.moviesSwipeSeekSensitivity,
+                        brightnessGestureEnabled = preferences.moviesBrightnessGestureEnabled,
+                        volumeGestureEnabled = preferences.moviesVolumeGestureEnabled,
+                        autoplayNextEpisode = preferences.moviesAutoplayNextEpisode,
+                        autoplayCountdownSeconds = preferences.moviesAutoplayCountdownSeconds,
+                        defaultQualityHeight = preferences.moviesDefaultQualityHeight,
+                        subtitleStyle = preferences.toSubtitleStyleConfig()
+                    )
+                }
                 com.laterbox.app.media.ui.viewer.MediaPlayerScreen(
                     asset = asset,
                     onDismiss = { activeViewerAsset = null },
@@ -1881,7 +1956,9 @@ fun LaterboxApp(
                                 android.widget.Toast.LENGTH_SHORT
                             ).show()
                         }
-                    }
+                    },
+                    playbackPreferences = localPlaybackPrefs,
+                    onSubtitleStyleChange = settingsViewModel::setSubtitleStyleConfig
                 )
             }
             else -> {

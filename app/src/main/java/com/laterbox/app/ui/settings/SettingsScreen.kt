@@ -24,6 +24,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
@@ -47,7 +48,8 @@ fun SettingsScreen(
     onNavigateToDataStorage: () -> Unit,
     onNavigateToAboutPrivacy: () -> Unit,
     onBackClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onNavigateToMoviesTv: () -> Unit = {}
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -172,6 +174,14 @@ fun SettingsScreen(
                     title = "Media & Downloads",
                     subtitle = "yt-dlp extractor, network policy, warm engine, export storage",
                     onClick = onNavigateToMediaDownloads
+                )
+
+                SettingsCategoryRow(
+                    iconRes = LaterboxIcons.Movies,
+                    title = "Movies & TV",
+                    subtitle = "Player gestures, subtitle style, quality, viewing history",
+                    onClick = onNavigateToMoviesTv,
+                    modifier = Modifier.testTag("settings_category_movies_tv")
                 )
 
                 SettingsCategoryRow(

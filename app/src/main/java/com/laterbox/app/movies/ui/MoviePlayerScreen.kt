@@ -5,11 +5,15 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
-import android.graphics.Color as AndroidColor
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
@@ -24,7 +28,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.displayCutoutPadding
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -33,6 +39,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -43,6 +51,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
@@ -65,10 +74,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalViewConfiguration
@@ -94,18 +105,28 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
-import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
+import coil.compose.AsyncImage
+import com.laterbox.app.data.preferences.SubtitleStyleConfig
 import com.laterbox.app.movies.data.cache.MoviesMediaCache
 import com.laterbox.app.movies.domain.model.AudioDubInfo
+import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.model.PlaybackResolution
 import com.laterbox.app.movies.domain.model.PlaybackSource
 import com.laterbox.app.movies.domain.model.SubtitleTrack
+import com.laterbox.app.movies.ui.player.PlayerAudioBoostController
+import com.laterbox.app.movies.ui.player.PlayerBrightnessHelper
+import com.laterbox.app.movies.ui.player.PlayerGesturesMath
+import com.laterbox.app.movies.ui.player.SeekSensitivityTier
+import com.laterbox.app.movies.ui.player.SubtitleStyleDialog
+import com.laterbox.app.movies.ui.player.SubtitleStyleHelper
+import com.laterbox.app.movies.ui.player.playerDragGestures
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.theme.LaterboxTheme
 import kotlinx.coroutines.delay
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -121,7 +142,10 @@ fun MoviePlayerScreen(
     onDismissDownloadStatus: () -> Unit = {},
     onSelectAudioDub: (dub: AudioDubInfo, currentPosMs: Long) -> Unit = { _, _ -> },
     onNextEpisode: () -> Unit = {},
-    modifier: Modifier = Modifier
+    onSubtitleStyleChange: (SubtitleStyleConfig) -> Unit = {},
+    onOpenRelatedTitle: (providerId: String, titleId: String) -> Unit = { _, _ -> },
+    modifier: Modifier = Modifier,
+    @androidx.annotation.VisibleForTesting simulatePlaybackEndedForTest: Boolean = false
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -182,9 +206,15 @@ fun MoviePlayerScreen(
                     activeTitleId = uiState.activeTitleId,
                     availableDubs = uiState.availableDubs,
                     nextEpisodeTarget = uiState.nextEpisodeTarget,
+                    nextEpisodePreview = uiState.nextEpisodePreview,
+                    relatedTitles = uiState.relatedTitles,
+                    playbackPreferences = uiState.playbackPreferences,
+                    seasonNumber = uiState.seasonNumber,
+                    episodeNumber = uiState.episodeNumber,
                     isEnqueuingDownload = uiState.isEnqueuingDownload,
                     downloadStatusMessage = uiState.downloadStatusMessage,
                     isLocalFile = false,
+                    simulatePlaybackEndedForTest = simulatePlaybackEndedForTest,
                     onBackClick = onBackClick,
                     onSelectSource = onSelectSource,
                     onSelectSubtitle = onSelectSubtitle,
@@ -193,7 +223,9 @@ fun MoviePlayerScreen(
                     onSaveProgress = onSaveProgress,
                     onOpenExternalUrl = onOpenExternalUrl,
                     onDownloadSource = onDownloadSource,
-                    onDismissDownloadStatus = onDismissDownloadStatus
+                    onDismissDownloadStatus = onDismissDownloadStatus,
+                    onSubtitleStyleChange = onSubtitleStyleChange,
+                    onOpenRelatedTitle = onOpenRelatedTitle
                 )
             }
         }
@@ -223,6 +255,8 @@ fun MoviePlayerScreen(
 fun LocalVideoPlayerScreen(
     asset: com.laterbox.app.media.domain.model.MediaAsset,
     onBackClick: () -> Unit,
+    playbackPreferences: PlayerPlaybackPreferences = PlayerPlaybackPreferences(),
+    onSubtitleStyleChange: (SubtitleStyleConfig) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -283,6 +317,11 @@ fun LocalVideoPlayerScreen(
             activeTitleId = asset.id,
             availableDubs = emptyList(),
             nextEpisodeTarget = null,
+            nextEpisodePreview = null,
+            relatedTitles = emptyList(),
+            playbackPreferences = playbackPreferences,
+            seasonNumber = null,
+            episodeNumber = null,
             isEnqueuingDownload = false,
             downloadStatusMessage = null,
             isLocalFile = true,
@@ -298,7 +337,9 @@ fun LocalVideoPlayerScreen(
             },
             onOpenExternalUrl = {},
             onDownloadSource = {},
-            onDismissDownloadStatus = {}
+            onDismissDownloadStatus = {},
+            onSubtitleStyleChange = onSubtitleStyleChange,
+            onOpenRelatedTitle = { _, _ -> }
         )
     }
 }
@@ -321,9 +362,15 @@ private fun ActiveVideoPlayerContent(
     activeTitleId: String,
     availableDubs: List<AudioDubInfo>,
     nextEpisodeTarget: Pair<Int, Int>?,
+    nextEpisodePreview: NextEpisodePreview?,
+    relatedTitles: List<MovieTitleSummary>,
+    playbackPreferences: PlayerPlaybackPreferences,
+    seasonNumber: Int?,
+    episodeNumber: Int?,
     isEnqueuingDownload: Boolean,
     downloadStatusMessage: String?,
     isLocalFile: Boolean = false,
+    simulatePlaybackEndedForTest: Boolean = false,
     onBackClick: () -> Unit,
     onSelectSource: (PlaybackSource, Long) -> Unit,
     onSelectSubtitle: (SubtitleTrack?, Long) -> Unit,
@@ -332,7 +379,9 @@ private fun ActiveVideoPlayerContent(
     onSaveProgress: (Long, Long) -> Unit,
     onOpenExternalUrl: (String) -> Unit,
     onDownloadSource: (PlaybackSource) -> Unit,
-    onDismissDownloadStatus: () -> Unit
+    onDismissDownloadStatus: () -> Unit,
+    onSubtitleStyleChange: (SubtitleStyleConfig) -> Unit,
+    onOpenRelatedTitle: (String, String) -> Unit
 ) {
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
@@ -374,6 +423,42 @@ private fun ActiveVideoPlayerContent(
     val latestSelectedSpeed by rememberUpdatedState(selectedSpeed)
     val latestIsLocked by rememberUpdatedState(isLocked)
     val latestStartPositionMs by rememberUpdatedState(startPositionMs)
+    val latestOnNextEpisode by rememberUpdatedState(onNextEpisode)
+
+    val brightnessHelper = remember(activity) { PlayerBrightnessHelper(activity) }
+    var brightnessFraction by remember { mutableFloatStateOf(brightnessHelper.currentNormalizedBrightness) }
+    var showBrightnessHud by remember { mutableStateOf(false) }
+    var isBrightnessDragging by remember { mutableStateOf(false) }
+
+    val audioBoostController = remember(context) { PlayerAudioBoostController(context) }
+    var currentVolumePercent by remember { mutableIntStateOf(audioBoostController.currentVolumePercent) }
+    var volumeFloatPercent by remember { mutableFloatStateOf(audioBoostController.currentVolumePercent.toFloat()) }
+    var showVolumeHud by remember { mutableStateOf(false) }
+    var isVolumeDragging by remember { mutableStateOf(false) }
+
+    val baseSensitivityTier = remember(playbackPreferences.swipeSeekSensitivity) {
+        SeekSensitivityTier.fromPreference(playbackPreferences.swipeSeekSensitivity)
+    }
+    var isHorizontalScrubbing by remember { mutableStateOf(false) }
+    var scrubTargetMs by remember { mutableLongStateOf(0L) }
+    var scrubDeltaMs by remember { mutableLongStateOf(0L) }
+    var scrubSensitivityTier by remember(baseSensitivityTier) { mutableStateOf(baseSensitivityTier) }
+
+    var localSubtitleStyle by remember(playbackPreferences.subtitleStyle) {
+        mutableStateOf(playbackPreferences.subtitleStyle)
+    }
+    var showSubtitleStyleDialog by remember { mutableStateOf(false) }
+
+    val playbackEpisodeKey = "${activeTitleId}:${seasonNumber ?: 0}:${episodeNumber ?: 0}"
+    var isPlaybackEnded by remember(playbackEpisodeKey, simulatePlaybackEndedForTest) {
+        mutableStateOf(simulatePlaybackEndedForTest)
+    }
+    var nextEpisodeCancelled by remember(playbackEpisodeKey) { mutableStateOf(false) }
+    var endCardDismissed by remember(playbackEpisodeKey) { mutableStateOf(false) }
+    var countdownStarted by remember(playbackEpisodeKey) { mutableStateOf(false) }
+    var countdownSecondsLeft by remember(playbackEpisodeKey, playbackPreferences.autoplayCountdownSeconds) {
+        mutableIntStateOf(playbackPreferences.autoplayCountdownSeconds)
+    }
 
     val isAdaptiveSource = remember(selectedSource.id, selectedSource.format, selectedSource.url) {
         selectedSource.format.equals("DASH", ignoreCase = true) ||
@@ -399,6 +484,12 @@ private fun ActiveVideoPlayerContent(
 
     BackHandler(enabled = isLocked) {
         showControls = true
+    }
+
+    DisposableEffect(brightnessHelper) {
+        onDispose {
+            brightnessHelper.restoreOriginalBrightness()
+        }
     }
 
     // Genuine full-screen mode by default + orientation and independent rotation lock handling
@@ -438,6 +529,7 @@ private fun ActiveVideoPlayerContent(
     LaunchedEffect(exoPlayer, selectedSource.id, selectedSubtitle?.id) {
         playerErrorText = null
         isBuffering = true
+        isPlaybackEnded = false
         hasManualAudioOverride = false
         val itemBuilder = MediaItem.Builder()
             .setUri(Uri.parse(selectedSource.url))
@@ -483,10 +575,18 @@ private fun ActiveVideoPlayerContent(
         exoPlayer.playWhenReady = true
     }
 
-    DisposableEffect(exoPlayer) {
+    DisposableEffect(exoPlayer, audioBoostController) {
+        audioBoostController.bindToPlayer(exoPlayer)
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 isBuffering = playbackState == Player.STATE_BUFFERING
+                isPlaybackEnded = playbackState == Player.STATE_ENDED
+                if (playbackState == Player.STATE_ENDED) {
+                    audioBoostController.resetBoost(exoPlayer)
+                    currentVolumePercent = audioBoostController.currentVolumePercent
+                    volumeFloatPercent = currentVolumePercent.toFloat()
+                    latestSaveProgress(exoPlayer.currentPosition.coerceAtLeast(0L), exoPlayer.duration.coerceAtLeast(0L))
+                }
             }
 
             override fun onTracksChanged(tracks: Tracks) {
@@ -510,6 +610,7 @@ private fun ActiveVideoPlayerContent(
                 currentPositionMs = pos
             }
             latestSaveProgress(pos, dur)
+            audioBoostController.release()
             exoPlayer.removeListener(listener)
             exoPlayer.release()
         }
@@ -522,8 +623,9 @@ private fun ActiveVideoPlayerContent(
             val cur = exoPlayer.currentPosition.coerceAtLeast(0L)
             val dur = exoPlayer.duration.coerceAtLeast(0L)
             isPlaying = exoPlayer.isPlaying || (exoPlayer.playWhenReady && exoPlayer.playbackState == Player.STATE_BUFFERING)
+            isPlaybackEnded = exoPlayer.playbackState == Player.STATE_ENDED
             durationMs = dur
-            if (!isSeeking) {
+            if (!isSeeking && !isHorizontalScrubbing) {
                 currentPositionMs = cur
             }
             tick++
@@ -541,15 +643,17 @@ private fun ActiveVideoPlayerContent(
         isLocked,
         showQualityDialog,
         showSubtitleDialog,
+        showSubtitleStyleDialog,
         showAudioDialog,
         showSpeedDialog,
         showDownloadDialog,
         isSeeking,
+        isHorizontalScrubbing,
         playerErrorText
     ) {
         if (showControls && isPlaying && !isLocked && playerErrorText == null &&
-            !showQualityDialog && !showSubtitleDialog && !showAudioDialog &&
-            !showSpeedDialog && !showDownloadDialog && !isSeeking
+            !showQualityDialog && !showSubtitleDialog && !showSubtitleStyleDialog && !showAudioDialog &&
+            !showSpeedDialog && !showDownloadDialog && !isSeeking && !isHorizontalScrubbing
         ) {
             delay(3_500L)
             showControls = false
@@ -564,9 +668,110 @@ private fun ActiveVideoPlayerContent(
         }
     }
 
+    LaunchedEffect(showBrightnessHud, brightnessFraction, isBrightnessDragging) {
+        if (showBrightnessHud && !isBrightnessDragging) {
+            delay(1_200L)
+            showBrightnessHud = false
+        }
+    }
+
+    LaunchedEffect(showVolumeHud, currentVolumePercent, isVolumeDragging) {
+        if (showVolumeHud && !isVolumeDragging) {
+            delay(1_400L)
+            showVolumeHud = false
+        }
+    }
+
+    val effectivePlaybackEnded = isPlaybackEnded || simulatePlaybackEndedForTest
+    val hasNextEpisode = !isLocalFile && (nextEpisodePreview != null || nextEpisodeTarget != null)
+    val nearEndWindow = durationMs > 25_000L && (durationMs - currentPositionMs) in 1L..10_000L
+    val showNextEpisodeCard = hasNextEpisode && !nextEpisodeCancelled && (nearEndWindow || effectivePlaybackEnded) && playerErrorText == null
+    val showMovieEndCard = !isLocalFile && !hasNextEpisode && effectivePlaybackEnded && !endCardDismissed && playerErrorText == null
+
+    LaunchedEffect(
+        showNextEpisodeCard,
+        nextEpisodeCancelled,
+        playbackPreferences.autoplayNextEpisode,
+        playbackPreferences.autoplayCountdownSeconds,
+        playbackEpisodeKey
+    ) {
+        if (showNextEpisodeCard && playbackPreferences.autoplayNextEpisode && !nextEpisodeCancelled && !countdownStarted) {
+            countdownStarted = true
+            var remaining = playbackPreferences.autoplayCountdownSeconds.coerceIn(3, 30)
+            countdownSecondsLeft = remaining
+            while (remaining > 0 && !nextEpisodeCancelled) {
+                delay(1_000L)
+                remaining--
+                countdownSecondsLeft = remaining
+            }
+            if (!nextEpisodeCancelled && remaining <= 0) {
+                latestSaveProgress(exoPlayer.currentPosition.coerceAtLeast(0L), exoPlayer.duration.coerceAtLeast(0L))
+                latestOnNextEpisode()
+            }
+        }
+    }
+
+    val seekJumpMs = (playbackPreferences.doubleTapSeekSeconds.coerceIn(5, 60) * 1000L)
+    val seekJumpSeconds = playbackPreferences.doubleTapSeekSeconds.coerceIn(5, 60)
+
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .playerDragGestures(
+                enabled = !isLocked && playerErrorText == null,
+                swipeToSeekEnabled = playbackPreferences.swipeToSeekEnabled,
+                brightnessGestureEnabled = playbackPreferences.brightnessGestureEnabled,
+                volumeGestureEnabled = playbackPreferences.volumeGestureEnabled,
+                baseSensitivity = baseSensitivityTier,
+                currentPositionProvider = { exoPlayer.currentPosition.coerceAtLeast(0L) },
+                durationProvider = { exoPlayer.duration.coerceAtLeast(0L) },
+                onHorizontalScrubStart = { startPos ->
+                    isHorizontalScrubbing = true
+                    scrubTargetMs = startPos
+                    scrubDeltaMs = 0L
+                    scrubSensitivityTier = baseSensitivityTier
+                },
+                onHorizontalScrubUpdate = { targetMs, deltaMs, sensitivity ->
+                    scrubTargetMs = targetMs
+                    scrubDeltaMs = deltaMs
+                    scrubSensitivityTier = sensitivity
+                },
+                onHorizontalScrubEnd = { finalTargetMs ->
+                    exoPlayer.seekTo(finalTargetMs)
+                    currentPositionMs = finalTargetMs
+                    isHorizontalScrubbing = false
+                    latestSaveProgress(finalTargetMs, exoPlayer.duration.coerceAtLeast(0L))
+                },
+                onHorizontalScrubCancel = {
+                    isHorizontalScrubbing = false
+                },
+                onBrightnessDelta = { deltaFraction ->
+                    isBrightnessDragging = true
+                    showBrightnessHud = true
+                    val updated = PlayerGesturesMath.applyBrightnessDelta(brightnessFraction, deltaFraction)
+                    brightnessFraction = updated
+                    brightnessHelper.setBrightness(updated)
+                },
+                onBrightnessGestureEnd = {
+                    isBrightnessDragging = false
+                },
+                onVolumeDelta = { deltaPercent ->
+                    isVolumeDragging = true
+                    showVolumeHud = true
+                    val maxAllowed = if (audioBoostController.isBoostSupported) {
+                        PlayerAudioBoostController.MAX_PERCENT
+                    } else {
+                        PlayerAudioBoostController.NORMAL_MAX_PERCENT
+                    }
+                    val updatedFloat = PlayerGesturesMath.applyVolumeDelta(volumeFloatPercent, deltaPercent, maxAllowed)
+                    volumeFloatPercent = updatedFloat
+                    val applied = audioBoostController.applyVolumePercent(updatedFloat.roundToInt(), exoPlayer)
+                    currentVolumePercent = applied
+                },
+                onVolumeGestureEnd = {
+                    isVolumeDragging = false
+                }
+            )
             .pointerInput(exoPlayer) {
                 // Tap-and-Hold 2x Speed gesture using a true timeout so stationary holds trigger after 320ms
                 awaitEachGesture {
@@ -618,7 +823,7 @@ private fun ActiveVideoPlayerContent(
                     }
                 }
             }
-            .pointerInput(exoPlayer) {
+            .pointerInput(exoPlayer, seekJumpMs, seekJumpSeconds) {
                 detectTapGestures(
                     onTap = {
                         if (ignoreNextTap) {
@@ -634,20 +839,20 @@ private fun ActiveVideoPlayerContent(
                         }
                         val widthPx = size.width.toFloat().coerceAtLeast(1f)
                         if (offset.x < widthPx / 2f) {
-                            val target = (exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L)
+                            val target = (exoPlayer.currentPosition - seekJumpMs).coerceAtLeast(0L)
                             exoPlayer.seekTo(target)
                             currentPositionMs = target
-                            seekFeedbackText = "-10s"
+                            seekFeedbackText = "-${seekJumpSeconds}s"
                         } else {
                             val dur = exoPlayer.duration.coerceAtLeast(0L)
                             val target = if (dur > 0L) {
-                                (exoPlayer.currentPosition + 10_000L).coerceAtMost(dur)
+                                (exoPlayer.currentPosition + seekJumpMs).coerceAtMost(dur)
                             } else {
-                                exoPlayer.currentPosition + 10_000L
+                                exoPlayer.currentPosition + seekJumpMs
                             }
                             exoPlayer.seekTo(target)
                             currentPositionMs = target
-                            seekFeedbackText = "+10s"
+                            seekFeedbackText = "+${seekJumpSeconds}s"
                         }
                     }
                 )
@@ -660,20 +865,7 @@ private fun ActiveVideoPlayerContent(
                     useController = false
                     keepScreenOn = true
                     this.resizeMode = resizeMode
-                    subtitleView?.apply {
-                        setApplyEmbeddedStyles(true)
-                        setApplyEmbeddedFontSizes(true)
-                        setStyle(
-                            CaptionStyleCompat(
-                                AndroidColor.WHITE,
-                                AndroidColor.argb(170, 0, 0, 0),
-                                AndroidColor.TRANSPARENT,
-                                CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW,
-                                AndroidColor.BLACK,
-                                null
-                            )
-                        )
-                    }
+                    SubtitleStyleHelper.applyToSubtitleView(subtitleView, localSubtitleStyle)
                 }
             },
             update = { view ->
@@ -681,6 +873,7 @@ private fun ActiveVideoPlayerContent(
                     view.player = exoPlayer
                 }
                 view.resizeMode = resizeMode
+                SubtitleStyleHelper.applyToSubtitleView(view.subtitleView, localSubtitleStyle)
             },
             modifier = Modifier.fillMaxSize()
         )
@@ -898,7 +1091,7 @@ private fun ActiveVideoPlayerContent(
                         }
                     }
 
-                    // Center Transport Row (-10s, Play/Pause, +10s)
+                    // Center Transport Row (-seek, Play/Pause, +seek)
                     Row(
                         modifier = Modifier.align(Alignment.Center),
                         verticalAlignment = Alignment.CenterVertically,
@@ -911,10 +1104,10 @@ private fun ActiveVideoPlayerContent(
                         ) {
                             IconButton(
                                 onClick = {
-                                    val target = (exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L)
+                                    val target = (exoPlayer.currentPosition - seekJumpMs).coerceAtLeast(0L)
                                     exoPlayer.seekTo(target)
                                     currentPositionMs = target
-                                    seekFeedbackText = "-10s"
+                                    seekFeedbackText = "-${seekJumpSeconds}s"
                                 },
                                 modifier = Modifier
                                     .fillMaxSize()
@@ -922,7 +1115,7 @@ private fun ActiveVideoPlayerContent(
                             ) {
                                 Icon(
                                     painter = painterResource(LaterboxIcons.Replay10),
-                                    contentDescription = "Rewind 10 seconds",
+                                    contentDescription = "Rewind $seekJumpSeconds seconds",
                                     tint = Color.White,
                                     modifier = Modifier.size(26.dp)
                                 )
@@ -944,6 +1137,7 @@ private fun ActiveVideoPlayerContent(
                                     } else {
                                         if (exoPlayer.playbackState == Player.STATE_ENDED) {
                                             exoPlayer.seekTo(0L)
+                                            isPlaybackEnded = false
                                         }
                                         exoPlayer.play()
                                         isPlaying = true
@@ -973,13 +1167,13 @@ private fun ActiveVideoPlayerContent(
                                 onClick = {
                                     val dur = exoPlayer.duration.coerceAtLeast(0L)
                                     val target = if (dur > 0L) {
-                                        (exoPlayer.currentPosition + 10_000L).coerceAtMost(dur)
+                                        (exoPlayer.currentPosition + seekJumpMs).coerceAtMost(dur)
                                     } else {
-                                        exoPlayer.currentPosition + 10_000L
+                                        exoPlayer.currentPosition + seekJumpMs
                                     }
                                     exoPlayer.seekTo(target)
                                     currentPositionMs = target
-                                    seekFeedbackText = "+10s"
+                                    seekFeedbackText = "+${seekJumpSeconds}s"
                                 },
                                 modifier = Modifier
                                     .fillMaxSize()
@@ -987,7 +1181,7 @@ private fun ActiveVideoPlayerContent(
                             ) {
                                 Icon(
                                     painter = painterResource(LaterboxIcons.Forward10),
-                                    contentDescription = "Forward 10 seconds",
+                                    contentDescription = "Forward $seekJumpSeconds seconds",
                                     tint = Color.White,
                                     modifier = Modifier.size(26.dp)
                                 )
@@ -1004,7 +1198,11 @@ private fun ActiveVideoPlayerContent(
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         val effectiveDuration = durationMs.coerceAtLeast(1L)
-                        val displayPosition = if (isSeeking) seekSliderPosMs.toLong() else currentPositionMs
+                        val displayPosition = when {
+                            isHorizontalScrubbing -> scrubTargetMs
+                            isSeeking -> seekSliderPosMs.toLong()
+                            else -> currentPositionMs
+                        }
 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1154,7 +1352,7 @@ private fun ActiveVideoPlayerContent(
                                     }
                                 }
 
-                                // Independent Rotation Lock Control (locks screen orientation without locking playback controls)
+                                // Independent Rotation Lock Control
                                 Surface(
                                     shape = RoundedCornerShape(8.dp),
                                     color = if (isRotationLocked) colors.accentPrimary else Color.White.copy(alpha = 0.16f),
@@ -1217,8 +1415,248 @@ private fun ActiveVideoPlayerContent(
             }
         }
 
+        // Left Brightness Gesture HUD
+        AnimatedVisibility(
+            visible = showBrightnessHud && playerErrorText == null,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .padding(start = 22.dp)
+        ) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = Color.Black.copy(alpha = 0.80f),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.18f)),
+                modifier = Modifier.testTag("player_brightness_hud")
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 14.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "BRIGHT",
+                        style = typography.caption.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
+                        color = Color.White.copy(alpha = 0.8f)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .width(8.dp)
+                            .height(110.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(Color.White.copy(alpha = 0.22f)),
+                        contentAlignment = Alignment.BottomCenter
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .fillMaxHeight(brightnessFraction.coerceIn(0.01f, 1.0f))
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(Color(0xFFFFD54F))
+                        )
+                    }
+                    Text(
+                        text = "${(brightnessFraction * 100f).roundToInt()}%",
+                        style = typography.caption.copy(fontWeight = FontWeight.Bold),
+                        color = Color.White
+                    )
+                }
+            }
+        }
+
+        // Right Volume / Boost Gesture HUD (0–100% normal vs 100–200% boost zone)
+        AnimatedVisibility(
+            visible = showVolumeHud && playerErrorText == null,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 22.dp)
+        ) {
+            val isBoosted = PlayerAudioBoostController.isBoostActive(currentVolumePercent)
+            val pulseTransition = rememberInfiniteTransition(label = "boostPulse")
+            val pulseScale by pulseTransition.animateFloat(
+                initialValue = 1f,
+                targetValue = if (isBoosted) 1.06f else 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(durationMillis = 650),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "boostScale"
+            )
+            val boostAmber = Color(0xFFFFB300)
+
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = Color.Black.copy(alpha = 0.82f),
+                border = BorderStroke(
+                    width = if (isBoosted) 1.5.dp else 1.dp,
+                    color = if (isBoosted) boostAmber.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.18f)
+                ),
+                modifier = Modifier.testTag("player_volume_hud")
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 14.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (isBoosted) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = boostAmber.copy(alpha = 0.22f),
+                            border = BorderStroke(0.75.dp, boostAmber),
+                            modifier = Modifier
+                                .scale(pulseScale)
+                                .testTag("player_volume_boost_badge")
+                        ) {
+                            Text(
+                                text = "BOOST · ${currentVolumePercent}%",
+                                style = typography.caption.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
+                                color = boostAmber,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                            )
+                        }
+                    } else {
+                        Text(
+                            text = if (currentVolumePercent == 0) "MUTE" else "VOL",
+                            style = typography.caption.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
+                            color = Color.White.copy(alpha = 0.8f)
+                        )
+                    }
+
+                    // Segmented 2-zone bar: top half = 101-200% boost range, bottom half = 0-100% normal range
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        val boostFill = ((currentVolumePercent - 100).coerceIn(0, 100) / 100f)
+                        val normalFill = (currentVolumePercent.coerceIn(0, 100) / 100f)
+
+                        Box(
+                            modifier = Modifier
+                                .width(10.dp)
+                                .height(54.dp)
+                                .clip(RoundedCornerShape(topStart = 5.dp, topEnd = 5.dp))
+                                .background(
+                                    if (audioBoostController.isBoostSupported) {
+                                        boostAmber.copy(alpha = 0.18f)
+                                    } else {
+                                        Color.White.copy(alpha = 0.08f)
+                                    }
+                                ),
+                            contentAlignment = Alignment.BottomCenter
+                        ) {
+                            if (boostFill > 0f) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .fillMaxHeight(boostFill)
+                                        .background(boostAmber)
+                                )
+                            }
+                        }
+
+                        // Clear 100% threshold marker line
+                        Box(
+                            modifier = Modifier
+                                .width(16.dp)
+                                .height(2.dp)
+                                .background(if (isBoosted) boostAmber else Color.White.copy(alpha = 0.7f))
+                        )
+
+                        Box(
+                            modifier = Modifier
+                                .width(10.dp)
+                                .height(54.dp)
+                                .clip(RoundedCornerShape(bottomStart = 5.dp, bottomEnd = 5.dp))
+                                .background(Color.White.copy(alpha = 0.22f)),
+                            contentAlignment = Alignment.BottomCenter
+                        ) {
+                            if (normalFill > 0f) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .fillMaxHeight(normalFill)
+                                        .background(Color.White)
+                                )
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = "${currentVolumePercent}%",
+                        style = typography.caption.copy(fontWeight = FontWeight.Bold),
+                        color = if (isBoosted) boostAmber else Color.White
+                    )
+
+                    if (!audioBoostController.isBoostSupported && audioBoostController.lastFallbackReason != null) {
+                        Text(
+                            text = "Max 100%",
+                            style = typography.caption.copy(fontSize = 9.sp),
+                            color = Color.White.copy(alpha = 0.6f)
+                        )
+                    }
+                }
+            }
+        }
+
+        // Horizontal Scrubbing HUD with Dynamic Sensitivity Pill
+        AnimatedVisibility(
+            visible = isHorizontalScrubbing && playerErrorText == null,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.Center)
+        ) {
+            val deltaSeconds = scrubDeltaMs / 1_000L
+            val deltaPrefix = if (deltaSeconds >= 0L) "+" else "-"
+            val absSec = abs(deltaSeconds)
+            val deltaClock = String.format(Locale.US, "%s%02d:%02d", deltaPrefix, absSec / 60L, absSec % 60L)
+
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = Color.Black.copy(alpha = 0.84f),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.22f)),
+                modifier = Modifier.testTag("player_horizontal_scrub_hud")
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "${formatPlaybackClock(scrubTargetMs)} / ${formatPlaybackClock(durationMs)}",
+                        style = typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                        color = Color.White
+                    )
+                    Text(
+                        text = deltaClock,
+                        style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
+                        color = colors.accentPrimary
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = colors.accentPrimary.copy(alpha = 0.22f),
+                        border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.5f))
+                    ) {
+                        Text(
+                            text = "Speed: ${scrubSensitivityTier.displayLabel}",
+                            style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                            color = Color.White,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
+                        )
+                    }
+                    Text(
+                        text = "Slide up/down for speed",
+                        style = typography.caption.copy(fontSize = 10.sp),
+                        color = Color.White.copy(alpha = 0.65f)
+                    )
+                }
+            }
+        }
+
         // Buffering Indicator (rendered above controls scrim so it stays crisp)
-        if (isBuffering && playerErrorText == null) {
+        if (isBuffering && playerErrorText == null && !isHorizontalScrubbing) {
             Surface(
                 shape = CircleShape,
                 color = Color.Black.copy(alpha = 0.56f),
@@ -1237,7 +1675,7 @@ private fun ActiveVideoPlayerContent(
             }
         }
 
-        // Tap-and-Hold 2x Speed Indicator Pill (rendered above controls scrim)
+        // Tap-and-Hold 2x Speed Indicator Pill
         AnimatedVisibility(
             visible = isHolding2x,
             enter = fadeIn(),
@@ -1261,9 +1699,9 @@ private fun ActiveVideoPlayerContent(
             }
         }
 
-        // Double-Tap Seek Feedback Badge (above scrim, offset above center controls when controls are visible)
+        // Double-Tap Seek Feedback Badge
         AnimatedVisibility(
-            visible = seekFeedbackText != null,
+            visible = seekFeedbackText != null && !isHorizontalScrubbing,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier
@@ -1282,6 +1720,231 @@ private fun ActiveVideoPlayerContent(
                     color = Color.White,
                     modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp)
                 )
+            }
+        }
+
+        // TV Series Next-Episode Netflix-Style Preview & Countdown Card
+        AnimatedVisibility(
+            visible = showNextEpisodeCard,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier
+                .align(if (effectivePlaybackEnded) Alignment.Center else Alignment.BottomEnd)
+                .navigationBarsPadding()
+                .padding(horizontal = 18.dp, vertical = if (effectivePlaybackEnded) 18.dp else 88.dp)
+        ) {
+            val previewSeason = nextEpisodePreview?.seasonNumber ?: nextEpisodeTarget?.first ?: 1
+            val previewEp = nextEpisodePreview?.episodeNumber ?: nextEpisodeTarget?.second ?: 1
+            val previewLabel = nextEpisodePreview?.episodeLabel ?: "S${previewSeason} · E${previewEp}"
+            val previewTitle = nextEpisodePreview?.title ?: "Episode $previewEp"
+            val previewThumb = nextEpisodePreview?.thumbnailUrl
+
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = colors.surfaceElevated.copy(alpha = 0.96f),
+                border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.45f)),
+                modifier = Modifier
+                    .width(if (effectiveIsLandscape) 340.dp else 310.dp)
+                    .testTag("player_next_episode_card")
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(104.dp)
+                                .aspectRatio(16f / 9f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(colors.surfaceSecondary),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (!previewThumb.isNullOrBlank()) {
+                                AsyncImage(
+                                    model = previewThumb,
+                                    contentDescription = previewTitle,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                Text(
+                                    text = previewLabel,
+                                    style = typography.caption.copy(fontWeight = FontWeight.Bold),
+                                    color = colors.textSecondary
+                                )
+                            }
+                        }
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Text(
+                                text = if (playbackPreferences.autoplayNextEpisode) {
+                                    "Up Next · Playing in ${countdownSecondsLeft}s"
+                                } else {
+                                    "Up Next"
+                                },
+                                style = typography.caption.copy(fontWeight = FontWeight.Bold),
+                                color = colors.accentPrimary
+                            )
+                            Text(
+                                text = previewLabel,
+                                style = typography.caption,
+                                color = colors.textSecondary
+                            )
+                            Text(
+                                text = previewTitle,
+                                style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
+                                color = colors.textPrimary,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+
+                    if (playbackPreferences.autoplayNextEpisode) {
+                        val totalSecs = playbackPreferences.autoplayCountdownSeconds.coerceIn(3, 30).toFloat()
+                        val frac = (1f - (countdownSecondsLeft / totalSecs)).coerceIn(0f, 1f)
+                        LinearProgressIndicator(
+                            progress = { frac },
+                            color = colors.accentPrimary,
+                            trackColor = colors.surfaceSecondary,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(4.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                nextEpisodeCancelled = true
+                                latestSaveProgress(
+                                    exoPlayer.currentPosition.coerceAtLeast(0L),
+                                    exoPlayer.duration.coerceAtLeast(0L)
+                                )
+                                onNextEpisode()
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = colors.accentPrimary,
+                                contentColor = colors.onAccentPrimary
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("player_end_play_now_button")
+                        ) {
+                            Text("Play Now", style = typography.caption.copy(fontWeight = FontWeight.Bold))
+                        }
+                        OutlinedButton(
+                            onClick = { nextEpisodeCancelled = true },
+                            border = BorderStroke(1.dp, colors.borderSubtle),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.testTag("player_end_cancel_button")
+                        ) {
+                            Text("Cancel", style = typography.caption, color = colors.textPrimary)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Movie End-of-Playback Card (Replay / Related / Back — never autoplays unrelated movies)
+        AnimatedVisibility(
+            visible = showMovieEndCard,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.84f))
+                    .displayCutoutPadding()
+                    .padding(20.dp)
+                    .testTag("player_movie_end_card"),
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = colors.surfaceElevated,
+                    border = BorderStroke(1.dp, colors.borderSubtle),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .padding(18.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            text = "Playback Finished",
+                            style = typography.caption.copy(fontWeight = FontWeight.Bold),
+                            color = colors.accentPrimary
+                        )
+                        Text(
+                            text = resolution.title,
+                            style = typography.titleLarge,
+                            color = colors.textPrimary,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Button(
+                                onClick = {
+                                    isPlaybackEnded = false
+                                    endCardDismissed = false
+                                    exoPlayer.seekTo(0L)
+                                    currentPositionMs = 0L
+                                    exoPlayer.play()
+                                    isPlaying = true
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = colors.accentPrimary,
+                                    contentColor = colors.onAccentPrimary
+                                ),
+                                modifier = Modifier.testTag("player_end_replay_button")
+                            ) {
+                                Text("Replay")
+                            }
+                            OutlinedButton(
+                                onClick = onBackClick,
+                                border = BorderStroke(1.dp, colors.borderSubtle),
+                                modifier = Modifier.testTag("player_end_back_button")
+                            ) {
+                                Text("Back", color = colors.textPrimary)
+                            }
+                        }
+
+                        if (relatedTitles.isNotEmpty()) {
+                            Text(
+                                text = "Related Titles",
+                                style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
+                                color = colors.textSecondary
+                            )
+                            LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                modifier = Modifier.testTag("player_end_related_row")
+                            ) {
+                                items(relatedTitles, key = { "end_rel_${it.compositeId}" }) { rel ->
+                                    MoviePosterCard(
+                                        item = rel,
+                                        width = 96.dp,
+                                        onClick = { onOpenRelatedTitle(rel.providerId, rel.id) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -1563,11 +2226,34 @@ private fun ActiveVideoPlayerContent(
                     }
                 }
             },
+            dismissButton = {
+                OutlinedButton(
+                    onClick = {
+                        showSubtitleDialog = false
+                        showSubtitleStyleDialog = true
+                    },
+                    border = BorderStroke(1.dp, colors.borderSubtle),
+                    modifier = Modifier.testTag("player_subtitle_set_style_button")
+                ) {
+                    Text("Set style", color = colors.textPrimary)
+                }
+            },
             confirmButton = {
                 TextButton(onClick = { showSubtitleDialog = false }) {
                     Text("Close", color = colors.accentPrimary)
                 }
             }
+        )
+    }
+
+    if (showSubtitleStyleDialog) {
+        SubtitleStyleDialog(
+            config = localSubtitleStyle,
+            onConfigChange = { updated ->
+                localSubtitleStyle = updated
+                onSubtitleStyleChange(updated)
+            },
+            onDismiss = { showSubtitleStyleDialog = false }
         )
     }
 

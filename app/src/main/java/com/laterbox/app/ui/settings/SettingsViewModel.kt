@@ -12,18 +12,23 @@ import com.laterbox.app.data.preferences.CardTapAction
 import com.laterbox.app.data.preferences.FontSizeScale
 import com.laterbox.app.data.preferences.InboxViewMode
 import com.laterbox.app.data.preferences.SmartReminderPersistence
+import com.laterbox.app.data.preferences.SubtitleStyleConfig
 import com.laterbox.app.data.preferences.ThemeMode
 import com.laterbox.app.data.preferences.UserPreferences
 import com.laterbox.app.data.preferences.UserPreferencesRepository
 import com.laterbox.app.data.repository.LinkRepository
 import com.laterbox.app.domain.model.ContentType
 import com.laterbox.app.domain.model.SavedLink
+import com.laterbox.app.movies.domain.model.WatchHistoryItem
+import com.laterbox.app.movies.domain.repository.MoviesRepository
 import com.laterbox.app.reminders.NotificationHelper
 import com.laterbox.app.reminders.smart.SmartReminderCoordinator
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -40,7 +45,8 @@ class SettingsViewModel(
     private val diagnosticsBuffer: com.laterbox.app.media.data.diagnostics.InspectionDiagnosticsBuffer? = null,
     private val database: com.laterbox.app.data.local.LaterboxDatabase? = null,
     private val backendBaseUrlProvider: (suspend () -> String)? = null,
-    private val appCheckTokenProvider: (suspend (Boolean) -> String?)? = null
+    private val appCheckTokenProvider: (suspend (Boolean) -> String?)? = null,
+    private val moviesRepository: MoviesRepository? = null
 ) : ViewModel() {
 
     private val runtimeManager: com.laterbox.app.media.data.adapters.ytdlp.YtDlpRuntimeManager? =
@@ -556,6 +562,75 @@ class SettingsViewModel(
     fun setQuietHoursWindow(startHour: Int, endHour: Int) {
         viewModelScope.launch {
             userPreferencesRepository.setQuietHoursWindow(startHour, endHour)
+        }
+    }
+
+    fun setMoviesDoubleTapSeekSeconds(seconds: Int) {
+        viewModelScope.launch {
+            userPreferencesRepository.setMoviesDoubleTapSeekSeconds(seconds)
+        }
+    }
+
+    fun setMoviesSwipeToSeekEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            userPreferencesRepository.setMoviesSwipeToSeekEnabled(enabled)
+        }
+    }
+
+    fun setMoviesSwipeSeekSensitivity(sensitivity: Float) {
+        viewModelScope.launch {
+            userPreferencesRepository.setMoviesSwipeSeekSensitivity(sensitivity)
+        }
+    }
+
+    fun setMoviesBrightnessGestureEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            userPreferencesRepository.setMoviesBrightnessGestureEnabled(enabled)
+        }
+    }
+
+    fun setMoviesVolumeGestureEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            userPreferencesRepository.setMoviesVolumeGestureEnabled(enabled)
+        }
+    }
+
+    fun setMoviesAutoplayNextEpisode(enabled: Boolean) {
+        viewModelScope.launch {
+            userPreferencesRepository.setMoviesAutoplayNextEpisode(enabled)
+        }
+    }
+
+    fun setMoviesAutoplayCountdownSeconds(seconds: Int) {
+        viewModelScope.launch {
+            userPreferencesRepository.setMoviesAutoplayCountdownSeconds(seconds)
+        }
+    }
+
+    fun setMoviesDefaultQualityHeight(height: Int) {
+        viewModelScope.launch {
+            userPreferencesRepository.setMoviesDefaultQualityHeight(height)
+        }
+    }
+
+    fun setSubtitleStyleConfig(config: SubtitleStyleConfig) {
+        viewModelScope.launch {
+            userPreferencesRepository.setSubtitleStyleConfig(config)
+        }
+    }
+
+    fun observeViewingHistory(limit: Int = 100): Flow<List<WatchHistoryItem>> =
+        moviesRepository?.observeViewingHistory(limit) ?: emptyFlow()
+
+    fun deleteViewingHistoryEntry(historyKey: String) {
+        viewModelScope.launch {
+            moviesRepository?.deleteViewingHistoryEntry(historyKey)
+        }
+    }
+
+    fun clearViewingHistory(trailersOnly: Boolean? = null) {
+        viewModelScope.launch {
+            moviesRepository?.clearViewingHistory(trailersOnly)
         }
     }
 }

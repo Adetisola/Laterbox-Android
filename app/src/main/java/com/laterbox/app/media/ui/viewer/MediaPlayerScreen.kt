@@ -41,12 +41,16 @@ fun MediaPlayerScreen(
     asset: MediaAsset,
     onDismiss: () -> Unit,
     onExport: () -> Unit,
+    playbackPreferences: com.laterbox.app.movies.ui.PlayerPlaybackPreferences = com.laterbox.app.movies.ui.PlayerPlaybackPreferences(),
+    onSubtitleStyleChange: (com.laterbox.app.data.preferences.SubtitleStyleConfig) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     if (asset.mediaType == com.laterbox.app.media.domain.model.MediaType.VIDEO) {
         com.laterbox.app.movies.ui.LocalVideoPlayerScreen(
             asset = asset,
             onBackClick = onDismiss,
+            playbackPreferences = playbackPreferences,
+            onSubtitleStyleChange = onSubtitleStyleChange,
             modifier = modifier
         )
         return

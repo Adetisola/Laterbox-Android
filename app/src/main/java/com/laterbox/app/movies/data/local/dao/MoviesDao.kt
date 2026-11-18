@@ -75,16 +75,20 @@ interface MoviesDao {
     @Query("DELETE FROM movie_watchlist_items WHERE canonical_id = :canonicalId")
     suspend fun deleteWatchlistItemsByCanonical(canonicalId: String)
 
-    @Query("SELECT * FROM movie_watch_history ORDER BY last_watched_at DESC LIMIT :limit")
+    @Query("SELECT * FROM movie_watch_history WHERE is_trailer = 0 ORDER BY last_watched_at DESC LIMIT :limit")
     fun observeContinueWatching(limit: Int): Flow<List<MovieWatchHistoryEntity>>
 
-    @Query("SELECT * FROM movie_watch_history WHERE history_key = :historyKey LIMIT 1")
+    @Query("SELECT * FROM movie_watch_history ORDER BY last_watched_at DESC LIMIT :limit")
+    fun observeViewingHistory(limit: Int): Flow<List<MovieWatchHistoryEntity>>
+
+    @Query("SELECT * FROM movie_watch_history WHERE history_key = :historyKey AND is_trailer = 0 LIMIT 1")
     suspend fun getWatchHistoryByKey(historyKey: String): MovieWatchHistoryEntity?
 
     @Query(
         """
         SELECT * FROM movie_watch_history
         WHERE canonical_id = :canonicalId
+          AND is_trailer = 0
           AND IFNULL(season_number, 0) = :seasonNumber
           AND IFNULL(episode_number, 0) = :episodeNumber
         ORDER BY last_watched_at DESC
@@ -105,6 +109,15 @@ interface MoviesDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertWatchHistory(item: MovieWatchHistoryEntity)
+
+    @Query("DELETE FROM movie_watch_history WHERE history_key = :historyKey")
+    suspend fun deleteWatchHistoryEntry(historyKey: String)
+
+    @Query("DELETE FROM movie_watch_history")
+    suspend fun clearWatchHistory()
+
+    @Query("DELETE FROM movie_watch_history WHERE is_trailer = :isTrailer")
+    suspend fun clearWatchHistoryByTrailerFlag(isTrailer: Boolean)
 
     @Query("SELECT query FROM movie_search_history ORDER BY searched_at DESC LIMIT :limit")
     fun observeRecentSearches(limit: Int): Flow<List<String>>

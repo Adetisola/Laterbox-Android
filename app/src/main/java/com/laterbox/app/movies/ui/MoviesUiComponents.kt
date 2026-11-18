@@ -45,9 +45,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -77,8 +75,6 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import coil.compose.AsyncImage
-import com.laterbox.app.BuildConfig
-import com.laterbox.app.data.preferences.MovieBoxEndpointConfig
 import com.laterbox.app.movies.domain.model.CastMember
 import com.laterbox.app.movies.domain.model.DataSourceBadge
 import com.laterbox.app.movies.domain.model.EpisodeItem
@@ -300,7 +296,8 @@ fun BackdropArtworkBox(
     backdropUrl: String?,
     posterUrl: String?,
     contentDescription: String?,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    blurPosterFallback: Boolean = false
 ) {
     val colors = LaterboxTheme.colors
     Box(
@@ -317,28 +314,35 @@ fun BackdropArtworkBox(
                 )
             }
             !posterUrl.isNullOrBlank() -> {
+                val imageModifier = if (blurPosterFallback) {
+                    Modifier
+                        .fillMaxSize()
+                        .blur(20.dp)
+                        .alpha(0.72f)
+                } else {
+                    Modifier.fillMaxSize()
+                }
                 AsyncImage(
                     model = posterUrl,
                     contentDescription = contentDescription,
                     contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .blur(20.dp)
-                        .alpha(0.72f)
+                    modifier = imageModifier
                 )
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(
-                            Brush.horizontalGradient(
-                                colors = listOf(
-                                    Color.Black.copy(alpha = 0.45f),
-                                    Color.Black.copy(alpha = 0.25f),
-                                    Color.Black.copy(alpha = 0.45f)
+                if (blurPosterFallback) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                Brush.horizontalGradient(
+                                    colors = listOf(
+                                        Color.Black.copy(alpha = 0.45f),
+                                        Color.Black.copy(alpha = 0.25f),
+                                        Color.Black.copy(alpha = 0.45f)
+                                    )
                                 )
                             )
-                        )
-                )
+                    )
+                }
             }
             else -> {
                 Icon(
@@ -379,9 +383,10 @@ fun ContinueWatchingCard(
                     .background(colors.surfaceSecondary)
             ) {
                 BackdropArtworkBox(
-                    backdropUrl = null,
+                    backdropUrl = item.backdropUrl,
                     posterUrl = item.posterUrl,
                     contentDescription = item.title,
+                    blurPosterFallback = false,
                     modifier = Modifier.fillMaxSize()
                 )
                 Box(
@@ -694,155 +699,6 @@ fun MoviesHomeSkeleton(modifier: Modifier = Modifier) {
             }
         }
     }
-}
-
-@Composable
-fun MoviesProviderSourceDialog(
-    useSampleFixturesOnly: Boolean,
-    onToggleSampleFixtures: (Boolean) -> Unit,
-    onDismiss: () -> Unit,
-    currentMovieBoxBaseUrl: String = "",
-    effectiveMovieBoxBaseUrl: String = "",
-    onSaveMovieBoxBaseUrl: (baseUrl: String) -> Unit = {}
-) {
-    val colors = LaterboxTheme.colors
-    val typography = LaterboxTheme.typography
-    var movieBoxUrlInput by remember(currentMovieBoxBaseUrl) { mutableStateOf(currentMovieBoxBaseUrl) }
-    val isUrlValid = MovieBoxEndpointConfig.isValidBaseUrl(
-        rawUrl = movieBoxUrlInput,
-        allowDebugCleartextLoopback = BuildConfig.DEBUG
-    )
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = colors.surfaceElevated,
-        title = {
-            Text(
-                text = "Movies & TV Data Sources",
-                style = typography.sheetTitle,
-                color = colors.textPrimary
-            )
-        },
-        text = {
-            Column(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Text(
-                    text = "MovieBox streams and metadata are unified with Internet Archive and TVMaze automatic fallback.",
-                    style = typography.bodySecondary,
-                    color = colors.textSecondary
-                )
-
-                // MovieBox Server Configuration
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(colors.surfaceSecondary)
-                        .padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "MovieBox API Server",
-                            style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
-                            color = colors.textPrimary
-                        )
-                        if (movieBoxUrlInput.isNotBlank()) {
-                            TextButton(
-                                onClick = { movieBoxUrlInput = "" },
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
-                            ) {
-                                Text("Reset Default", style = typography.caption, color = colors.accentPrimary)
-                            }
-                        }
-                    }
-                    OutlinedTextField(
-                        value = movieBoxUrlInput,
-                        onValueChange = { movieBoxUrlInput = it },
-                        label = { Text("Server Base URL") },
-                        placeholder = {
-                            Text(
-                                effectiveMovieBoxBaseUrl.ifBlank { MovieBoxEndpointConfig.DEFAULT_PRODUCTION_BASE_URL }
-                            )
-                        },
-                        isError = !isUrlValid,
-                        supportingText = {
-                            if (!isUrlValid) {
-                                Text(
-                                    text = if (BuildConfig.DEBUG) {
-                                        "Use https:// (or http://10.0.2.2 / localhost in debug)."
-                                    } else {
-                                        "Use an https:// MovieBox API URL."
-                                    },
-                                    color = colors.statusDanger
-                                )
-                            } else if (effectiveMovieBoxBaseUrl.isNotBlank() && movieBoxUrlInput.isBlank()) {
-                                Text("Active default: $effectiveMovieBoxBaseUrl")
-                            }
-                        },
-                        singleLine = true,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("moviebox_base_url_input")
-                    )
-                }
-
-                if (BuildConfig.DEBUG) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(colors.surfaceSecondary)
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-                            Text(
-                                text = "Offline Sample Fixture Mode (Debug)",
-                                style = typography.uiLabel,
-                                color = colors.textPrimary
-                            )
-                            Text(
-                                text = "Use local Creative Commons sample titles only",
-                                style = typography.metaText,
-                                color = colors.textSecondary
-                            )
-                        }
-                        Switch(
-                            checked = useSampleFixturesOnly,
-                            onCheckedChange = onToggleSampleFixtures,
-                            modifier = Modifier.testTag("toggle_sample_fixtures_switch")
-                        )
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    onSaveMovieBoxBaseUrl(movieBoxUrlInput)
-                    onDismiss()
-                },
-                enabled = isUrlValid,
-                colors = ButtonDefaults.buttonColors(containerColor = colors.accentPrimary),
-                modifier = Modifier.testTag("sources_dialog_save_button")
-            ) {
-                Text("Save")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Close", color = colors.textSecondary)
-            }
-        }
-    )
 }
 
 @Composable

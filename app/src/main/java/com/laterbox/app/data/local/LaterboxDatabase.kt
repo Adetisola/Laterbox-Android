@@ -52,7 +52,7 @@ import com.laterbox.app.movies.data.local.entity.MovieWatchlistEntity
         CanonicalMediaEntity::class,
         MediaProviderLinkEntity::class
     ],
-    version = 14,
+    version = 15,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -773,6 +773,19 @@ abstract class LaterboxDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Non-destructive migration from version 14 to version 15:
+         * Adds backdrop_url and is_trailer columns (plus index on is_trailer) to movie_watch_history
+         * so Continue Watching renders crisp backdrop artwork and isolates trailer views from full-title progress.
+         */
+        val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `movie_watch_history` ADD COLUMN `backdrop_url` TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE `movie_watch_history` ADD COLUMN `is_trailer` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movie_watch_history_is_trailer` ON `movie_watch_history` (`is_trailer`)")
+            }
+        }
+
         @Volatile
         private var INSTANCE: LaterboxDatabase? = null
 
@@ -796,7 +809,8 @@ abstract class LaterboxDatabase : RoomDatabase() {
                         MIGRATION_10_11,
                         MIGRATION_11_12,
                         MIGRATION_12_13,
-                        MIGRATION_13_14
+                        MIGRATION_13_14,
+                        MIGRATION_14_15
                     )
                     .build()
                     .also { INSTANCE = it }

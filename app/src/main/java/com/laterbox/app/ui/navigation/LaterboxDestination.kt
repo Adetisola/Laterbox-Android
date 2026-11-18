@@ -11,6 +11,8 @@ sealed class LaterboxDestination(val route: String) {
     object SettingsCaptureShortcuts : LaterboxDestination("settings/capture_shortcuts")
     object SettingsReadingBehavior : LaterboxDestination("settings/reading_behavior")
     object SettingsMediaDownloads : LaterboxDestination("settings/media_downloads")
+    object SettingsMoviesTv : LaterboxDestination("settings/movies_tv")
+    object MoviesViewingHistory : LaterboxDestination("movies/viewing_history")
     object SettingsDataStorage : LaterboxDestination("settings/data_storage")
     object SettingsAboutPrivacy : LaterboxDestination("settings/about_privacy")
     object NotificationHistory : LaterboxDestination("notification_history")

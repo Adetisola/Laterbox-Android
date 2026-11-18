@@ -2,9 +2,10 @@ package com.laterbox.app.movies.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.laterbox.app.data.preferences.SubtitleStyleConfig
+import com.laterbox.app.data.preferences.UserPreferencesRepository
 import com.laterbox.app.movies.data.download.MoviesDownloadBridge
 import com.laterbox.app.movies.domain.model.AudioDubInfo
-import com.laterbox.app.movies.domain.model.DataSourceBadge
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.model.PlaybackResolution
@@ -16,8 +17,30 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.math.abs
+
+data class PlayerPlaybackPreferences(
+    val doubleTapSeekSeconds: Int = 10,
+    val swipeToSeekEnabled: Boolean = true,
+    val swipeSeekSensitivity: Float = 1.0f,
+    val brightnessGestureEnabled: Boolean = true,
+    val volumeGestureEnabled: Boolean = true,
+    val autoplayNextEpisode: Boolean = true,
+    val autoplayCountdownSeconds: Int = 10,
+    val defaultQualityHeight: Int = 720,
+    val subtitleStyle: SubtitleStyleConfig = SubtitleStyleConfig()
+)
+
+data class NextEpisodePreview(
+    val seasonNumber: Int,
+    val episodeNumber: Int,
+    val title: String,
+    val episodeLabel: String,
+    val thumbnailUrl: String?
+)
 
 data class MoviePlayerUiState(
     val isLoading: Boolean = true,
@@ -32,6 +55,9 @@ data class MoviePlayerUiState(
     val seasonNumber: Int? = null,
     val episodeNumber: Int? = null,
     val episodeLabel: String? = null,
+    val nextEpisodePreview: NextEpisodePreview? = null,
+    val relatedTitles: List<MovieTitleSummary> = emptyList(),
+    val playbackPreferences: PlayerPlaybackPreferences = PlayerPlaybackPreferences(),
     val isEnqueuingDownload: Boolean = false,
     val downloadStatusMessage: String? = null,
     val errorMessage: String? = null
@@ -59,7 +85,8 @@ data class MoviePlayerUiState(
 
 class MoviePlayerViewModel(
     private val moviesRepository: MoviesRepository,
-    private val moviesDownloadBridge: MoviesDownloadBridge? = null
+    private val moviesDownloadBridge: MoviesDownloadBridge? = null,
+    private val userPreferencesRepository: UserPreferencesRepository? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MoviePlayerUiState())
@@ -68,6 +95,38 @@ class MoviePlayerViewModel(
     private var loadJob: Job? = null
     private var loadedKey: String? = null
     private var activeProviderId: String = ""
+
+    init {
+        userPreferencesRepository?.let { prefsRepo ->
+            viewModelScope.launch {
+                prefsRepo.userPreferencesFlow.collect { prefs ->
+                    val mapped = PlayerPlaybackPreferences(
+                        doubleTapSeekSeconds = prefs.moviesDoubleTapSeekSeconds,
+                        swipeToSeekEnabled = prefs.moviesSwipeToSeekEnabled,
+                        swipeSeekSensitivity = prefs.moviesSwipeSeekSensitivity,
+                        brightnessGestureEnabled = prefs.moviesBrightnessGestureEnabled,
+                        volumeGestureEnabled = prefs.moviesVolumeGestureEnabled,
+                        autoplayNextEpisode = prefs.moviesAutoplayNextEpisode,
+                        autoplayCountdownSeconds = prefs.moviesAutoplayCountdownSeconds,
+                        defaultQualityHeight = prefs.moviesDefaultQualityHeight,
+                        subtitleStyle = prefs.toSubtitleStyleConfig()
+                    )
+                    _uiState.update { it.copy(playbackPreferences = mapped) }
+                }
+            }
+        }
+    }
+
+    fun updateSubtitleStyle(config: SubtitleStyleConfig) {
+        _uiState.update {
+            it.copy(playbackPreferences = it.playbackPreferences.copy(subtitleStyle = config))
+        }
+        userPreferencesRepository?.let { repo ->
+            viewModelScope.launch {
+                repo.setSubtitleStyleConfig(config)
+            }
+        }
+    }
 
     fun load(
         providerId: String,
@@ -83,12 +142,27 @@ class MoviePlayerViewModel(
 
         loadJob?.cancel()
         loadJob = viewModelScope.launch {
+            val currentPrefs = userPreferencesRepository?.userPreferencesFlow?.firstOrNull()?.let { prefs ->
+                PlayerPlaybackPreferences(
+                    doubleTapSeekSeconds = prefs.moviesDoubleTapSeekSeconds,
+                    swipeToSeekEnabled = prefs.moviesSwipeToSeekEnabled,
+                    swipeSeekSensitivity = prefs.moviesSwipeSeekSensitivity,
+                    brightnessGestureEnabled = prefs.moviesBrightnessGestureEnabled,
+                    volumeGestureEnabled = prefs.moviesVolumeGestureEnabled,
+                    autoplayNextEpisode = prefs.moviesAutoplayNextEpisode,
+                    autoplayCountdownSeconds = prefs.moviesAutoplayCountdownSeconds,
+                    defaultQualityHeight = prefs.moviesDefaultQualityHeight,
+                    subtitleStyle = prefs.toSubtitleStyleConfig()
+                )
+            } ?: _uiState.value.playbackPreferences
+
             _uiState.update {
                 MoviePlayerUiState(
                     isLoading = true,
                     activeTitleId = titleId,
                     seasonNumber = seasonNumber,
-                    episodeNumber = episodeNumber
+                    episodeNumber = episodeNumber,
+                    playbackPreferences = currentPrefs
                 )
             }
 
@@ -98,8 +172,10 @@ class MoviePlayerViewModel(
                 onSuccess = { resolution ->
                     when (resolution) {
                         is PlaybackResolution.Available -> {
-                            val defaultSource = resolution.sources.firstOrNull { it.qualityHeight <= 720 }
-                                ?: resolution.sources.firstOrNull()
+                            val defaultSource = pickPreferredSource(
+                                sources = resolution.sources,
+                                preferredQualityHeight = currentPrefs.defaultQualityHeight
+                            )
                             val defaultSub = resolution.subtitles.firstOrNull {
                                 it.languageCode.equals("en", ignoreCase = true)
                             } ?: resolution.subtitles.firstOrNull()
@@ -115,6 +191,31 @@ class MoviePlayerViewModel(
                                 "S${seasonNumber} · E${episodeNumber}"
                             } else null
 
+                            val nextTarget = computeNextEpisodeTarget(
+                                seasonNumber = seasonNumber,
+                                episodeNumber = episodeNumber,
+                                seasons = details?.seasons.orEmpty()
+                            )
+                            val nextPreview = if (nextTarget != null) {
+                                val nextEpItem = moviesRepository.getEpisodes(
+                                    providerId = summary.providerId,
+                                    seriesId = summary.id,
+                                    seasonNumber = nextTarget.first
+                                ).getOrNull()?.firstOrNull { it.episodeNumber == nextTarget.second }
+                                NextEpisodePreview(
+                                    seasonNumber = nextTarget.first,
+                                    episodeNumber = nextTarget.second,
+                                    title = nextEpItem?.title?.takeIf { it.isNotBlank() }
+                                        ?: "Episode ${nextTarget.second}",
+                                    episodeLabel = "S${nextTarget.first} · E${nextTarget.second}",
+                                    thumbnailUrl = nextEpItem?.stillUrl
+                                        ?: summary.backdropUrl
+                                        ?: summary.posterUrl
+                                )
+                            } else {
+                                null
+                            }
+
                             _uiState.update {
                                 it.copy(
                                     isLoading = false,
@@ -127,6 +228,8 @@ class MoviePlayerViewModel(
                                     availableDubs = details?.audioDubs.orEmpty(),
                                     seasons = details?.seasons.orEmpty(),
                                     episodeLabel = epLabel,
+                                    nextEpisodePreview = nextPreview,
+                                    relatedTitles = details?.relatedTitles.orEmpty().take(8),
                                     errorMessage = null
                                 )
                             }
@@ -140,6 +243,7 @@ class MoviePlayerViewModel(
                                     activeTitleId = titleId,
                                     availableDubs = details?.audioDubs.orEmpty(),
                                     seasons = details?.seasons.orEmpty(),
+                                    relatedTitles = details?.relatedTitles.orEmpty().take(8),
                                     errorMessage = null
                                 )
                             }
@@ -188,7 +292,8 @@ class MoviePlayerViewModel(
         val seasonNumber = currentState.seasonNumber
         val episodeNumber = currentState.episodeNumber
         val preservedPosMs = currentPositionMs.coerceAtLeast(0L)
-        val preferredHeight = currentState.selectedSource?.qualityHeight ?: 720
+        val preferredHeight = currentState.selectedSource?.qualityHeight
+            ?: currentState.playbackPreferences.defaultQualityHeight
         val previousDubs = currentState.availableDubs
         val previousSeasons = currentState.seasons
         val previousSubCode = currentState.selectedSubtitleTrack?.languageCode
@@ -208,8 +313,7 @@ class MoviePlayerViewModel(
                     when (resolution) {
                         is PlaybackResolution.Available -> {
                             val matchedSource = resolution.sources.firstOrNull { it.qualityHeight == preferredHeight }
-                                ?: resolution.sources.firstOrNull { it.qualityHeight <= 720 }
-                                ?: resolution.sources.firstOrNull()
+                                ?: pickPreferredSource(resolution.sources, preferredHeight)
                             val matchedSub = previousSubCode?.let { code ->
                                 resolution.subtitles.firstOrNull { it.languageCode.equals(code, ignoreCase = true) }
                             } ?: currentState.selectedSubtitleTrack?.let { null } ?: resolution.subtitles.firstOrNull {
@@ -343,5 +447,43 @@ class MoviePlayerViewModel(
 
     fun clearDownloadStatus() {
         _uiState.update { it.copy(downloadStatusMessage = null) }
+    }
+
+    companion object {
+        fun pickPreferredSource(
+            sources: List<PlaybackSource>,
+            preferredQualityHeight: Int
+        ): PlaybackSource? {
+            if (sources.isEmpty()) return null
+            val target = preferredQualityHeight.coerceIn(240, 2160)
+            return sources
+                .filter { it.qualityHeight in 1..target }
+                .maxByOrNull { it.qualityHeight }
+                ?: sources.minByOrNull { abs(it.qualityHeight - target) }
+                ?: sources.firstOrNull()
+        }
+
+        private fun computeNextEpisodeTarget(
+            seasonNumber: Int?,
+            episodeNumber: Int?,
+            seasons: List<SeasonSummary>
+        ): Pair<Int, Int>? {
+            val s = seasonNumber ?: return null
+            val e = episodeNumber ?: return null
+            if (seasons.isEmpty()) return null
+            val ordered = seasons.sortedBy { it.seasonNumber }
+            val currentIdx = ordered.indexOfFirst { it.seasonNumber == s }
+            if (currentIdx < 0) return null
+            val currentSeason = ordered[currentIdx]
+            if (currentSeason.episodeCount > 0 && e < currentSeason.episodeCount) {
+                return s to (e + 1)
+            }
+            val nextSeason = ordered.getOrNull(currentIdx + 1)
+            return if (nextSeason != null && (nextSeason.episodeCount <= 0 || nextSeason.episodeCount >= 1)) {
+                nextSeason.seasonNumber to 1
+            } else {
+                null
+            }
+        }
     }
 }

@@ -95,6 +95,15 @@ object MovieBoxEndpointConfig {
     }
 }
 
+data class SubtitleStyleConfig(
+    val useSystemCaptions: Boolean = false,
+    val fontSizeSp: Float = 20f,
+    val textColorArgb: Int = 0xFFFFFFFF.toInt(),
+    val backgroundColorArgb: Int = 0xFF000000.toInt(),
+    val backgroundOpacity: Float = 0.67f,
+    val edgeType: Int = 2 // 0=none, 1=outline, 2=drop_shadow
+)
+
 data class UserPreferences(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val autoMarkAsRead: Boolean = true,
@@ -173,9 +182,34 @@ data class UserPreferences(
     val manualCapturesCount: Int = 0,
     val tmdbApiKey: String = "",
     val moviesUseSampleFixturesOnly: Boolean = false,
-    val movieBoxApiBaseUrl: String = ""
+    val movieBoxApiBaseUrl: String = "",
+    // Movies & TV player, gesture, subtitle, and playback preferences
+    val moviesDoubleTapSeekSeconds: Int = 10,
+    val moviesSwipeToSeekEnabled: Boolean = true,
+    val moviesSwipeSeekSensitivity: Float = 1.0f,
+    val moviesBrightnessGestureEnabled: Boolean = true,
+    val moviesVolumeGestureEnabled: Boolean = true,
+    val moviesAutoplayNextEpisode: Boolean = true,
+    val moviesAutoplayCountdownSeconds: Int = 10,
+    val moviesDefaultQualityHeight: Int = 720,
+    val moviesTrailerMuted: Boolean = false,
+    val subtitleUseSystemCaptions: Boolean = false,
+    val subtitleFontSizeSp: Float = 20f,
+    val subtitleTextColorArgb: Int = 0xFFFFFFFF.toInt(),
+    val subtitleBackgroundColorArgb: Int = 0xFF000000.toInt(),
+    val subtitleBackgroundOpacity: Float = 0.67f,
+    val subtitleEdgeType: Int = 2
 ) {
     val allowSystemBackup: Boolean get() = includeInBackup
+
+    fun toSubtitleStyleConfig(): SubtitleStyleConfig = SubtitleStyleConfig(
+        useSystemCaptions = subtitleUseSystemCaptions,
+        fontSizeSp = subtitleFontSizeSp.coerceIn(12f, 36f),
+        textColorArgb = subtitleTextColorArgb,
+        backgroundColorArgb = subtitleBackgroundColorArgb,
+        backgroundOpacity = subtitleBackgroundOpacity.coerceIn(0f, 1f),
+        edgeType = subtitleEdgeType.coerceIn(0, 2)
+    )
 
     fun toSmartReminderSettings(): SmartReminderSettings = SmartReminderSettings(
         enabled = smartRemindersEnabled,
@@ -304,6 +338,21 @@ class UserPreferencesRepository(private val context: Context) {
         val MOVIES_PREFS_MIGRATED_V2 = booleanPreferencesKey("movies_prefs_migrated_v2")
         val MOVIEBOX_API_BASE_URL = stringPreferencesKey("moviebox_api_base_url")
         val MOVIEBOX_API_KEY = stringPreferencesKey("moviebox_api_key")
+        val MOVIES_DOUBLE_TAP_SEEK_SECONDS = intPreferencesKey("movies_double_tap_seek_seconds")
+        val MOVIES_SWIPE_TO_SEEK_ENABLED = booleanPreferencesKey("movies_swipe_to_seek_enabled")
+        val MOVIES_SWIPE_SEEK_SENSITIVITY = floatPreferencesKey("movies_swipe_seek_sensitivity")
+        val MOVIES_BRIGHTNESS_GESTURE_ENABLED = booleanPreferencesKey("movies_brightness_gesture_enabled")
+        val MOVIES_VOLUME_GESTURE_ENABLED = booleanPreferencesKey("movies_volume_gesture_enabled")
+        val MOVIES_AUTOPLAY_NEXT_EPISODE = booleanPreferencesKey("movies_autoplay_next_episode")
+        val MOVIES_AUTOPLAY_COUNTDOWN_SECONDS = intPreferencesKey("movies_autoplay_countdown_seconds")
+        val MOVIES_DEFAULT_QUALITY_HEIGHT = intPreferencesKey("movies_default_quality_height")
+        val MOVIES_TRAILER_MUTED = booleanPreferencesKey("movies_trailer_muted")
+        val SUBTITLE_USE_SYSTEM_CAPTIONS = booleanPreferencesKey("subtitle_use_system_captions")
+        val SUBTITLE_FONT_SIZE_SP = floatPreferencesKey("subtitle_font_size_sp")
+        val SUBTITLE_TEXT_COLOR_ARGB = intPreferencesKey("subtitle_text_color_argb")
+        val SUBTITLE_BACKGROUND_COLOR_ARGB = intPreferencesKey("subtitle_background_color_argb")
+        val SUBTITLE_BACKGROUND_OPACITY = floatPreferencesKey("subtitle_background_opacity")
+        val SUBTITLE_EDGE_TYPE = intPreferencesKey("subtitle_edge_type")
     }
 
     val userPreferencesFlow: Flow<UserPreferences> = context.userDataStore.data.map { preferences ->
@@ -509,7 +558,22 @@ class UserPreferencesRepository(private val context: Context) {
             manualCapturesCount = preferences[PreferencesKeys.MANUAL_CAPTURES_COUNT] ?: 0,
             tmdbApiKey = preferences[PreferencesKeys.TMDB_API_KEY] ?: "",
             moviesUseSampleFixturesOnly = debugSampleFixturesOnly,
-            movieBoxApiBaseUrl = movieBoxApiBaseUrl
+            movieBoxApiBaseUrl = movieBoxApiBaseUrl,
+            moviesDoubleTapSeekSeconds = (preferences[PreferencesKeys.MOVIES_DOUBLE_TAP_SEEK_SECONDS] ?: 10).coerceIn(5, 60),
+            moviesSwipeToSeekEnabled = preferences[PreferencesKeys.MOVIES_SWIPE_TO_SEEK_ENABLED] ?: true,
+            moviesSwipeSeekSensitivity = (preferences[PreferencesKeys.MOVIES_SWIPE_SEEK_SENSITIVITY] ?: 1.0f).coerceIn(0.25f, 2.0f),
+            moviesBrightnessGestureEnabled = preferences[PreferencesKeys.MOVIES_BRIGHTNESS_GESTURE_ENABLED] ?: true,
+            moviesVolumeGestureEnabled = preferences[PreferencesKeys.MOVIES_VOLUME_GESTURE_ENABLED] ?: true,
+            moviesAutoplayNextEpisode = preferences[PreferencesKeys.MOVIES_AUTOPLAY_NEXT_EPISODE] ?: true,
+            moviesAutoplayCountdownSeconds = (preferences[PreferencesKeys.MOVIES_AUTOPLAY_COUNTDOWN_SECONDS] ?: 10).coerceIn(3, 30),
+            moviesDefaultQualityHeight = (preferences[PreferencesKeys.MOVIES_DEFAULT_QUALITY_HEIGHT] ?: 720).coerceIn(240, 2160),
+            moviesTrailerMuted = preferences[PreferencesKeys.MOVIES_TRAILER_MUTED] ?: false,
+            subtitleUseSystemCaptions = preferences[PreferencesKeys.SUBTITLE_USE_SYSTEM_CAPTIONS] ?: false,
+            subtitleFontSizeSp = (preferences[PreferencesKeys.SUBTITLE_FONT_SIZE_SP] ?: 20f).coerceIn(12f, 36f),
+            subtitleTextColorArgb = preferences[PreferencesKeys.SUBTITLE_TEXT_COLOR_ARGB] ?: 0xFFFFFFFF.toInt(),
+            subtitleBackgroundColorArgb = preferences[PreferencesKeys.SUBTITLE_BACKGROUND_COLOR_ARGB] ?: 0xFF000000.toInt(),
+            subtitleBackgroundOpacity = (preferences[PreferencesKeys.SUBTITLE_BACKGROUND_OPACITY] ?: 0.67f).coerceIn(0f, 1f),
+            subtitleEdgeType = (preferences[PreferencesKeys.SUBTITLE_EDGE_TYPE] ?: 2).coerceIn(0, 2)
         )
     }
 
@@ -1003,6 +1067,77 @@ class UserPreferencesRepository(private val context: Context) {
             } else {
                 preferences.remove(PreferencesKeys.MOVIEBOX_API_BASE_URL)
             }
+        }
+    }
+
+    suspend fun setMoviesDoubleTapSeekSeconds(seconds: Int) {
+        context.userDataStore.edit { preferences ->
+            preferences[PreferencesKeys.MOVIES_DOUBLE_TAP_SEEK_SECONDS] = seconds.coerceIn(5, 60)
+        }
+    }
+
+    suspend fun setMoviesSwipeToSeekEnabled(enabled: Boolean) {
+        context.userDataStore.edit { preferences ->
+            preferences[PreferencesKeys.MOVIES_SWIPE_TO_SEEK_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setMoviesSwipeSeekSensitivity(sensitivity: Float) {
+        context.userDataStore.edit { preferences ->
+            preferences[PreferencesKeys.MOVIES_SWIPE_SEEK_SENSITIVITY] = sensitivity.coerceIn(0.25f, 2.0f)
+        }
+    }
+
+    suspend fun setMoviesBrightnessGestureEnabled(enabled: Boolean) {
+        context.userDataStore.edit { preferences ->
+            preferences[PreferencesKeys.MOVIES_BRIGHTNESS_GESTURE_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setMoviesVolumeGestureEnabled(enabled: Boolean) {
+        context.userDataStore.edit { preferences ->
+            preferences[PreferencesKeys.MOVIES_VOLUME_GESTURE_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setMoviesAutoplayNextEpisode(enabled: Boolean) {
+        context.userDataStore.edit { preferences ->
+            preferences[PreferencesKeys.MOVIES_AUTOPLAY_NEXT_EPISODE] = enabled
+        }
+    }
+
+    suspend fun setMoviesAutoplayCountdownSeconds(seconds: Int) {
+        context.userDataStore.edit { preferences ->
+            preferences[PreferencesKeys.MOVIES_AUTOPLAY_COUNTDOWN_SECONDS] = seconds.coerceIn(3, 30)
+        }
+    }
+
+    suspend fun setMoviesDefaultQualityHeight(height: Int) {
+        context.userDataStore.edit { preferences ->
+            preferences[PreferencesKeys.MOVIES_DEFAULT_QUALITY_HEIGHT] = height.coerceIn(240, 2160)
+        }
+    }
+
+    suspend fun setMoviesTrailerMuted(muted: Boolean) {
+        context.userDataStore.edit { preferences ->
+            preferences[PreferencesKeys.MOVIES_TRAILER_MUTED] = muted
+        }
+    }
+
+    suspend fun setSubtitleUseSystemCaptions(enabled: Boolean) {
+        context.userDataStore.edit { preferences ->
+            preferences[PreferencesKeys.SUBTITLE_USE_SYSTEM_CAPTIONS] = enabled
+        }
+    }
+
+    suspend fun setSubtitleStyleConfig(config: SubtitleStyleConfig) {
+        context.userDataStore.edit { preferences ->
+            preferences[PreferencesKeys.SUBTITLE_USE_SYSTEM_CAPTIONS] = config.useSystemCaptions
+            preferences[PreferencesKeys.SUBTITLE_FONT_SIZE_SP] = config.fontSizeSp.coerceIn(12f, 36f)
+            preferences[PreferencesKeys.SUBTITLE_TEXT_COLOR_ARGB] = config.textColorArgb
+            preferences[PreferencesKeys.SUBTITLE_BACKGROUND_COLOR_ARGB] = config.backgroundColorArgb
+            preferences[PreferencesKeys.SUBTITLE_BACKGROUND_OPACITY] = config.backgroundOpacity.coerceIn(0f, 1f)
+            preferences[PreferencesKeys.SUBTITLE_EDGE_TYPE] = config.edgeType.coerceIn(0, 2)
         }
     }
 }

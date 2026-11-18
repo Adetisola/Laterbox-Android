@@ -947,4 +947,142 @@ class MoviesViewModelsTest {
         advanceUntilIdle()
         assertTrue(enqueuedTitles.isEmpty())
     }
+
+    @Test
+    fun playerViewModel_picksPreferredDefaultQualityLoadsNextEpisodePreviewAndRelatedTitles() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = UserPreferencesRepository(context)
+        prefs.setMoviesDefaultQualityHeight(1080)
+
+        val baseFake = FakeMoviesRepository()
+        val customRepo = object : MoviesRepository by baseFake {
+            override suspend fun getDetails(providerId: String, titleId: String, forceRefresh: Boolean) =
+                Result.success(
+                    MediaDetails(
+                        summary = baseFake.sampleSeries.copy(
+                            id = "mb_series",
+                            providerId = "moviebox",
+                            backdropUrl = "https://cdn.example/series_backdrop.jpg"
+                        ),
+                        seasons = listOf(SeasonSummary(1, "Season 1", 4)),
+                        relatedTitles = listOf(baseFake.sampleMovie)
+                    )
+                )
+
+            override suspend fun getEpisodes(providerId: String, seriesId: String, seasonNumber: Int) =
+                Result.success(
+                    listOf(
+                        EpisodeItem("ep1", seasonNumber, 1, "Good News"),
+                        EpisodeItem("ep2", seasonNumber, 2, "Half Loop", stillUrl = "https://cdn.example/ep2_still.jpg")
+                    )
+                )
+
+            override suspend fun resolvePlayback(
+                providerId: String,
+                titleId: String,
+                seasonNumber: Int?,
+                episodeNumber: Int?
+            ): Result<PlaybackResolution> {
+                return Result.success(
+                    PlaybackResolution.Available(
+                        title = "Breaking Bad",
+                        sources = listOf(
+                            PlaybackSource("s1080", "https://cdn.example/1080.mp4", "MP4", "1080p", 1080, providerName = "MovieBox"),
+                            PlaybackSource("s720", "https://cdn.example/720.mp4", "MP4", "720p", 720, providerName = "MovieBox"),
+                            PlaybackSource("s480", "https://cdn.example/480.mp4", "MP4", "480p", 480, providerName = "MovieBox")
+                        ),
+                        providerName = "MovieBox",
+                        sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+                    )
+                )
+            }
+        }
+
+        val vm = MoviePlayerViewModel(customRepo, userPreferencesRepository = prefs)
+        vm.load("moviebox", "mb_series", seasonNumber = 1, episodeNumber = 1)
+        val state = vm.uiState.first { !it.isLoading }
+        assertEquals(1080, state.selectedSource?.qualityHeight)
+        assertEquals(1, state.nextEpisodePreview?.seasonNumber)
+        assertEquals(2, state.nextEpisodePreview?.episodeNumber)
+        assertEquals("Half Loop", state.nextEpisodePreview?.title)
+        assertEquals("https://cdn.example/ep2_still.jpg", state.nextEpisodePreview?.thumbnailUrl)
+        assertEquals(listOf("his_girl_friday"), state.relatedTitles.map { it.id })
+
+        // Verify pickPreferredSource picks closest <= target, or nearest if all higher
+        val pickedLow = MoviePlayerViewModel.pickPreferredSource(
+            (state.resolution as PlaybackResolution.Available).sources,
+            preferredQualityHeight = 720
+        )
+        assertEquals(720, pickedLow?.qualityHeight)
+    }
+
+    @Test
+    fun detailViewModel_controlsInlineTrailerPersistsMutePreferenceAndHandlesError() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = UserPreferencesRepository(context)
+        prefs.setMoviesTrailerMuted(false)
+
+        val trailerCalls = mutableListOf<Triple<String, Long, Long>>()
+        val baseFake = FakeMoviesRepository()
+        val customRepo = object : MoviesRepository by baseFake {
+            override suspend fun getDetails(providerId: String, titleId: String, forceRefresh: Boolean) =
+                Result.success(
+                    MediaDetails(
+                        summary = baseFake.sampleSeries.copy(
+                            id = "mb_series",
+                            providerId = "moviebox",
+                            trailerUrl = "https://cdn.example/trailer.mp4"
+                        ),
+                        seasons = listOf(SeasonSummary(1, "Season 1", 7))
+                    )
+                )
+
+            override suspend fun recordTrailerWatch(item: MovieTitleSummary, positionMs: Long, durationMs: Long) {
+                trailerCalls.add(Triple(item.id, positionMs, durationMs))
+            }
+        }
+
+        val vm = MovieDetailViewModel(customRepo, userPreferencesRepository = prefs)
+        vm.load("moviebox", "mb_series")
+        vm.uiState.first { !it.isLoading && it.details != null }
+
+        // Does NOT autoplay when detail opens
+        assertFalse(vm.uiState.value.isTrailerPlaying)
+        assertFalse(vm.uiState.value.trailerMuted)
+
+        // Start inline trailer -> unmuted by default, records trailer watch
+        vm.onPlayTrailerClick()
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.isTrailerPlaying)
+        assertNull(vm.uiState.value.trailerError)
+        assertEquals(1, trailerCalls.size)
+
+        // Toggle mute -> updates state & persists preference
+        vm.onToggleTrailerMute()
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.trailerMuted)
+        assertTrue(prefs.userPreferencesFlow.first { it.moviesTrailerMuted }.moviesTrailerMuted)
+
+        // Fullscreen expansion preserves current timestamp & position update
+        vm.onSetTrailerFullscreen(fullscreen = true, currentPositionMs = 24_500L)
+        assertTrue(vm.uiState.value.isTrailerFullscreen)
+        assertEquals(24_500L, vm.uiState.value.trailerPositionMs)
+
+        vm.onSetTrailerFullscreen(fullscreen = false, currentPositionMs = 31_000L)
+        assertFalse(vm.uiState.value.isTrailerFullscreen)
+        assertEquals(31_000L, vm.uiState.value.trailerPositionMs)
+
+        // Error stops cleanly with message
+        vm.onTrailerPlaybackError("Trailer stream unavailable")
+        assertFalse(vm.uiState.value.isTrailerPlaying)
+        assertFalse(vm.uiState.value.isTrailerFullscreen)
+        assertEquals("Trailer stream unavailable", vm.uiState.value.trailerError)
+
+        // Clean stop resets state
+        vm.onPlayTrailerClick()
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.isTrailerPlaying)
+        vm.onStopTrailer()
+        assertFalse(vm.uiState.value.isTrailerPlaying)
+    }
 }

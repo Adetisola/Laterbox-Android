@@ -1770,4 +1770,50 @@ class LaterboxDatabaseTest {
             context.deleteDatabase(dbName)
         }
     }
+
+    @Test
+    fun migration14To15_addsBackdropUrlAndIsTrailerAndIsolatesTrailers() {
+        val instrumentation = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+        val helper = androidx.room.testing.MigrationTestHelper(
+            instrumentation,
+            LaterboxDatabase::class.java
+        )
+        val dbName = "migration_14_15_test.db"
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        context.deleteDatabase(dbName)
+
+        helper.createDatabase(dbName, 14).use { v14Db ->
+            v14Db.execSQL(
+                "INSERT INTO `movie_watch_history` (`history_key`, `composite_id`, `provider_id`, `title_id`, `kind`, `title`, `poster_url`, `position_ms`, `duration_ms`, `last_watched_at`) " +
+                    "VALUES ('moviebox:100:0:0', 'moviebox:100', 'moviebox', '100', 'movie', 'Existing Film', 'https://cdn.example/poster.jpg', 45000, 7200000, 1000)"
+            )
+        }
+
+        val migratedDb = helper.runMigrationsAndValidate(
+            dbName,
+            15,
+            true,
+            LaterboxDatabase.MIGRATION_14_15
+        )
+        try {
+            migratedDb.query("SELECT title, backdrop_url, is_trailer FROM `movie_watch_history` WHERE history_key = 'moviebox:100:0:0'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("Existing Film", c.getString(0))
+                assertNull(c.getString(1))
+                assertEquals(0, c.getInt(2))
+            }
+            migratedDb.execSQL(
+                "INSERT INTO `movie_watch_history` (`history_key`, `composite_id`, `provider_id`, `title_id`, `kind`, `title`, `episode_label`, `poster_url`, `backdrop_url`, `position_ms`, `duration_ms`, `last_watched_at`, `is_trailer`) " +
+                    "VALUES ('trailer:moviebox:200', 'moviebox:200', 'moviebox', '200', 'movie', 'Trailer Film', 'Trailer', 'https://cdn.example/p2.jpg', 'https://cdn.example/b2.jpg', 12000, 90000, 2000, 1)"
+            )
+            migratedDb.query("SELECT history_key FROM `movie_watch_history` WHERE is_trailer = 0").use { c ->
+                assertEquals(1, c.count)
+                assertTrue(c.moveToFirst())
+                assertEquals("moviebox:100:0:0", c.getString(0))
+            }
+        } finally {
+            migratedDb.close()
+            context.deleteDatabase(dbName)
+        }
+    }
 }

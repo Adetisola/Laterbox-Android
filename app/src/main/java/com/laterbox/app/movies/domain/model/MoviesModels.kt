@@ -73,6 +73,7 @@ data class MovieTitleSummary(
     val country: String? = null,
     val detailPath: String? = null,
     val trailerUrl: String? = null,
+    val trailerHeaders: Map<String, String> = emptyMap(),
     val sourceBadge: DataSourceBadge = DataSourceBadge.LIVE_INTERNET_ARCHIVE,
     val isPlayableHint: Boolean = false,
     val imdbId: String? = null,
@@ -238,9 +239,12 @@ data class WatchHistoryItem(
     val seasonNumber: Int? = null,
     val episodeNumber: Int? = null,
     val posterUrl: String? = null,
+    val backdropUrl: String? = null,
     val positionMs: Long,
     val durationMs: Long,
-    val lastWatchedAt: Long
+    val lastWatchedAt: Long,
+    val historyKey: String = "",
+    val isTrailer: Boolean = false
 ) {
     val progressFraction: Float
         get() = if (durationMs > 0L) (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f

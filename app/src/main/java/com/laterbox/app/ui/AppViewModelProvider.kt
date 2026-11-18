@@ -74,7 +74,8 @@ object AppViewModelProvider {
                 diagnosticsBuffer = app.container.diagnosticsBuffer,
                 database = app.container.database,
                 backendBaseUrlProvider = { app.container.resolveBackendBaseUrl() },
-                appCheckTokenProvider = { forceRefresh -> app.container.getBackendAppCheckToken(forceRefresh) }
+                appCheckTokenProvider = { forceRefresh -> app.container.getBackendAppCheckToken(forceRefresh) },
+                moviesRepository = app.container.moviesRepository
             )
         }
         initializer {
@@ -114,14 +115,16 @@ object AppViewModelProvider {
             val app = laterboxApplication()
             com.laterbox.app.movies.ui.MovieDetailViewModel(
                 moviesRepository = app.container.moviesRepository,
-                moviesDownloadBridge = app.container.moviesDownloadBridge
+                moviesDownloadBridge = app.container.moviesDownloadBridge,
+                userPreferencesRepository = app.container.userPreferencesRepository
             )
         }
         initializer {
             val app = laterboxApplication()
             com.laterbox.app.movies.ui.MoviePlayerViewModel(
                 moviesRepository = app.container.moviesRepository,
-                moviesDownloadBridge = app.container.moviesDownloadBridge
+                moviesDownloadBridge = app.container.moviesDownloadBridge,
+                userPreferencesRepository = app.container.userPreferencesRepository
             )
         }
     }

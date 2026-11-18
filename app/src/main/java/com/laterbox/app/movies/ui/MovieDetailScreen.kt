@@ -1,5 +1,16 @@
 package com.laterbox.app.movies.ui
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.pm.ActivityInfo
+import android.net.Uri
+import androidx.activity.compose.BackHandler
+import androidx.annotation.OptIn
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -13,6 +24,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -20,6 +32,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -33,13 +46,20 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,14 +67,30 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.laterbox.app.BuildConfig
+import com.laterbox.app.movies.data.cache.MoviesMediaCache
+import com.laterbox.app.movies.data.provider.MovieBoxProvider
 import com.laterbox.app.movies.domain.model.CastMember
 import com.laterbox.app.movies.domain.model.EpisodeItem
 import com.laterbox.app.movies.domain.model.MediaKind
@@ -62,9 +98,10 @@ import com.laterbox.app.movies.domain.model.PlaybackResolution
 import com.laterbox.app.movies.domain.model.PlaybackSource
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.theme.LaterboxTheme
+import kotlinx.coroutines.delay
 import java.util.Locale
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, UnstableApi::class)
 @Composable
 fun MovieDetailScreen(
     uiState: MovieDetailUiState,
@@ -82,10 +119,18 @@ fun MovieDetailScreen(
     onCastMemberClick: (CastMember) -> Unit = {},
     onDismissPersonSheet: () -> Unit = {},
     onDownloadEpisodesBatch: (seasonNumber: Int, episodeNumbers: List<Int>, preferredQualityHeight: Int?) -> Unit = { _, _, _ -> },
+    onPlayTrailerClick: () -> Unit = {},
+    onStopTrailer: () -> Unit = {},
+    onToggleTrailerMute: () -> Unit = {},
+    onSetTrailerFullscreen: (fullscreen: Boolean, currentPositionMs: Long) -> Unit = { _, _ -> },
+    onRecordTrailerProgress: (positionMs: Long, durationMs: Long) -> Unit = { _, _ -> },
+    onTrailerPlaybackError: (String?) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
+    val context = LocalContext.current
+    val activity = remember(context) { context.findDetailActivity() }
     var showDownloadDialog by remember { mutableStateOf(false) }
     var showPosterViewer by remember { mutableStateOf(false) }
 
@@ -131,6 +176,159 @@ fun MovieDetailScreen(
             onOpenCredit = onOpenRelated,
             onDismiss = onDismissPersonSheet
         )
+    }
+
+    val summaryForTrailer = uiState.details?.summary
+    val validTrailerUrl = summaryForTrailer?.trailerUrl?.trim()?.takeIf {
+        it.startsWith("http://", ignoreCase = true) || it.startsWith("https://", ignoreCase = true)
+    }
+
+    // Single shared ExoPlayer instance for the active trailer across inline and landscape fullscreen
+    var trailerIsPlaying by remember(summaryForTrailer?.id, validTrailerUrl) { mutableStateOf(true) }
+    var trailerPosMs by remember(summaryForTrailer?.id, validTrailerUrl) { mutableLongStateOf(uiState.trailerPositionMs) }
+    var trailerDurMs by remember(summaryForTrailer?.id, validTrailerUrl) { mutableLongStateOf(0L) }
+
+    val trailerPlayer: ExoPlayer? = if (uiState.isTrailerPlaying && validTrailerUrl != null) {
+        val headers = remember(summaryForTrailer?.trailerHeaders) {
+            summaryForTrailer?.trailerHeaders.orEmpty()
+        }
+        val player = remember(summaryForTrailer?.id, validTrailerUrl) {
+            val mediaSourceFactory = MoviesMediaCache.createMediaSourceFactory(
+                context = context,
+                headers = headers,
+                useDiskCache = true
+            )
+            ExoPlayer.Builder(context)
+                .setMediaSourceFactory(mediaSourceFactory)
+                .build()
+        }
+        val latestOnRecordProgress by rememberUpdatedState(onRecordTrailerProgress)
+        val latestOnTrailerError by rememberUpdatedState(onTrailerPlaybackError)
+        val latestOnStopTrailer by rememberUpdatedState(onStopTrailer)
+
+        LaunchedEffect(player, uiState.trailerMuted) {
+            player.volume = if (uiState.trailerMuted) 0f else 1f
+        }
+
+        LaunchedEffect(player, validTrailerUrl) {
+            player.setMediaItem(MediaItem.fromUri(Uri.parse(validTrailerUrl)))
+            if (uiState.trailerPositionMs > 0L) {
+                player.seekTo(uiState.trailerPositionMs)
+            }
+            player.volume = if (uiState.trailerMuted) 0f else 1f
+            player.prepare()
+            player.playWhenReady = true
+        }
+
+        DisposableEffect(player) {
+            val listener = object : Player.Listener {
+                override fun onIsPlayingChanged(playing: Boolean) {
+                    trailerIsPlaying = playing
+                }
+
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (playbackState == Player.STATE_ENDED) {
+                        latestOnRecordProgress(player.duration.coerceAtLeast(0L), player.duration.coerceAtLeast(0L))
+                        latestOnStopTrailer()
+                    }
+                }
+
+                override fun onPlayerError(error: PlaybackException) {
+                    latestOnTrailerError(error.message ?: "Unable to play trailer.")
+                }
+            }
+            player.addListener(listener)
+            onDispose {
+                latestOnRecordProgress(
+                    player.currentPosition.coerceAtLeast(0L),
+                    player.duration.coerceAtLeast(0L)
+                )
+                player.removeListener(listener)
+                player.release()
+            }
+        }
+
+        LaunchedEffect(player) {
+            var tick = 0
+            while (true) {
+                val cur = player.currentPosition.coerceAtLeast(0L)
+                val dur = player.duration.coerceAtLeast(0L)
+                trailerPosMs = cur
+                trailerDurMs = dur
+                trailerIsPlaying = player.isPlaying || (player.playWhenReady && player.playbackState == Player.STATE_BUFFERING)
+                tick++
+                if (tick % 8 == 0 && player.isPlaying) {
+                    latestOnRecordProgress(cur, dur)
+                }
+                delay(350L)
+            }
+        }
+
+        if (uiState.isTrailerFullscreen) {
+            BackHandler {
+                onSetTrailerFullscreen(false, player.currentPosition.coerceAtLeast(0L))
+            }
+            DisposableEffect(activity) {
+                activity?.let { act ->
+                    act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                    val controller = WindowCompat.getInsetsController(act.window, act.window.decorView)
+                    controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    controller.hide(WindowInsetsCompat.Type.systemBars())
+                }
+                onDispose {
+                    activity?.let { act ->
+                        if (!act.isChangingConfigurations) {
+                            act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                            val controller = WindowCompat.getInsetsController(act.window, act.window.decorView)
+                            controller.show(WindowInsetsCompat.Type.systemBars())
+                        }
+                    }
+                }
+            }
+            Dialog(
+                onDismissRequest = {
+                    onSetTrailerFullscreen(false, player.currentPosition.coerceAtLeast(0L))
+                },
+                properties = DialogProperties(
+                    usePlatformDefaultWidth = false,
+                    decorFitsSystemWindows = false
+                )
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black)
+                        .displayCutoutPadding()
+                        .testTag("detail_trailer_fullscreen_dialog")
+                ) {
+                    InlineTrailerPlayerSurface(
+                        exoPlayer = player,
+                        title = summaryForTrailer?.title ?: "Trailer",
+                        isPlaying = trailerIsPlaying,
+                        isMuted = uiState.trailerMuted,
+                        currentPositionMs = trailerPosMs,
+                        durationMs = trailerDurMs,
+                        isFullscreen = true,
+                        onTogglePlayPause = {
+                            if (player.isPlaying) player.pause() else player.play()
+                        },
+                        onSeekTo = { target ->
+                            player.seekTo(target)
+                            trailerPosMs = target
+                        },
+                        onToggleMute = onToggleTrailerMute,
+                        onToggleFullscreen = {
+                            onSetTrailerFullscreen(false, player.currentPosition.coerceAtLeast(0L))
+                        },
+                        onClose = onStopTrailer
+                    )
+                }
+            }
+        }
+
+        player
+    } else {
+        null
     }
 
     Box(
@@ -264,7 +462,7 @@ fun MovieDetailScreen(
                     contentPadding = PaddingValues(bottom = 36.dp),
                     verticalArrangement = Arrangement.spacedBy(18.dp)
                 ) {
-                    // Top Hero Backdrop & Poster Header
+                    // Top Hero Backdrop & Poster Header (with inline Trailer Player crossfade)
                     item(key = "detail_hero") {
                         Box(
                             modifier = Modifier
@@ -273,118 +471,196 @@ fun MovieDetailScreen(
                                 .heightIn(min = 252.dp, max = 320.dp)
                                 .background(colors.surfaceSecondary)
                         ) {
-                            BackdropArtworkBox(
-                                backdropUrl = summary.backdropUrl,
-                                posterUrl = summary.posterUrl,
-                                contentDescription = summary.title,
-                                modifier = Modifier.fillMaxSize()
-                            )
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .background(
-                                        Brush.verticalGradient(
-                                            listOf(
-                                                Color.Black.copy(alpha = 0.35f),
-                                                colors.backgroundPrimary.copy(alpha = 0.58f),
-                                                colors.backgroundPrimary
-                                            )
-                                        )
+                            val showInlineTrailer = uiState.isTrailerPlaying && trailerPlayer != null
+                            Crossfade(
+                                targetState = showInlineTrailer,
+                                label = "detail_hero_trailer_crossfade"
+                            ) { playingTrailer ->
+                                if (playingTrailer && trailerPlayer != null) {
+                                    InlineTrailerPlayerSurface(
+                                        exoPlayer = trailerPlayer,
+                                        title = summary.title,
+                                        isPlaying = trailerIsPlaying,
+                                        isMuted = uiState.trailerMuted,
+                                        currentPositionMs = trailerPosMs,
+                                        durationMs = trailerDurMs,
+                                        isFullscreen = false,
+                                        attachVideoSurface = !uiState.isTrailerFullscreen,
+                                        onTogglePlayPause = {
+                                            if (trailerPlayer.isPlaying) trailerPlayer.pause() else trailerPlayer.play()
+                                        },
+                                        onSeekTo = { target ->
+                                            trailerPlayer.seekTo(target)
+                                            trailerPosMs = target
+                                        },
+                                        onToggleMute = onToggleTrailerMute,
+                                        onToggleFullscreen = {
+                                            onSetTrailerFullscreen(true, trailerPlayer.currentPosition.coerceAtLeast(0L))
+                                        },
+                                        onClose = onStopTrailer,
+                                        modifier = Modifier.fillMaxSize()
                                     )
-                            )
-
-                            // Top navigation bar
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 10.dp)
-                                    .align(Alignment.TopCenter),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.50f)) {
-                                    IconButton(
-                                        onClick = onBackClick,
-                                        modifier = Modifier.testTag("detail_back_button")
-                                    ) {
-                                        Icon(
-                                            painter = painterResource(LaterboxIcons.ArrowLeft),
-                                            contentDescription = "Back",
-                                            tint = Color.White
-                                        )
-                                    }
-                                }
-                                Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.50f)) {
-                                    IconButton(
-                                        onClick = onToggleWatchlist,
-                                        modifier = Modifier.testTag("detail_watchlist_button")
-                                    ) {
-                                        Icon(
-                                            painter = painterResource(
-                                                if (uiState.isInWatchlist) LaterboxIcons.Check else LaterboxIcons.Bookmark
-                                            ),
-                                            contentDescription = if (uiState.isInWatchlist) "Saved to Watchlist" else "Add to Watchlist",
-                                            tint = if (uiState.isInWatchlist) colors.accentPrimary else Color.White
-                                        )
-                                    }
-                                }
-                            }
-
-                            // Poster + Main Metadata at Bottom
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp)
-                                    .align(Alignment.BottomStart),
-                                horizontalArrangement = Arrangement.spacedBy(14.dp),
-                                verticalAlignment = Alignment.Bottom
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .width(104.dp)
-                                        .aspectRatio(2f / 3f)
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .background(colors.surfacePrimary)
-                                        .border(1.dp, colors.borderSubtle, RoundedCornerShape(12.dp))
-                                        .clickable(enabled = !summary.posterUrl.isNullOrBlank()) {
-                                            showPosterViewer = true
-                                        }
-                                        .testTag("detail_poster_image")
-                                ) {
-                                    if (!summary.posterUrl.isNullOrBlank()) {
-                                        AsyncImage(
-                                            model = summary.posterUrl,
+                                } else {
+                                    Box(modifier = Modifier.fillMaxSize()) {
+                                        BackdropArtworkBox(
+                                            backdropUrl = summary.backdropUrl,
+                                            posterUrl = summary.posterUrl,
                                             contentDescription = summary.title,
-                                            contentScale = ContentScale.Crop,
                                             modifier = Modifier.fillMaxSize()
                                         )
-                                    }
-                                }
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .background(
+                                                    Brush.verticalGradient(
+                                                        listOf(
+                                                            Color.Black.copy(alpha = 0.35f),
+                                                            colors.backgroundPrimary.copy(alpha = 0.58f),
+                                                            colors.backgroundPrimary
+                                                        )
+                                                    )
+                                                )
+                                        )
 
-                                Column(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .padding(bottom = 4.dp),
-                                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Text(
-                                        text = summary.title,
-                                        style = typography.editorialTitle.copy(fontSize = 22.sp, lineHeight = 26.sp),
-                                        color = colors.textPrimary,
-                                        maxLines = 3,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    val metaParts = buildList {
-                                        add(summary.kind.label)
-                                        summary.releaseYear?.let { add(it.toString()) }
-                                        summary.durationMinutes?.let { add("${it}m") }
-                                        summary.rating?.let { add(String.format(Locale.US, "★ %.1f", it)) }
+                                        // Top navigation bar
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                                                .align(Alignment.TopCenter),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.50f)) {
+                                                IconButton(
+                                                    onClick = onBackClick,
+                                                    modifier = Modifier.testTag("detail_back_button")
+                                                ) {
+                                                    Icon(
+                                                        painter = painterResource(LaterboxIcons.ArrowLeft),
+                                                        contentDescription = "Back",
+                                                        tint = Color.White
+                                                    )
+                                                }
+                                            }
+                                            Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.50f)) {
+                                                IconButton(
+                                                    onClick = onToggleWatchlist,
+                                                    modifier = Modifier.testTag("detail_watchlist_button")
+                                                ) {
+                                                    Icon(
+                                                        painter = painterResource(
+                                                            if (uiState.isInWatchlist) LaterboxIcons.Check else LaterboxIcons.Bookmark
+                                                        ),
+                                                        contentDescription = if (uiState.isInWatchlist) "Saved to Watchlist" else "Add to Watchlist",
+                                                        tint = if (uiState.isInWatchlist) colors.accentPrimary else Color.White
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        // Poster + Main Metadata at Bottom
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 16.dp)
+                                                .align(Alignment.BottomStart),
+                                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                            verticalAlignment = Alignment.Bottom
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .width(104.dp)
+                                                    .aspectRatio(2f / 3f)
+                                                    .clip(RoundedCornerShape(12.dp))
+                                                    .background(colors.surfacePrimary)
+                                                    .border(1.dp, colors.borderSubtle, RoundedCornerShape(12.dp))
+                                                    .clickable(enabled = !summary.posterUrl.isNullOrBlank()) {
+                                                        showPosterViewer = true
+                                                    }
+                                                    .testTag("detail_poster_image")
+                                            ) {
+                                                if (!summary.posterUrl.isNullOrBlank()) {
+                                                    AsyncImage(
+                                                        model = summary.posterUrl,
+                                                        contentDescription = summary.title,
+                                                        contentScale = ContentScale.Crop,
+                                                        modifier = Modifier.fillMaxSize()
+                                                    )
+                                                }
+                                            }
+
+                                            Column(
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .padding(bottom = 4.dp),
+                                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                Text(
+                                                    text = summary.title,
+                                                    style = typography.editorialTitle.copy(fontSize = 22.sp, lineHeight = 26.sp),
+                                                    color = colors.textPrimary,
+                                                    maxLines = 3,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                val metaParts = buildList {
+                                                    add(summary.kind.label)
+                                                    summary.releaseYear?.let { add(it.toString()) }
+                                                    summary.durationMinutes?.let { add("${it}m") }
+                                                    summary.rating?.let { add(String.format(Locale.US, "★ %.1f", it)) }
+                                                }
+                                                Text(
+                                                    text = metaParts.joinToString(" · "),
+                                                    style = typography.metaText,
+                                                    color = colors.textSecondary
+                                                )
+                                                if (validTrailerUrl != null) {
+                                                    Row(
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                    ) {
+                                                        Surface(
+                                                            shape = RoundedCornerShape(10.dp),
+                                                            color = colors.surfaceElevated.copy(alpha = 0.88f),
+                                                            border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.45f)),
+                                                            modifier = Modifier
+                                                                .clip(RoundedCornerShape(10.dp))
+                                                                .clickable(onClick = onPlayTrailerClick)
+                                                                .testTag("detail_watch_trailer_button")
+                                                        ) {
+                                                            Row(
+                                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                                            ) {
+                                                                Icon(
+                                                                    painter = painterResource(LaterboxIcons.Play),
+                                                                    contentDescription = null,
+                                                                    tint = colors.accentPrimary,
+                                                                    modifier = Modifier.size(12.dp)
+                                                                )
+                                                                Text(
+                                                                    text = "Watch Trailer",
+                                                                    style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                                                    color = colors.textPrimary
+                                                                )
+                                                            }
+                                                        }
+                                                        if (uiState.trailerError != null) {
+                                                            Text(
+                                                                text = "Trailer unavailable",
+                                                                style = typography.caption,
+                                                                color = colors.textTertiary,
+                                                                maxLines = 1,
+                                                                overflow = TextOverflow.Ellipsis,
+                                                                modifier = Modifier.testTag("detail_trailer_error_note")
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
-                                    Text(
-                                        text = metaParts.joinToString(" · "),
-                                        style = typography.metaText,
-                                        color = colors.textSecondary
-                                    )
                                 }
                             }
                         }
@@ -650,24 +926,6 @@ fun MovieDetailScreen(
                                             color = colors.textSecondary
                                         )
                                     }
-                                }
-                            }
-
-                            val trailerUrl = summary.trailerUrl
-                            if (!trailerUrl.isNullOrBlank()) {
-                                OutlinedButton(
-                                    onClick = { onOpenExternalUrl(trailerUrl) },
-                                    border = BorderStroke(0.75.dp, colors.borderSubtle),
-                                    shape = RoundedCornerShape(10.dp)
-                                ) {
-                                    Icon(
-                                        painter = painterResource(LaterboxIcons.Play),
-                                        contentDescription = null,
-                                        modifier = Modifier.size(14.dp),
-                                        tint = colors.accentPrimary
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Watch Trailer", color = colors.textPrimary)
                                 }
                             }
 
@@ -1185,4 +1443,287 @@ private fun EpisodeRowCard(
         }
     }
 }
+
+@OptIn(UnstableApi::class)
+@Composable
+private fun InlineTrailerPlayerSurface(
+    exoPlayer: ExoPlayer,
+    title: String,
+    isPlaying: Boolean,
+    isMuted: Boolean,
+    currentPositionMs: Long,
+    durationMs: Long,
+    isFullscreen: Boolean,
+    onTogglePlayPause: () -> Unit,
+    onSeekTo: (Long) -> Unit,
+    onToggleMute: () -> Unit,
+    onToggleFullscreen: () -> Unit,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier,
+    attachVideoSurface: Boolean = true
+) {
+    val typography = LaterboxTheme.typography
+    val colors = LaterboxTheme.colors
+    var controlsVisible by remember { mutableStateOf(true) }
+    var isScrubbing by remember { mutableStateOf(false) }
+    var scrubFraction by remember { mutableFloatStateOf(0f) }
+
+    LaunchedEffect(controlsVisible, isPlaying, isScrubbing) {
+        if (controlsVisible && isPlaying && !isScrubbing) {
+            delay(3500L)
+            controlsVisible = false
+        }
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .clickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null
+            ) {
+                controlsVisible = !controlsVisible
+            }
+            .testTag(if (isFullscreen) "detail_fullscreen_trailer_player" else "detail_inline_trailer_player")
+    ) {
+        if (attachVideoSurface) {
+            AndroidView(
+                factory = { ctx ->
+                    PlayerView(ctx).apply {
+                        useController = false
+                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                        keepScreenOn = true
+                        player = exoPlayer
+                    }
+                },
+                update = { view ->
+                    if (view.player !== exoPlayer) {
+                        view.player = exoPlayer
+                    }
+                    view.keepScreenOn = isPlaying
+                },
+                onRelease = { view ->
+                    view.player = null
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        AnimatedVisibility(
+            visible = controlsVisible,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(
+                                Color.Black.copy(alpha = 0.60f),
+                                Color.Transparent,
+                                Color.Black.copy(alpha = 0.72f)
+                            )
+                        )
+                    )
+                    .padding(horizontal = 10.dp, vertical = 8.dp)
+            ) {
+                // Top compact bar: Close + Title (fullscreen) + Mute/Sound pill
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.TopCenter),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color.Black.copy(alpha = 0.55f)
+                        ) {
+                            IconButton(
+                                onClick = onClose,
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .testTag("detail_trailer_close_button")
+                            ) {
+                                Icon(
+                                    painter = painterResource(LaterboxIcons.Close),
+                                    contentDescription = "Close trailer",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                        if (isFullscreen) {
+                            Text(
+                                text = "$title · Trailer",
+                                style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
+                                color = Color.White,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        } else {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color.Black.copy(alpha = 0.55f)
+                            ) {
+                                Text(
+                                    text = "Trailer",
+                                    style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                    color = Color.White,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = Color.Black.copy(alpha = 0.62f),
+                        border = BorderStroke(0.75.dp, Color.White.copy(alpha = 0.25f)),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(16.dp))
+                            .clickable(onClick = onToggleMute)
+                            .testTag("detail_trailer_mute_button")
+                    ) {
+                        Text(
+                            text = if (isMuted) "Muted" else "Sound",
+                            style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                            color = if (isMuted) Color.White.copy(alpha = 0.78f) else colors.accentPrimary,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                        )
+                    }
+                }
+
+                // Center Play/Pause control
+                Surface(
+                    shape = CircleShape,
+                    color = Color.Black.copy(alpha = 0.58f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.28f)),
+                    modifier = Modifier.align(Alignment.Center)
+                ) {
+                    IconButton(
+                        onClick = onTogglePlayPause,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("detail_trailer_play_pause_button")
+                    ) {
+                        Icon(
+                            painter = painterResource(
+                                if (isPlaying) LaterboxIcons.Pause else LaterboxIcons.Play
+                            ),
+                            contentDescription = if (isPlaying) "Pause trailer" else "Play trailer",
+                            tint = Color.White,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                }
+
+                // Bottom scrubber + single combined Expand/Rotate button
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.BottomCenter),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val safeDuration = durationMs.coerceAtLeast(1L)
+                    val displayPos = if (isScrubbing) {
+                        (scrubFraction * safeDuration).toLong()
+                    } else {
+                        currentPositionMs.coerceIn(0L, safeDuration)
+                    }
+                    val sliderVal = if (isScrubbing) {
+                        scrubFraction
+                    } else if (durationMs > 0L) {
+                        (currentPositionMs.toFloat() / safeDuration.toFloat()).coerceIn(0f, 1f)
+                    } else {
+                        0f
+                    }
+
+                    Text(
+                        text = formatTrailerClock(displayPos),
+                        style = typography.caption.copy(fontSize = 11.sp),
+                        color = Color.White
+                    )
+                    Slider(
+                        value = sliderVal,
+                        onValueChange = { frac ->
+                            isScrubbing = true
+                            scrubFraction = frac.coerceIn(0f, 1f)
+                        },
+                        onValueChangeFinished = {
+                            if (durationMs > 0L) {
+                                onSeekTo((scrubFraction * durationMs).toLong().coerceIn(0L, durationMs))
+                            }
+                            isScrubbing = false
+                        },
+                        colors = SliderDefaults.colors(
+                            thumbColor = colors.accentPrimary,
+                            activeTrackColor = colors.accentPrimary,
+                            inactiveTrackColor = Color.White.copy(alpha = 0.30f)
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(28.dp)
+                            .testTag("detail_trailer_seek_slider")
+                    )
+                    Text(
+                        text = formatTrailerClock(durationMs),
+                        style = typography.caption.copy(fontSize = 11.sp),
+                        color = Color.White.copy(alpha = 0.8f)
+                    )
+
+                    Surface(
+                        shape = CircleShape,
+                        color = Color.Black.copy(alpha = 0.55f)
+                    ) {
+                        IconButton(
+                            onClick = onToggleFullscreen,
+                            modifier = Modifier
+                                .size(34.dp)
+                                .testTag("detail_trailer_expand_button")
+                        ) {
+                            Icon(
+                                painter = painterResource(
+                                    if (isFullscreen) LaterboxIcons.FullscreenExit else LaterboxIcons.Fullscreen
+                                ),
+                                contentDescription = if (isFullscreen) "Exit fullscreen" else "Expand trailer",
+                                tint = Color.White,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun formatTrailerClock(ms: Long): String {
+    if (ms <= 0L) return "0:00"
+    val totalSec = (ms / 1000L).coerceAtLeast(0L)
+    val hours = totalSec / 3600L
+    val mins = (totalSec % 3600L) / 60L
+    val secs = totalSec % 60L
+    return if (hours > 0L) {
+        String.format(Locale.US, "%d:%02d:%02d", hours, mins, secs)
+    } else {
+        String.format(Locale.US, "%d:%02d", mins, secs)
+    }
+}
+
+private tailrec fun Context.findDetailActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findDetailActivity()
+    else -> null
+}
+
 

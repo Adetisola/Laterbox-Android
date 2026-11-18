@@ -742,10 +742,12 @@ class MoviesRepositoryImpl(
                 seasonNumber = seasonNumber,
                 episodeNumber = episodeNumber,
                 posterUrl = resolved.posterUrl,
+                backdropUrl = resolved.backdropUrl ?: item.backdropUrl,
                 positionMs = positionMs.coerceAtLeast(0L),
                 durationMs = durationMs.coerceAtLeast(0L),
                 lastWatchedAt = nowMs(),
-                canonicalId = resolved.canonicalId
+                canonicalId = resolved.canonicalId,
+                isTrailer = false
             )
         )
     }
@@ -769,6 +771,49 @@ class MoviesRepositoryImpl(
             return 0L
         }
         return entry.positionMs
+    }
+
+    override fun observeViewingHistory(limit: Int): Flow<List<WatchHistoryItem>> =
+        moviesDao.observeViewingHistory(limit).map { entities -> entities.map { it.toDomain() } }
+
+    override suspend fun recordTrailerWatch(
+        item: MovieTitleSummary,
+        positionMs: Long,
+        durationMs: Long
+    ) {
+        val resolved = if (item.canonicalId != null) item else mediaResolver.resolveOrRegister(item)
+        val key = "trailer:${resolved.providerId}:${resolved.id}"
+        moviesDao.upsertWatchHistory(
+            MovieWatchHistoryEntity(
+                historyKey = key,
+                compositeId = resolved.compositeId,
+                providerId = resolved.providerId,
+                titleId = resolved.id,
+                kind = resolved.kind.wireValue,
+                title = resolved.title,
+                episodeLabel = "Trailer",
+                seasonNumber = null,
+                episodeNumber = null,
+                posterUrl = resolved.posterUrl,
+                backdropUrl = resolved.backdropUrl ?: item.backdropUrl,
+                positionMs = positionMs.coerceAtLeast(0L),
+                durationMs = durationMs.coerceAtLeast(0L),
+                lastWatchedAt = nowMs(),
+                canonicalId = resolved.canonicalId,
+                isTrailer = true
+            )
+        )
+    }
+
+    override suspend fun deleteViewingHistoryEntry(historyKey: String) {
+        moviesDao.deleteWatchHistoryEntry(historyKey)
+    }
+
+    override suspend fun clearViewingHistory(trailersOnly: Boolean?) {
+        when (trailersOnly) {
+            null -> moviesDao.clearWatchHistory()
+            else -> moviesDao.clearWatchHistoryByTrailerFlag(trailersOnly)
+        }
     }
 
     override fun observeRecentSearches(limit: Int): Flow<List<String>> =
@@ -880,9 +925,12 @@ class MoviesRepositoryImpl(
         seasonNumber = seasonNumber,
         episodeNumber = episodeNumber,
         posterUrl = posterUrl,
+        backdropUrl = backdropUrl,
         positionMs = positionMs,
         durationMs = durationMs,
-        lastWatchedAt = lastWatchedAt
+        lastWatchedAt = lastWatchedAt,
+        historyKey = historyKey,
+        isTrailer = isTrailer
     )
 
     companion object {

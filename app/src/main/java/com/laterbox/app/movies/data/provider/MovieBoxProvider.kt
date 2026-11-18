@@ -74,6 +74,7 @@ class MovieBoxProvider(
     private val detailPathCache = ConcurrentHashMap<String, String>()
     private val titleCache = ConcurrentHashMap<String, String>()
     private val trailerCache = ConcurrentHashMap<String, String>()
+    private val trailerHeadersCache = ConcurrentHashMap<String, Map<String, String>>()
     private val episodeSizesCache = ConcurrentHashMap<String, ConcurrentHashMap<Int, Map<Int, Double>>>()
 
     @Volatile
@@ -473,12 +474,14 @@ class MovieBoxProvider(
             val id = root.optCleanString("subject_id") ?: titleId
             val title = root.optCleanString("title") ?: titleCache[id] ?: "Title $id"
             val dp = root.optCleanString("detail_path")
-            val trailerUrl = root.optJSONObject("trailer")
-                ?.optJSONObject("videoAddress")
-                ?.optCleanString("url")
+            val trailerObj = root.optJSONObject("trailer")
+            val trailerUrl = trailerObj?.optCleanString("url")
+                ?: trailerObj?.optJSONObject("videoAddress")?.optCleanString("url")
                 ?: root.optCleanString("trailer_url")
                 ?: trailerCache[id]
-            cacheMetadata(id, title, dp, trailerUrl)
+            val trailerHeaders = parseHeadersObject(trailerObj?.optJSONObject("headers"))
+                .ifEmpty { trailerHeadersCache[id].orEmpty() }
+            cacheMetadata(id, title, dp, trailerUrl, trailerHeaders)
 
             val kind = parseMediaKind(
                 root.optIntOrNull("subject_type"),
@@ -560,6 +563,7 @@ class MovieBoxProvider(
                 country = root.optCleanString("country"),
                 detailPath = dp,
                 trailerUrl = trailerUrl,
+                trailerHeaders = trailerHeaders,
                 sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
                 isPlayableHint = true,
                 imdbId = root.optCleanString("imdbId") ?: root.optCleanString("imdb_id")
@@ -962,9 +966,12 @@ class MovieBoxProvider(
             ?: obj.optCleanString("cover")
             ?: obj.optJSONObject("image")?.optCleanString("url")
         val stillsUrl = obj.optJSONObject("stills")?.optCleanString("url")
+        val trailerObj = obj.optJSONObject("trailer")
         val trailerUrl = trailerOverride
-            ?: obj.optJSONObject("trailer")?.optJSONObject("videoAddress")?.optCleanString("url")
-        cacheMetadata(id, title, dp, trailerUrl)
+            ?: trailerObj?.optCleanString("url")
+            ?: trailerObj?.optJSONObject("videoAddress")?.optCleanString("url")
+        val trailerHeaders = parseHeadersObject(trailerObj?.optJSONObject("headers"))
+        cacheMetadata(id, title, dp, trailerUrl, trailerHeaders)
         val hasResource = if (obj.has("hasResource")) obj.optBoolean("hasResource", true) else true
 
         return MovieTitleSummary(
@@ -983,17 +990,32 @@ class MovieBoxProvider(
             country = obj.optCleanString("countryName") ?: obj.optCleanString("country"),
             detailPath = dp,
             trailerUrl = trailerUrl,
+            trailerHeaders = trailerHeaders,
             sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
             isPlayableHint = hasResource,
             imdbId = obj.optCleanString("imdbId") ?: obj.optCleanString("imdb_id")
         )
     }
 
+    private fun parseHeadersObject(headersObj: JSONObject?): Map<String, String> {
+        if (headersObj == null) return emptyMap()
+        return buildMap {
+            val keys = headersObj.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                headersObj.optCleanString(key)?.let { value ->
+                    put(key, value)
+                }
+            }
+        }
+    }
+
     private fun cacheMetadata(
         subjectId: String,
         title: String?,
         detailPath: String?,
-        trailerUrl: String? = null
+        trailerUrl: String? = null,
+        trailerHeaders: Map<String, String> = emptyMap()
     ) {
         if (!title.isNullOrBlank()) {
             titleCache[subjectId] = title
@@ -1004,13 +1026,16 @@ class MovieBoxProvider(
         if (!trailerUrl.isNullOrBlank()) {
             trailerCache[subjectId] = trailerUrl
         }
+        if (trailerHeaders.isNotEmpty()) {
+            trailerHeadersCache[subjectId] = trailerHeaders
+        }
     }
 
     private suspend fun requireBaseHttpUrl(): HttpUrl {
         val raw = activeBaseUrl()
         if (raw.isBlank()) {
             throw IllegalStateException(
-                "MovieBox API server URL is not configured. Open Data Sources to set your MovieBox server URL."
+                "MovieBox service URL is not configured."
             )
         }
         if (!MovieBoxEndpointConfig.isValidBaseUrl(raw, allowDebugCleartextLoopback = BuildConfig.DEBUG)) {
@@ -1155,7 +1180,7 @@ class MovieBoxProvider(
         is SocketTimeoutException ->
             "Timed out waiting for MovieBox server. Please retry."
         is UnknownHostException ->
-            "Cannot resolve MovieBox server hostname. Check your internet connection or Data Sources URL."
+            "Cannot reach MovieBox service. Check your internet connection and retry."
         is SSLException ->
             "Secure TLS connection to MovieBox server failed."
         else ->

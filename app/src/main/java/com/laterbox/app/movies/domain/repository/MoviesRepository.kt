@@ -96,6 +96,15 @@ interface MoviesRepository {
         episodeNumber: Int? = null
     ): Long
 
+    fun observeViewingHistory(limit: Int = 50): Flow<List<WatchHistoryItem>> = kotlinx.coroutines.flow.emptyFlow()
+    suspend fun recordTrailerWatch(
+        item: MovieTitleSummary,
+        positionMs: Long = 0L,
+        durationMs: Long = 0L
+    ) = Unit
+    suspend fun deleteViewingHistoryEntry(historyKey: String) = Unit
+    suspend fun clearViewingHistory(trailersOnly: Boolean? = null) = Unit
+
     fun observeRecentSearches(limit: Int = 10): Flow<List<String>>
     suspend fun recordSearchQuery(query: String)
     suspend fun clearSearchHistory()

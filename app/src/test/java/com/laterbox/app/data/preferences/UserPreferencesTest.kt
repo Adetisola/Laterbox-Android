@@ -109,4 +109,45 @@ class UserPreferencesTest {
         assertEquals("https://custom.moviebox.example/", mapped.movieBoxApiBaseUrl)
         assertFalse(mapped.moviesUseSampleFixturesOnly)
     }
+
+    @Test
+    fun moviesPlaybackAndSubtitlePreferences_persistAndMapAllFieldsCorrectly() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val repo = UserPreferencesRepository(context)
+
+        repo.setMoviesDoubleTapSeekSeconds(15)
+        repo.setMoviesSwipeToSeekEnabled(false)
+        repo.setMoviesSwipeSeekSensitivity(0.5f)
+        repo.setMoviesBrightnessGestureEnabled(false)
+        repo.setMoviesVolumeGestureEnabled(true)
+        repo.setMoviesAutoplayNextEpisode(false)
+        repo.setMoviesAutoplayCountdownSeconds(5)
+        repo.setMoviesDefaultQualityHeight(1080)
+        repo.setMoviesTrailerMuted(true)
+
+        val customSub = SubtitleStyleConfig(
+            useSystemCaptions = true,
+            fontSizeSp = 24f,
+            textColorArgb = 0xFFFFEB3B.toInt(),
+            backgroundColorArgb = 0xFF1E1E1E.toInt(),
+            backgroundOpacity = 0.85f,
+            edgeType = 1
+        )
+        repo.setSubtitleStyleConfig(customSub)
+
+        val loaded = repo.userPreferencesFlow.first()
+        assertEquals(15, loaded.moviesDoubleTapSeekSeconds)
+        assertFalse(loaded.moviesSwipeToSeekEnabled)
+        assertEquals(0.5f, loaded.moviesSwipeSeekSensitivity, 0.001f)
+        assertFalse(loaded.moviesBrightnessGestureEnabled)
+        assertTrue(loaded.moviesVolumeGestureEnabled)
+        assertFalse(loaded.moviesAutoplayNextEpisode)
+        assertEquals(5, loaded.moviesAutoplayCountdownSeconds)
+        assertEquals(1080, loaded.moviesDefaultQualityHeight)
+        assertTrue(loaded.moviesTrailerMuted)
+        assertEquals(customSub, loaded.toSubtitleStyleConfig())
+
+        repo.setSubtitleUseSystemCaptions(false)
+        assertFalse(repo.userPreferencesFlow.first().toSubtitleStyleConfig().useSystemCaptions)
+    }
 }
