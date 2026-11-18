@@ -72,7 +72,9 @@ object AppViewModelProvider {
                 ytDlpUpdater = app.container.ytDlpUpdater,
                 ytDlpRuntimeManager = app.container.ytDlpRuntimeManager,
                 diagnosticsBuffer = app.container.diagnosticsBuffer,
-                database = app.container.database
+                database = app.container.database,
+                backendBaseUrlProvider = { app.container.resolveBackendBaseUrl() },
+                appCheckTokenProvider = { forceRefresh -> app.container.getBackendAppCheckToken(forceRefresh) }
             )
         }
         initializer {

@@ -389,24 +389,57 @@ fun LaterboxApp(
     }
 
     var appUpdateInfoToPrompt by remember { mutableStateOf<AppUpdateInfo?>(null) }
+    var sessionDismissedUpdateVersion by remember { mutableStateOf<String?>(null) }
+    var autoCheckBackoffUntilMs by remember { mutableStateOf(0L) }
 
     LifecycleResumeEffect(Unit) {
         val checkJob = coroutineScope.launch {
+            if (appUpdateInfoToPrompt != null) return@launch
             val sixHoursMs = 6L * 60 * 60 * 1000L
             val oneDayMs = 24L * 60 * 60 * 1000L
             val now = System.currentTimeMillis()
-            val app = context.applicationContext as? LaterboxApplication
-            val prefsRepo = app?.container?.userPreferencesRepository
-            val prefs = prefsRepo?.userPreferencesFlow?.first() ?: return@launch
+            if (now < autoCheckBackoffUntilMs) return@launch
+            val app = context.applicationContext as? LaterboxApplication ?: return@launch
+            val prefsRepo = app.container.userPreferencesRepository
+            val prefs = prefsRepo.userPreferencesFlow.first()
             if (now - prefs.lastUpdateCheckTime >= sixHoursMs) {
-                prefsRepo.recordUpdateCheck(now)
-                val result = GitHubUpdateChecker.checkForUpdate(com.laterbox.app.BuildConfig.VERSION_NAME)
-                if (result is com.laterbox.app.update.UpdateCheckResult.UpdateAvailable) {
-                    val info = result.updateInfo
-                    val isDismissedRecently = prefs.dismissedUpdateVersion == info.versionName &&
-                        (now - prefs.dismissedUpdateTimestamp < oneDayMs)
-                    if (!isDismissedRecently) {
-                        appUpdateInfoToPrompt = info
+                val baseUrl = app.container.resolveBackendBaseUrl()
+                val result = GitHubUpdateChecker.checkForUpdate(
+                    currentVersionName = com.laterbox.app.BuildConfig.VERSION_NAME,
+                    releasesUrl = GitHubUpdateChecker.buildBackendUpdateUrl(
+                        baseUrl = baseUrl,
+                        forceRefresh = false
+                    ),
+                    context = context.applicationContext,
+                    appCheckTokenProvider = { forceRefresh ->
+                        app.container.getBackendAppCheckToken(forceRefresh)
+                    },
+                    forceRefresh = false
+                )
+                when (result) {
+                    is com.laterbox.app.update.UpdateCheckResult.UpdateAvailable -> {
+                        prefsRepo.recordUpdateCheck(System.currentTimeMillis())
+                        val info = result.updateInfo
+                        val isDismissedRecently = prefs.dismissedUpdateVersion == info.versionName &&
+                            (now - prefs.dismissedUpdateTimestamp < oneDayMs)
+                        val isSessionDismissed = sessionDismissedUpdateVersion == info.versionName
+                        if (!isDismissedRecently && !isSessionDismissed) {
+                            appUpdateInfoToPrompt = info
+                        }
+                    }
+                    is com.laterbox.app.update.UpdateCheckResult.UpToDate,
+                    is com.laterbox.app.update.UpdateCheckResult.NoCompatibleApk -> {
+                        prefsRepo.recordUpdateCheck(System.currentTimeMillis())
+                    }
+                    is com.laterbox.app.update.UpdateCheckResult.RateLimited -> {
+                        val backoffSec = (result.retryAfterSeconds ?: 60).coerceIn(30, 3600)
+                        autoCheckBackoffUntilMs = System.currentTimeMillis() + (backoffSec * 1000L)
+                    }
+                    is com.laterbox.app.update.UpdateCheckResult.AuthError,
+                    is com.laterbox.app.update.UpdateCheckResult.NetworkError,
+                    is com.laterbox.app.update.UpdateCheckResult.ApiError,
+                    is com.laterbox.app.update.UpdateCheckResult.InvalidRelease -> {
+                        autoCheckBackoffUntilMs = System.currentTimeMillis() + 60_000L
                     }
                 }
             }
@@ -1855,15 +1888,23 @@ fun LaterboxApp(
     }
 
     if (appUpdateInfoToPrompt != null) {
+        val currentPrompt = appUpdateInfoToPrompt!!
+        val app = context.applicationContext as? LaterboxApplication
         AppUpdateDialog(
-            updateInfo = appUpdateInfoToPrompt!!,
-            onDismiss = { appUpdateInfoToPrompt = null },
+            updateInfo = currentPrompt,
+            onDismiss = {
+                sessionDismissedUpdateVersion = currentPrompt.versionName
+                appUpdateInfoToPrompt = null
+            },
             onPostpone = { version ->
+                sessionDismissedUpdateVersion = version
                 appUpdateInfoToPrompt = null
                 coroutineScope.launch {
-                    val app = context.applicationContext as? LaterboxApplication
                     app?.container?.userPreferencesRepository?.dismissUpdate(version)
                 }
+            },
+            appCheckTokenProvider = app?.let { laterboxApp ->
+                { forceRefresh -> laterboxApp.container.getBackendAppCheckToken(forceRefresh) }
             }
         )
     }

@@ -38,7 +38,9 @@ class SettingsViewModel(
     private val ytDlpUpdater: com.laterbox.app.media.data.adapters.ytdlp.YtDlpUpdater? = null,
     private val ytDlpRuntimeManager: com.laterbox.app.media.data.adapters.ytdlp.YtDlpRuntimeManager? = null,
     private val diagnosticsBuffer: com.laterbox.app.media.data.diagnostics.InspectionDiagnosticsBuffer? = null,
-    private val database: com.laterbox.app.data.local.LaterboxDatabase? = null
+    private val database: com.laterbox.app.data.local.LaterboxDatabase? = null,
+    private val backendBaseUrlProvider: (suspend () -> String)? = null,
+    private val appCheckTokenProvider: (suspend (Boolean) -> String?)? = null
 ) : ViewModel() {
 
     private val runtimeManager: com.laterbox.app.media.data.adapters.ytdlp.YtDlpRuntimeManager? =
@@ -331,21 +333,50 @@ class SettingsViewModel(
         viewModelScope.launch {
             _isCheckingUpdate.value = true
             try {
-                userPreferencesRepository.recordUpdateCheck()
                 appContext?.let { ctx ->
                     try {
                         com.laterbox.app.update.ApkInstallerHelper.cleanupOldUpdateApks(ctx, currentVersion)
                     } catch (_: Exception) {}
                 }
-                when (val result = com.laterbox.app.update.GitHubUpdateChecker.checkForUpdate(currentVersion, context = appContext)) {
+                val baseUrl = backendBaseUrlProvider?.invoke()
+                    ?: (appContext?.applicationContext as? com.laterbox.app.LaterboxApplication)
+                        ?.container?.resolveBackendBaseUrl()
+                    ?: userPreferencesRepository.userPreferencesFlow.first().movieBoxApiBaseUrl
+                        .ifBlank { com.laterbox.app.BuildConfig.MOVIEBOX_API_BASE_URL }
+                val resolvedAppCheckProvider: (suspend (Boolean) -> String?)? = appCheckTokenProvider
+                    ?: (appContext?.applicationContext as? com.laterbox.app.LaterboxApplication)
+                        ?.container?.let { container ->
+                            { forceRefresh -> container.getBackendAppCheckToken(forceRefresh) }
+                        }
+                val releasesUrl = com.laterbox.app.update.GitHubUpdateChecker.buildBackendUpdateUrl(
+                    baseUrl = baseUrl,
+                    forceRefresh = true
+                )
+                val result = com.laterbox.app.update.GitHubUpdateChecker.checkForUpdate(
+                    currentVersionName = currentVersion,
+                    releasesUrl = releasesUrl,
+                    context = appContext,
+                    appCheckTokenProvider = resolvedAppCheckProvider,
+                    forceRefresh = true
+                )
+                when (result) {
                     is com.laterbox.app.update.UpdateCheckResult.UpdateAvailable -> {
+                        userPreferencesRepository.recordUpdateCheck()
                         _updateCheckResult.value = result.updateInfo
                     }
                     is com.laterbox.app.update.UpdateCheckResult.UpToDate -> {
+                        userPreferencesRepository.recordUpdateCheck()
                         onResult("Laterbox is up to date (v$currentVersion)")
                     }
                     is com.laterbox.app.update.UpdateCheckResult.NetworkError -> {
                         onResult("Network error: ${result.message}")
+                    }
+                    is com.laterbox.app.update.UpdateCheckResult.AuthError -> {
+                        onResult("Update authentication failed (${result.statusCode}): ${result.message}")
+                    }
+                    is com.laterbox.app.update.UpdateCheckResult.RateLimited -> {
+                        val waitText = result.retryAfterSeconds?.let { " Try again in ${it}s." } ?: ""
+                        onResult("Update server rate limit reached.$waitText ${result.message}".trim())
                     }
                     is com.laterbox.app.update.UpdateCheckResult.ApiError -> {
                         onResult("Update check failed (${result.statusCode}): ${result.message}")
@@ -354,6 +385,7 @@ class SettingsViewModel(
                         onResult("Could not parse release info: ${result.message}")
                     }
                     is com.laterbox.app.update.UpdateCheckResult.NoCompatibleApk -> {
+                        userPreferencesRepository.recordUpdateCheck()
                         onResult("Version ${result.releaseVersion} is available, but no APK matching your device (${result.deviceAbis.joinToString()}) was found.")
                     }
                 }

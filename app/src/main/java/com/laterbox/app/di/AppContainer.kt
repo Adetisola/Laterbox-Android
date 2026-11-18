@@ -40,6 +40,8 @@ interface AppContainer {
     val transcriptExportManager: com.laterbox.app.transcript.export.TranscriptExportManager
     val moviesRepository: com.laterbox.app.movies.domain.repository.MoviesRepository
     val moviesDownloadBridge: com.laterbox.app.movies.data.download.MoviesDownloadBridge
+    suspend fun resolveBackendBaseUrl(): String
+    suspend fun getBackendAppCheckToken(forceRefresh: Boolean = false): String?
 }
 
 class DefaultAppContainer(private val context: Context) : AppContainer {
@@ -270,6 +272,17 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
         com.laterbox.app.movies.data.download.MoviesDownloadBridge(
             mediaRepository = mediaRepository
         )
+    }
+
+    override suspend fun resolveBackendBaseUrl(): String {
+        return userPreferencesRepository.userPreferencesFlow.first().movieBoxApiBaseUrl
+            .ifBlank { com.laterbox.app.BuildConfig.MOVIEBOX_API_BASE_URL }
+            .trim()
+            .trimEnd('/')
+    }
+
+    override suspend fun getBackendAppCheckToken(forceRefresh: Boolean): String? {
+        return fetchFirebaseAppCheckToken(forceRefresh)
     }
 
     private suspend fun fetchFirebaseAppCheckToken(forceRefresh: Boolean): String? {

@@ -14,10 +14,12 @@ import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
+import java.net.URI
 import java.net.URL
 
 /**
@@ -31,7 +33,7 @@ object ApkInstallerHelper {
     sealed class DownloadProgress {
         data class Downloading(val bytesDownloaded: Long, val totalBytes: Long, val percent: Int) : DownloadProgress()
         data class Completed(val file: File) : DownloadProgress()
-        data class Error(val message: String) : DownloadProgress()
+        data class Error(val message: String, val isAuthOrRateLimit: Boolean = false) : DownloadProgress()
     }
 
     sealed class ApkVerificationResult {
@@ -40,6 +42,140 @@ object ApkInstallerHelper {
         data class InvalidPackage(val expected: String, val actual: String) : ApkVerificationResult()
         data class IncompatibleAbi(val message: String) : ApkVerificationResult()
         data class Error(val message: String) : ApkVerificationResult()
+    }
+
+    internal data class ResolvedAssetUrlResult(
+        val downloadUrl: String? = null,
+        val errorMessage: String? = null,
+        val isAuthOrRateLimit: Boolean = false
+    )
+
+    private class NonRetryableDownloadException(
+        message: String,
+        val isAuthOrRateLimit: Boolean
+    ) : IOException(message)
+
+    internal fun isBackendAssetResolverUrl(url: String): Boolean {
+        return try {
+            val path = URI(url).path ?: ""
+            path.startsWith("/updates/laterbox/assets/") && path.endsWith("/download-url")
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun isAllowedDownloadTargetUrl(rawUrl: String): Boolean {
+        return try {
+            val uri = URI(rawUrl.trim())
+            val scheme = uri.scheme?.lowercase() ?: return false
+            val host = uri.host?.lowercase() ?: return false
+            when (scheme) {
+                "https" -> host.isNotBlank()
+                "http" -> host == "127.0.0.1" || host == "localhost" || host == "10.0.2.2"
+                else -> false
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun extractBackendError(connection: HttpURLConnection): Triple<String?, String?, Boolean> {
+        val raw = try {
+            connection.errorStream?.bufferedReader()?.use { it.readText() }
+        } catch (_: Exception) {
+            null
+        }
+        val code = connection.responseCode
+        var detailCode: String? = null
+        var detailMsg: String? = null
+        if (!raw.isNullOrBlank()) {
+            try {
+                val root = JSONObject(raw)
+                val detailObj = root.optJSONObject("detail")
+                if (detailObj != null) {
+                    detailCode = detailObj.optString("code", "").trim().ifBlank { null }
+                    detailMsg = detailObj.optString("message", "").trim().ifBlank { null }
+                } else {
+                    detailMsg = root.optString("detail", "").trim().ifBlank { null }
+                        ?: root.optString("message", "").trim().ifBlank { null }
+                }
+            } catch (_: Exception) {
+                detailMsg = raw.trim().take(240).ifBlank { null }
+            }
+        }
+        val isAuthOrLimit = code in listOf(401, 403, 429) ||
+            detailCode == "github_auth_failed" ||
+            detailCode == "github_rate_limited"
+        return Triple(detailCode, detailMsg, isAuthOrLimit)
+    }
+
+    internal suspend fun resolveSignedAssetDownloadUrl(
+        resolverUrl: String,
+        appCheckTokenProvider: (suspend (Boolean) -> String?)? = null
+    ): ResolvedAssetUrlResult = withContext(Dispatchers.IO) {
+        try {
+            for (authAttempt in 0..1) {
+                var conn: HttpURLConnection? = null
+                try {
+                    val token = if (appCheckTokenProvider != null) {
+                        appCheckTokenProvider(authAttempt > 0)
+                    } else {
+                        null
+                    }
+                    conn = (URL(resolverUrl).openConnection() as HttpURLConnection).apply {
+                        requestMethod = "GET"
+                        connectTimeout = 15_000
+                        readTimeout = 20_000
+                        instanceFollowRedirects = true
+                        setRequestProperty("Accept", "application/json")
+                        setRequestProperty("User-Agent", "Laterbox-App")
+                        if (!token.isNullOrBlank()) {
+                            setRequestProperty("X-Firebase-AppCheck", token)
+                        }
+                    }
+
+                    val code = conn.responseCode
+                    if (code in 200..299) {
+                        val body = conn.inputStream.bufferedReader().use { it.readText() }
+                        val json = JSONObject(body)
+                        val signedUrl = json.optString("download_url", "").trim()
+                        if (signedUrl.isBlank() || !isAllowedDownloadTargetUrl(signedUrl)) {
+                            return@withContext ResolvedAssetUrlResult(
+                                errorMessage = "Update server returned an invalid download URL.",
+                                isAuthOrRateLimit = false
+                            )
+                        }
+                        return@withContext ResolvedAssetUrlResult(downloadUrl = signedUrl)
+                    }
+
+                    val (_, detailMsg, isAuthOrLimit) = extractBackendError(conn)
+                    if (code == 401 && authAttempt == 0 && appCheckTokenProvider != null) {
+                        continue
+                    }
+
+                    val fallbackMsg = when (code) {
+                        401, 403 -> "Authentication failed while preparing asset download (HTTP $code)."
+                        429 -> "Update server rate limit reached. Please try again later."
+                        else -> "Failed to prepare update download (HTTP $code)."
+                    }
+                    return@withContext ResolvedAssetUrlResult(
+                        errorMessage = detailMsg ?: fallbackMsg,
+                        isAuthOrRateLimit = isAuthOrLimit
+                    )
+                } finally {
+                    conn?.disconnect()
+                }
+            }
+            ResolvedAssetUrlResult(
+                errorMessage = "Authentication failed while preparing asset download.",
+                isAuthOrRateLimit = true
+            )
+        } catch (e: Exception) {
+            ResolvedAssetUrlResult(
+                errorMessage = e.message ?: "Network error while resolving asset download URL.",
+                isAuthOrRateLimit = false
+            )
+        }
     }
 
     fun getApkFileName(versionName: String, assetName: String = ""): String {
@@ -65,25 +201,54 @@ object ApkInstallerHelper {
         }
     }
 
+    private fun parseContentRange(header: String?): Pair<Long, Long?>? {
+        if (header.isNullOrBlank()) return null
+        val match = Regex("""bytes\s+(\d+)-(\d+)/(\d+|\*)""", RegexOption.IGNORE_CASE).find(header.trim())
+            ?: return null
+        val start = match.groupValues[1].toLongOrNull() ?: return null
+        val total = match.groupValues[3].toLongOrNull()
+        return start to total
+    }
+
     private suspend fun downloadFileInternal(
         outputFile: File,
         downloadUrl: String,
         expectedTotalBytes: Long = -1L,
+        appCheckTokenProvider: (suspend (Boolean) -> String?)? = null,
         onProgress: (DownloadProgress) -> Unit
     ): File? = withContext(Dispatchers.IO) {
+        val usesBackendResolver = isBackendAssetResolverUrl(downloadUrl)
+        var cachedSignedUrl: String? = null
+        var signedUrlRefreshCount = 0
         var existingBytes = if (outputFile.exists()) outputFile.length() else 0L
         var attempt = 0
-        val maxAttempts = 3
+        val maxAttempts = 5
         var lastErrorMessage = "Download failed"
+        var lastIsAuthOrRateLimit = false
 
         while (attempt < maxAttempts) {
             attempt++
             var activeConnection: HttpURLConnection? = null
             try {
-                var currentUrl = downloadUrl
+                if (usesBackendResolver && cachedSignedUrl == null) {
+                    val resolved = resolveSignedAssetDownloadUrl(
+                        resolverUrl = downloadUrl,
+                        appCheckTokenProvider = appCheckTokenProvider
+                    )
+                    if (resolved.downloadUrl == null) {
+                        val msg = resolved.errorMessage ?: "Failed to resolve asset download URL."
+                        if (resolved.isAuthOrRateLimit) {
+                            throw NonRetryableDownloadException(msg, isAuthOrRateLimit = true)
+                        }
+                        throw IOException(msg)
+                    }
+                    cachedSignedUrl = resolved.downloadUrl
+                }
+
+                var currentUrl = cachedSignedUrl ?: downloadUrl
                 var redirectCount = 0
 
-                // Follow HTTP redirects (GitHub releases redirect to AWS S3)
+                // Follow HTTP redirects without attaching any GitHub or Firebase credentials
                 while (redirectCount < 5) {
                     val conn = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
                         connectTimeout = 20_000
@@ -113,12 +278,33 @@ object ApkInstallerHelper {
 
                 val responseCode = connection.responseCode
 
+                if (responseCode in listOf(401, 403, 410)) {
+                    if (usesBackendResolver && signedUrlRefreshCount < 2) {
+                        Log.i(TAG, "Pre-signed CDN URL returned HTTP $responseCode; refreshing signed URL and preserving partial progress ($existingBytes bytes)")
+                        cachedSignedUrl = null
+                        signedUrlRefreshCount++
+                        delay(500L)
+                        continue
+                    }
+                    throw NonRetryableDownloadException(
+                        "Download authorization failed or rate limit reached (HTTP $responseCode).",
+                        isAuthOrRateLimit = true
+                    )
+                }
+
                 val (isAppend, totalBytes) = when (responseCode) {
                     HttpURLConnection.HTTP_PARTIAL -> {
                         // 206 Partial Content: Server supports resuming
+                        val parsedRange = parseContentRange(connection.getHeaderField("Content-Range"))
+                        if (parsedRange != null && parsedRange.first != existingBytes) {
+                            outputFile.delete()
+                            existingBytes = 0L
+                            throw IOException("Unexpected Content-Range start (${parsedRange.first} != $existingBytes)")
+                        }
                         val remaining = connection.contentLengthLong.takeIf { it > 0 }
                             ?: connection.getHeaderField("Content-Length")?.toLongOrNull() ?: -1L
-                        val total = if (remaining > 0) existingBytes + remaining else expectedTotalBytes
+                        val total = parsedRange?.second
+                            ?: if (remaining > 0) existingBytes + remaining else expectedTotalBytes
                         Pair(true, total)
                     }
                     HttpURLConnection.HTTP_OK -> {
@@ -128,6 +314,12 @@ object ApkInstallerHelper {
                         Pair(false, len)
                     }
                     416 -> {
+                        if (expectedTotalBytes > 0 && outputFile.exists() && outputFile.length() == expectedTotalBytes) {
+                            withContext(Dispatchers.Main) {
+                                onProgress(DownloadProgress.Completed(outputFile))
+                            }
+                            return@withContext outputFile
+                        }
                         // Requested Range Not Satisfiable: Restart clean
                         outputFile.delete()
                         existingBytes = 0L
@@ -164,7 +356,13 @@ object ApkInstallerHelper {
                     }
                 }
 
-                // Verify file existence and size
+                val expectedLength = if (totalBytes > 0) totalBytes else expectedTotalBytes
+                if (expectedLength > 0 && outputFile.length() < expectedLength) {
+                    existingBytes = outputFile.length()
+                    throw IOException("Download interrupted prematurely ($existingBytes / $expectedLength bytes)")
+                }
+
+                // Verify file existence and non-empty size
                 if (outputFile.exists() && outputFile.length() > 0) {
                     withContext(Dispatchers.Main) {
                         onProgress(DownloadProgress.Completed(outputFile))
@@ -174,14 +372,20 @@ object ApkInstallerHelper {
                     throw IOException("Downloaded file is empty or missing")
                 }
 
+            } catch (e: NonRetryableDownloadException) {
+                Log.w(TAG, "Non-retryable download error: ${e.message}")
+                lastErrorMessage = e.message ?: "Download failed"
+                lastIsAuthOrRateLimit = e.isAuthOrRateLimit
+                break
             } catch (e: Exception) {
                 Log.w(TAG, "Download attempt $attempt failed: ${e.message}")
                 lastErrorMessage = e.message ?: "Network error during download"
+                lastIsAuthOrRateLimit = false
                 if (outputFile.exists()) {
                     existingBytes = outputFile.length()
                 }
                 if (attempt < maxAttempts) {
-                    delay(1500L * attempt)
+                    delay(1200L * attempt)
                 }
             } finally {
                 try {
@@ -190,22 +394,25 @@ object ApkInstallerHelper {
             }
         }
 
-        Log.e(TAG, "Download failed after $maxAttempts attempts: $lastErrorMessage")
+        Log.e(TAG, "Download failed after $attempt attempts: $lastErrorMessage")
         withContext(Dispatchers.Main) {
-            onProgress(DownloadProgress.Error(lastErrorMessage))
+            onProgress(DownloadProgress.Error(lastErrorMessage, isAuthOrRateLimit = lastIsAuthOrRateLimit))
         }
         null
     }
 
     /**
      * Resiliently downloads the APK with HTTP Range header support to resume partial downloads.
-     * Retries automatically on transient network drops instead of discarding downloaded data.
+     * Supports both backend `/updates/laterbox/assets/{id}/download-url` resolvers and direct CDN URLs.
+     * Retries automatically on transient network drops and expired signed URLs without discarding data.
      */
     suspend fun downloadApk(
         context: Context,
         downloadUrl: String,
         versionName: String,
         assetName: String = "",
+        expectedSizeBytes: Long = -1L,
+        appCheckTokenProvider: (suspend (Boolean) -> String?)? = null,
         onProgress: (DownloadProgress) -> Unit
     ): File? = withContext(Dispatchers.IO) {
         val updatesDir = File(context.cacheDir, "updates").apply { mkdirs() }
@@ -223,7 +430,8 @@ object ApkInstallerHelper {
         downloadFileInternal(
             outputFile = outputFile,
             downloadUrl = downloadUrl,
-            expectedTotalBytes = -1L,
+            expectedTotalBytes = expectedSizeBytes,
+            appCheckTokenProvider = appCheckTokenProvider,
             onProgress = onProgress
         )
     }
@@ -234,6 +442,7 @@ object ApkInstallerHelper {
     suspend fun downloadPatch(
         context: Context,
         deltaPatch: DeltaPatchInfo,
+        appCheckTokenProvider: (suspend (Boolean) -> String?)? = null,
         onProgress: (DownloadProgress) -> Unit
     ): File? = withContext(Dispatchers.IO) {
         val updatesDir = File(context.cacheDir, "updates").apply { mkdirs() }
@@ -255,6 +464,7 @@ object ApkInstallerHelper {
             outputFile = outputFile,
             downloadUrl = deltaPatch.downloadUrl,
             expectedTotalBytes = deltaPatch.patchSize,
+            appCheckTokenProvider = appCheckTokenProvider,
             onProgress = onProgress
         )
 

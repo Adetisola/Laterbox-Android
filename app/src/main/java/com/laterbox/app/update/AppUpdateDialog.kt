@@ -63,13 +63,22 @@ private enum class UpdateStep {
 fun AppUpdateDialog(
     updateInfo: AppUpdateInfo,
     onDismiss: () -> Unit,
-    onPostpone: (version: String) -> Unit
+    onPostpone: (version: String) -> Unit,
+    appCheckTokenProvider: (suspend (Boolean) -> String?)? = null
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
     val spacing = LaterboxTheme.spacing
+
+    val effectiveAppCheckProvider: suspend (Boolean) -> String? = remember(context, appCheckTokenProvider) {
+        appCheckTokenProvider ?: { forceRefresh ->
+            (context.applicationContext as? com.laterbox.app.LaterboxApplication)
+                ?.container
+                ?.getBackendAppCheckToken(forceRefresh)
+        }
+    }
 
     var currentStep by remember { mutableStateOf(UpdateStep.PROMPT) }
     var downloadPercent by remember { mutableIntStateOf(0) }
@@ -134,6 +143,8 @@ fun AppUpdateDialog(
                 downloadUrl = updateInfo.downloadUrl,
                 versionName = updateInfo.versionName,
                 assetName = updateInfo.assetName,
+                expectedSizeBytes = updateInfo.apkSize,
+                appCheckTokenProvider = effectiveAppCheckProvider,
                 onProgress = { progress ->
                     when (progress) {
                         is ApkInstallerHelper.DownloadProgress.Downloading -> {
@@ -173,9 +184,11 @@ fun AppUpdateDialog(
             totalDownloadBytes = delta.patchSize
 
             coroutineScope.launch {
+                var patchError: ApkInstallerHelper.DownloadProgress.Error? = null
                 val patchFile = ApkInstallerHelper.downloadPatch(
                     context = context,
                     deltaPatch = delta,
+                    appCheckTokenProvider = effectiveAppCheckProvider,
                     onProgress = { progress ->
                         when (progress) {
                             is ApkInstallerHelper.DownloadProgress.Downloading -> {
@@ -189,13 +202,19 @@ fun AppUpdateDialog(
                                 // Patch download completed
                             }
                             is ApkInstallerHelper.DownloadProgress.Error -> {
-                                // Handled below when patchFile returns null
+                                patchError = progress
                             }
                         }
                     }
                 )
 
                 if (patchFile == null || !patchFile.exists()) {
+                    if (patchError?.isAuthOrRateLimit == true) {
+                        errorMessage = patchError?.message
+                            ?: "Download could not be authorized or rate limit was reached."
+                        currentStep = UpdateStep.FAILED
+                        return@launch
+                    }
                     Log.w("AppUpdateDialog", "Delta patch download failed, falling back to full APK download")
                     startFullDownload("Delta update could not be applied. Downloading complete update...")
                     return@launch
