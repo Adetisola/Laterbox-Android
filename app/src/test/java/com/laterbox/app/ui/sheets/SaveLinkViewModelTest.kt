@@ -11,6 +11,7 @@ import com.laterbox.app.data.repository.LinkRepository
 import com.laterbox.app.domain.model.ContentType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -38,6 +39,7 @@ import org.robolectric.annotation.Config
 class SaveLinkViewModelTest {
 
     private val testDispatcher = StandardTestDispatcher()
+    private lateinit var repoScope: kotlinx.coroutines.CoroutineScope
     private lateinit var database: LaterboxDatabase
     private lateinit var linkRepository: LinkRepository
     private lateinit var collectionRepository: CollectionRepository
@@ -45,16 +47,21 @@ class SaveLinkViewModelTest {
     @Before
     fun setUp() {
         Dispatchers.setMain(testDispatcher)
+        repoScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + testDispatcher)
         val context = ApplicationProvider.getApplicationContext<Context>()
         database = Room.inMemoryDatabaseBuilder(context, LaterboxDatabase::class.java)
             .allowMainThreadQueries()
+            .setQueryExecutor { it.run() }
+            .setTransactionExecutor { it.run() }
             .build()
-        linkRepository = LinkRepository(database.savedLinkDao())
+        linkRepository = LinkRepository(database.savedLinkDao(), scope = repoScope)
         collectionRepository = CollectionRepository(database.collectionDao())
     }
 
     @After
     fun tearDown() {
+        repoScope.cancel()
+        database.close()
         Dispatchers.resetMain()
     }
 
@@ -328,6 +335,7 @@ class SaveLinkViewModelTest {
             assertEquals(false, isUpdateReceived)
             cancelAndIgnoreRemainingEvents()
         }
+        advanceUntilIdle()
 
         // Now save with duplicate URL
         val viewModel2 = createViewModel()
@@ -356,6 +364,7 @@ class SaveLinkViewModelTest {
             assertEquals(true, isUpdateReceived2)
             cancelAndIgnoreRemainingEvents()
         }
+        advanceUntilIdle()
     }
 }
 
