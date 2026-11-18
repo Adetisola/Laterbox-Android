@@ -145,4 +145,76 @@ class DownloadsScreenTest {
         composeTestRule.onNodeWithTag("downloads_storage_sheet").assertIsDisplayed()
         assertTrue(true)
     }
+
+    @Test
+    fun pausedDownloadTask_displaysProgressBarPercentageAndDownloadedTotalBytesWithoutStaleSpeed() {
+        val pausedTask = DownloadTask(
+            id = "task_paused",
+            savedLinkId = null,
+            sourceUrl = "https://cdn.example/movie.mp4",
+            sourcePlatform = "MovieBox",
+            candidateId = "c1",
+            formatSelector = null,
+            mediaType = MediaType.VIDEO,
+            qualityLabel = "720p · MP4",
+            title = "Severance · S1 · E1 (720p)",
+            assetId = null,
+            status = DownloadState.PAUSED,
+            progress = 40,
+            downloadedBytes = 10L * 1024L * 1024L,
+            totalBytes = 25L * 1024L * 1024L,
+            createdAt = 1_700_000_000_000L,
+            updatedAt = 1_700_000_000_000L,
+            contentCategory = "EPISODE",
+            speedBps = 2L * 1024L * 1024L,
+            etaSeconds = 8L
+        )
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                DownloadsScreenContent(
+                    uiState = DownloadsUiState(
+                        selectedTab = DownloadsTab.QUEUE,
+                        selectedCategory = DownloadsFilterCategory.ALL,
+                        assets = emptyList(),
+                        queueTasks = listOf(pausedTask),
+                        storageBreakdown = emptyMap(),
+                        totalStorageBytes = 0L
+                    ),
+                    onSettingsClick = {},
+                    onOpenLinkDetail = {},
+                    onMenuClick = null,
+                    onSearchQueryChange = {},
+                    onCategorySelected = {},
+                    onTabSelected = {},
+                    onToggleAssetSelection = {},
+                    onSelectAllAssets = {},
+                    onClearSelection = {},
+                    onDeleteSelectedAssets = {},
+                    onExportSelectedAssets = {},
+                    onOpenAsset = {},
+                    onExportAsset = {},
+                    onDeleteAsset = {},
+                    onToggleTaskSelection = {},
+                    onSelectAllTasks = {},
+                    onClearTaskSelection = {},
+                    onCancelSelectedTasks = {},
+                    onRetrySelectedTasks = {},
+                    onDismissSelectedTasks = {},
+                    onOverrideCellular = {},
+                    onPauseTask = {},
+                    onResumeTask = {},
+                    onCancelTask = {},
+                    onRetryTask = {},
+                    onDismissTask = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("queue_task_progress_task_paused").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Paused · 40% · 10.0 MB / 25.0 MB").assertIsDisplayed()
+        composeTestRule.onNodeWithText("40%", substring = true).assertIsDisplayed()
+        composeTestRule.onNodeWithText("10.0 MB / 25.0 MB", substring = true).assertIsDisplayed()
+        composeTestRule.onNodeWithText("2.0 MB/s", substring = true).assertDoesNotExist()
+    }
 }

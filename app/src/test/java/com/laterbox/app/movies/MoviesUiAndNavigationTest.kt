@@ -342,10 +342,13 @@ class MoviesUiAndNavigationTest {
             }
         }
 
-        composeTestRule.onNodeWithTag("movies_home_search_field").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("movies_home_search_field").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("movies_search_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("movies_home_filters_row").assertIsDisplayed()
         composeTestRule.onNodeWithTag("movies_home_kind_movie").assertIsDisplayed().performClick()
         assertEquals(MediaKind.MOVIE, selectedKind)
 
+        composeTestRule.onNodeWithTag("movies_home_filters_row").performScrollToNode(hasTestTag("movies_home_sort_top_rated"))
         composeTestRule.onNodeWithTag("movies_home_sort_top_rated").assertIsDisplayed().performClick()
         assertEquals(CatalogueSort.TOP_RATED, selectedSort)
         composeTestRule.onNodeWithTag("movies_tmdb_setup_card").assertDoesNotExist()
@@ -425,9 +428,16 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithTag("player_seek_slider").assertIsDisplayed()
         composeTestRule.onNodeWithTag("player_speed_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("player_resize_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_rotation_lock_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("player_fullscreen_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_rotate_button", useUnmergedTree = true).assertIsDisplayed()
 
-        // Test Lock & Unlock
+        // Test independent Rotation Lock (does not lock playback controls)
+        composeTestRule.onNodeWithTag("player_rotation_lock_button").performClick()
+        composeTestRule.onNodeWithTag("player_play_pause_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_rotation_lock_button").performClick()
+
+        // Test Playback Controls Lock & Unlock
         composeTestRule.onNodeWithTag("player_lock_button").assertIsDisplayed().performClick()
         composeTestRule.onNodeWithTag("player_unlock_button").assertIsDisplayed().performClick()
         composeTestRule.onNodeWithTag("player_lock_button").assertIsDisplayed()
@@ -573,7 +583,8 @@ class MoviesUiAndNavigationTest {
             }
         }
 
-        composeTestRule.onNodeWithText("Watch S2·E1 (1080p)").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Watch S2·E1").assertIsDisplayed()
+        composeTestRule.onNodeWithText("MOVIEBOX").assertDoesNotExist()
         composeTestRule.onNodeWithTag("detail_watch_button").performClick()
         assertEquals(2, clickedSeason)
         assertEquals(1, clickedEpisode)
@@ -589,7 +600,7 @@ class MoviesUiAndNavigationTest {
                         isLoading = false,
                         details = MediaDetails(summary = sampleMovie, fullDescription = "Classic."),
                         playbackResolution = null,
-                        playbackError = "Failed to bootstrap MovieBox token"
+                        playbackError = "Failed to load stream options"
                     ),
                     onBackClick = {},
                     onRetry = {},
@@ -604,7 +615,7 @@ class MoviesUiAndNavigationTest {
         }
 
         composeTestRule.onNodeWithTag("detail_playback_error").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Failed to bootstrap MovieBox token").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Failed to load stream options").assertIsDisplayed()
         composeTestRule.onNodeWithText("Retry Stream Check").performClick()
         assertTrue(retried)
     }
@@ -618,6 +629,8 @@ class MoviesUiAndNavigationTest {
             providerId = "moviebox",
             kind = MediaKind.TV_SERIES,
             title = "Avatar",
+            country = "United States",
+            language = "English",
             sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
         )
 
@@ -653,7 +666,8 @@ class MoviesUiAndNavigationTest {
             }
         }
 
-        composeTestRule.onNodeWithTag("movie_detail_list").performScrollToNode(hasTestTag("detail_dub_chip_mb_series_fr"))
+        composeTestRule.onNodeWithTag("movie_detail_list").performScrollToNode(hasTestTag("detail_metadata_pills_row"))
+        composeTestRule.onNodeWithTag("detail_metadata_pills_row").performScrollToNode(hasTestTag("detail_dub_chip_mb_series_fr"))
         composeTestRule.onNodeWithTag("detail_dub_chip_mb_series_fr").assertIsDisplayed().performClick()
         assertEquals("mb_series_fr", openedRelatedId)
 
@@ -752,7 +766,7 @@ class MoviesUiAndNavigationTest {
 
     @Test
     fun moviesScreen_homeDropdownShowsLoadingStateAndOutsideTapDismisses() {
-        var focusState: Boolean? = null
+        var openedCatalogueSearch = false
         composeTestRule.setContent {
             LaterboxTheme {
                 MoviesScreen(
@@ -770,20 +784,19 @@ class MoviesUiAndNavigationTest {
                         )
                     ),
                     onRefresh = {},
-                    onOpenCatalogue = { _, _ -> },
+                    onOpenCatalogue = { _, _ -> openedCatalogueSearch = true },
                     onOpenDetail = { _, _ -> },
                     onOpenPlayer = { _, _, _, _ -> },
                     onToggleWatchlist = {},
-                    onToggleSampleFixtures = {},
-                    onSearchFocusChange = { focusState = it }
+                    onToggleSampleFixtures = {}
                 )
             }
         }
 
-        composeTestRule.onNodeWithTag("movies_home_suggestions").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("movies_home_suggestions_loading").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("movies_home_search_scrim").performClick()
-        assertEquals(false, focusState)
+        composeTestRule.onNodeWithTag("movies_home_search_field").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("movies_home_suggestions").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("movies_search_button").assertIsDisplayed().performClick()
+        assertTrue(openedCatalogueSearch)
     }
 
     @Test
@@ -824,10 +837,11 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithText("Powered by", substring = true).assertDoesNotExist()
         composeTestRule.onNodeWithTag("movies_home_genre_fantasy").assertDoesNotExist()
 
+        composeTestRule.onNodeWithTag("movies_home_filters_row").performScrollToNode(hasTestTag("movies_home_shortcut_k_drama"))
         composeTestRule.onNodeWithTag("movies_home_shortcut_k_drama").assertIsDisplayed().performClick()
         assertEquals(com.laterbox.app.movies.domain.model.MoviesDiscoveryShortcut.K_DRAMA, clickedShortcut)
 
-        composeTestRule.onNodeWithTag("movies_home_shortcuts_row").performScrollToNode(hasTestTag("movies_home_country_korea"))
+        composeTestRule.onNodeWithTag("movies_home_filters_row").performScrollToNode(hasTestTag("movies_home_country_korea"))
         composeTestRule.onNodeWithTag("movies_home_country_korea").performClick()
         assertEquals("Korea", clickedCountry)
 
@@ -907,13 +921,21 @@ class MoviesUiAndNavigationTest {
                             summary = seriesSummary,
                             fullDescription = "Workplace thriller.",
                             cast = listOf(CastMember("Adam Scott", "Mark S.", personId = "p1", providerId = "tvmaze")),
-                            seasons = listOf(SeasonSummary(1, "Season 1", 3, availableEpisodes = listOf(1, 2, 3)))
+                            seasons = listOf(
+                                SeasonSummary(
+                                    1,
+                                    "Season 1",
+                                    3,
+                                    availableEpisodes = listOf(1, 2, 3),
+                                    availableResolutions = listOf(720, 480)
+                                )
+                            )
                         ),
                         selectedSeasonNumber = 1,
                         episodes = listOf(
-                            EpisodeItem("ep_1_1", 1, 1, "Episode 1"),
-                            EpisodeItem("ep_1_2", 1, 2, "Episode 2"),
-                            EpisodeItem("ep_1_3", 1, 3, "Episode 3")
+                            EpisodeItem("ep_1_1", 1, 1, "Good News About Hell", sizesMbByQuality = mapOf(720 to 420.0, 480 to 210.0)),
+                            EpisodeItem("ep_1_2", 1, 2, "Half Loop", sizesMbByQuality = mapOf(720 to 415.0, 480 to 205.0)),
+                            EpisodeItem("ep_1_3", 1, 3, "In Perpetuity", sizesMbByQuality = mapOf(720 to 430.0, 480 to 215.0))
                         ),
                         playbackResolution = PlaybackResolution.Available(
                             title = "Severance",
@@ -941,16 +963,20 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithTag("detail_poster_viewer_dialog").assertIsDisplayed()
         composeTestRule.onNodeWithTag("detail_poster_viewer_close").performClick()
 
-        // Tap download button to open DownloadOptionsBottomSheet & batch-select episodes 1 and 2
+        // Tap download button to open unified Download episodes sheet & batch-select episodes 1 and 2
         composeTestRule.onNodeWithTag("detail_download_button").performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("download_resolution_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Download episodes").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Batch Download Episodes").assertDoesNotExist()
+        composeTestRule.onNodeWithText("720p · 420 MB").assertIsDisplayed()
+
         composeTestRule.onNodeWithTag("download_options_list").performScrollToNode(hasTestTag("batch_episode_checkbox_1"))
         composeTestRule.onNodeWithTag("batch_episode_checkbox_1").performClick()
         composeTestRule.onNodeWithTag("download_options_list").performScrollToNode(hasTestTag("batch_episode_checkbox_2"))
         composeTestRule.onNodeWithTag("batch_episode_checkbox_2").performClick()
-        composeTestRule.onNodeWithTag("download_options_list").performScrollToNode(hasTestTag("batch_download_confirm_button"))
-        composeTestRule.onNodeWithTag("batch_download_confirm_button").performClick()
+        // Sticky bottom download button does not require scrolling the list to tap
+        composeTestRule.onNodeWithTag("batch_download_confirm_button").assertIsDisplayed().performClick()
         composeTestRule.waitForIdle()
         assertEquals(1, batchCall?.first)
         assertEquals(listOf(1, 2), batchCall?.second?.sorted())
@@ -996,5 +1022,52 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithTag("person_credit_parks_rec").assertIsDisplayed().performClick()
         composeTestRule.waitForIdle()
         assertEquals("parks_rec", openedCreditId)
+    }
+
+    @Test
+    fun localVideoPlayerScreen_usesSharedFullscreenPlayerAndHidesRemoteOnlyControls() {
+        var dismissed = false
+        val localAsset = com.laterbox.app.media.domain.model.MediaAsset(
+            id = "asset_vid_1",
+            savedLinkId = 1L,
+            sourcePlatform = "Laterbox",
+            originalSourceUrl = "https://cdn.example/video.mp4",
+            title = "Severance · S1E1",
+            mimeType = "video/mp4",
+            mediaType = com.laterbox.app.media.domain.model.MediaType.VIDEO,
+            localPath = "videos/severance_s1e1.mp4",
+            exportedUri = null,
+            fileSize = 150_000_000L,
+            durationMs = 3_000_000L,
+            width = 1280,
+            height = 720,
+            qualityLabel = "720p",
+            checksum = "sha256",
+            createdAt = 1_000L
+        )
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                com.laterbox.app.media.ui.viewer.MediaPlayerScreen(
+                    asset = localAsset,
+                    onDismiss = { dismissed = true },
+                    onExport = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("movie_player_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_controls_overlay").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Severance · S1E1").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_play_pause_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_rotation_lock_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_rotate_button", useUnmergedTree = true).assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_lock_button").assertIsDisplayed()
+        // Remote-only quality and download controls are hidden for local video playback
+        composeTestRule.onNodeWithTag("player_quality_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("player_download_button").assertDoesNotExist()
+
+        composeTestRule.onNodeWithTag("player_back_button").performClick()
+        assertTrue(dismissed)
     }
 }

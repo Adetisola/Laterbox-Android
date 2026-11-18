@@ -80,6 +80,7 @@ object MoviesCacheJsonCodec {
                     put("episodeCount", s.episodeCount)
                     put("imageUrl", s.imageUrl ?: JSONObject.NULL)
                     put("availableEpisodes", JSONArray(s.availableEpisodes))
+                    put("availableResolutions", JSONArray(s.availableResolutions))
                 })
             }
         })
@@ -143,13 +144,23 @@ object MoviesCacheJsonCodec {
                             }
                         }
                     }
+                    val resArr = o.optJSONArray("availableResolutions")
+                    val availableRes = buildList {
+                        if (resArr != null) {
+                            for (j in 0 until resArr.length()) {
+                                val resVal = resArr.optInt(j, 0)
+                                if (resVal > 0) add(resVal)
+                            }
+                        }
+                    }
                     add(
                         SeasonSummary(
                             seasonNumber = o.optInt("seasonNumber", 1),
                             title = o.optString("title"),
                             episodeCount = o.optInt("episodeCount", 0),
                             imageUrl = o.optNullableString("imageUrl"),
-                            availableEpisodes = availableEps
+                            availableEpisodes = availableEps,
+                            availableResolutions = availableRes
                         )
                     )
                 }
@@ -198,6 +209,13 @@ object MoviesCacheJsonCodec {
                 put("runtimeMinutes", ep.runtimeMinutes ?: JSONObject.NULL)
                 put("airDate", ep.airDate ?: JSONObject.NULL)
                 put("stillUrl", ep.stillUrl ?: JSONObject.NULL)
+                if (ep.sizesMbByQuality.isNotEmpty()) {
+                    put("sizesMbByQuality", JSONObject().apply {
+                        ep.sizesMbByQuality.forEach { (q, size) ->
+                            put(q.toString(), size)
+                        }
+                    })
+                }
             })
         }
     }.toString()
@@ -207,6 +225,18 @@ object MoviesCacheJsonCodec {
         buildList {
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
+                val sizesObj = o.optJSONObject("sizesMbByQuality")
+                val sizesMap = buildMap<Int, Double> {
+                    if (sizesObj != null) {
+                        val keys = sizesObj.keys()
+                        while (keys.hasNext()) {
+                            val k = keys.next()
+                            val q = k.toIntOrNull() ?: continue
+                            val v = sizesObj.optDouble(k, 0.0)
+                            if (q > 0 && v > 0.0) put(q, v)
+                        }
+                    }
+                }
                 add(
                     EpisodeItem(
                         id = o.optString("id"),
@@ -216,7 +246,8 @@ object MoviesCacheJsonCodec {
                         overview = o.optNullableString("overview"),
                         runtimeMinutes = if (o.isNull("runtimeMinutes")) null else o.optInt("runtimeMinutes"),
                         airDate = o.optNullableString("airDate"),
-                        stillUrl = o.optNullableString("stillUrl")
+                        stillUrl = o.optNullableString("stillUrl"),
+                        sizesMbByQuality = sizesMap
                     )
                 )
             }

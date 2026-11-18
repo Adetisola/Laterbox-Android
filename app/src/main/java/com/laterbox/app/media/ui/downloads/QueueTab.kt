@@ -28,6 +28,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -242,6 +243,13 @@ fun QueueTaskCard(
 
             Spacer(modifier = Modifier.height(12.dp))
 
+            val totalBytes = task.totalBytes ?: 0L
+            val downloadedOfTotalText = if (totalBytes > 0L) {
+                "${formatBytes(task.downloadedBytes)} / ${formatBytes(totalBytes)}"
+            } else {
+                formatBytes(task.downloadedBytes)
+            }
+
             when (task.status) {
                 DownloadState.DOWNLOADING, DownloadState.PROCESSING -> {
                     val stage = task.stage
@@ -250,7 +258,8 @@ fun QueueTaskCard(
                         LinearProgressIndicator(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(6.dp),
+                                .height(6.dp)
+                                .testTag("queue_task_progress_${task.id}"),
                             color = colors.accentPrimary,
                             trackColor = colors.surfaceSecondary
                         )
@@ -259,7 +268,8 @@ fun QueueTaskCard(
                             progress = { (task.progress.coerceIn(0, 100)) / 100f },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(6.dp),
+                                .height(6.dp)
+                                .testTag("queue_task_progress_${task.id}"),
                             color = colors.accentPrimary,
                             trackColor = colors.surfaceSecondary
                         )
@@ -270,14 +280,14 @@ fun QueueTaskCard(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        val stageLabel = stage?.label ?: if (task.status == DownloadState.PROCESSING) "Processing..." else "Downloading..."
+                        val stageLabel = stage?.label ?: if (task.status == DownloadState.PROCESSING) "Processing" else "Downloading"
                         val detail = if (!task.stageDetail.isNullOrBlank()) " · ${task.stageDetail}" else ""
                         val speedPart = task.speedBps?.takeIf { it > 0L }?.let { " · ${formatSpeed(it)}" }.orEmpty()
                         val etaPart = task.etaSeconds?.takeIf { it > 0L }?.let { " · ${formatEta(it)} left" }.orEmpty()
                         val progressText = if (isIndeterminate) {
                             "$stageLabel$detail"
                         } else {
-                            "$stageLabel · ${task.progress}% · ${formatBytes(task.downloadedBytes)}$speedPart$etaPart$detail"
+                            "$stageLabel · ${task.progress}% · $downloadedOfTotalText$speedPart$etaPart$detail"
                         }
                         Text(
                             text = progressText,
@@ -295,7 +305,7 @@ fun QueueTaskCard(
 
                 DownloadState.WAITING_FOR_WIFI -> {
                     Text(
-                        text = "Waiting for Wi-Fi (over 20 MB threshold)",
+                        text = "Waiting for Wi-Fi (over 20 MB)",
                         style = typography.bodySmall,
                         color = colors.textSecondary
                     )
@@ -306,7 +316,7 @@ fun QueueTaskCard(
                         shape = LaterboxShapeTokens.PillNav
                     ) {
                         Text(
-                            text = "Download anyway (use cellular)",
+                            text = "Download using mobile data",
                             style = typography.uiMedium,
                             color = colors.accentPrimary
                         )
@@ -314,17 +324,35 @@ fun QueueTaskCard(
                 }
 
                 DownloadState.PAUSED -> {
-                    Text(
-                        text = "Paused (${task.progress}%)",
-                        style = typography.bodySmall,
-                        color = colors.textSecondary
+                    LinearProgressIndicator(
+                        progress = { (task.progress.coerceIn(0, 100)) / 100f },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(6.dp)
+                            .testTag("queue_task_progress_${task.id}"),
+                        color = colors.accentPrimary.copy(alpha = 0.65f),
+                        trackColor = colors.surfaceSecondary
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    TextButton(
-                        onClick = onResumeTask,
-                        colors = ButtonDefaults.textButtonColors(contentColor = colors.accentPrimary)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(text = "Resume")
+                        Text(
+                            text = "Paused · ${task.progress}% · $downloadedOfTotalText",
+                            style = typography.caption,
+                            color = colors.textSecondary,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        TextButton(
+                            onClick = onResumeTask,
+                            colors = ButtonDefaults.textButtonColors(contentColor = colors.accentPrimary)
+                        ) {
+                            Text(text = "Resume", fontSize = 12.sp)
+                        }
                     }
                 }
 

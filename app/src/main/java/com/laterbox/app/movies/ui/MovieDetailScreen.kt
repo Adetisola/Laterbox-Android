@@ -90,16 +90,23 @@ fun MovieDetailScreen(
     var showPosterViewer by remember { mutableStateOf(false) }
 
     val availableRes = uiState.playbackResolution as? PlaybackResolution.Available
-    if (showDownloadDialog && availableRes != null && uiState.details != null) {
+    val canShowDownloadSheet = uiState.details != null && (
+        availableRes != null ||
+            (uiState.details.summary.kind == MediaKind.TV_SERIES && uiState.details.seasons.isNotEmpty())
+        )
+    if (showDownloadDialog && canShowDownloadSheet) {
+        val currentDetails = uiState.details!!
         DownloadOptionsBottomSheet(
-            title = uiState.details.summary.title,
-            kind = uiState.details.summary.kind,
-            sources = availableRes.sources,
-            subtitles = availableRes.subtitles.ifEmpty { uiState.details.availableSubtitles },
+            title = currentDetails.summary.title,
+            kind = currentDetails.summary.kind,
+            sources = availableRes?.sources.orEmpty(),
+            subtitles = availableRes?.subtitles.orEmpty().ifEmpty { uiState.details.availableSubtitles },
             seasons = uiState.details.seasons,
             selectedSeasonNumber = uiState.selectedSeasonNumber,
             currentEpisodes = uiState.episodes,
             isEnqueuing = uiState.isEnqueuingDownload,
+            isLoadingEpisodeSizes = uiState.isLoadingEpisodeSizes,
+            onSelectSeason = onSelectSeason,
             onSelectSource = onDownloadSource,
             onDownloadBatch = onDownloadEpisodesBatch,
             onDismiss = { showDownloadDialog = false }
@@ -360,7 +367,6 @@ fun MovieDetailScreen(
                                         .padding(bottom = 4.dp),
                                     verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    DataSourceBadgeChip(badge = summary.sourceBadge)
                                     Text(
                                         text = summary.title,
                                         style = typography.editorialTitle.copy(fontSize = 22.sp, lineHeight = 26.sp),
@@ -411,7 +417,7 @@ fun MovieDetailScreen(
                                                 color = colors.accentPrimary
                                             )
                                             Text(
-                                                text = "Checking authorised stream availability...",
+                                                text = "Checking playback availability...",
                                                 style = typography.bodySecondary,
                                                 color = colors.textSecondary
                                             )
@@ -420,7 +426,8 @@ fun MovieDetailScreen(
                                 }
                                 resolution is PlaybackResolution.Available -> {
                                     val isResume = uiState.savedPositionMs >= 5_000L
-                                    val hasAuthorisedDownloads = resolution.sources.any { it.isAuthorised }
+                                    val hasAuthorisedDownloads = resolution.sources.any { it.isAuthorised } ||
+                                        (summary.kind == MediaKind.TV_SERIES && details.seasons.isNotEmpty())
                                     val playSeason = if (summary.kind == MediaKind.TV_SERIES) {
                                         uiState.selectedSeasonNumber ?: 1
                                     } else null
@@ -450,18 +457,22 @@ fun MovieDetailScreen(
                                                 modifier = Modifier.size(16.dp)
                                             )
                                             Spacer(modifier = Modifier.width(8.dp))
-                                            val maxQual = resolution.sources.firstOrNull()?.qualityLabel ?: "Stream"
-                                            val epPrefix = if (playSeason != null && playEpisode != null) {
-                                                "S${playSeason}·E${playEpisode} "
-                                            } else ""
-                                            val ctaLabel = if (isResume) {
-                                                "Resume ${epPrefix}(${maxQual})"
-                                            } else if (epPrefix.isNotEmpty()) {
-                                                "Watch ${epPrefix}(${maxQual})"
-                                            } else {
-                                                "Watch Now (${maxQual})"
+                                            val ctaLabel = when {
+                                                playSeason != null && playEpisode != null && isResume ->
+                                                    "Resume S${playSeason}·E${playEpisode}"
+                                                playSeason != null && playEpisode != null ->
+                                                    "Watch S${playSeason}·E${playEpisode}"
+                                                isResume ->
+                                                    "Resume"
+                                                else ->
+                                                    "Watch now"
                                             }
-                                            Text(text = ctaLabel, style = typography.buttonLabel, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            Text(
+                                                text = ctaLabel,
+                                                style = typography.buttonLabel,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
                                         }
 
                                         if (hasAuthorisedDownloads) {
@@ -543,7 +554,7 @@ fun MovieDetailScreen(
                                             verticalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
                                             Text(
-                                                text = "Playback Unavailable from ${resolution.providerName}",
+                                                text = "Playback Unavailable",
                                                 style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
                                                 color = colors.textPrimary
                                             )
@@ -609,7 +620,7 @@ fun MovieDetailScreen(
                         }
                     }
 
-                    // Synopsis & Metadata Chips
+                    // Synopsis & Unified Metadata Pills
                     item(key = "detail_synopsis") {
                         Column(
                             modifier = Modifier
@@ -626,11 +637,6 @@ fun MovieDetailScreen(
                             val metaLines = buildList {
                                 details.directorOrCreator?.let { add("Director / Creator: $it") }
                                 details.networkOrStudio?.let { add("Studio / Network: $it") }
-                                summary.country?.takeIf { it.isNotBlank() }?.let { add("Country: $it") }
-                                summary.language?.takeIf { it.isNotBlank() }?.let { add("Language: $it") }
-                                if (details.audioDubs.isNotEmpty()) {
-                                    add("Audio Dubs: ${details.audioDubs.joinToString { it.label }}")
-                                }
                                 if (details.availableSubtitles.isNotEmpty()) {
                                     add("Subtitles: ${details.availableSubtitles.joinToString { it.language }}")
                                 }
@@ -646,6 +652,7 @@ fun MovieDetailScreen(
                                     }
                                 }
                             }
+
                             val trailerUrl = summary.trailerUrl
                             if (!trailerUrl.isNullOrBlank()) {
                                 OutlinedButton(
@@ -664,64 +671,102 @@ fun MovieDetailScreen(
                                 }
                             }
 
-                            if (summary.genres.isNotEmpty()) {
-                                FlowRow(
+                            // Unified horizontal pill row: Country, Language, Genres, and Audio Languages/Dubs
+                            val countryPills = remember(summary.country) {
+                                summary.country
+                                    ?.split(",")
+                                    ?.map { it.trim() }
+                                    ?.filter { it.isNotBlank() }
+                                    .orEmpty()
+                            }
+                            val dubLabelsLower = remember(details.audioDubs) {
+                                details.audioDubs.map { it.label.lowercase(Locale.US) }.toSet()
+                            }
+                            val languagePills = remember(summary.language, dubLabelsLower) {
+                                summary.language
+                                    ?.split(",")
+                                    ?.map { it.trim() }
+                                    ?.filter { it.isNotBlank() && it.lowercase(Locale.US) !in dubLabelsLower }
+                                    .orEmpty()
+                            }
+                            val hasMetadataPills = countryPills.isNotEmpty() ||
+                                languagePills.isNotEmpty() ||
+                                summary.genres.isNotEmpty() ||
+                                details.audioDubs.isNotEmpty()
+
+                            if (hasMetadataPills) {
+                                LazyRow(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("detail_metadata_pills_row"),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    summary.genres.forEach { genre ->
+                                    items(countryPills, key = { "meta_country_$it" }) { country ->
+                                        MetadataPillChip(
+                                            label = country,
+                                            modifier = Modifier.testTag("detail_country_chip_$country")
+                                        )
+                                    }
+                                    items(languagePills, key = { "meta_lang_$it" }) { lang ->
+                                        MetadataPillChip(
+                                            label = lang,
+                                            modifier = Modifier.testTag("detail_language_chip_$lang")
+                                        )
+                                    }
+                                    items(summary.genres, key = { "meta_genre_$it" }) { genre ->
+                                        MetadataPillChip(
+                                            label = genre,
+                                            modifier = Modifier.testTag("detail_genre_chip_$genre")
+                                        )
+                                    }
+                                    items(
+                                        details.audioDubs,
+                                        key = { dub -> "meta_dub_${dub.language}_${dub.referenceId ?: dub.label}" }
+                                    ) { dub ->
+                                        val refId = dub.referenceId
+                                        val isActiveDub = refId == null || refId == summary.id
+                                        val isSwitchableDub = !refId.isNullOrBlank() && refId != summary.id
                                         Surface(
                                             shape = RoundedCornerShape(20.dp),
-                                            color = colors.surfacePrimary,
-                                            border = BorderStroke(0.75.dp, colors.borderSubtle)
+                                            color = if (isActiveDub && details.audioDubs.size > 1) {
+                                                colors.accentContainer
+                                            } else {
+                                                colors.surfacePrimary
+                                            },
+                                            border = BorderStroke(
+                                                0.75.dp,
+                                                if (isActiveDub && details.audioDubs.size > 1) {
+                                                    colors.accentPrimary
+                                                } else {
+                                                    colors.borderSubtle
+                                                }
+                                            ),
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(20.dp))
+                                                .clickable(enabled = isSwitchableDub) {
+                                                    if (!refId.isNullOrBlank()) {
+                                                        onOpenRelated(summary.providerId, refId)
+                                                    }
+                                                }
+                                                .testTag("detail_dub_chip_${refId ?: dub.language}")
                                         ) {
                                             Text(
-                                                text = genre,
-                                                style = typography.caption,
-                                                color = colors.textSecondary,
+                                                text = dub.label,
+                                                style = typography.caption.copy(
+                                                    fontWeight = if (isActiveDub && details.audioDubs.size > 1) {
+                                                        FontWeight.SemiBold
+                                                    } else {
+                                                        FontWeight.Normal
+                                                    }
+                                                ),
+                                                color = if (isActiveDub && details.audioDubs.size > 1) {
+                                                    colors.accentPrimary
+                                                } else {
+                                                    colors.textSecondary
+                                                },
                                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                                             )
-                                        }
-                                    }
-                                }
-                            }
-                            if (details.audioDubs.isNotEmpty()) {
-                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    Text(
-                                        text = "Audio & Language Dubs",
-                                        style = typography.uiLabel.copy(fontSize = 12.sp, fontWeight = FontWeight.SemiBold),
-                                        color = colors.textPrimary
-                                    )
-                                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        items(
-                                            details.audioDubs,
-                                            key = { dub -> "${dub.language}_${dub.referenceId ?: dub.label}" }
-                                        ) { dub ->
-                                            val refId = dub.referenceId
-                                            val isActiveDub = refId == null || refId == summary.id
-                                            Surface(
-                                                shape = RoundedCornerShape(12.dp),
-                                                color = if (isActiveDub) colors.accentPrimary else colors.surfacePrimary,
-                                                border = BorderStroke(
-                                                    0.75.dp,
-                                                    if (isActiveDub) colors.accentPrimary else colors.borderSubtle
-                                                ),
-                                                modifier = Modifier
-                                                    .clip(RoundedCornerShape(12.dp))
-                                                    .clickable(enabled = !refId.isNullOrBlank() && refId != summary.id) {
-                                                        if (!refId.isNullOrBlank()) {
-                                                            onOpenRelated(summary.providerId, refId)
-                                                        }
-                                                    }
-                                                    .testTag("detail_dub_chip_${refId ?: dub.language}")
-                                            ) {
-                                                Text(
-                                                    text = dub.label,
-                                                    style = typography.caption.copy(fontWeight = FontWeight.Medium),
-                                                    color = if (isActiveDub) colors.onAccentPrimary else colors.textPrimary,
-                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                                                )
-                                            }
                                         }
                                     }
                                 }
@@ -1019,6 +1064,29 @@ fun MovieDetailScreen(
 }
 
 @Composable
+private fun MetadataPillChip(
+    label: String,
+    modifier: Modifier = Modifier
+) {
+    val colors = LaterboxTheme.colors
+    val typography = LaterboxTheme.typography
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(20.dp),
+        color = colors.surfacePrimary,
+        border = BorderStroke(0.75.dp, colors.borderSubtle)
+    ) {
+        Text(
+            text = label,
+            style = typography.caption,
+            color = colors.textSecondary,
+            maxLines = 1,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+        )
+    }
+}
+
+@Composable
 private fun EpisodeRowCard(
     episode: EpisodeItem,
     onClick: () -> Unit,
@@ -1065,7 +1133,10 @@ private fun EpisodeRowCard(
                     )
                 }
             }
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
                 Text(
                     text = "${episode.episodeNumber}. ${episode.title}",
                     style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
@@ -1094,6 +1165,24 @@ private fun EpisodeRowCard(
                     )
                 }
             }
+            Surface(
+                shape = CircleShape,
+                color = colors.accentContainer,
+                border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.35f)),
+                modifier = Modifier
+                    .size(34.dp)
+                    .testTag("episode_play_button_${episode.seasonNumber}_${episode.episodeNumber}")
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        painter = painterResource(LaterboxIcons.Play),
+                        contentDescription = "Play episode ${episode.episodeNumber}",
+                        tint = colors.accentPrimary,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            }
         }
     }
 }
+

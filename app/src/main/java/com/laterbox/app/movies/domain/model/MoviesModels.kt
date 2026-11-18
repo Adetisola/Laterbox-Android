@@ -156,7 +156,8 @@ data class SeasonSummary(
     val title: String = "Season $seasonNumber",
     val episodeCount: Int = 0,
     val imageUrl: String? = null,
-    val availableEpisodes: List<Int> = emptyList()
+    val availableEpisodes: List<Int> = emptyList(),
+    val availableResolutions: List<Int> = emptyList()
 )
 
 data class EpisodeItem(
@@ -167,7 +168,8 @@ data class EpisodeItem(
     val overview: String? = null,
     val runtimeMinutes: Int? = null,
     val airDate: String? = null,
-    val stillUrl: String? = null
+    val stillUrl: String? = null,
+    val sizesMbByQuality: Map<Int, Double> = emptyMap()
 )
 
 data class MediaDetails(

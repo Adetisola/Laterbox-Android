@@ -43,6 +43,15 @@ fun MediaPlayerScreen(
     onExport: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    if (asset.mediaType == com.laterbox.app.media.domain.model.MediaType.VIDEO) {
+        com.laterbox.app.movies.ui.LocalVideoPlayerScreen(
+            asset = asset,
+            onBackClick = onDismiss,
+            modifier = modifier
+        )
+        return
+    }
+
     val context = LocalContext.current
     val file = File(context.filesDir, "media/${asset.localPath}")
 

@@ -26,6 +26,7 @@ data class MovieDetailUiState(
     val selectedSeasonNumber: Int? = null,
     val episodes: List<EpisodeItem> = emptyList(),
     val isLoadingEpisodes: Boolean = false,
+    val isLoadingEpisodeSizes: Boolean = false,
     val episodesError: String? = null,
     val playbackResolution: PlaybackResolution? = null,
     val isCheckingPlayback: Boolean = false,
@@ -53,6 +54,7 @@ class MovieDetailViewModel(
     private var loadJob: Job? = null
     private var watchlistJob: Job? = null
     private var episodesJob: Job? = null
+    private var episodeSizesJob: Job? = null
     private var playbackJob: Job? = null
     private var personJob: Job? = null
     private var currentKey: Pair<String, String>? = null
@@ -72,6 +74,7 @@ class MovieDetailViewModel(
         loadJob?.cancel()
         playbackJob?.cancel()
         episodesJob?.cancel()
+        episodeSizesJob?.cancel()
         personJob?.cancel()
         loadJob = viewModelScope.launch {
             _uiState.update {
@@ -244,15 +247,37 @@ class MovieDetailViewModel(
 
     private fun loadEpisodes(providerId: String, seriesId: String, seasonNumber: Int) {
         episodesJob?.cancel()
+        episodeSizesJob?.cancel()
         episodesJob = viewModelScope.launch {
             _uiState.update { it.copy(isLoadingEpisodes = true, episodesError = null) }
             moviesRepository.getEpisodes(providerId, seriesId, seasonNumber).fold(
                 onSuccess = { episodes ->
+                    val currentRes = _uiState.value.playbackResolution as? PlaybackResolution.Available
+                    val ep1Sizes = extractProgressiveSizesMap(currentRes?.sources.orEmpty())
+                    val seededEpisodes = if (ep1Sizes.isNotEmpty()) {
+                        episodes.map { ep ->
+                            if (ep.seasonNumber == seasonNumber && ep.episodeNumber == 1 && ep.sizesMbByQuality.isEmpty()) {
+                                ep.copy(sizesMbByQuality = ep1Sizes)
+                            } else {
+                                ep
+                            }
+                        }
+                    } else {
+                        episodes
+                    }
                     _uiState.update {
                         it.copy(
                             isLoadingEpisodes = false,
-                            episodes = episodes,
+                            episodes = seededEpisodes,
                             episodesError = null
+                        )
+                    }
+                    if (seededEpisodes.isNotEmpty()) {
+                        loadSeasonEpisodeSizes(
+                            providerId = providerId,
+                            seriesId = seriesId,
+                            seasonNumber = seasonNumber,
+                            episodeNumbers = seededEpisodes.map { it.episodeNumber }
                         )
                     }
                 },
@@ -261,13 +286,64 @@ class MovieDetailViewModel(
                         it.copy(
                             isLoadingEpisodes = false,
                             episodes = emptyList(),
-                            episodesError = err.message ?: "Unable to load season episodes."
+                            episodesError = err.message ?: "Unable to load episodes."
                         )
                     }
                 }
             )
         }
     }
+
+    private fun loadSeasonEpisodeSizes(
+        providerId: String,
+        seriesId: String,
+        seasonNumber: Int,
+        episodeNumbers: List<Int>
+    ) {
+        episodeSizesJob?.cancel()
+        episodeSizesJob = viewModelScope.launch {
+            _uiState.update { it.copy(isLoadingEpisodeSizes = true) }
+            val sizesByEpisode = moviesRepository.getSeasonEpisodeSizes(
+                providerId = providerId,
+                seriesId = seriesId,
+                seasonNumber = seasonNumber,
+                episodeNumbers = episodeNumbers
+            ).getOrDefault(emptyMap())
+            _uiState.update { current ->
+                if (current.selectedSeasonNumber != seasonNumber) {
+                    current.copy(isLoadingEpisodeSizes = false)
+                } else {
+                    val updatedEpisodes = if (sizesByEpisode.isNotEmpty()) {
+                        current.episodes.map { ep ->
+                            val resolvedSizes = sizesByEpisode[ep.episodeNumber]
+                            if (!resolvedSizes.isNullOrEmpty()) {
+                                ep.copy(sizesMbByQuality = ep.sizesMbByQuality + resolvedSizes)
+                            } else {
+                                ep
+                            }
+                        }
+                    } else {
+                        current.episodes
+                    }
+                    current.copy(
+                        isLoadingEpisodeSizes = false,
+                        episodes = updatedEpisodes
+                    )
+                }
+            }
+        }
+    }
+
+    private fun extractProgressiveSizesMap(sources: List<PlaybackSource>): Map<Int, Double> =
+        sources
+            .filter {
+                it.isAuthorised &&
+                    !it.format.equals("DASH", ignoreCase = true) &&
+                    !it.format.equals("HLS", ignoreCase = true) &&
+                    it.qualityHeight > 0 &&
+                    (it.sizeMb ?: 0.0) > 0.0
+            }
+            .associate { it.qualityHeight to (it.sizeMb ?: 0.0) }
 
     fun downloadSource(source: PlaybackSource, episodeNumber: Int? = null) {
         val bridge = moviesDownloadBridge ?: return
@@ -294,7 +370,7 @@ class MovieDetailViewModel(
                     _uiState.update {
                         it.copy(
                             isEnqueuingDownload = false,
-                            downloadStatusMessage = "Queued ${source.qualityLabel} download in Laterbox Downloads."
+                            downloadStatusMessage = "Queued ${source.qualityLabel} download."
                         )
                     }
                 },
@@ -302,7 +378,7 @@ class MovieDetailViewModel(
                     _uiState.update {
                         it.copy(
                             isEnqueuingDownload = false,
-                            downloadStatusMessage = error.message ?: "Could not enqueue download."
+                            downloadStatusMessage = error.message ?: "Could not start download."
                         )
                     }
                 }
@@ -324,6 +400,7 @@ class MovieDetailViewModel(
         viewModelScope.launch {
             _uiState.update { it.copy(isEnqueuingDownload = true, downloadStatusMessage = null) }
             var queuedCount = 0
+            var lowerFallbackCount = 0
             var skippedCount = 0
             var lastError: String? = null
 
@@ -341,9 +418,17 @@ class MovieDetailViewModel(
                 val chosenSource = pickPreferredBatchSource(progressiveSources, preferredQualityHeight)
                 if (chosenSource == null) {
                     skippedCount++
-                    lastError = res.exceptionOrNull()?.message
-                        ?: (res.getOrNull() as? PlaybackResolution.Unavailable)?.reason
+                    lastError = if (preferredQualityHeight != null && progressiveSources.any { it.qualityHeight > preferredQualityHeight }) {
+                        "Episode $epNum is not available in ${preferredQualityHeight}p or lower."
+                    } else {
+                        res.exceptionOrNull()?.message
+                            ?: (res.getOrNull() as? PlaybackResolution.Unavailable)?.reason
+                    }
                     continue
+                }
+
+                if (preferredQualityHeight != null && chosenSource.qualityHeight in 1 until preferredQualityHeight) {
+                    lowerFallbackCount++
                 }
 
                 val enqueueResult = bridge.enqueueAuthorisedDownload(
@@ -362,12 +447,14 @@ class MovieDetailViewModel(
             }
 
             val message = when {
+                queuedCount > 0 && skippedCount == 0 && lowerFallbackCount == 0 ->
+                    "Queued $queuedCount episode${if (queuedCount == 1) "" else "s"} from Season $seasonNumber."
                 queuedCount > 0 && skippedCount == 0 ->
-                    "Queued $queuedCount episode${if (queuedCount == 1) "" else "s"} from Season $seasonNumber in Laterbox Downloads."
+                    "Queued $queuedCount episode${if (queuedCount == 1) "" else "s"} from Season $seasonNumber ($lowerFallbackCount at lower available quality)."
                 queuedCount > 0 ->
-                    "Queued $queuedCount episode${if (queuedCount == 1) "" else "s"} ($skippedCount unavailable for offline download)."
+                    "Queued $queuedCount episode${if (queuedCount == 1) "" else "s"} ($skippedCount unavailable at ${preferredQualityHeight?.let { "${it}p" } ?: "selected quality"})."
                 else ->
-                    lastError ?: "No downloadable MP4 streams found for the selected episodes."
+                    lastError ?: "No downloadable video streams found for the selected episodes."
             }
 
             _uiState.update {
@@ -379,15 +466,15 @@ class MovieDetailViewModel(
         }
     }
 
-    private fun pickPreferredBatchSource(
+    internal fun pickPreferredBatchSource(
         progressiveSources: List<PlaybackSource>,
         preferredQualityHeight: Int?
     ): PlaybackSource? {
         if (progressiveSources.isEmpty()) return null
-        val target = preferredQualityHeight ?: return progressiveSources.maxByOrNull { it.qualityHeight }
+        val target = preferredQualityHeight?.takeIf { it > 0 }
+            ?: return progressiveSources.maxByOrNull { it.qualityHeight }
         return progressiveSources.firstOrNull { it.qualityHeight == target }
-            ?: progressiveSources.filter { it.qualityHeight <= target }.maxByOrNull { it.qualityHeight }
-            ?: progressiveSources.maxByOrNull { it.qualityHeight }
+            ?: progressiveSources.filter { it.qualityHeight in 1..target }.maxByOrNull { it.qualityHeight }
     }
 
     fun clearDownloadStatus() {
@@ -405,11 +492,29 @@ class MovieDetailViewModel(
             _uiState.update { it.copy(isCheckingPlayback = true, playbackError = null) }
             moviesRepository.resolvePlayback(providerId, titleId, seasonNumber, episodeNumber).fold(
                 onSuccess = { resolution ->
-                    _uiState.update {
-                        it.copy(
+                    val available = resolution as? PlaybackResolution.Available
+                    val epSizes = if (seasonNumber != null && episodeNumber != null && available != null) {
+                        extractProgressiveSizesMap(available.sources)
+                    } else {
+                        emptyMap()
+                    }
+                    _uiState.update { current ->
+                        val updatedEpisodes = if (epSizes.isNotEmpty() && seasonNumber != null && episodeNumber != null) {
+                            current.episodes.map { ep ->
+                                if (ep.seasonNumber == seasonNumber && ep.episodeNumber == episodeNumber) {
+                                    ep.copy(sizesMbByQuality = ep.sizesMbByQuality + epSizes)
+                                } else {
+                                    ep
+                                }
+                            }
+                        } else {
+                            current.episodes
+                        }
+                        current.copy(
                             isCheckingPlayback = false,
                             playbackResolution = resolution,
-                            playbackError = null
+                            playbackError = null,
+                            episodes = updatedEpisodes
                         )
                     }
                 },
@@ -418,7 +523,7 @@ class MovieDetailViewModel(
                         it.copy(
                             isCheckingPlayback = false,
                             playbackError = error.message?.takeIf { m -> m.isNotBlank() }
-                                ?: "Unable to check stream availability."
+                                ?: "Unable to check video availability."
                         )
                     }
                 }

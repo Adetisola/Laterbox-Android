@@ -1,9 +1,11 @@
 package com.laterbox.app.movies.ui
 
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -49,6 +52,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -71,6 +75,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import coil.compose.AsyncImage
 import com.laterbox.app.BuildConfig
 import com.laterbox.app.data.preferences.MovieBoxEndpointConfig
@@ -87,6 +92,7 @@ import com.laterbox.app.movies.domain.model.SubtitleTrack
 import com.laterbox.app.movies.domain.model.WatchHistoryItem
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.theme.LaterboxTheme
+import kotlinx.coroutines.delay
 import java.util.Locale
 
 @Composable
@@ -136,8 +142,8 @@ fun MoviePosterCard(
     Column(
         modifier = modifier
             .width(width)
-            .clip(RoundedCornerShape(14.dp))
             .clickable(onClick = onClick)
+            .padding(bottom = 2.dp)
             .testTag(testTag)
     ) {
         Box(
@@ -221,10 +227,9 @@ fun MoviePosterCard(
                 }
             }
 
-            // Kind / fixture micro-badge (bottom-left)
-            val badgeText = when {
-                item.sourceBadge.isSampleFixture -> "SAMPLE"
-                item.kind == MediaKind.TV_SERIES -> "SERIES"
+            // Kind micro-badge (bottom-left)
+            val badgeText = when (item.kind) {
+                MediaKind.TV_SERIES -> "SERIES"
                 else -> "FILM"
             }
             Text(
@@ -248,18 +253,44 @@ fun MoviePosterCard(
             lineHeight = 16.sp
         )
 
-        val metaParts = buildList {
-            item.releaseYear?.let { add(it.toString()) }
-            item.genres.firstOrNull()?.let { add(it) }
-        }
-        if (metaParts.isNotEmpty()) {
-            Text(
-                text = metaParts.joinToString(" · "),
-                style = typography.metaText.copy(fontSize = 10.sp),
-                color = colors.textSecondary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+        val yearText = item.releaseYear?.toString()
+        val primaryGenre = item.genres.firstOrNull()?.takeIf { it.isNotBlank() }
+        if (yearText != null || primaryGenre != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (yearText != null) {
+                    Text(
+                        text = yearText,
+                        style = typography.metaText.copy(fontSize = 11.sp, lineHeight = 15.sp),
+                        color = colors.textSecondary,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+                if (yearText != null && primaryGenre != null) {
+                    Text(
+                        text = " · ",
+                        style = typography.metaText.copy(fontSize = 11.sp, lineHeight = 15.sp),
+                        color = colors.textSecondary,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+                if (primaryGenre != null) {
+                    Text(
+                        text = primaryGenre,
+                        style = typography.metaText.copy(fontSize = 11.sp, lineHeight = 15.sp),
+                        color = colors.textSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                }
+            }
         }
     }
 }
@@ -412,12 +443,42 @@ fun MoviesHeroCarousel(
     onBannerClick: (MovieTitleSummary) -> Unit,
     onPlayClick: (MovieTitleSummary) -> Unit,
     onToggleWatchlist: (MovieTitleSummary) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    autoAdvanceIntervalMs: Long = 6_000L
 ) {
     if (banners.isEmpty()) return
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
     val pagerState = rememberPagerState(pageCount = { banners.size })
+    val isDragged by pagerState.interactionSource.collectIsDraggedAsState()
+    var isLifecycleResumed by remember { mutableStateOf(true) }
+
+    LifecycleResumeEffect(Unit) {
+        isLifecycleResumed = true
+        onPauseOrDispose {
+            isLifecycleResumed = false
+        }
+    }
+
+    LaunchedEffect(
+        banners.size,
+        pagerState.settledPage,
+        isDragged,
+        pagerState.isScrollInProgress,
+        isLifecycleResumed,
+        autoAdvanceIntervalMs
+    ) {
+        if (banners.size <= 1 || autoAdvanceIntervalMs <= 0L) return@LaunchedEffect
+        if (!isLifecycleResumed || isDragged || pagerState.isScrollInProgress) return@LaunchedEffect
+        delay(autoAdvanceIntervalMs)
+        if (banners.size > 1 && isLifecycleResumed && !isDragged && !pagerState.isScrollInProgress) {
+            val nextPage = (pagerState.currentPage + 1) % banners.size
+            pagerState.animateScrollToPage(
+                page = nextPage,
+                animationSpec = tween(durationMillis = 550)
+            )
+        }
+    }
 
     Column(modifier = modifier.fillMaxWidth()) {
         HorizontalPager(
@@ -468,16 +529,9 @@ fun MoviesHeroCarousel(
                             .fillMaxWidth()
                             .padding(12.dp)
                             .align(Alignment.TopCenter),
-                        horizontalArrangement = if (item.sourceBadge.isSampleFixture) {
-                            Arrangement.SpaceBetween
-                        } else {
-                            Arrangement.End
-                        },
+                        horizontalArrangement = Arrangement.End,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        if (item.sourceBadge.isSampleFixture) {
-                            DataSourceBadgeChip(badge = item.sourceBadge)
-                        }
                         Surface(
                             shape = CircleShape,
                             color = Color.Black.copy(alpha = 0.52f)
@@ -554,7 +608,7 @@ fun MoviesHeroCarousel(
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = if (item.isPlayableHint) "Watch Now" else "View Guide",
+                                    text = if (item.isPlayableHint) "Watch now" else "Open details",
                                     style = typography.buttonLabel.copy(fontSize = 12.sp)
                                 )
                             }
@@ -809,7 +863,7 @@ fun DownloadResolutionDialog(
         modifier = Modifier.testTag("download_resolution_dialog"),
         title = {
             Text(
-                text = "Download Offline Copy",
+                text = "Download",
                 style = typography.sheetTitle,
                 color = colors.textPrimary
             )
@@ -817,13 +871,13 @@ fun DownloadResolutionDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "Choose an authorised stream resolution for \"$title\". Downloads are saved to your Laterbox Downloads tab.",
+                    text = "Choose a video quality for \"$title\".",
                     style = typography.bodySecondary,
                     color = colors.textSecondary
                 )
                 if (authorisedSources.isEmpty()) {
                     Text(
-                        text = "No downloadable authorised video streams are available for this title.",
+                        text = "No downloadable video options are available for this title.",
                         style = typography.metaText,
                         color = colors.textSecondary
                     )
@@ -858,20 +912,20 @@ fun DownloadResolutionDialog(
                                         color = if (isAdaptive) colors.textSecondary else colors.textPrimary
                                     )
                                     val metaParts = buildList {
-                                        if (isAdaptive) add("Stream only (Adaptive manifest)")
-                                        source.codec?.takeIf { it.isNotBlank() }?.let { add(it) }
+                                        if (isAdaptive) add("Streaming only")
                                         source.sizeMb?.takeIf { it > 0.0 }?.let { mb ->
-                                            add(String.format(Locale.US, "%.0f MB", mb))
+                                            add(formatDownloadSizeMb(mb))
                                         }
-                                        add(source.providerName)
                                     }
-                                    Text(
-                                        text = metaParts.joinToString(" · "),
-                                        style = typography.caption,
-                                        color = colors.textSecondary,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
+                                    if (metaParts.isNotEmpty()) {
+                                        Text(
+                                            text = metaParts.joinToString(" · "),
+                                            style = typography.caption,
+                                            color = colors.textSecondary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
                                 }
                                 if (!isAdaptive) {
                                     Icon(
@@ -1099,6 +1153,8 @@ fun DownloadOptionsBottomSheet(
     selectedSeasonNumber: Int?,
     currentEpisodes: List<EpisodeItem>,
     isEnqueuing: Boolean = false,
+    isLoadingEpisodeSizes: Boolean = false,
+    onSelectSeason: (Int) -> Unit = {},
     onSelectSource: (PlaybackSource) -> Unit,
     onDownloadBatch: (seasonNumber: Int, episodeNumbers: List<Int>, preferredQualityHeight: Int?) -> Unit,
     onDismiss: () -> Unit
@@ -1119,9 +1175,27 @@ fun DownloadOptionsBottomSheet(
     var batchSeason by remember(selectedSeasonNumber, seasons) {
         mutableIntStateOf(selectedSeasonNumber ?: seasons.firstOrNull()?.seasonNumber ?: 1)
     }
-    var batchPreferredQualityHeight by remember(progressiveSources) {
-        mutableStateOf(progressiveSources.firstOrNull()?.qualityHeight)
+
+    val currentSeasonObj = remember(batchSeason, seasons) {
+        seasons.firstOrNull { it.seasonNumber == batchSeason }
     }
+
+    val availableQualityHeights = remember(progressiveSources, currentEpisodes, currentSeasonObj, batchSeason) {
+        buildSet {
+            progressiveSources.map { it.qualityHeight }.filter { it > 0 }.forEach { add(it) }
+            currentEpisodes
+                .filter { it.seasonNumber == batchSeason }
+                .flatMap { it.sizesMbByQuality.keys }
+                .filter { it > 0 }
+                .forEach { add(it) }
+            currentSeasonObj?.availableResolutions?.filter { it > 0 }?.forEach { add(it) }
+        }.sortedDescending()
+    }
+
+    var batchPreferredQualityHeight by remember(availableQualityHeights) {
+        mutableStateOf(availableQualityHeights.firstOrNull())
+    }
+
     val seasonEpisodeNumbers = remember(batchSeason, seasons, currentEpisodes, selectedSeasonNumber) {
         val seasonObj = seasons.firstOrNull { it.seasonNumber == batchSeason }
         when {
@@ -1136,204 +1210,87 @@ fun DownloadOptionsBottomSheet(
         mutableStateOf(emptySet<Int>())
     }
 
+    val isTvSeriesExperience = kind == MediaKind.TV_SERIES && seasons.isNotEmpty()
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = colors.surfaceElevated,
         modifier = Modifier.testTag("download_resolution_dialog")
     ) {
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 560.dp)
-                .padding(horizontal = 16.dp)
-                .testTag("download_options_list"),
-            contentPadding = PaddingValues(bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            item(key = "dl_header") {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
-                        text = "Download Offline Copy",
-                        style = typography.sheetTitle,
-                        color = colors.textPrimary
-                    )
-                    Text(
-                        text = "Choose an authorised stream resolution for \"$title\". Downloads save to Laterbox Downloads.",
-                        style = typography.bodySecondary,
-                        color = colors.textSecondary
-                    )
-                }
-            }
-
-            if (subtitles.isNotEmpty()) {
-                item(key = "dl_subtitles") {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (isTvSeriesExperience) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 620.dp)
+            ) {
+                // Fixed header + filter controls above the scrollable episode list
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(
-                            text = "Available Subtitles",
-                            style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                            text = "Download episodes",
+                            style = typography.sheetTitle,
+                            color = colors.textPrimary
+                        )
+                        Text(
+                            text = "Select a season, video quality, and episodes for \"$title\".",
+                            style = typography.bodySecondary,
                             color = colors.textSecondary
                         )
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            subtitles.distinctBy { it.language }.take(6).forEach { track ->
+                    }
+
+                    // Season selector chips
+                    if (seasons.isNotEmpty()) {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(seasons, key = { "batch_s_${it.seasonNumber}" }) { season ->
+                                val selected = batchSeason == season.seasonNumber
                                 Surface(
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = colors.surfaceSecondary,
-                                    border = BorderStroke(0.5.dp, colors.borderSubtle)
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = if (selected) colors.accentPrimary else colors.surfaceSecondary,
+                                    border = BorderStroke(
+                                        0.75.dp,
+                                        if (selected) colors.accentPrimary else colors.borderSubtle
+                                    ),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable {
+                                            if (batchSeason != season.seasonNumber) {
+                                                batchSeason = season.seasonNumber
+                                                onSelectSeason(season.seasonNumber)
+                                            }
+                                        }
+                                        .testTag("batch_season_chip_${season.seasonNumber}")
                                 ) {
                                     Text(
-                                        text = "${track.language} (${track.format.uppercase(Locale.US)})",
-                                        style = typography.caption,
-                                        color = colors.textSecondary,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                        text = "Season ${season.seasonNumber}",
+                                        style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                        color = if (selected) colors.onAccentPrimary else colors.textPrimary,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                                     )
                                 }
                             }
                         }
                     }
-                }
-            }
 
-            if (authorisedSources.isEmpty()) {
-                item(key = "dl_no_sources") {
-                    Text(
-                        text = "No downloadable authorised video streams are available for this title.",
-                        style = typography.metaText,
-                        color = colors.textSecondary
-                    )
-                }
-            } else {
-                items(authorisedSources, key = { "dl_src_${it.id}" }) { source ->
-                    val isAdaptive = source.format.equals("DASH", ignoreCase = true) ||
-                        source.format.equals("HLS", ignoreCase = true) ||
-                        source.url.contains(".mpd", ignoreCase = true) ||
-                        source.url.contains(".m3u8", ignoreCase = true)
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = colors.surfaceSecondary,
-                        border = BorderStroke(0.75.dp, colors.borderSubtle),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable(enabled = !isEnqueuing && !isAdaptive) {
-                                onSelectSource(source)
-                                onDismiss()
-                            }
-                            .testTag("download_quality_option_${source.id}")
-                    ) {
+                    // Resolution selector chips
+                    if (availableQualityHeights.isNotEmpty()) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "${source.qualityLabel} · ${source.format}",
-                                    style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
-                                    color = if (isAdaptive) colors.textSecondary else colors.textPrimary
-                                )
-                                val metaParts = buildList {
-                                    if (isAdaptive) add("Stream only (Adaptive manifest)")
-                                    source.codec?.takeIf { it.isNotBlank() }?.let { add(it) }
-                                    source.sizeMb?.takeIf { it > 0.0 }?.let { mb ->
-                                        add(String.format(Locale.US, "%.0f MB", mb))
-                                    }
-                                    add(source.providerName)
-                                }
-                                Text(
-                                    text = metaParts.joinToString(" · "),
-                                    style = typography.caption,
-                                    color = colors.textSecondary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            if (!isAdaptive) {
-                                Icon(
-                                    painter = painterResource(LaterboxIcons.Download),
-                                    contentDescription = "Download ${source.qualityLabel}",
-                                    tint = colors.accentPrimary,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (kind == MediaKind.TV_SERIES && seasons.isNotEmpty() && progressiveSources.isNotEmpty()) {
-                item(key = "dl_batch_header") {
-                    Column(
-                        modifier = Modifier.padding(top = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        HorizontalDivider(thickness = 0.75.dp, color = colors.borderSubtle)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Text(
-                                text = "Batch Download Episodes",
-                                style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
-                                color = colors.textPrimary
+                                text = "Quality",
+                                style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                color = colors.textSecondary
                             )
-                            if (seasonEpisodeNumbers.isNotEmpty()) {
-                                val allSelected = selectedEpisodes.size == seasonEpisodeNumbers.size
-                                TextButton(
-                                    onClick = {
-                                        selectedEpisodes = if (allSelected) {
-                                            emptySet()
-                                        } else {
-                                            seasonEpisodeNumbers.toSet()
-                                        }
-                                    },
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                                    modifier = Modifier.testTag("batch_select_all_button")
-                                ) {
-                                    Text(
-                                        text = if (allSelected) "Clear All" else "Select All (${seasonEpisodeNumbers.size})",
-                                        style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
-                                        color = colors.accentPrimary
-                                    )
-                                }
-                            }
-                        }
-
-                        if (seasons.size > 1) {
                             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                items(seasons, key = { "batch_s_${it.seasonNumber}" }) { season ->
-                                    val selected = batchSeason == season.seasonNumber
-                                    Surface(
-                                        shape = RoundedCornerShape(10.dp),
-                                        color = if (selected) colors.accentPrimary else colors.surfaceSecondary,
-                                        border = BorderStroke(
-                                            0.75.dp,
-                                            if (selected) colors.accentPrimary else colors.borderSubtle
-                                        ),
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(10.dp))
-                                            .clickable { batchSeason = season.seasonNumber }
-                                            .testTag("batch_season_chip_${season.seasonNumber}")
-                                    ) {
-                                        Text(
-                                            text = "Season ${season.seasonNumber}",
-                                            style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
-                                            color = if (selected) colors.onAccentPrimary else colors.textPrimary,
-                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        if (progressiveSources.size > 1) {
-                            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                items(progressiveSources.distinctBy { it.qualityHeight }, key = { "bq_${it.qualityHeight}" }) { src ->
-                                    val selected = batchPreferredQualityHeight == src.qualityHeight
+                                items(availableQualityHeights, key = { "bq_$it" }) { qualityHeight ->
+                                    val selected = batchPreferredQualityHeight == qualityHeight
                                     Surface(
                                         shape = RoundedCornerShape(10.dp),
                                         color = if (selected) colors.accentContainer else colors.surfaceSecondary,
@@ -1343,12 +1300,12 @@ fun DownloadOptionsBottomSheet(
                                         ),
                                         modifier = Modifier
                                             .clip(RoundedCornerShape(10.dp))
-                                            .clickable { batchPreferredQualityHeight = src.qualityHeight }
-                                            .testTag("batch_quality_chip_${src.qualityHeight}")
+                                            .clickable { batchPreferredQualityHeight = qualityHeight }
+                                            .testTag("batch_quality_chip_$qualityHeight")
                                     ) {
                                         Text(
-                                            text = src.qualityLabel,
-                                            style = typography.caption.copy(fontWeight = FontWeight.Medium),
+                                            text = "${qualityHeight}p",
+                                            style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
                                             color = if (selected) colors.accentPrimary else colors.textSecondary,
                                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                                         )
@@ -1357,71 +1314,373 @@ fun DownloadOptionsBottomSheet(
                             }
                         }
                     }
-                }
 
-                items(seasonEpisodeNumbers, key = { "batch_ep_${batchSeason}_$it" }) { epNum ->
-                    val checked = epNum in selectedEpisodes
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(colors.surfaceSecondary)
-                            .clickable {
-                                selectedEpisodes = if (checked) {
-                                    selectedEpisodes - epNum
-                                } else {
-                                    selectedEpisodes + epNum
+                    // Available subtitles
+                    if (subtitles.isNotEmpty()) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                text = "Subtitles included",
+                                style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                color = colors.textSecondary
+                            )
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                items(subtitles.distinctBy { it.language }.take(8), key = { "sub_${it.id}" }) { track ->
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = colors.surfaceSecondary,
+                                        border = BorderStroke(0.5.dp, colors.borderSubtle)
+                                    ) {
+                                        Text(
+                                            text = track.language,
+                                            style = typography.caption,
+                                            color = colors.textSecondary,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                        )
+                                    }
                                 }
                             }
-                            .padding(horizontal = 10.dp, vertical = 4.dp)
-                            .testTag("batch_episode_row_$epNum"),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Season $batchSeason · Episode $epNum",
-                            style = typography.uiLabel,
+                            text = "Episodes (${seasonEpisodeNumbers.size})",
+                            style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
                             color = colors.textPrimary
                         )
-                        Checkbox(
-                            checked = checked,
-                            onCheckedChange = { nowChecked ->
-                                selectedEpisodes = if (nowChecked) {
-                                    selectedEpisodes + epNum
-                                } else {
-                                    selectedEpisodes - epNum
+                        if (seasonEpisodeNumbers.isNotEmpty()) {
+                            val allSelected = selectedEpisodes.size == seasonEpisodeNumbers.size
+                            TextButton(
+                                onClick = {
+                                    selectedEpisodes = if (allSelected) {
+                                        emptySet()
+                                    } else {
+                                        seasonEpisodeNumbers.toSet()
+                                    }
+                                },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                modifier = Modifier.testTag("batch_select_all_button")
+                            ) {
+                                Text(
+                                    text = if (allSelected) "Clear All" else "Select All (${seasonEpisodeNumbers.size})",
+                                    style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                    color = colors.accentPrimary
+                                )
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(thickness = 0.75.dp, color = colors.borderSubtle)
+                }
+
+                // Scrollable selectable episode list
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false)
+                        .padding(horizontal = 16.dp)
+                        .testTag("download_options_list"),
+                    contentPadding = PaddingValues(vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (seasonEpisodeNumbers.isEmpty()) {
+                        item(key = "dl_no_episodes") {
+                            Text(
+                                text = "No downloadable episodes found for Season $batchSeason.",
+                                style = typography.metaText,
+                                color = colors.textSecondary,
+                                modifier = Modifier.padding(vertical = 12.dp)
+                            )
+                        }
+                    } else {
+                        items(seasonEpisodeNumbers, key = { "batch_ep_${batchSeason}_$it" }) { epNum ->
+                            val checked = epNum in selectedEpisodes
+                            val episodeItem = currentEpisodes.firstOrNull {
+                                it.seasonNumber == batchSeason && it.episodeNumber == epNum
+                            }
+                            val targetQ = batchPreferredQualityHeight
+                            val exactSizeMb = targetQ?.let { q ->
+                                episodeItem?.sizesMbByQuality?.get(q)
+                                    ?: if (epNum == 1 && batchSeason == (selectedSeasonNumber ?: 1)) {
+                                        progressiveSources.firstOrNull { it.qualityHeight == q }?.sizeMb
+                                    } else {
+                                        null
+                                    }
+                            }
+                            val fallbackLowerEntry = if (exactSizeMb == null && targetQ != null) {
+                                episodeItem?.sizesMbByQuality
+                                    ?.entries
+                                    ?.filter { it.key <= targetQ && it.value > 0.0 }
+                                    ?.maxByOrNull { it.key }
+                            } else {
+                                null
+                            }
+
+                            val sizeSubtitle = when {
+                                exactSizeMb != null && exactSizeMb > 0.0 ->
+                                    "${targetQ}p · ${formatDownloadSizeMb(exactSizeMb)}"
+                                fallbackLowerEntry != null ->
+                                    "${fallbackLowerEntry.key}p · ${formatDownloadSizeMb(fallbackLowerEntry.value)}"
+                                episodeItem != null && episodeItem.sizesMbByQuality.isNotEmpty() && targetQ != null ->
+                                    "Not available in ${targetQ}p"
+                                isLoadingEpisodeSizes ->
+                                    "Calculating size..."
+                                targetQ != null ->
+                                    "${targetQ}p"
+                                else ->
+                                    "Standard quality"
+                            }
+
+                            val epTitleText = episodeItem?.title
+                                ?.takeIf { it.isNotBlank() && !it.equals("Episode $epNum", ignoreCase = true) }
+                            val primaryLabel = if (epTitleText != null) {
+                                "S$batchSeason · E$epNum — $epTitleText"
+                            } else {
+                                "S$batchSeason · E$epNum · Episode $epNum"
+                            }
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(colors.surfaceSecondary)
+                                    .clickable {
+                                        selectedEpisodes = if (checked) {
+                                            selectedEpisodes - epNum
+                                        } else {
+                                            selectedEpisodes + epNum
+                                        }
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                                    .testTag("batch_episode_row_$epNum"),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(end = 8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    Text(
+                                        text = primaryLabel,
+                                        style = typography.uiLabel.copy(fontWeight = FontWeight.Medium),
+                                        color = colors.textPrimary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = sizeSubtitle,
+                                        style = typography.caption,
+                                        color = colors.textSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                 }
+                                Checkbox(
+                                    checked = checked,
+                                    onCheckedChange = { nowChecked ->
+                                        selectedEpisodes = if (nowChecked) {
+                                            selectedEpisodes + epNum
+                                        } else {
+                                            selectedEpisodes - epNum
+                                        }
+                                    },
+                                    modifier = Modifier.testTag("batch_episode_checkbox_$epNum")
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Sticky bottom download CTA container (outside LazyColumn)
+                Surface(
+                    color = colors.surfaceElevated,
+                    tonalElevation = 2.dp,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                            .padding(horizontal = 16.dp, vertical = 12.dp)
+                    ) {
+                        HorizontalDivider(
+                            thickness = 0.75.dp,
+                            color = colors.borderSubtle,
+                            modifier = Modifier.padding(bottom = 12.dp)
+                        )
+                        val count = selectedEpisodes.size
+                        val buttonText = when {
+                            count == 0 -> "Select episodes to download"
+                            count == 1 -> "Download 1 episode"
+                            else -> "Download $count episodes"
+                        }
+                        Button(
+                            onClick = {
+                                onDownloadBatch(
+                                    batchSeason,
+                                    selectedEpisodes.toList(),
+                                    batchPreferredQualityHeight
+                                )
+                                onDismiss()
                             },
-                            modifier = Modifier.testTag("batch_episode_checkbox_$epNum")
+                            enabled = !isEnqueuing && selectedEpisodes.isNotEmpty(),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = colors.accentPrimary,
+                                contentColor = colors.onAccentPrimary
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("batch_download_confirm_button")
+                        ) {
+                            Text(
+                                text = buttonText,
+                                style = typography.buttonLabel
+                            )
+                        }
+                    }
+                }
+            }
+        } else {
+            // Movie download sheet experience
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 560.dp)
+                    .padding(horizontal = 16.dp)
+                    .navigationBarsPadding()
+                    .testTag("download_options_list"),
+                contentPadding = PaddingValues(bottom = 28.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                item(key = "dl_header") {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = "Download",
+                            style = typography.sheetTitle,
+                            color = colors.textPrimary
+                        )
+                        Text(
+                            text = "Choose a video quality for \"$title\".",
+                            style = typography.bodySecondary,
+                            color = colors.textSecondary
                         )
                     }
                 }
 
-                item(key = "dl_batch_confirm") {
-                    Button(
-                        onClick = {
-                            onDownloadBatch(batchSeason, selectedEpisodes.toList(), batchPreferredQualityHeight)
-                            onDismiss()
-                        },
-                        enabled = !isEnqueuing && selectedEpisodes.isNotEmpty(),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = colors.accentPrimary,
-                            contentColor = colors.onAccentPrimary
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 4.dp)
-                            .testTag("batch_download_confirm_button")
-                    ) {
+                if (subtitles.isNotEmpty()) {
+                    item(key = "dl_subtitles") {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(
+                                text = "Available Subtitles",
+                                style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                color = colors.textSecondary
+                            )
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                subtitles.distinctBy { it.language }.take(6).forEach { track ->
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = colors.surfaceSecondary,
+                                        border = BorderStroke(0.5.dp, colors.borderSubtle)
+                                    ) {
+                                        Text(
+                                            text = track.language,
+                                            style = typography.caption,
+                                            color = colors.textSecondary,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (authorisedSources.isEmpty()) {
+                    item(key = "dl_no_sources") {
                         Text(
-                            text = "Download Selected (${selectedEpisodes.size})",
-                            style = typography.buttonLabel
+                            text = "No downloadable video options are available for this title.",
+                            style = typography.metaText,
+                            color = colors.textSecondary
                         )
+                    }
+                } else {
+                    items(authorisedSources, key = { "dl_src_${it.id}" }) { source ->
+                        val isAdaptive = source.format.equals("DASH", ignoreCase = true) ||
+                            source.format.equals("HLS", ignoreCase = true) ||
+                            source.url.contains(".mpd", ignoreCase = true) ||
+                            source.url.contains(".m3u8", ignoreCase = true)
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = colors.surfaceSecondary,
+                            border = BorderStroke(0.75.dp, colors.borderSubtle),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable(enabled = !isEnqueuing && !isAdaptive) {
+                                    onSelectSource(source)
+                                    onDismiss()
+                                }
+                                .testTag("download_quality_option_${source.id}")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "${source.qualityLabel} · ${source.format}",
+                                        style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
+                                        color = if (isAdaptive) colors.textSecondary else colors.textPrimary
+                                    )
+                                    val metaParts = buildList {
+                                        if (isAdaptive) add("Streaming only")
+                                        source.sizeMb?.takeIf { it > 0.0 }?.let { mb ->
+                                            add(formatDownloadSizeMb(mb))
+                                        }
+                                    }
+                                    if (metaParts.isNotEmpty()) {
+                                        Text(
+                                            text = metaParts.joinToString(" · "),
+                                            style = typography.caption,
+                                            color = colors.textSecondary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                                if (!isAdaptive) {
+                                    Icon(
+                                        painter = painterResource(LaterboxIcons.Download),
+                                        contentDescription = "Download ${source.qualityLabel}",
+                                        tint = colors.accentPrimary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+private fun formatDownloadSizeMb(sizeMb: Double): String {
+    return if (sizeMb >= 1024.0) {
+        String.format(Locale.US, "%.1f GB", sizeMb / 1024.0)
+    } else {
+        String.format(Locale.US, "%.0f MB", sizeMb)
     }
 }
 

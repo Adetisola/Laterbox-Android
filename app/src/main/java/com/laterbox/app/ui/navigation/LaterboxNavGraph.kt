@@ -487,7 +487,9 @@ fun LaterboxApp(
                 LaterboxDestination.Archive.route
             )
         }
+        val isLocalVideoViewerActive = activeViewerAsset?.mediaType == com.laterbox.app.media.domain.model.MediaType.VIDEO
         val isInboxOverlayVisible = currentRoute == LaterboxDestination.Inbox.route &&
+            !isLocalVideoViewerActive &&
             !inboxUiState.isSelectionMode &&
             inboxUiState.hasCompletedOnboarding
 
@@ -548,7 +550,7 @@ fun LaterboxApp(
 
         val mainContent: @Composable () -> Unit = {
             val density = LocalDensity.current
-            val isImmersivePlayerRoute = currentRoute == LaterboxDestination.MoviePlayer.route
+            val isImmersivePlayerRoute = currentRoute == LaterboxDestination.MoviePlayer.route || isLocalVideoViewerActive
             val isImeVisible = WindowInsets.ime.getBottom(density) > WindowInsets.navigationBars.getBottom(density)
             val showHandsetBottomBar = !isWideTablet &&
                 !isImmersivePlayerRoute &&
@@ -1556,7 +1558,7 @@ fun LaterboxApp(
             }
         }
 
-        val isImmersivePlayerDestination = currentRoute == LaterboxDestination.MoviePlayer.route
+        val isImmersivePlayerDestination = currentRoute == LaterboxDestination.MoviePlayer.route || isLocalVideoViewerActive
         if (isWideTablet && !isImmersivePlayerDestination) {
             Row(modifier = Modifier.fillMaxSize()) {
                 LaterboxPersistentSidePanel(
@@ -1581,7 +1583,8 @@ fun LaterboxApp(
                 }
             }
         } else {
-            val gesturesEnabled = currentRoute?.startsWith("settings") != true &&
+            val gesturesEnabled = !isImmersivePlayerDestination &&
+                currentRoute?.startsWith("settings") != true &&
                 currentRoute?.startsWith("collection/") != true &&
                 currentRoute?.startsWith("movies/") != true
             ModalNavigationDrawer(
@@ -1651,7 +1654,7 @@ fun LaterboxApp(
     }
 
     // Saved Item Detail Sheet
-    if (selectedLinkForDetails != null) {
+    if (selectedLinkForDetails != null && activeViewerAsset == null) {
         val detailUiState by savedItemDetailViewModel.uiState.collectAsState()
         SavedItemDetailSheet(
             uiState = detailUiState,

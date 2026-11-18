@@ -28,7 +28,12 @@ import com.laterbox.app.movies.domain.provider.PlaybackSourceProvider
 import com.laterbox.app.movies.domain.provider.SubtitleProvider
 import com.laterbox.app.movies.domain.provider.SeriesEpisodeProvider
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -69,6 +74,7 @@ class MovieBoxProvider(
     private val detailPathCache = ConcurrentHashMap<String, String>()
     private val titleCache = ConcurrentHashMap<String, String>()
     private val trailerCache = ConcurrentHashMap<String, String>()
+    private val episodeSizesCache = ConcurrentHashMap<String, ConcurrentHashMap<Int, Map<Int, Double>>>()
 
     @Volatile
     private var cachedGenres: List<String> = emptyList()
@@ -595,13 +601,92 @@ class MovieBoxProvider(
                 target.episodeCount > 0 -> (1..target.episodeCount).toList()
                 else -> emptyList()
             }
+            val cachedSizesForSeason = episodeSizesCache["$seriesId:$seasonNumber"].orEmpty()
             epNumbers.map { ep ->
                 EpisodeItem(
                     id = "${seriesId}_s${seasonNumber}_e$ep",
                     seasonNumber = seasonNumber,
                     episodeNumber = ep,
-                    title = "Episode $ep"
+                    title = "Episode $ep",
+                    sizesMbByQuality = cachedSizesForSeason[ep].orEmpty()
                 )
+            }
+        }
+    }
+
+    suspend fun getSeasonEpisodeSizes(
+        seriesId: String,
+        seasonNumber: Int,
+        episodeNumbers: List<Int> = emptyList()
+    ): Result<Map<Int, Map<Int, Double>>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cacheKey = "$seriesId:$seasonNumber"
+            val seasonMap = episodeSizesCache.getOrPut(cacheKey) { ConcurrentHashMap() }
+            if (episodeNumbers.isNotEmpty() && episodeNumbers.all { seasonMap[it]?.isNotEmpty() == true }) {
+                return@runCatching seasonMap.toMap()
+            }
+
+            val builder = requireBaseHttpUrl().newBuilder()
+                .addPathSegment("episodes")
+                .addPathSegment(seriesId)
+                .addPathSegment("sizes")
+                .addQueryParameter("se", seasonNumber.toString())
+            if (episodeNumbers.isNotEmpty()) {
+                builder.addQueryParameter("eps", episodeNumbers.take(30).joinToString(","))
+            }
+            detailPathCache[seriesId]?.takeIf { it.isNotBlank() }?.let { dp ->
+                builder.addQueryParameter("detail_path", dp)
+            }
+
+            try {
+                val body = executeGet(builder.build())
+                val root = JSONObject(body)
+                val epsArr = root.optJSONArray("episodes") ?: JSONArray()
+                for (i in 0 until epsArr.length()) {
+                    val epObj = epsArr.optJSONObject(i) ?: continue
+                    val epNum = epObj.optInt("episode", 0).takeIf { it > 0 } ?: continue
+                    val parsedSizes = linkedMapOf<Int, Double>()
+                    val sizesObj = epObj.optJSONObject("sizes_mb")
+                    if (sizesObj != null) {
+                        val keys = sizesObj.keys()
+                        while (keys.hasNext()) {
+                            val k = keys.next()
+                            val q = k.toIntOrNull()?.takeIf { it > 0 } ?: continue
+                            val sizeVal = sizesObj.optDouble(k, 0.0)
+                            if (sizeVal > 0.0) parsedSizes[q] = sizeVal
+                        }
+                    }
+                    if (parsedSizes.isEmpty()) {
+                        val qualitiesArr = epObj.optJSONArray("qualities") ?: JSONArray()
+                        for (j in 0 until qualitiesArr.length()) {
+                            val qObj = qualitiesArr.optJSONObject(j) ?: continue
+                            val q = qObj.optInt("quality_value", 0).takeIf { it > 0 } ?: continue
+                            val sizeVal = qObj.optDouble("size_mb", 0.0)
+                            if (sizeVal > 0.0) parsedSizes[q] = sizeVal
+                        }
+                    }
+                    if (parsedSizes.isNotEmpty()) {
+                        seasonMap[epNum] = parsedSizes
+                    }
+                }
+                seasonMap.toMap()
+            } catch (apiErr: MovieBoxApiException) {
+                if (apiErr.httpCode == 404 && episodeNumbers.isNotEmpty()) {
+                    val semaphore = Semaphore(3)
+                    val missing = episodeNumbers.filter { seasonMap[it].isNullOrEmpty() }.take(12)
+                    coroutineScope {
+                        missing.map { epNum ->
+                            async {
+                                semaphore.withPermit {
+                                    resolvePlaybackSources(seriesId, seasonNumber, epNum)
+                                }
+                            }
+                        }.awaitAll()
+                    }
+                    seasonMap.toMap()
+                } else {
+                    throw apiErr
+                }
             }
         }
     }
@@ -657,12 +742,24 @@ class MovieBoxProvider(
                         }
                     }
                 }.distinct()
+                val resArr = s.optJSONArray("resolutions")
+                val availableResolutions = buildList {
+                    if (resArr != null) {
+                        for (j in 0 until resArr.length()) {
+                            val resObj = resArr.optJSONObject(j)
+                            val resVal = resObj?.optInt("resolution", 0)
+                                ?: resArr.optInt(j, 0)
+                            if (resVal > 0) add(resVal)
+                        }
+                    }
+                }.distinct().sortedDescending()
                 add(
                     SeasonSummary(
                         seasonNumber = seasonNumber,
                         title = "Season $seasonNumber",
                         episodeCount = if (episodeCount > 0) episodeCount else availableEpisodes.size,
-                        availableEpisodes = availableEpisodes
+                        availableEpisodes = availableEpisodes,
+                        availableResolutions = availableResolutions
                     )
                 )
             }
@@ -769,13 +866,22 @@ class MovieBoxProvider(
                     .thenBy { it.format == "DASH" || it.format == "HLS" }
             )
 
+            if (se > 0 && ep > 0) {
+                val epSizes = sources
+                    .filter { it.format != "DASH" && it.format != "HLS" && it.qualityHeight > 0 && (it.sizeMb ?: 0.0) > 0.0 }
+                    .associate { it.qualityHeight to (it.sizeMb ?: 0.0) }
+                if (epSizes.isNotEmpty()) {
+                    episodeSizesCache.getOrPut("$titleId:$se") { ConcurrentHashMap() }[ep] = epSizes
+                }
+            }
+
             val resolvedTitle = titleCache[titleId]
                 ?: root.optCleanString("title")
-                ?: "MovieBox Stream"
+                ?: "Video"
             if (sources.isEmpty()) {
                 PlaybackResolution.Unavailable(
                     title = resolvedTitle,
-                    reason = "No playable streams were returned by MovieBox for this title.",
+                    reason = "This title is not currently available to play.",
                     providerName = displayName,
                     sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
                 )

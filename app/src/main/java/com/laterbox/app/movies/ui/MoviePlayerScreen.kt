@@ -130,7 +130,6 @@ fun MoviePlayerScreen(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black)
-            .navigationBarsPadding()
             .testTag("movie_player_screen")
     ) {
         when {
@@ -142,7 +141,7 @@ fun MoviePlayerScreen(
                     ) {
                         CircularProgressIndicator(color = colors.accentPrimary)
                         Text(
-                            text = "Preparing authorised playback...",
+                            text = "Loading video...",
                             style = typography.bodySecondary,
                             color = Color.White.copy(alpha = 0.8f)
                         )
@@ -185,6 +184,7 @@ fun MoviePlayerScreen(
                     nextEpisodeTarget = uiState.nextEpisodeTarget,
                     isEnqueuingDownload = uiState.isEnqueuingDownload,
                     downloadStatusMessage = uiState.downloadStatusMessage,
+                    isLocalFile = false,
                     onBackClick = onBackClick,
                     onSelectSource = onSelectSource,
                     onSelectSubtitle = onSelectSubtitle,
@@ -218,6 +218,91 @@ fun MoviePlayerScreen(
     }
 }
 
+@OptIn(UnstableApi::class)
+@Composable
+fun LocalVideoPlayerScreen(
+    asset: com.laterbox.app.media.domain.model.MediaAsset,
+    onBackClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val resolvedFile = remember(asset.localPath) {
+        val direct = java.io.File(asset.localPath)
+        if (direct.isAbsolute && direct.exists()) {
+            direct
+        } else {
+            java.io.File(context.filesDir, "media/${asset.localPath}")
+        }
+    }
+    val playbackUriString = remember(asset.id, asset.localPath, asset.exportedUri, asset.originalSourceUrl) {
+        when {
+            resolvedFile.exists() -> Uri.fromFile(resolvedFile).toString()
+            !asset.exportedUri.isNullOrBlank() -> asset.exportedUri
+            asset.localPath.startsWith("content://") ||
+                asset.localPath.startsWith("file://") ||
+                asset.localPath.startsWith("http") -> asset.localPath
+            else -> Uri.fromFile(resolvedFile).toString()
+        }
+    }
+    val displayTitle = remember(asset.id, asset.title, asset.localPath) {
+        asset.title?.takeIf { it.isNotBlank() }
+            ?: resolvedFile.name.takeIf { it.isNotBlank() }
+            ?: "Saved Video"
+    }
+    val localSource = remember(asset.id, playbackUriString) {
+        PlaybackSource(
+            id = "local_${asset.id}",
+            url = playbackUriString,
+            format = asset.mimeType.substringAfterLast('/', "MP4").uppercase(Locale.US),
+            qualityLabel = "Offline",
+            qualityHeight = asset.height ?: 720,
+            providerName = "Local",
+            isAuthorised = false
+        )
+    }
+    val localResolution = remember(asset.id, displayTitle, localSource) {
+        PlaybackResolution.Available(
+            title = displayTitle,
+            sources = listOf(localSource),
+            subtitles = emptyList()
+        )
+    }
+    var savedPositionMs by rememberSaveable(asset.id) { mutableLongStateOf(0L) }
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .testTag("movie_player_screen")
+    ) {
+        ActiveVideoPlayerContent(
+            resolution = localResolution,
+            selectedSource = localSource,
+            selectedSubtitle = null,
+            startPositionMs = savedPositionMs,
+            activeTitleId = asset.id,
+            availableDubs = emptyList(),
+            nextEpisodeTarget = null,
+            isEnqueuingDownload = false,
+            downloadStatusMessage = null,
+            isLocalFile = true,
+            onBackClick = onBackClick,
+            onSelectSource = { _, _ -> },
+            onSelectSubtitle = { _, _ -> },
+            onSelectAudioDub = { _, _ -> },
+            onNextEpisode = {},
+            onSaveProgress = { pos, _ ->
+                if (pos > 0L) {
+                    savedPositionMs = pos
+                }
+            },
+            onOpenExternalUrl = {},
+            onDownloadSource = {},
+            onDismissDownloadStatus = {}
+        )
+    }
+}
+
 private data class PlayerAudioTrackOption(
     val group: TrackGroup,
     val trackIndex: Int,
@@ -238,6 +323,7 @@ private fun ActiveVideoPlayerContent(
     nextEpisodeTarget: Pair<Int, Int>?,
     isEnqueuingDownload: Boolean,
     downloadStatusMessage: String?,
+    isLocalFile: Boolean = false,
     onBackClick: () -> Unit,
     onSelectSource: (PlaybackSource, Long) -> Unit,
     onSelectSubtitle: (SubtitleTrack?, Long) -> Unit,
@@ -258,7 +344,9 @@ private fun ActiveVideoPlayerContent(
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     var showControls by remember { mutableStateOf(true) }
     var isLocked by rememberSaveable { mutableStateOf(false) }
-    var isFullscreen by rememberSaveable { mutableStateOf(false) }
+    var forcedLandscape by rememberSaveable { mutableStateOf<Boolean?>(null) }
+    var isRotationLocked by rememberSaveable { mutableStateOf(false) }
+    val effectiveIsLandscape = forcedLandscape ?: isLandscape
     var selectedSpeed by rememberSaveable { mutableFloatStateOf(1.0f) }
     var isHolding2x by remember { mutableStateOf(false) }
     var ignoreNextTap by remember { mutableStateOf(false) }
@@ -294,41 +382,44 @@ private fun ActiveVideoPlayerContent(
             selectedSource.url.contains(".m3u8", ignoreCase = true)
     }
 
-    val exoPlayer = remember(resolution.title, selectedSource.headers, isAdaptiveSource) {
-        val mediaSourceFactory = MoviesMediaCache.createMediaSourceFactory(
-            context = context,
-            headers = selectedSource.headers,
-            useDiskCache = !isAdaptiveSource
-        )
-        ExoPlayer.Builder(context)
-            .setMediaSourceFactory(mediaSourceFactory)
-            .build()
-    }
-
-    BackHandler(enabled = isLocked || isFullscreen) {
-        if (isLocked) {
-            showControls = true
+    val exoPlayer = remember(resolution.title, selectedSource.headers, isAdaptiveSource, isLocalFile) {
+        if (isLocalFile) {
+            ExoPlayer.Builder(context).build()
         } else {
-            isFullscreen = false
+            val mediaSourceFactory = MoviesMediaCache.createMediaSourceFactory(
+                context = context,
+                headers = selectedSource.headers,
+                useDiskCache = !isAdaptiveSource
+            )
+            ExoPlayer.Builder(context)
+                .setMediaSourceFactory(mediaSourceFactory)
+                .build()
         }
     }
 
-    // Apply orientation & immersive system bars when fullscreen or landscape changes; never reset during config change recreation
-    val isImmersiveLandscape = isFullscreen || isLandscape
-    LaunchedEffect(isFullscreen, isImmersiveLandscape, activity) {
+    BackHandler(enabled = isLocked) {
+        showControls = true
+    }
+
+    // Genuine full-screen mode by default + orientation and independent rotation lock handling
+    LaunchedEffect(forcedLandscape, isRotationLocked, effectiveIsLandscape, activity) {
         val act = activity ?: return@LaunchedEffect
         val window = act.window
         val controller = WindowCompat.getInsetsController(window, window.decorView)
-        if (isFullscreen) {
-            act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-        } else {
-            act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        }
-        if (isImmersiveLandscape) {
-            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            controller.hide(WindowInsetsCompat.Type.systemBars())
-        } else {
-            controller.show(WindowInsetsCompat.Type.systemBars())
+        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller.hide(WindowInsetsCompat.Type.systemBars())
+
+        act.requestedOrientation = when {
+            isRotationLocked -> {
+                if (effectiveIsLandscape) {
+                    ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                } else {
+                    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                }
+            }
+            forcedLandscape == true -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            forcedLandscape == false -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
 
@@ -660,7 +751,8 @@ private fun ActiveVideoPlayerContent(
                         IconButton(
                             onClick = {
                                 latestSaveProgress(exoPlayer.currentPosition, exoPlayer.duration.coerceAtLeast(0L))
-                                isFullscreen = false
+                                forcedLandscape = null
+                                isRotationLocked = false
                                 onBackClick()
                             },
                             modifier = Modifier.testTag("player_back_button")
@@ -696,79 +788,85 @@ private fun ActiveVideoPlayerContent(
                         }
 
                         // Subtitles (CC) Control
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (selectedSubtitle != null) colors.accentPrimary else Color.White.copy(alpha = 0.16f),
-                            modifier = Modifier
-                                .padding(end = 6.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { showSubtitleDialog = true }
-                                .testTag("player_subtitles_button")
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        if (!isLocalFile || resolution.subtitles.isNotEmpty()) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (selectedSubtitle != null) colors.accentPrimary else Color.White.copy(alpha = 0.16f),
+                                modifier = Modifier
+                                    .padding(end = 6.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { showSubtitleDialog = true }
+                                    .testTag("player_subtitles_button")
                             ) {
-                                Icon(
-                                    painter = painterResource(LaterboxIcons.Subtitles),
-                                    contentDescription = "Subtitles",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Text(
-                                    text = selectedSubtitle?.languageCode?.uppercase(Locale.US) ?: "CC",
-                                    style = typography.caption.copy(fontWeight = FontWeight.Bold),
-                                    color = Color.White
-                                )
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        painter = painterResource(LaterboxIcons.Subtitles),
+                                        contentDescription = "Subtitles",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Text(
+                                        text = selectedSubtitle?.languageCode?.uppercase(Locale.US) ?: "CC",
+                                        style = typography.caption.copy(fontWeight = FontWeight.Bold),
+                                        color = Color.White
+                                    )
+                                }
                             }
                         }
 
                         // Audio Track / Dub Selector
-                        val activeAudioBadge = inStreamAudioTracks.firstOrNull { it.isSelected }?.languageCode?.uppercase(Locale.US)
-                            ?: availableDubs.firstOrNull { it.referenceId == activeTitleId }
-                                ?.language?.takeIf { it.isNotBlank() }?.uppercase(Locale.US)
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (hasManualAudioOverride || availableDubs.size > 1 || inStreamAudioTracks.size > 1) {
-                                colors.accentPrimary.copy(alpha = 0.85f)
-                            } else {
-                                Color.White.copy(alpha = 0.16f)
-                            },
-                            modifier = Modifier
-                                .padding(end = 6.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { showAudioDialog = true }
-                                .testTag("player_audio_button")
-                        ) {
-                            Text(
-                                text = activeAudioBadge?.let { "Audio · $it" } ?: "Audio",
-                                style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
-                                color = Color.White,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
-                            )
+                        if (!isLocalFile || inStreamAudioTracks.size > 1 || availableDubs.isNotEmpty()) {
+                            val activeAudioBadge = inStreamAudioTracks.firstOrNull { it.isSelected }?.languageCode?.uppercase(Locale.US)
+                                ?: availableDubs.firstOrNull { it.referenceId == activeTitleId }
+                                    ?.language?.takeIf { it.isNotBlank() }?.uppercase(Locale.US)
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (hasManualAudioOverride || availableDubs.size > 1 || inStreamAudioTracks.size > 1) {
+                                    colors.accentPrimary.copy(alpha = 0.85f)
+                                } else {
+                                    Color.White.copy(alpha = 0.16f)
+                                },
+                                modifier = Modifier
+                                    .padding(end = 6.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { showAudioDialog = true }
+                                    .testTag("player_audio_button")
+                            ) {
+                                Text(
+                                    text = activeAudioBadge?.let { "Audio · $it" } ?: "Audio",
+                                    style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                    color = Color.White,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                                )
+                            }
                         }
 
-                        // Quality Selector
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = Color.White.copy(alpha = 0.16f),
-                            modifier = Modifier
-                                .padding(end = 6.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { showQualityDialog = true }
-                                .testTag("player_quality_button")
-                        ) {
-                            Text(
-                                text = selectedSource.qualityLabel,
-                                style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
-                                color = Color.White,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                            )
+                        // Quality Selector (Remote streams only)
+                        if (!isLocalFile) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color.White.copy(alpha = 0.16f),
+                                modifier = Modifier
+                                    .padding(end = 6.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { showQualityDialog = true }
+                                    .testTag("player_quality_button")
+                            ) {
+                                Text(
+                                    text = selectedSource.qualityLabel,
+                                    style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                    color = Color.White,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                )
+                            }
                         }
 
-                        // Download Authorised Stream Button
-                        if (resolution.sources.any { it.isAuthorised }) {
+                        // Download Stream Button (Remote streams only)
+                        if (!isLocalFile && resolution.sources.any { it.isAuthorised }) {
                             IconButton(
                                 onClick = { showDownloadDialog = true },
                                 modifier = Modifier
@@ -784,7 +882,7 @@ private fun ActiveVideoPlayerContent(
                             }
                         }
 
-                        // Lock Controls Button
+                        // Lock Controls Button (Playback controls lock, independent of rotation lock)
                         IconButton(
                             onClick = { isLocked = true },
                             modifier = Modifier
@@ -1018,7 +1116,7 @@ private fun ActiveVideoPlayerContent(
                                     )
                                 }
 
-                                if (nextEpisodeTarget == null && !isImmersiveLandscape) {
+                                if (nextEpisodeTarget == null && !effectiveIsLandscape) {
                                     Text(
                                         text = "Hold video for 2x",
                                         style = typography.caption,
@@ -1056,22 +1154,57 @@ private fun ActiveVideoPlayerContent(
                                     }
                                 }
 
-                                // Fullscreen / Landscape Rotation Icon Control
+                                // Independent Rotation Lock Control (locks screen orientation without locking playback controls)
                                 Surface(
                                     shape = RoundedCornerShape(8.dp),
-                                    color = if (isFullscreen) colors.accentPrimary else Color.White.copy(alpha = 0.16f),
+                                    color = if (isRotationLocked) colors.accentPrimary else Color.White.copy(alpha = 0.16f),
                                     modifier = Modifier
                                         .size(34.dp)
                                         .clip(RoundedCornerShape(8.dp))
-                                        .clickable { isFullscreen = !isFullscreen }
-                                        .testTag("player_fullscreen_button")
+                                        .clickable {
+                                            val nextLocked = !isRotationLocked
+                                            isRotationLocked = nextLocked
+                                            if (nextLocked) {
+                                                if (forcedLandscape == null) {
+                                                    forcedLandscape = effectiveIsLandscape
+                                                }
+                                            } else {
+                                                forcedLandscape = null
+                                            }
+                                        }
+                                        .testTag("player_rotation_lock_button")
                                 ) {
                                     Box(contentAlignment = Alignment.Center) {
                                         Icon(
                                             painter = painterResource(
-                                                if (isFullscreen) LaterboxIcons.FullscreenExit else LaterboxIcons.Fullscreen
+                                                if (isRotationLocked) LaterboxIcons.Lock else LaterboxIcons.Unlock
                                             ),
-                                            contentDescription = if (isFullscreen) "Exit fullscreen" else "Enter fullscreen",
+                                            contentDescription = if (isRotationLocked) "Unlock screen rotation" else "Lock screen rotation",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+
+                                // Icon-Only Rotate Button (switches between Landscape and Portrait)
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (forcedLandscape != null) colors.accentPrimary else Color.White.copy(alpha = 0.16f),
+                                    modifier = Modifier
+                                        .size(34.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            forcedLandscape = !effectiveIsLandscape
+                                        }
+                                        .testTag("player_fullscreen_button")
+                                ) {
+                                    Box(
+                                        contentAlignment = Alignment.Center,
+                                        modifier = Modifier.testTag("player_rotate_button")
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(LaterboxIcons.Refresh),
+                                            contentDescription = if (effectiveIsLandscape) "Rotate to portrait" else "Rotate to landscape",
                                             tint = Color.White,
                                             modifier = Modifier.size(18.dp)
                                         )

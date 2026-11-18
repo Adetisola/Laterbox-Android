@@ -46,6 +46,13 @@ interface MoviesRepository {
 
     suspend fun getEpisodes(providerId: String, seriesId: String, seasonNumber: Int): Result<List<EpisodeItem>>
 
+    suspend fun getSeasonEpisodeSizes(
+        providerId: String,
+        seriesId: String,
+        seasonNumber: Int,
+        episodeNumbers: List<Int> = emptyList()
+    ): Result<Map<Int, Map<Int, Double>>> = Result.success(emptyMap())
+
     suspend fun getPersonFilmography(
         providerId: String,
         personId: String,

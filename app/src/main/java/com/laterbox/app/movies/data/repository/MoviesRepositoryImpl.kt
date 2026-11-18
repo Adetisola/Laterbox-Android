@@ -618,6 +618,25 @@ class MoviesRepositoryImpl(
             ?: Result.failure(error)
     }
 
+    override suspend fun getSeasonEpisodeSizes(
+        providerId: String,
+        seriesId: String,
+        seasonNumber: Int,
+        episodeNumbers: List<Int>
+    ): Result<Map<Int, Map<Int, Double>>> {
+        val (resolvedProviderId, resolvedSeriesId) = mediaResolver.resolveConcreteTarget(
+            providerId = providerId,
+            titleId = seriesId,
+            preferPlayable = true
+        )
+        return when (resolvedProviderId) {
+            MovieBoxProvider.PROVIDER_ID ->
+                movieBoxProvider?.getSeasonEpisodeSizes(resolvedSeriesId, seasonNumber, episodeNumbers)
+                    ?: Result.success(emptyMap())
+            else -> Result.success(emptyMap())
+        }
+    }
+
     override suspend fun resolvePlayback(
         providerId: String,
         titleId: String,

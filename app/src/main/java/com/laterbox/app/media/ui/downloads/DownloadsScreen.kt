@@ -84,7 +84,8 @@ fun DownloadsScreen(
     onSettingsClick: () -> Unit,
     modifier: Modifier = Modifier,
     onOpenLinkDetail: (Long) -> Unit = {},
-    onMenuClick: (() -> Unit)? = null
+    onMenuClick: (() -> Unit)? = null,
+    onOpenVideoAsset: ((MediaAsset) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
@@ -115,7 +116,14 @@ fun DownloadsScreen(
         onOpenAsset = { asset ->
             when (asset.mediaType) {
                 MediaType.IMAGE -> activeViewerAsset = asset
-                MediaType.VIDEO, MediaType.AUDIO -> activeViewerAsset = asset
+                MediaType.VIDEO -> {
+                    if (onOpenVideoAsset != null) {
+                        onOpenVideoAsset(asset)
+                    } else {
+                        activeViewerAsset = asset
+                    }
+                }
+                MediaType.AUDIO -> activeViewerAsset = asset
                 MediaType.DOCUMENT, MediaType.OTHER -> DocumentOpener.openDocument(context, asset)
             }
         },

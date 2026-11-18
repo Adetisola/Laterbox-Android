@@ -940,5 +940,11 @@ class MoviesViewModelsTest {
             enqueuedTitles
         )
         assertTrue(vm.uiState.value.downloadStatusMessage?.contains("Queued 2 episodes") == true)
+
+        // Requesting 480p when only 1080p and 720p exist must NOT silently substitute a higher resolution
+        enqueuedTitles.clear()
+        vm.downloadEpisodesBatch(seasonNumber = 1, episodeNumbers = listOf(1), preferredQualityHeight = 480)
+        advanceUntilIdle()
+        assertTrue(enqueuedTitles.isEmpty())
     }
 }
