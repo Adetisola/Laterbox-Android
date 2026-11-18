@@ -117,4 +117,145 @@ class LaterboxContextEngineTest {
         assertFalse(built.systemInstruction.contains("does NOT transcribe videos"))
         assertFalse(built.contextBlock.contains("video transcript is not stored locally"))
     }
+
+    @Test
+    fun buildContextForPrompt_includesMoviesWatchlistHistoryAndAllAppSections() = runTest {
+        db.moviesDao().insertWatchlistItem(
+            com.laterbox.app.movies.data.local.entity.MovieWatchlistEntity(
+                compositeId = "tvmaze:66",
+                providerId = "tvmaze",
+                titleId = "66",
+                kind = "tv_series",
+                title = "Severance",
+                posterUrl = null,
+                backdropUrl = null,
+                releaseYear = 2022,
+                rating = 8.7,
+                genresCsv = "Drama,Sci-Fi",
+                summary = "Macrodata refinement",
+                sourceBadge = "LIVE_TVMAZE",
+                isPlayableHint = false,
+                addedAt = 1700000000000L
+            )
+        )
+        db.moviesDao().upsertWatchHistory(
+            com.laterbox.app.movies.data.local.entity.MovieWatchHistoryEntity(
+                historyKey = "tvmaze:66:s1:e2",
+                compositeId = "tvmaze:66",
+                providerId = "tvmaze",
+                titleId = "66",
+                kind = "tv_series",
+                title = "Severance",
+                episodeLabel = "S1E2",
+                seasonNumber = 1,
+                episodeNumber = 2,
+                posterUrl = null,
+                backdropUrl = null,
+                positionMs = 120_000L,
+                durationMs = 240_000L,
+                lastWatchedAt = 1700000500000L,
+                isTrailer = false
+            )
+        )
+
+        val built = engine.buildContextForPrompt("What episode of Severance was I watching?")
+        assertTrue(built.contextBlock.contains("Movies & TV Watchlist"))
+        assertTrue(built.contextBlock.contains("Movies & TV Watch History"))
+        assertTrue(built.contextBlock.contains("Severance"))
+        assertTrue(built.contextBlock.contains("S1E2"))
+        assertTrue(built.systemInstruction.contains("OPEN_MOVIE_DETAIL"))
+        assertTrue(built.systemInstruction.contains("Movies & TV"))
+    }
+
+    @Test
+    fun buildContextForPrompt_includesRecentlyViewedViewingRemindersRewatchesAndCollectionMedia() = runTest {
+        val collectionId = db.collectionDao().insertCollection(
+            com.laterbox.app.data.local.entity.CollectionEntity(name = "Sci-Fi Favorites")
+        )
+        db.moviesDao().upsertWatchHistory(
+            com.laterbox.app.movies.data.local.entity.MovieWatchHistoryEntity(
+                historyKey = "archive:dune",
+                compositeId = "archive:dune",
+                providerId = "archive",
+                titleId = "dune",
+                kind = "movie",
+                title = "Dune Classic",
+                episodeLabel = null,
+                seasonNumber = null,
+                episodeNumber = null,
+                posterUrl = null,
+                backdropUrl = null,
+                positionMs = 180_000L,
+                durationMs = 200_000L,
+                lastWatchedAt = 1700001000000L,
+                isTrailer = false,
+                isCompleted = true,
+                rewatchCount = 2
+            )
+        )
+        db.moviesDao().upsertRecentlyViewed(
+            com.laterbox.app.movies.data.local.entity.MovieRecentlyViewedEntity(
+                mediaKey = "tvmaze:101",
+                compositeId = "tvmaze:101",
+                providerId = "tvmaze",
+                titleId = "101",
+                kind = "tv_series",
+                title = "Andor",
+                posterUrl = null,
+                backdropUrl = null,
+                releaseYear = 2022,
+                rating = 8.4,
+                genresCsv = "Sci-Fi,Drama",
+                sourceBadge = "LIVE_TVMAZE",
+                isPlayableHint = false,
+                viewedAt = 1700002000000L
+            )
+        )
+        db.moviesDao().upsertViewingReminder(
+            com.laterbox.app.movies.data.local.entity.MovieViewingReminderEntity(
+                mediaKey = "tvmaze:101",
+                compositeId = "tvmaze:101",
+                providerId = "tvmaze",
+                titleId = "101",
+                kind = "tv_series",
+                title = "Andor",
+                note = "Watch Episode 3 tonight",
+                triggerAtMillis = 1800000000000L,
+                isDismissed = false,
+                createdAt = 1700002000000L,
+                updatedAt = 1700002000000L
+            )
+        )
+        db.moviesDao().upsertMediaCollectionCrossRef(
+            com.laterbox.app.movies.data.local.entity.MediaCollectionCrossRef(
+                mediaKey = "archive:dune",
+                collectionId = collectionId,
+                compositeId = "archive:dune",
+                providerId = "archive",
+                titleId = "dune",
+                kind = "movie",
+                title = "Dune Classic",
+                sourceBadge = "LIVE_INTERNET_ARCHIVE",
+                addedAt = 1700002500000L
+            )
+        )
+        db.moviesDao().upsertSeriesPreferences(
+            com.laterbox.app.movies.data.local.entity.MovieSeriesPreferencesEntity(
+                mediaKey = "tvmaze:66",
+                remindersMuted = true,
+                updatedAt = 1700002600000L
+            )
+        )
+
+        val built = engine.buildContextForPrompt("What did I recently view or set a reminder for?")
+        assertTrue(built.contextBlock.contains("1 collections (1 Movies & TV items)"))
+        assertTrue(built.contextBlock.contains("1 Movies & TV reminders"))
+        assertTrue(built.contextBlock.contains("1 muted series"))
+        assertTrue(built.contextBlock.contains("1 reminders; 1 custom collections"))
+        assertTrue(built.contextBlock.contains("rewatches=2"))
+        assertTrue(built.contextBlock.contains("Movies & TV Recently Viewed"))
+        assertTrue(built.contextBlock.contains("[providerId=tvmaze titleId=101] title=\"Andor\""))
+        assertTrue(built.contextBlock.contains("Movies & TV Viewing Reminders"))
+        assertTrue(built.contextBlock.contains("Watch Episode 3 tonight"))
+    }
 }

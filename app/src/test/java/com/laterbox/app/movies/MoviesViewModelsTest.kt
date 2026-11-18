@@ -1085,4 +1085,374 @@ class MoviesViewModelsTest {
         vm.onStopTrailer()
         assertFalse(vm.uiState.value.isTrailerPlaying)
     }
+
+    @Test
+    fun homeViewModel_expandedFiltersSurpriseRerollAndContextualLibraryActionsWork() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(context, com.laterbox.app.data.local.LaterboxDatabase::class.java)
+            .allowMainThreadQueries()
+            .setQueryExecutor { it.run() }
+            .setTransactionExecutor { it.run() }
+            .build()
+        try {
+            val prefs = UserPreferencesRepository(context)
+            val colRepo = com.laterbox.app.data.repository.CollectionRepository(db.collectionDao())
+            val colId = colRepo.createCollection("Weekend Watch")
+            val shortComedy = MovieTitleSummary(
+                id = "m_short",
+                providerId = "moviebox",
+                kind = MediaKind.MOVIE,
+                title = "Quick Laugh",
+                releaseYear = 2024,
+                durationMinutes = 78,
+                language = "French",
+                genres = listOf("Comedy"),
+                sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+                isPlayableHint = true
+            )
+            val longDrama = MovieTitleSummary(
+                id = "m_long",
+                providerId = "moviebox",
+                kind = MediaKind.MOVIE,
+                title = "Epic Journey",
+                releaseYear = 2021,
+                durationMinutes = 155,
+                language = "English",
+                genres = listOf("Drama"),
+                sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+                isPlayableHint = true
+            )
+
+            val historyFlow = MutableStateFlow<List<WatchHistoryItem>>(emptyList())
+            val hiddenFlow = MutableStateFlow<List<WatchHistoryItem>>(emptyList())
+            val addedCollections = mutableListOf<Pair<String, Long>>()
+            val markedWatchedIds = mutableListOf<String>()
+            val restartedIds = mutableListOf<String>()
+            val removedCwIds = mutableListOf<String>()
+
+            val baseFake = FakeMoviesRepository()
+            val repo = object : MoviesRepository by baseFake {
+                override suspend fun getHomeFeed(forceRefresh: Boolean) = Result.success(
+                    MoviesHomeFeed(
+                        featuredBanners = listOf(shortComedy, longDrama),
+                        sections = listOf(
+                            BrowseSection("s1", "Featured", null, SectionStyle.RAIL, listOf(shortComedy, longDrama))
+                        ),
+                        genres = listOf("All", "Comedy", "Drama")
+                    )
+                )
+
+                override suspend fun getCatalogue(
+                    kind: MediaKind?,
+                    page: Int,
+                    pageSize: Int,
+                    genre: String?,
+                    sort: CatalogueSort,
+                    country: String?,
+                    year: String?
+                ): Result<CataloguePage> {
+                    baseFake.catalogueCalls.add(FakeMoviesRepository.CatalogueCall(kind, genre, sort, country, year))
+                    return Result.success(CataloguePage(listOf(shortComedy, longDrama), page, pageSize, 2, false))
+                }
+
+                override fun observeMovieWatchHistory(limit: Int) = historyFlow
+                override fun observeHiddenHistory(limit: Int) = hiddenFlow
+
+                override suspend fun markWatched(
+                    item: MovieTitleSummary,
+                    durationMs: Long,
+                    seasonNumber: Int?,
+                    episodeNumber: Int?,
+                    episodeLabel: String?,
+                    isRewatch: Boolean
+                ) {
+                    markedWatchedIds.add(item.id)
+                    historyFlow.value = listOf(
+                        WatchHistoryItem(
+                            compositeId = item.compositeId,
+                            providerId = item.providerId,
+                            titleId = item.id,
+                            kind = item.kind,
+                            title = item.title,
+                            positionMs = 100L,
+                            durationMs = 100L,
+                            lastWatchedAt = 5_000L,
+                            isCompleted = true
+                        )
+                    )
+                }
+
+                override suspend fun setTitleHidden(providerId: String, titleId: String, hidden: Boolean) {
+                    if (hidden) {
+                        hiddenFlow.value = listOf(
+                            WatchHistoryItem(
+                                compositeId = "$providerId:$titleId",
+                                providerId = providerId,
+                                titleId = titleId,
+                                kind = MediaKind.MOVIE,
+                                title = "Hidden",
+                                positionMs = 0L,
+                                durationMs = 0L,
+                                lastWatchedAt = 1L,
+                                isHiddenTitle = true
+                            )
+                        )
+                    }
+                }
+
+                override suspend fun restartFromBeginning(providerId: String, titleId: String, seasonNumber: Int?, episodeNumber: Int?) {
+                    restartedIds.add(titleId)
+                }
+
+                override suspend fun removeFromContinueWatching(providerId: String, titleId: String) {
+                    removedCwIds.add(titleId)
+                }
+
+                override suspend fun addMediaToCollection(item: MovieTitleSummary, collectionId: Long) {
+                    addedCollections.add(item.id to collectionId)
+                }
+            }
+
+            val vm = MoviesHomeViewModel(repo, prefs, colRepo)
+            vm.uiState.first { it.feed != null && !it.isLoading }
+
+            assertTrue(
+                "Expected [All, English, French] in ${vm.uiState.value.availableLanguages} (topRated=${vm.uiState.value.topRatedRail.size}, feed=${vm.uiState.value.feed?.featuredBanners?.size})",
+                vm.uiState.value.availableLanguages.containsAll(listOf("All", "English", "French"))
+            )
+            assertTrue(vm.uiState.value.quickRuntimePicks.any { it.id == "m_short" })
+            assertTrue(vm.uiState.value.quickRuntimePicks.none { it.id == "m_long" })
+
+            // Expanded filters: 4-digit year passes to getCatalogue, runtime & language filter client-side
+            vm.selectYear("2024")
+            vm.selectRuntimeBucket(com.laterbox.app.movies.domain.model.RuntimeBucket.QUICK)
+            vm.selectLanguage("French")
+            advanceUntilIdle()
+            assertEquals("2024", baseFake.catalogueCalls.last().year)
+            assertEquals(listOf("m_short"), vm.uiState.value.filteredItems.map { it.id })
+
+            // Reroll surprise
+            val firstSurprise = vm.uiState.value.surprisePick?.pick?.id
+            vm.rerollSurpriseMe(MediaKind.MOVIE)
+            advanceUntilIdle()
+            assertTrue(vm.uiState.value.surprisePick != null)
+            assertFalse(firstSurprise.isNullOrBlank())
+
+            // Contextual actions + collection add
+            vm.markWatched(shortComedy)
+            vm.addToCollection(shortComedy, colId)
+            vm.createAndAddToCollection(longDrama, "Sci-Fi Vault")
+            val cwEntry = WatchHistoryItem(
+                compositeId = "moviebox:m_short",
+                providerId = "moviebox",
+                titleId = "m_short",
+                kind = MediaKind.MOVIE,
+                title = "Quick Laugh",
+                positionMs = 10_000L,
+                durationMs = 100_000L,
+                lastWatchedAt = 1_000L
+            )
+            vm.restartFromBeginning(cwEntry)
+            vm.removeFromContinueWatching(cwEntry)
+            vm.hideTitle(longDrama)
+            advanceUntilIdle()
+
+            assertTrue(markedWatchedIds.contains("m_short"))
+            assertTrue(addedCollections.any { it.first == "m_short" && it.second == colId })
+            assertTrue(addedCollections.any { it.first == "m_long" })
+            assertEquals(listOf("m_short"), restartedIds)
+            assertEquals(listOf("m_short"), removedCwIds)
+            assertTrue(vm.uiState.value.hiddenMediaKeys.contains(longDrama.stableMediaKey))
+            assertTrue(vm.uiState.value.filteredItems.none { it.id == "m_long" })
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun catalogueViewModel_forwardsFourDigitYearAndFiltersRuntimeAndLanguage() = runTest {
+        val shortMovie = MovieTitleSummary(
+            id = "m_fast",
+            providerId = "moviebox",
+            kind = MediaKind.MOVIE,
+            title = "Short Film",
+            releaseYear = 2024,
+            durationMinutes = 82,
+            language = "Korean",
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+        )
+        val longMovie = MovieTitleSummary(
+            id = "m_long",
+            providerId = "moviebox",
+            kind = MediaKind.MOVIE,
+            title = "Long Film",
+            releaseYear = 2024,
+            durationMinutes = 148,
+            language = "English",
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+        )
+        val baseFake = FakeMoviesRepository()
+        val repo = object : MoviesRepository by baseFake {
+            override suspend fun getCatalogue(
+                kind: MediaKind?,
+                page: Int,
+                pageSize: Int,
+                genre: String?,
+                sort: CatalogueSort,
+                country: String?,
+                year: String?
+            ): Result<CataloguePage> {
+                baseFake.catalogueCalls.add(FakeMoviesRepository.CatalogueCall(kind, genre, sort, country, year))
+                return Result.success(CataloguePage(listOf(shortMovie, longMovie), page, pageSize, 2, false))
+            }
+        }
+
+        val vm = MoviesCatalogueViewModel(repo)
+        vm.initialize("s1", MediaKind.MOVIE, null, null, CatalogueSort.POPULAR, null)
+        advanceUntilIdle()
+
+        vm.selectYear("2024")
+        advanceUntilIdle()
+        assertEquals("2024", baseFake.catalogueCalls.last().year)
+
+        vm.selectRuntimeBucket(com.laterbox.app.movies.domain.model.RuntimeBucket.QUICK)
+        advanceUntilIdle()
+        assertEquals(listOf("m_fast"), vm.uiState.value.items.map { it.id })
+
+        vm.selectLanguage("Korean")
+        advanceUntilIdle()
+        assertEquals(listOf("m_fast"), vm.uiState.value.items.map { it.id })
+
+        vm.selectLanguage("English")
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.items.isEmpty())
+    }
+
+    @Test
+    fun detailViewModel_personalLibraryEpisodeToggleCollectionReminderAndMuteWork() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(context, com.laterbox.app.data.local.LaterboxDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val colRepo = com.laterbox.app.data.repository.CollectionRepository(db.collectionDao())
+            val colId = colRepo.createCollection("Top Series")
+            val prefs = UserPreferencesRepository(context)
+            val seriesSummary = MovieTitleSummary(
+                id = "mb_series",
+                providerId = "moviebox",
+                kind = MediaKind.TV_SERIES,
+                title = "Severance",
+                sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+                isPlayableHint = true
+            )
+            val memberCols = MutableStateFlow<List<Long>>(emptyList())
+            val reminderFlow = MutableStateFlow<com.laterbox.app.movies.domain.model.ViewingReminderItem?>(null)
+            val mutedFlow = MutableStateFlow(false)
+            val watchedEpisodeNums = mutableSetOf<Int>()
+
+            val baseFake = FakeMoviesRepository()
+            val repo = object : MoviesRepository by baseFake {
+                override suspend fun getDetails(providerId: String, titleId: String, forceRefresh: Boolean) =
+                    Result.success(
+                        MediaDetails(
+                            summary = seriesSummary,
+                            seasons = listOf(SeasonSummary(1, "Season 1", 2, availableEpisodes = listOf(1, 2)))
+                        )
+                    )
+
+                override suspend fun getEpisodes(providerId: String, seriesId: String, seasonNumber: Int) =
+                    Result.success(
+                        listOf(
+                            EpisodeItem("ep1", 1, 1, "Good News"),
+                            EpisodeItem("ep2", 1, 2, "Half Loop")
+                        )
+                    )
+
+                override fun observeCollectionIdsForMedia(providerId: String, titleId: String) = memberCols
+                override suspend fun addMediaToCollection(item: MovieTitleSummary, collectionId: Long) {
+                    memberCols.value = (memberCols.value + collectionId).distinct()
+                }
+                override suspend fun removeMediaFromCollection(item: MovieTitleSummary, collectionId: Long) {
+                    memberCols.value = memberCols.value - collectionId
+                }
+
+                override fun observeViewingReminderForTitle(providerId: String, titleId: String) = reminderFlow
+                override suspend fun scheduleViewingReminder(
+                    item: MovieTitleSummary,
+                    triggerAtMillis: Long,
+                    note: String?,
+                    seasonNumber: Int?,
+                    episodeNumber: Int?
+                ) {
+                    reminderFlow.value = com.laterbox.app.movies.domain.model.ViewingReminderItem(
+                        mediaKey = item.stableMediaKey,
+                        compositeId = item.compositeId,
+                        providerId = item.providerId,
+                        titleId = item.id,
+                        kind = item.kind,
+                        title = item.title,
+                        seasonNumber = seasonNumber,
+                        episodeNumber = episodeNumber,
+                        posterUrl = item.posterUrl,
+                        note = note,
+                        triggerAtMillis = triggerAtMillis
+                    )
+                }
+                override suspend fun dismissViewingReminder(providerId: String, titleId: String) {
+                    reminderFlow.value = null
+                }
+
+                override fun observeSeriesPreferences(providerId: String, titleId: String) =
+                    MutableStateFlow(com.laterbox.app.movies.domain.model.SeriesPreferences(seriesSummary.stableMediaKey, remindersMuted = mutedFlow.value))
+                override suspend fun setSeriesRemindersMuted(providerId: String, titleId: String, muted: Boolean) {
+                    mutedFlow.value = muted
+                }
+
+                override suspend fun markWatched(
+                    item: MovieTitleSummary,
+                    durationMs: Long,
+                    seasonNumber: Int?,
+                    episodeNumber: Int?,
+                    episodeLabel: String?,
+                    isRewatch: Boolean
+                ) {
+                    if (episodeNumber != null) watchedEpisodeNums.add(episodeNumber)
+                }
+                override suspend fun markUnwatched(providerId: String, titleId: String, seasonNumber: Int?, episodeNumber: Int?) {
+                    if (episodeNumber != null) watchedEpisodeNums.remove(episodeNumber)
+                }
+            }
+
+            val vm = MovieDetailViewModel(repo, null, prefs, colRepo, null)
+            vm.load("moviebox", "mb_series")
+            vm.uiState.first { !it.isLoading && it.episodes.isNotEmpty() }
+
+            // Episode toggle
+            vm.toggleEpisodeWatched(vm.uiState.value.episodes.first())
+            advanceUntilIdle()
+            assertTrue(1 in watchedEpisodeNums)
+
+            // Collection toggle
+            vm.toggleCollectionMembership(colId)
+            advanceUntilIdle()
+            assertTrue(colId in vm.uiState.value.memberCollectionIds)
+
+            // Viewing reminder schedule & dismiss
+            vm.scheduleViewingReminder(System.currentTimeMillis() + 3600_000L, "Watch tonight")
+            advanceUntilIdle()
+            assertEquals("Watch tonight", vm.uiState.value.viewingReminder?.note)
+
+            vm.dismissViewingReminder()
+            advanceUntilIdle()
+            assertNull(vm.uiState.value.viewingReminder)
+
+            // Mute series reminders
+            vm.toggleMuteSeriesReminders()
+            advanceUntilIdle()
+            assertTrue(mutedFlow.value)
+        } finally {
+            db.close()
+        }
+    }
 }

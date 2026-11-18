@@ -1,11 +1,17 @@
 package com.laterbox.app.movies.data.repository
 
 import com.laterbox.app.BuildConfig
+import com.laterbox.app.media.data.db.dao.DownloadedAssetDao
+import com.laterbox.app.movies.data.download.MoviesDownloadBridge
 import com.laterbox.app.movies.data.fixtures.DevelopmentMoviesFixtureProvider
 import com.laterbox.app.movies.data.local.MoviesCacheJsonCodec
 import com.laterbox.app.movies.data.local.dao.MoviesDao
+import com.laterbox.app.movies.data.local.entity.MediaCollectionCrossRef
 import com.laterbox.app.movies.data.local.entity.MovieCacheEntryEntity
+import com.laterbox.app.movies.data.local.entity.MovieRecentlyViewedEntity
 import com.laterbox.app.movies.data.local.entity.MovieSearchHistoryEntity
+import com.laterbox.app.movies.data.local.entity.MovieSeriesPreferencesEntity
+import com.laterbox.app.movies.data.local.entity.MovieViewingReminderEntity
 import com.laterbox.app.movies.data.local.entity.MovieWatchHistoryEntity
 import com.laterbox.app.movies.data.local.entity.MovieWatchlistEntity
 import com.laterbox.app.movies.data.provider.InternetArchiveMoviesProvider
@@ -15,23 +21,33 @@ import com.laterbox.app.movies.data.provider.TvMazeSeriesProvider
 import com.laterbox.app.movies.data.resolver.MediaResolver
 import com.laterbox.app.movies.domain.model.CataloguePage
 import com.laterbox.app.movies.domain.model.CatalogueSort
+import com.laterbox.app.movies.domain.model.CollectionMediaItem
 import com.laterbox.app.movies.domain.model.DataSourceBadge
 import com.laterbox.app.movies.domain.model.EpisodeItem
+import com.laterbox.app.movies.domain.model.EpisodeProgressState
 import com.laterbox.app.movies.domain.model.MediaDetails
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.model.MoviesHomeFeed
+import com.laterbox.app.movies.domain.model.OfflineMediaMatch
 import com.laterbox.app.movies.domain.model.PersonFilmography
 import com.laterbox.app.movies.domain.model.PlaybackResolution
+import com.laterbox.app.movies.domain.model.PlaybackSource
 import com.laterbox.app.movies.domain.model.ProviderLinkRecord
 import com.laterbox.app.movies.domain.model.SearchSuggestion
 import com.laterbox.app.movies.domain.model.SeasonSummary
+import com.laterbox.app.movies.domain.model.SeriesPreferences
+import com.laterbox.app.movies.domain.model.SeriesProgressSummary
 import com.laterbox.app.movies.domain.model.SubtitleTrack
+import com.laterbox.app.movies.domain.model.ViewingReminderItem
 import com.laterbox.app.movies.domain.model.WatchHistoryItem
 import com.laterbox.app.movies.domain.repository.MoviesRepository
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 
 class MoviesRepositoryImpl(
@@ -44,7 +60,9 @@ class MoviesRepositoryImpl(
     private val movieBoxProvider: MovieBoxProvider? = null,
     private val useSampleFixturesOnlyProvider: suspend () -> Boolean = { false },
     private val nowMs: () -> Long = { System.currentTimeMillis() },
-    private val mediaResolver: MediaResolver = MediaResolver(moviesDao, nowMs)
+    private val mediaResolver: MediaResolver = MediaResolver(moviesDao, nowMs),
+    private val downloadedAssetDao: DownloadedAssetDao? = null,
+    private val localMediaUriResolver: ((String) -> String?)? = null
 ) : MoviesRepository {
 
     private suspend fun isDebugSampleFixturesEnabled(): Boolean =
@@ -648,6 +666,23 @@ class MoviesRepositoryImpl(
             titleId = titleId,
             preferPlayable = true
         )
+        val offlineMatch = findOfflineEpisodeAsset(resolvedProviderId, resolvedTitleId, seasonNumber, episodeNumber)
+        val offlineSource = offlineMatch?.let { match ->
+            localMediaUriResolver?.invoke(match.localPath)?.let { fileUri ->
+                PlaybackSource(
+                    id = "offline_${match.assetId}",
+                    url = fileUri,
+                    format = "MP4",
+                    qualityLabel = "${match.qualityLabel ?: "Downloaded"} (Offline)",
+                    qualityHeight = parseHeightFromQuality(match.qualityLabel),
+                    sizeMb = match.fileSizeBytes / (1024.0 * 1024.0),
+                    providerName = "Offline Library",
+                    isOfflineLocal = true
+                )
+            }
+        }
+        val savedPos = getSavedPositionMs(resolvedProviderId, resolvedTitleId, seasonNumber, episodeNumber)
+
         val result = when (resolvedProviderId) {
             MovieBoxProvider.PROVIDER_ID ->
                 movieBoxProvider?.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
@@ -663,12 +698,48 @@ class MoviesRepositoryImpl(
             else -> Result.failure(IllegalArgumentException("Unknown provider '$resolvedProviderId'"))
         }
 
+        if (result.isFailure && offlineSource != null) {
+            return Result.success(
+                PlaybackResolution.Available(
+                    title = "Offline Playback",
+                    subtitleHeading = if (seasonNumber != null && episodeNumber != null) "S${seasonNumber} · E${episodeNumber}" else null,
+                    sources = listOf(offlineSource),
+                    subtitles = emptyList(),
+                    startPositionMs = savedPos,
+                    providerName = "Offline Library",
+                    sourceBadge = DataSourceBadge.LIVE_INTERNET_ARCHIVE
+                )
+            )
+        }
+
         return result.map { resolution ->
-            if (resolution is PlaybackResolution.Available) {
-                val savedPos = getSavedPositionMs(resolvedProviderId, resolvedTitleId, seasonNumber, episodeNumber)
-                resolution.copy(startPositionMs = savedPos)
-            } else {
-                resolution
+            when (resolution) {
+                is PlaybackResolution.Available -> {
+                    val combinedSources = if (offlineSource != null) {
+                        listOf(offlineSource) + resolution.sources
+                    } else {
+                        resolution.sources
+                    }
+                    resolution.copy(
+                        sources = combinedSources,
+                        startPositionMs = savedPos
+                    )
+                }
+                is PlaybackResolution.Unavailable -> {
+                    if (offlineSource != null) {
+                        PlaybackResolution.Available(
+                            title = resolution.title,
+                            subtitleHeading = if (seasonNumber != null && episodeNumber != null) "S${seasonNumber} · E${episodeNumber}" else null,
+                            sources = listOf(offlineSource),
+                            subtitles = emptyList(),
+                            startPositionMs = savedPos,
+                            providerName = "Offline Library",
+                            sourceBadge = resolution.sourceBadge
+                        )
+                    } else {
+                        resolution
+                    }
+                }
             }
         }
     }
@@ -730,24 +801,52 @@ class MoviesRepositoryImpl(
     ) {
         val resolved = if (item.canonicalId != null) item else mediaResolver.resolveOrRegister(item)
         val key = buildHistoryKey(resolved.providerId, resolved.id, seasonNumber, episodeNumber)
+        val existing = moviesDao.getWatchHistoryByKey(key)
+            ?: resolved.canonicalId?.let {
+                moviesDao.getWatchHistoryByCanonical(it, seasonNumber ?: 0, episodeNumber ?: 0)
+            }
+        val cleanPos = positionMs.coerceAtLeast(0L)
+        val cleanDur = durationMs.coerceAtLeast(0L)
+        val now = nowMs()
+        val reachedCompletion = cleanDur > 0L && (cleanPos.toFloat() / cleanDur.toFloat()) >= 0.96f
+
+        val wasCompleted = existing?.isCompleted == true
+        val prevFraction = if (existing != null && existing.durationMs > 0L) {
+            existing.positionMs.toFloat() / existing.durationMs.toFloat()
+        } else 0f
+        val newRewatchCount = when {
+            reachedCompletion && wasCompleted && prevFraction < 0.90f -> existing!!.rewatchCount + 1
+            else -> existing?.rewatchCount ?: 0
+        }
+        val isCompleted = wasCompleted || reachedCompletion
+        val completedAt = when {
+            reachedCompletion -> now
+            else -> existing?.completedAt
+        }
+
         moviesDao.upsertWatchHistory(
             MovieWatchHistoryEntity(
-                historyKey = key,
-                compositeId = resolved.compositeId,
+                historyKey = existing?.historyKey ?: key,
+                compositeId = existing?.compositeId ?: resolved.compositeId,
                 providerId = resolved.providerId,
                 titleId = resolved.id,
                 kind = resolved.kind.wireValue,
                 title = resolved.title,
-                episodeLabel = episodeLabel,
-                seasonNumber = seasonNumber,
-                episodeNumber = episodeNumber,
-                posterUrl = resolved.posterUrl,
-                backdropUrl = resolved.backdropUrl ?: item.backdropUrl,
-                positionMs = positionMs.coerceAtLeast(0L),
-                durationMs = durationMs.coerceAtLeast(0L),
-                lastWatchedAt = nowMs(),
-                canonicalId = resolved.canonicalId,
-                isTrailer = false
+                episodeLabel = episodeLabel ?: existing?.episodeLabel,
+                seasonNumber = seasonNumber ?: existing?.seasonNumber,
+                episodeNumber = episodeNumber ?: existing?.episodeNumber,
+                posterUrl = resolved.posterUrl ?: existing?.posterUrl,
+                backdropUrl = resolved.backdropUrl ?: item.backdropUrl ?: existing?.backdropUrl,
+                positionMs = cleanPos,
+                durationMs = cleanDur,
+                lastWatchedAt = now,
+                canonicalId = resolved.canonicalId ?: existing?.canonicalId,
+                isTrailer = false,
+                isCompleted = isCompleted,
+                completedAt = completedAt,
+                rewatchCount = newRewatchCount,
+                hiddenFromContinueWatching = if (cleanPos > 0L) false else existing?.hiddenFromContinueWatching ?: false,
+                isHiddenTitle = existing?.isHiddenTitle ?: false
             )
         )
     }
@@ -775,6 +874,216 @@ class MoviesRepositoryImpl(
 
     override fun observeViewingHistory(limit: Int): Flow<List<WatchHistoryItem>> =
         moviesDao.observeViewingHistory(limit).map { entities -> entities.map { it.toDomain() } }
+
+    override fun observeMovieWatchHistory(limit: Int): Flow<List<WatchHistoryItem>> =
+        moviesDao.observeMovieWatchHistory(limit).map { entities -> entities.map { it.toDomain() } }
+
+    override fun observeEpisodeWatchHistory(limit: Int): Flow<List<WatchHistoryItem>> =
+        moviesDao.observeEpisodeWatchHistory(limit).map { entities -> entities.map { it.toDomain() } }
+
+    override fun observeTrailerHistory(limit: Int): Flow<List<WatchHistoryItem>> =
+        moviesDao.observeTrailerHistory(limit).map { entities -> entities.map { it.toDomain() } }
+
+    override fun observeHiddenHistory(limit: Int): Flow<List<WatchHistoryItem>> =
+        moviesDao.observeHiddenHistory(limit).map { entities -> entities.map { it.toDomain() } }
+
+    override fun observeSeriesProgress(
+        providerId: String,
+        titleId: String,
+        title: String
+    ): Flow<SeriesProgressSummary> = flow {
+        val (resolvedProviderId, resolvedTitleId) = mediaResolver.resolveConcreteTarget(providerId, titleId, preferPlayable = false)
+        val cid = mediaResolver.resolveCanonicalIdForProvider(providerId, titleId)
+        val compositeId = "$resolvedProviderId:$resolvedTitleId"
+        val mediaKey = cid ?: compositeId
+        emitAll(
+            moviesDao.observeHistoryForTitle(compositeId, cid).map { entries ->
+                val epStates = mutableMapOf<Pair<Int, Int>, EpisodeProgressState>()
+                var latestEntry: MovieWatchHistoryEntity? = null
+                for (entry in entries) {
+                    val se = entry.seasonNumber ?: continue
+                    val ep = entry.episodeNumber ?: continue
+                    val completed = entry.isCompleted || (entry.durationMs > 0L && entry.positionMs.toFloat() / entry.durationMs.toFloat() >= 0.96f)
+                    epStates[se to ep] = EpisodeProgressState(
+                        seasonNumber = se,
+                        episodeNumber = ep,
+                        isCompleted = completed,
+                        positionMs = entry.positionMs,
+                        durationMs = entry.durationMs,
+                        rewatchCount = entry.rewatchCount,
+                        lastWatchedAt = entry.lastWatchedAt
+                    )
+                    if (latestEntry == null || entry.lastWatchedAt > latestEntry.lastWatchedAt) {
+                        latestEntry = entry
+                    }
+                }
+                SeriesProgressSummary(
+                    mediaKey = mediaKey,
+                    compositeId = compositeId,
+                    providerId = resolvedProviderId,
+                    titleId = resolvedTitleId,
+                    title = title.ifBlank { latestEntry?.title ?: "" },
+                    totalWatchedEpisodes = epStates.values.count { it.isCompleted },
+                    lastWatchedSeason = latestEntry?.seasonNumber,
+                    lastWatchedEpisode = latestEntry?.episodeNumber,
+                    lastWatchedAt = latestEntry?.lastWatchedAt ?: 0L,
+                    nextUnwatchedSeason = null,
+                    nextUnwatchedEpisode = null,
+                    episodeStates = epStates
+                )
+            }
+        )
+    }
+
+    override suspend fun computeNextUnwatchedEpisode(
+        providerId: String,
+        titleId: String,
+        seasons: List<SeasonSummary>,
+        episodesBySeason: Map<Int, List<EpisodeItem>>
+    ): Pair<Int, Int>? {
+        val (resolvedProviderId, resolvedTitleId) = mediaResolver.resolveConcreteTarget(providerId, titleId, preferPlayable = false)
+        val cid = mediaResolver.resolveCanonicalIdForProvider(providerId, titleId)
+        val entries = moviesDao.getHistoryListForTitle("$resolvedProviderId:$resolvedTitleId", cid)
+        val completedKeys = entries
+            .filter {
+                it.isCompleted || (it.durationMs > 0L && it.positionMs.toFloat() / it.durationMs.toFloat() >= 0.96f)
+            }
+            .mapNotNull { e ->
+                val se = e.seasonNumber ?: return@mapNotNull null
+                val ep = e.episodeNumber ?: return@mapNotNull null
+                se to ep
+            }
+            .toSet()
+
+        val sortedSeasons = seasons.sortedBy { it.seasonNumber }
+        for (season in sortedSeasons) {
+            val loadedEpisodes = episodesBySeason[season.seasonNumber]
+            if (!loadedEpisodes.isNullOrEmpty()) {
+                for (ep in loadedEpisodes.sortedBy { it.episodeNumber }) {
+                    if ((season.seasonNumber to ep.episodeNumber) !in completedKeys) {
+                        return season.seasonNumber to ep.episodeNumber
+                    }
+                }
+            } else if (season.availableEpisodes.isNotEmpty()) {
+                for (epNum in season.availableEpisodes.sorted()) {
+                    if ((season.seasonNumber to epNum) !in completedKeys) {
+                        return season.seasonNumber to epNum
+                    }
+                }
+            } else if (season.episodeCount > 0) {
+                for (epNum in 1..season.episodeCount) {
+                    if ((season.seasonNumber to epNum) !in completedKeys) {
+                        return season.seasonNumber to epNum
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    override suspend fun markWatched(
+        item: MovieTitleSummary,
+        durationMs: Long,
+        seasonNumber: Int?,
+        episodeNumber: Int?,
+        episodeLabel: String?,
+        isRewatch: Boolean
+    ) {
+        val resolved = if (item.canonicalId != null) item else mediaResolver.resolveOrRegister(item)
+        val key = buildHistoryKey(resolved.providerId, resolved.id, seasonNumber, episodeNumber)
+        val existing = moviesDao.getWatchHistoryByKey(key)
+            ?: resolved.canonicalId?.let {
+                moviesDao.getWatchHistoryByCanonical(it, seasonNumber ?: 0, episodeNumber ?: 0)
+            }
+        val now = nowMs()
+        val effectiveDuration = when {
+            durationMs > 0L -> durationMs
+            existing != null && existing.durationMs > 0L -> existing.durationMs
+            resolved.durationMinutes != null && resolved.durationMinutes > 0 -> resolved.durationMinutes * 60_000L
+            else -> 1_000L
+        }
+        val alreadyCompleted = existing?.isCompleted == true
+        val newRewatchCount = when {
+            isRewatch || alreadyCompleted -> (existing?.rewatchCount ?: 0) + 1
+            else -> existing?.rewatchCount ?: 0
+        }
+        moviesDao.upsertWatchHistory(
+            MovieWatchHistoryEntity(
+                historyKey = existing?.historyKey ?: key,
+                compositeId = existing?.compositeId ?: resolved.compositeId,
+                providerId = resolved.providerId,
+                titleId = resolved.id,
+                kind = resolved.kind.wireValue,
+                title = resolved.title,
+                episodeLabel = episodeLabel ?: existing?.episodeLabel,
+                seasonNumber = seasonNumber ?: existing?.seasonNumber,
+                episodeNumber = episodeNumber ?: existing?.episodeNumber,
+                posterUrl = resolved.posterUrl ?: existing?.posterUrl,
+                backdropUrl = resolved.backdropUrl ?: existing?.backdropUrl,
+                positionMs = effectiveDuration,
+                durationMs = effectiveDuration,
+                lastWatchedAt = now,
+                canonicalId = resolved.canonicalId ?: existing?.canonicalId,
+                isTrailer = false,
+                isCompleted = true,
+                completedAt = now,
+                rewatchCount = newRewatchCount,
+                hiddenFromContinueWatching = false,
+                isHiddenTitle = false
+            )
+        )
+    }
+
+    override suspend fun markUnwatched(
+        providerId: String,
+        titleId: String,
+        seasonNumber: Int?,
+        episodeNumber: Int?
+    ) {
+        val (resolvedProviderId, resolvedTitleId) = mediaResolver.resolveConcreteTarget(providerId, titleId, preferPlayable = false)
+        val key = buildHistoryKey(resolvedProviderId, resolvedTitleId, seasonNumber, episodeNumber)
+        val existing = moviesDao.getWatchHistoryByKey(key)
+            ?: mediaResolver.resolveCanonicalIdForProvider(providerId, titleId)?.let { cid ->
+                moviesDao.getWatchHistoryByCanonical(cid, seasonNumber ?: 0, episodeNumber ?: 0)
+            }
+        if (existing != null) {
+            moviesDao.deleteWatchHistoryEntry(existing.historyKey)
+        } else {
+            moviesDao.deleteWatchHistoryEntry(key)
+        }
+    }
+
+    override suspend fun restartFromBeginning(
+        providerId: String,
+        titleId: String,
+        seasonNumber: Int?,
+        episodeNumber: Int?
+    ) {
+        val (resolvedProviderId, resolvedTitleId) = mediaResolver.resolveConcreteTarget(providerId, titleId, preferPlayable = false)
+        val key = buildHistoryKey(resolvedProviderId, resolvedTitleId, seasonNumber, episodeNumber)
+        val existing = moviesDao.getWatchHistoryByKey(key)
+            ?: mediaResolver.resolveCanonicalIdForProvider(providerId, titleId)?.let { cid ->
+                moviesDao.getWatchHistoryByCanonical(cid, seasonNumber ?: 0, episodeNumber ?: 0)
+            }
+        if (existing != null) {
+            moviesDao.resetSavedPositionPreservingCompletion(existing.historyKey, nowMs())
+        }
+    }
+
+    override suspend fun removeFromContinueWatching(providerId: String, titleId: String) {
+        val (resolvedProviderId, resolvedTitleId) = mediaResolver.resolveConcreteTarget(providerId, titleId, preferPlayable = false)
+        val cid = mediaResolver.resolveCanonicalIdForProvider(providerId, titleId)
+        moviesDao.setHiddenFromContinueWatching("$resolvedProviderId:$resolvedTitleId", cid, hidden = true)
+    }
+
+    override suspend fun setTitleHidden(providerId: String, titleId: String, hidden: Boolean) {
+        val (resolvedProviderId, resolvedTitleId) = mediaResolver.resolveConcreteTarget(providerId, titleId, preferPlayable = false)
+        val cid = mediaResolver.resolveCanonicalIdForProvider(providerId, titleId)
+        moviesDao.setTitleHidden("$resolvedProviderId:$resolvedTitleId", cid, hidden = hidden)
+        if (!hidden) {
+            moviesDao.setHiddenFromContinueWatching("$resolvedProviderId:$resolvedTitleId", cid, hidden = false)
+        }
+    }
 
     override suspend fun recordTrailerWatch(
         item: MovieTitleSummary,
@@ -814,6 +1123,257 @@ class MoviesRepositoryImpl(
             null -> moviesDao.clearWatchHistory()
             else -> moviesDao.clearWatchHistoryByTrailerFlag(trailersOnly)
         }
+    }
+
+    override fun observeRecentlyViewed(limit: Int): Flow<List<MovieTitleSummary>> =
+        moviesDao.observeRecentlyViewed(limit).map { list -> list.map { it.toDomain() } }
+
+    override suspend fun recordRecentlyViewed(item: MovieTitleSummary) {
+        if (item.id.isBlank() || item.providerId.isBlank()) return
+        val resolved = if (item.canonicalId != null) item else mediaResolver.resolveOrRegister(item)
+        moviesDao.upsertRecentlyViewed(
+            MovieRecentlyViewedEntity(
+                mediaKey = resolved.stableMediaKey,
+                compositeId = resolved.compositeId,
+                providerId = resolved.providerId,
+                titleId = resolved.id,
+                canonicalId = resolved.canonicalId,
+                kind = resolved.kind.wireValue,
+                title = resolved.title,
+                posterUrl = resolved.posterUrl,
+                backdropUrl = resolved.backdropUrl,
+                releaseYear = resolved.releaseYear,
+                rating = resolved.rating,
+                genresCsv = resolved.genres.joinToString(","),
+                sourceBadge = resolved.sourceBadge.name,
+                isPlayableHint = resolved.isPlayableHint,
+                viewedAt = nowMs()
+            )
+        )
+    }
+
+    override suspend fun removeRecentlyViewed(providerId: String, titleId: String) {
+        val cid = mediaResolver.resolveCanonicalIdForProvider(providerId, titleId)
+        val compositeId = "$providerId:$titleId"
+        moviesDao.deleteRecentlyViewed(cid ?: compositeId, compositeId)
+    }
+
+    override suspend fun clearRecentlyViewed() {
+        moviesDao.clearRecentlyViewed()
+    }
+
+    override fun observeCollectionIdsForMedia(providerId: String, titleId: String): Flow<List<Long>> = flow {
+        val cid = mediaResolver.resolveCanonicalIdForProvider(providerId, titleId)
+        val compositeId = "$providerId:$titleId"
+        emitAll(moviesDao.observeCollectionIdsForMedia(cid ?: compositeId, compositeId))
+    }
+
+    override fun observeMediaInCollection(collectionId: Long): Flow<List<CollectionMediaItem>> =
+        moviesDao.observeMediaInCollection(collectionId).map { refs ->
+            refs.map { it.toDomain() }
+        }
+
+    override suspend fun addMediaToCollection(item: MovieTitleSummary, collectionId: Long) {
+        val resolved = if (item.canonicalId != null) item else mediaResolver.resolveOrRegister(item)
+        moviesDao.upsertMediaCollectionCrossRef(
+            MediaCollectionCrossRef(
+                mediaKey = resolved.stableMediaKey,
+                collectionId = collectionId,
+                compositeId = resolved.compositeId,
+                providerId = resolved.providerId,
+                titleId = resolved.id,
+                canonicalId = resolved.canonicalId,
+                kind = resolved.kind.wireValue,
+                title = resolved.title,
+                posterUrl = resolved.posterUrl,
+                backdropUrl = resolved.backdropUrl,
+                releaseYear = resolved.releaseYear,
+                rating = resolved.rating,
+                genresCsv = resolved.genres.joinToString(","),
+                sourceBadge = resolved.sourceBadge.name,
+                isPlayableHint = resolved.isPlayableHint,
+                addedAt = nowMs()
+            )
+        )
+    }
+
+    override suspend fun removeMediaFromCollection(item: MovieTitleSummary, collectionId: Long) {
+        val cid = item.canonicalId ?: mediaResolver.resolveCanonicalIdForProvider(item.providerId, item.id)
+        moviesDao.removeMediaFromCollection(cid ?: item.compositeId, item.compositeId, collectionId)
+    }
+
+    override suspend fun getSeriesPreferences(providerId: String, titleId: String): SeriesPreferences? {
+        val cid = mediaResolver.resolveCanonicalIdForProvider(providerId, titleId)
+        val key = cid ?: "$providerId:$titleId"
+        return moviesDao.getSeriesPreferences(key)?.toDomain()
+            ?: moviesDao.getSeriesPreferences("$providerId:$titleId")?.toDomain()
+    }
+
+    override fun observeSeriesPreferences(providerId: String, titleId: String): Flow<SeriesPreferences?> = flow {
+        val cid = mediaResolver.resolveCanonicalIdForProvider(providerId, titleId)
+        val key = cid ?: "$providerId:$titleId"
+        emitAll(moviesDao.observeSeriesPreferences(key).map { it?.toDomain() })
+    }
+
+    override suspend fun saveSeriesAudioPreference(
+        providerId: String,
+        titleId: String,
+        language: String?,
+        label: String?
+    ) {
+        val key = mediaResolver.resolveCanonicalIdForProvider(providerId, titleId) ?: "$providerId:$titleId"
+        val current = moviesDao.getSeriesPreferences(key) ?: MovieSeriesPreferencesEntity(
+            mediaKey = key,
+            updatedAt = nowMs()
+        )
+        moviesDao.upsertSeriesPreferences(
+            current.copy(
+                preferredAudioLanguage = language,
+                preferredAudioLabel = label,
+                updatedAt = nowMs()
+            )
+        )
+    }
+
+    override suspend fun saveSeriesSubtitlePreference(
+        providerId: String,
+        titleId: String,
+        language: String?,
+        label: String?,
+        disabled: Boolean
+    ) {
+        val key = mediaResolver.resolveCanonicalIdForProvider(providerId, titleId) ?: "$providerId:$titleId"
+        val current = moviesDao.getSeriesPreferences(key) ?: MovieSeriesPreferencesEntity(
+            mediaKey = key,
+            updatedAt = nowMs()
+        )
+        moviesDao.upsertSeriesPreferences(
+            current.copy(
+                preferredSubtitleLanguage = language,
+                preferredSubtitleLabel = label,
+                subtitlesDisabled = disabled,
+                updatedAt = nowMs()
+            )
+        )
+    }
+
+    override suspend fun setSeriesRemindersMuted(providerId: String, titleId: String, muted: Boolean) {
+        val key = mediaResolver.resolveCanonicalIdForProvider(providerId, titleId) ?: "$providerId:$titleId"
+        val current = moviesDao.getSeriesPreferences(key) ?: MovieSeriesPreferencesEntity(
+            mediaKey = key,
+            updatedAt = nowMs()
+        )
+        moviesDao.upsertSeriesPreferences(
+            current.copy(
+                remindersMuted = muted,
+                updatedAt = nowMs()
+            )
+        )
+    }
+
+    override fun observeOfflineAvailability(): Flow<List<OfflineMediaMatch>> {
+        val dao = downloadedAssetDao ?: return flowOf(emptyList())
+        return dao.observeAvailableOfflineMovieAssets().map { assets ->
+            assets.mapNotNull { asset ->
+                val ref = asset.sourceRef?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val parts = ref.split("|")
+                val se = parts.getOrNull(2)?.toIntOrNull()?.takeIf { it > 0 }
+                val ep = parts.getOrNull(3)?.toIntOrNull()?.takeIf { it > 0 }
+                OfflineMediaMatch(
+                    assetId = asset.id,
+                    sourceRef = ref,
+                    localPath = asset.localPath,
+                    qualityLabel = asset.qualityLabel ?: parts.getOrNull(4)?.takeIf { it.isNotBlank() },
+                    fileSizeBytes = asset.fileSize,
+                    seasonNumber = se,
+                    episodeNumber = ep
+                )
+            }
+        }
+    }
+
+    override suspend fun findOfflineEpisodeAsset(
+        providerId: String,
+        titleId: String,
+        seasonNumber: Int?,
+        episodeNumber: Int?
+    ): OfflineMediaMatch? {
+        val dao = downloadedAssetDao ?: return null
+        val se = seasonNumber ?: 0
+        val ep = episodeNumber ?: 0
+        val linked = mediaResolver.getLinksForTitle(providerId, titleId)
+        val candidatePairs = buildList {
+            add(providerId to titleId)
+            linked.forEach { link -> add(link.providerId to link.providerTitleId) }
+        }.distinct()
+
+        for ((pId, tId) in candidatePairs) {
+            val prefix = "${pId.trim()}|${tId.trim()}|$se|$ep|"
+            val matches = dao.findAvailableBySourceRefPrefix(prefix)
+            val best = matches.firstOrNull { asset ->
+                localMediaUriResolver == null || localMediaUriResolver.invoke(asset.localPath) != null
+            }
+            if (best != null) {
+                val ref = best.sourceRef.orEmpty()
+                return OfflineMediaMatch(
+                    assetId = best.id,
+                    sourceRef = ref,
+                    localPath = best.localPath,
+                    qualityLabel = best.qualityLabel,
+                    fileSizeBytes = best.fileSize,
+                    seasonNumber = se.takeIf { it > 0 },
+                    episodeNumber = ep.takeIf { it > 0 }
+                )
+            }
+        }
+        return null
+    }
+
+    override fun observeActiveViewingReminders(): Flow<List<ViewingReminderItem>> =
+        moviesDao.observeActiveViewingReminders().map { list -> list.map { it.toDomain() } }
+
+    override fun observeViewingReminderForTitle(providerId: String, titleId: String): Flow<ViewingReminderItem?> = flow {
+        val cid = mediaResolver.resolveCanonicalIdForProvider(providerId, titleId)
+        val compositeId = "$providerId:$titleId"
+        emitAll(moviesDao.observeViewingReminderForTitle(cid ?: compositeId, compositeId).map { it?.toDomain() })
+    }
+
+    override suspend fun scheduleViewingReminder(
+        item: MovieTitleSummary,
+        triggerAtMillis: Long,
+        note: String?,
+        seasonNumber: Int?,
+        episodeNumber: Int?
+    ) {
+        val resolved = if (item.canonicalId != null) item else mediaResolver.resolveOrRegister(item)
+        val now = nowMs()
+        val key = resolved.stableMediaKey
+        val existing = moviesDao.getViewingReminderByMediaKey(key)
+        moviesDao.upsertViewingReminder(
+            MovieViewingReminderEntity(
+                mediaKey = key,
+                compositeId = resolved.compositeId,
+                providerId = resolved.providerId,
+                titleId = resolved.id,
+                canonicalId = resolved.canonicalId,
+                kind = resolved.kind.wireValue,
+                title = resolved.title,
+                seasonNumber = seasonNumber,
+                episodeNumber = episodeNumber,
+                posterUrl = resolved.posterUrl,
+                note = note?.trim()?.takeIf { it.isNotBlank() },
+                triggerAtMillis = triggerAtMillis,
+                isDismissed = false,
+                createdAt = existing?.createdAt ?: now,
+                updatedAt = now
+            )
+        )
+    }
+
+    override suspend fun dismissViewingReminder(providerId: String, titleId: String) {
+        val cid = mediaResolver.resolveCanonicalIdForProvider(providerId, titleId)
+        val compositeId = "$providerId:$titleId"
+        moviesDao.dismissViewingReminder(cid ?: compositeId, compositeId, nowMs())
     }
 
     override fun observeRecentSearches(limit: Int): Flow<List<String>> =
@@ -868,6 +1428,12 @@ class MoviesRepositoryImpl(
         seasonNumber: Int?,
         episodeNumber: Int?
     ): String = "$providerId:$titleId:${seasonNumber ?: 0}:${episodeNumber ?: 0}"
+
+    private fun parseHeightFromQuality(quality: String?): Int {
+        if (quality.isNullOrBlank()) return 720
+        val match = Regex("(\\d{3,4})").find(quality)
+        return match?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 720
+    }
 
     private fun <T> interleaveLists(lists: List<List<T>>): List<T> {
         if (lists.isEmpty()) return emptyList()
@@ -930,7 +1496,75 @@ class MoviesRepositoryImpl(
         durationMs = durationMs,
         lastWatchedAt = lastWatchedAt,
         historyKey = historyKey,
-        isTrailer = isTrailer
+        isTrailer = isTrailer,
+        canonicalId = canonicalId,
+        isCompleted = isCompleted,
+        completedAt = completedAt,
+        rewatchCount = rewatchCount,
+        hiddenFromContinueWatching = hiddenFromContinueWatching,
+        isHiddenTitle = isHiddenTitle
+    )
+
+    private fun MovieRecentlyViewedEntity.toDomain(): MovieTitleSummary = MovieTitleSummary(
+        id = titleId,
+        providerId = providerId,
+        kind = MediaKind.fromWire(kind),
+        title = title,
+        releaseYear = releaseYear,
+        rating = rating,
+        posterUrl = posterUrl,
+        backdropUrl = backdropUrl,
+        genres = genresCsv.split(",").map { it.trim() }.filter { it.isNotBlank() },
+        sourceBadge = DataSourceBadge.fromName(sourceBadge),
+        isPlayableHint = isPlayableHint,
+        canonicalId = canonicalId
+    )
+
+    private fun MediaCollectionCrossRef.toDomain(): CollectionMediaItem = CollectionMediaItem(
+        collectionId = collectionId,
+        mediaKey = mediaKey,
+        summary = MovieTitleSummary(
+            id = titleId,
+            providerId = providerId,
+            kind = MediaKind.fromWire(kind),
+            title = title,
+            releaseYear = releaseYear,
+            rating = rating,
+            posterUrl = posterUrl,
+            backdropUrl = backdropUrl,
+            genres = genresCsv.split(",").map { it.trim() }.filter { it.isNotBlank() },
+            sourceBadge = DataSourceBadge.fromName(sourceBadge),
+            isPlayableHint = isPlayableHint,
+            canonicalId = canonicalId
+        ),
+        addedAt = addedAt
+    )
+
+    private fun MovieSeriesPreferencesEntity.toDomain(): SeriesPreferences = SeriesPreferences(
+        mediaKey = mediaKey,
+        preferredAudioLanguage = preferredAudioLanguage,
+        preferredAudioLabel = preferredAudioLabel,
+        preferredSubtitleLanguage = preferredSubtitleLanguage,
+        preferredSubtitleLabel = preferredSubtitleLabel,
+        subtitlesDisabled = subtitlesDisabled,
+        remindersMuted = remindersMuted,
+        updatedAt = updatedAt
+    )
+
+    private fun MovieViewingReminderEntity.toDomain(): ViewingReminderItem = ViewingReminderItem(
+        mediaKey = mediaKey,
+        compositeId = compositeId,
+        providerId = providerId,
+        titleId = titleId,
+        canonicalId = canonicalId,
+        kind = MediaKind.fromWire(kind),
+        title = title,
+        seasonNumber = seasonNumber,
+        episodeNumber = episodeNumber,
+        posterUrl = posterUrl,
+        note = note,
+        triggerAtMillis = triggerAtMillis,
+        isDismissed = isDismissed
     )
 
     companion object {

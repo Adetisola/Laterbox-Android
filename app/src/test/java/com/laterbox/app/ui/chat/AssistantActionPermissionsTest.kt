@@ -19,12 +19,31 @@ import com.laterbox.app.media.domain.model.MediaAsset
 import com.laterbox.app.media.domain.model.MediaCandidate
 import com.laterbox.app.media.domain.model.MediaType
 import com.laterbox.app.media.domain.repository.MediaRepository
+import com.laterbox.app.data.repository.CollectionRepository
+import com.laterbox.app.movies.domain.model.CataloguePage
+import com.laterbox.app.movies.domain.model.CatalogueSort
+import com.laterbox.app.movies.domain.model.DataSourceBadge
+import com.laterbox.app.movies.domain.model.EpisodeItem
+import com.laterbox.app.movies.domain.model.MediaDetails
+import com.laterbox.app.movies.domain.model.MediaKind
+import com.laterbox.app.movies.domain.model.MovieTitleSummary
+import com.laterbox.app.movies.domain.model.MoviesHomeFeed
+import com.laterbox.app.movies.domain.model.PlaybackResolution
+import com.laterbox.app.movies.domain.model.SearchSuggestion
+import com.laterbox.app.movies.domain.model.SeasonSummary
+import com.laterbox.app.movies.domain.model.SubtitleTrack
+import com.laterbox.app.movies.domain.model.ViewingReminderItem
+import com.laterbox.app.movies.domain.model.WatchHistoryItem
+import com.laterbox.app.movies.domain.repository.MoviesRepository
+import com.laterbox.app.reminders.ReminderScheduler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -34,6 +53,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -53,6 +73,8 @@ class AssistantActionPermissionsTest {
     private lateinit var chatRepo: ChatRepository
     private lateinit var linkRepo: LinkRepository
     private lateinit var mediaRepo: RecordingFakeMediaRepository
+    private lateinit var moviesRepo: RecordingFakeMoviesRepository
+    private lateinit var collectionRepo: CollectionRepository
     private lateinit var vm: ChatViewModel
 
     @Before
@@ -67,6 +89,8 @@ class AssistantActionPermissionsTest {
         chatRepo = ChatRepository(db.chatDao())
         linkRepo = LinkRepository(db.savedLinkDao(), ctx)
         mediaRepo = RecordingFakeMediaRepository()
+        moviesRepo = RecordingFakeMoviesRepository()
+        collectionRepo = CollectionRepository(db.collectionDao())
         val prefs = UserPreferencesRepository(ctx)
         val activityRepo = ActivityEventRepository(db.activityEventDao())
         vm = ChatViewModel(
@@ -75,7 +99,10 @@ class AssistantActionPermissionsTest {
             laterboxContextEngine = LaterboxContextEngine(db, activityRepo, prefs),
             appHealthChecker = AppHealthChecker(ctx, db, com.laterbox.app.media.data.adapters.ytdlp.YtDlpRuntimeManager(ctx), prefs),
             linkRepository = linkRepo,
-            mediaRepository = mediaRepo
+            mediaRepository = mediaRepo,
+            moviesRepository = moviesRepo,
+            collectionRepository = collectionRepo,
+            reminderScheduler = ReminderScheduler(ctx)
         )
     }
 
@@ -203,6 +230,100 @@ class AssistantActionPermissionsTest {
         assertEquals(1, mediaRepo.retriedTaskIds.size)
     }
 
+    @Test
+    fun moviesMutatingActions_validateTargets_requireApproval_andExecute() = runTest(mainDispatcher) {
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.uiState.collect {} }
+        val show = MovieTitleSummary(
+            id = "66",
+            providerId = "tvmaze",
+            kind = MediaKind.TV_SERIES,
+            title = "Severance",
+            releaseYear = 2022,
+            sourceBadge = DataSourceBadge.LIVE_TVMAZE
+        )
+        moviesRepo.seedTitle(show)
+
+        val convId = chatRepo.createConversation("Movies Actions")
+        vm.selectConversation(convId)
+        advanceUntilIdle()
+
+        // 1. Unknown title is rejected before prompting
+        vm.requestMutatingActionConfirmation(
+            ChatAction.ToggleMovieWatchlist("tvmaze", "999999", add = true, title = "Unknown")
+        )
+        advanceUntilIdle()
+        assertNull(vm.uiState.value.pendingMutatingAction)
+        assertTrue(chatRepo.getMessagesSnapshot(convId).last().content.contains("could not be found"))
+
+        // 2. Past reminder timestamp is rejected
+        vm.requestMutatingActionConfirmation(
+            ChatAction.ScheduleMovieReminder("tvmaze", "66", triggerAtMillis = 1000L, title = "Severance")
+        )
+        advanceUntilIdle()
+        assertNull(vm.uiState.value.pendingMutatingAction)
+        assertTrue(chatRepo.getMessagesSnapshot(convId).last().content.contains("already in the past"))
+
+        // 3. ToggleMovieWatchlist requires confirmation then adds to watchlist
+        vm.requestMutatingActionConfirmation(
+            ChatAction.ToggleMovieWatchlist("tvmaze", "66", add = true, title = "Severance")
+        )
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.pendingMutatingAction is ChatAction.ToggleMovieWatchlist)
+        vm.confirmMutatingAction()
+        advanceUntilIdle()
+        assertTrue(moviesRepo.observeIsInWatchlist("tvmaze:66").first())
+        assertTrue(chatRepo.getMessagesSnapshot(convId).last().content.contains("Added \"Severance\" to your Movies & TV watchlist"))
+
+        // 4. AddMovieToCollection creates named collection and adds media
+        vm.requestMutatingActionConfirmation(
+            ChatAction.AddMovieToCollection("tvmaze", "66", collectionName = "Weekend Binges", title = "Severance")
+        )
+        advanceUntilIdle()
+        vm.confirmMutatingAction()
+        advanceUntilIdle()
+        val createdCol = collectionRepo.collectionsWithCounts.first()
+            .map { it.collection }
+            .firstOrNull { it.name == "Weekend Binges" }
+        assertNotNull(createdCol)
+        assertTrue(moviesRepo.addedToCollection.any { it.first == "tvmaze:66" && it.second == createdCol?.id })
+
+        // 5. MarkMovieWatched records watched episode
+        vm.requestMutatingActionConfirmation(
+            ChatAction.MarkMovieWatched("tvmaze", "66", seasonNumber = 1, episodeNumber = 3, watched = true, title = "Severance")
+        )
+        advanceUntilIdle()
+        vm.confirmMutatingAction()
+        advanceUntilIdle()
+        assertEquals(listOf("tvmaze:66:S1E3"), moviesRepo.markedWatched)
+
+        // 6. ScheduleMovieReminder schedules future reminder
+        val futureMs = System.currentTimeMillis() + 3_600_000L
+        vm.requestMutatingActionConfirmation(
+            ChatAction.ScheduleMovieReminder("tvmaze", "66", triggerAtMillis = futureMs, note = "Watch S1E4", title = "Severance")
+        )
+        advanceUntilIdle()
+        vm.confirmMutatingAction()
+        advanceUntilIdle()
+        assertEquals(1, moviesRepo.scheduledReminders.size)
+        assertEquals(futureMs, moviesRepo.scheduledReminders.first().triggerAtMillis)
+
+        // 7. Always allow scoped to MuteSeriesReminders executes repeats automatically
+        vm.requestMutatingActionConfirmation(
+            ChatAction.MuteSeriesReminders("tvmaze", "66", muted = true, title = "Severance")
+        )
+        advanceUntilIdle()
+        vm.alwaysAllowMutatingActionInConversation()
+        advanceUntilIdle()
+        assertTrue(moviesRepo.mutedSeries["tvmaze:66"] == true)
+
+        vm.requestMutatingActionConfirmation(
+            ChatAction.MuteSeriesReminders("tvmaze", "66", muted = false, title = "Severance")
+        )
+        advanceUntilIdle()
+        assertNull(vm.uiState.value.pendingMutatingAction)
+        assertFalse(moviesRepo.mutedSeries["tvmaze:66"] ?: true)
+    }
+
     private class RecordingFakeMediaRepository : MediaRepository {
         val inspectedLinkIds = mutableListOf<Long>()
         val retriedTaskIds = mutableListOf<String>()
@@ -244,5 +365,101 @@ class AssistantActionPermissionsTest {
             inspectedLinkIds += linkId
         }
         override suspend fun cancelInspection(linkId: Long) {}
+    }
+
+    private class RecordingFakeMoviesRepository : MoviesRepository {
+        private val titlesByComposite = mutableMapOf<String, MovieTitleSummary>()
+        private val watchlistFlow = MutableStateFlow<List<MovieTitleSummary>>(emptyList())
+        val addedToCollection = mutableListOf<Pair<String, Long>>()
+        val markedWatched = mutableListOf<String>()
+        val scheduledReminders = mutableListOf<ViewingReminderItem>()
+        val mutedSeries = mutableMapOf<String, Boolean>()
+
+        fun seedTitle(summary: MovieTitleSummary) {
+            titlesByComposite[summary.compositeId] = summary
+        }
+
+        override suspend fun getHomeFeed(forceRefresh: Boolean) = Result.success(MoviesHomeFeed())
+        override suspend fun getCatalogue(
+            kind: MediaKind?, page: Int, pageSize: Int, genre: String?, sort: CatalogueSort, country: String?, year: String?
+        ) = Result.success(CataloguePage())
+        override suspend fun getGenres() = Result.success(emptyList<String>())
+        override suspend fun search(query: String, kind: MediaKind?, page: Int, pageSize: Int) =
+            Result.success(CataloguePage())
+        override suspend fun getSuggestions(query: String, limit: Int) = Result.success(emptyList<SearchSuggestion>())
+        override suspend fun getDetails(providerId: String, titleId: String, forceRefresh: Boolean): Result<MediaDetails> {
+            val found = titlesByComposite["$providerId:$titleId"]
+            return if (found != null) Result.success(MediaDetails(summary = found))
+            else Result.failure(NoSuchElementException("Not found"))
+        }
+        override suspend fun getSeasons(providerId: String, seriesId: String) = Result.success(emptyList<SeasonSummary>())
+        override suspend fun getEpisodes(providerId: String, seriesId: String, seasonNumber: Int) =
+            Result.success(emptyList<EpisodeItem>())
+        override suspend fun resolvePlayback(
+            providerId: String, titleId: String, seasonNumber: Int?, episodeNumber: Int?
+        ): Result<PlaybackResolution> = Result.failure(UnsupportedOperationException())
+        override suspend fun getSubtitles(
+            providerId: String, titleId: String, seasonNumber: Int?, episodeNumber: Int?
+        ) = Result.success(emptyList<SubtitleTrack>())
+
+        override fun observeWatchlist(): Flow<List<MovieTitleSummary>> = watchlistFlow
+        override fun observeIsInWatchlist(compositeId: String): Flow<Boolean> =
+            watchlistFlow.map { list -> list.any { it.compositeId == compositeId } }
+        override suspend fun toggleWatchlist(item: MovieTitleSummary): Boolean {
+            val current = watchlistFlow.value
+            return if (current.any { it.compositeId == item.compositeId }) {
+                watchlistFlow.value = current.filterNot { it.compositeId == item.compositeId }
+                false
+            } else {
+                watchlistFlow.value = current + item
+                true
+            }
+        }
+
+        override fun observeContinueWatching(limit: Int): Flow<List<WatchHistoryItem>> = flowOf(emptyList())
+        override suspend fun saveWatchProgress(
+            item: MovieTitleSummary, positionMs: Long, durationMs: Long,
+            seasonNumber: Int?, episodeNumber: Int?, episodeLabel: String?
+        ) = Unit
+        override suspend fun getSavedPositionMs(
+            providerId: String, titleId: String, seasonNumber: Int?, episodeNumber: Int?
+        ): Long = 0L
+
+        override suspend fun markWatched(
+            item: MovieTitleSummary, durationMs: Long, seasonNumber: Int?, episodeNumber: Int?,
+            episodeLabel: String?, isRewatch: Boolean
+        ) {
+            val ep = if (seasonNumber != null && episodeNumber != null) ":S${seasonNumber}E$episodeNumber" else ""
+            markedWatched += "${item.compositeId}$ep"
+        }
+
+        override suspend fun addMediaToCollection(item: MovieTitleSummary, collectionId: Long) {
+            addedToCollection += item.compositeId to collectionId
+        }
+
+        override suspend fun setSeriesRemindersMuted(providerId: String, titleId: String, muted: Boolean) {
+            mutedSeries["$providerId:$titleId"] = muted
+        }
+
+        override suspend fun scheduleViewingReminder(
+            item: MovieTitleSummary, triggerAtMillis: Long, note: String?, seasonNumber: Int?, episodeNumber: Int?
+        ) {
+            scheduledReminders += ViewingReminderItem(
+                mediaKey = item.stableMediaKey,
+                compositeId = item.compositeId,
+                providerId = item.providerId,
+                titleId = item.id,
+                kind = item.kind,
+                title = item.title,
+                seasonNumber = seasonNumber,
+                episodeNumber = episodeNumber,
+                note = note,
+                triggerAtMillis = triggerAtMillis
+            )
+        }
+
+        override fun observeRecentSearches(limit: Int): Flow<List<String>> = flowOf(emptyList())
+        override suspend fun recordSearchQuery(query: String) = Unit
+        override suspend fun clearSearchHistory() = Unit
     }
 }

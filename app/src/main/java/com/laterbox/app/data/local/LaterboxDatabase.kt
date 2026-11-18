@@ -26,9 +26,13 @@ import com.laterbox.app.media.data.db.entity.DownloadTaskEntity
 import com.laterbox.app.media.data.db.entity.MediaInspectionEntity
 import com.laterbox.app.movies.data.local.dao.MoviesDao
 import com.laterbox.app.movies.data.local.entity.CanonicalMediaEntity
+import com.laterbox.app.movies.data.local.entity.MediaCollectionCrossRef
 import com.laterbox.app.movies.data.local.entity.MediaProviderLinkEntity
 import com.laterbox.app.movies.data.local.entity.MovieCacheEntryEntity
+import com.laterbox.app.movies.data.local.entity.MovieRecentlyViewedEntity
 import com.laterbox.app.movies.data.local.entity.MovieSearchHistoryEntity
+import com.laterbox.app.movies.data.local.entity.MovieSeriesPreferencesEntity
+import com.laterbox.app.movies.data.local.entity.MovieViewingReminderEntity
 import com.laterbox.app.movies.data.local.entity.MovieWatchHistoryEntity
 import com.laterbox.app.movies.data.local.entity.MovieWatchlistEntity
 
@@ -50,9 +54,13 @@ import com.laterbox.app.movies.data.local.entity.MovieWatchlistEntity
         MovieWatchHistoryEntity::class,
         MovieSearchHistoryEntity::class,
         CanonicalMediaEntity::class,
-        MediaProviderLinkEntity::class
+        MediaProviderLinkEntity::class,
+        MovieRecentlyViewedEntity::class,
+        MovieSeriesPreferencesEntity::class,
+        MediaCollectionCrossRef::class,
+        MovieViewingReminderEntity::class
     ],
-    version = 15,
+    version = 16,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -786,6 +794,128 @@ abstract class LaterboxDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Non-destructive migration from version 15 to version 16:
+         * 1. Extends movie_watch_history with completion, rewatch tracking, Continue Watching hide, and title hide flags.
+         * 2. Adds sourceRef column + index to downloaded_asset for exact offline Movies/Episodes matching.
+         * 3. Creates movie_recently_viewed, movie_series_preferences, media_collection_cross_ref, and movie_viewing_reminders.
+         */
+        val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `downloaded_asset` ADD COLUMN `sourceRef` TEXT DEFAULT NULL")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_downloaded_asset_sourceRef` ON `downloaded_asset` (`sourceRef`)")
+
+                db.execSQL("ALTER TABLE `movie_watch_history` ADD COLUMN `is_completed` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `movie_watch_history` ADD COLUMN `completed_at` INTEGER DEFAULT NULL")
+                db.execSQL("ALTER TABLE `movie_watch_history` ADD COLUMN `rewatch_count` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `movie_watch_history` ADD COLUMN `hidden_from_continue_watching` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `movie_watch_history` ADD COLUMN `is_hidden_title` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movie_watch_history_is_completed` ON `movie_watch_history` (`is_completed`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movie_watch_history_is_hidden_title` ON `movie_watch_history` (`is_hidden_title`)")
+                db.execSQL(
+                    """
+                    UPDATE `movie_watch_history`
+                    SET `is_completed` = 1, `completed_at` = `last_watched_at`
+                    WHERE `is_trailer` = 0 AND `duration_ms` > 0 AND (`position_ms` * 1.0 / `duration_ms`) >= 0.96
+                    """.trimIndent()
+                )
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `movie_recently_viewed` (
+                        `media_key` TEXT NOT NULL,
+                        `composite_id` TEXT NOT NULL,
+                        `provider_id` TEXT NOT NULL,
+                        `title_id` TEXT NOT NULL,
+                        `canonical_id` TEXT,
+                        `kind` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `poster_url` TEXT,
+                        `backdrop_url` TEXT,
+                        `release_year` INTEGER,
+                        `rating` REAL,
+                        `genres_csv` TEXT NOT NULL,
+                        `source_badge` TEXT NOT NULL,
+                        `is_playable_hint` INTEGER NOT NULL DEFAULT 0,
+                        `viewed_at` INTEGER NOT NULL,
+                        PRIMARY KEY(`media_key`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movie_recently_viewed_viewed_at` ON `movie_recently_viewed` (`viewed_at`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movie_recently_viewed_canonical_id` ON `movie_recently_viewed` (`canonical_id`)")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `movie_series_preferences` (
+                        `media_key` TEXT NOT NULL,
+                        `preferred_audio_language` TEXT,
+                        `preferred_audio_label` TEXT,
+                        `preferred_subtitle_language` TEXT,
+                        `preferred_subtitle_label` TEXT,
+                        `subtitles_disabled` INTEGER NOT NULL DEFAULT 0,
+                        `reminders_muted` INTEGER NOT NULL DEFAULT 0,
+                        `updated_at` INTEGER NOT NULL,
+                        PRIMARY KEY(`media_key`)
+                    )
+                    """.trimIndent()
+                )
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `media_collection_cross_ref` (
+                        `media_key` TEXT NOT NULL,
+                        `collection_id` INTEGER NOT NULL,
+                        `composite_id` TEXT NOT NULL,
+                        `provider_id` TEXT NOT NULL,
+                        `title_id` TEXT NOT NULL,
+                        `canonical_id` TEXT,
+                        `kind` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `poster_url` TEXT,
+                        `backdrop_url` TEXT,
+                        `release_year` INTEGER,
+                        `rating` REAL,
+                        `genres_csv` TEXT NOT NULL,
+                        `source_badge` TEXT NOT NULL,
+                        `is_playable_hint` INTEGER NOT NULL DEFAULT 0,
+                        `added_at` INTEGER NOT NULL,
+                        PRIMARY KEY(`media_key`, `collection_id`),
+                        FOREIGN KEY(`collection_id`) REFERENCES `collections`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_media_collection_cross_ref_collection_id` ON `media_collection_cross_ref` (`collection_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_media_collection_cross_ref_media_key` ON `media_collection_cross_ref` (`media_key`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_media_collection_cross_ref_added_at` ON `media_collection_cross_ref` (`added_at`)")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `movie_viewing_reminders` (
+                        `media_key` TEXT NOT NULL,
+                        `composite_id` TEXT NOT NULL,
+                        `provider_id` TEXT NOT NULL,
+                        `title_id` TEXT NOT NULL,
+                        `canonical_id` TEXT,
+                        `kind` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `season_number` INTEGER,
+                        `episode_number` INTEGER,
+                        `poster_url` TEXT,
+                        `note` TEXT,
+                        `trigger_at_millis` INTEGER NOT NULL,
+                        `is_dismissed` INTEGER NOT NULL DEFAULT 0,
+                        `created_at` INTEGER NOT NULL,
+                        `updated_at` INTEGER NOT NULL,
+                        PRIMARY KEY(`media_key`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movie_viewing_reminders_trigger_at_millis` ON `movie_viewing_reminders` (`trigger_at_millis`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movie_viewing_reminders_is_dismissed` ON `movie_viewing_reminders` (`is_dismissed`)")
+            }
+        }
+
         @Volatile
         private var INSTANCE: LaterboxDatabase? = null
 
@@ -810,7 +940,8 @@ abstract class LaterboxDatabase : RoomDatabase() {
                         MIGRATION_11_12,
                         MIGRATION_12_13,
                         MIGRATION_13_14,
-                        MIGRATION_14_15
+                        MIGRATION_14_15,
+                        MIGRATION_15_16
                     )
                     .build()
                     .also { INSTANCE = it }

@@ -47,6 +47,19 @@ class BootReceiver : BroadcastReceiver() {
                         }
                     }
                 }
+                val activeMovieReminders = appContainer.database.moviesDao().getActiveViewingRemindersSnapshot()
+                for (reminder in activeMovieReminders) {
+                    if (reminder.triggerAtMillis > now) {
+                        reminderScheduler.scheduleMovieViewingReminder(
+                            mediaKey = reminder.mediaKey,
+                            providerId = reminder.providerId,
+                            titleId = reminder.titleId,
+                            title = reminder.title,
+                            triggerAtMillis = reminder.triggerAtMillis,
+                            note = reminder.note
+                        )
+                    }
+                }
                 val prefs = appContainer.userPreferencesRepository.userPreferencesFlow.first()
                 SmartReminderCoordinator.sync(context, prefs.toSmartReminderSettings())
                 Log.d(TAG, "Rescheduled reminders and synced smart reminders on $action")

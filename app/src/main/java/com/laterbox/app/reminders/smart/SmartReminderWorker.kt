@@ -94,6 +94,9 @@ class SmartReminderWorker(
                         linkRepo.recordNudge(candidate.id)
                         userPrefsRepo.recordDeliveredSlot(slotKey)
                     }
+                    try {
+                        app.container.contextualNotificationEngine.maybeNotifyMoviesAndTv(app.container.moviesRepository)
+                    } catch (_: Throwable) {}
                     SmartReminderCoordinator.scheduleNext(applicationContext, type)
                     return Result.success()
                 }
@@ -128,6 +131,9 @@ class SmartReminderWorker(
                         linkRepo.recordNudge(candidate.id)
                         userPrefsRepo.recordDeliveredSlot(slotKey)
                     }
+                    try {
+                        app.container.contextualNotificationEngine.maybeNotifyMoviesAndTv(app.container.moviesRepository)
+                    } catch (_: Throwable) {}
                     SmartReminderCoordinator.scheduleNext(applicationContext, type)
                     return Result.success()
                 }

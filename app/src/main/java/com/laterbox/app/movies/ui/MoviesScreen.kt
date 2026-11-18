@@ -46,6 +46,8 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -53,14 +55,20 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.laterbox.app.BuildConfig
 import com.laterbox.app.movies.domain.model.CatalogueSort
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.model.MoviesDiscoveryShortcut
+import com.laterbox.app.movies.domain.model.RuntimeBucket
+import com.laterbox.app.movies.domain.model.WatchHistoryItem
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.theme.LaterboxTheme
+import kotlinx.coroutines.delay
 import kotlin.math.abs
+
+private val YEAR_FILTER_OPTIONS = listOf("All", "2025", "2024", "2020s", "2010s", "2000s", "Classic")
 
 @Composable
 fun MoviesScreen(
@@ -87,6 +95,19 @@ fun MoviesScreen(
     onOpenCatalogueWithSort: (kind: MediaKind?, genre: String?, sort: CatalogueSort?, country: String?) -> Unit = { k, g, _, _ ->
         onOpenCatalogue(k, g)
     },
+    onSelectLanguage: (String) -> Unit = {},
+    onSelectYear: (String) -> Unit = {},
+    onSelectRuntimeBucket: (RuntimeBucket) -> Unit = {},
+    onRerollSurprise: (MediaKind?) -> Unit = {},
+    onMarkWatched: (MovieTitleSummary) -> Unit = {},
+    onHideTitle: (MovieTitleSummary) -> Unit = {},
+    onAddToCollection: (MovieTitleSummary, Long) -> Unit = { _, _ -> },
+    onCreateAndAddToCollection: (MovieTitleSummary, String) -> Unit = { _, _ -> },
+    onRestartContinueWatching: (WatchHistoryItem) -> Unit = {},
+    onRemoveContinueWatching: (WatchHistoryItem) -> Unit = {},
+    onMarkContinueWatchingWatched: (WatchHistoryItem) -> Unit = {},
+    onOpenCollection: (collectionId: Long, collectionName: String) -> Unit = { _, _ -> },
+    onClearActionFeedback: () -> Unit = {},
     onMenuClick: (() -> Unit)? = null,
     bottomPaddingDp: Int = 96,
     modifier: Modifier = Modifier
@@ -100,8 +121,33 @@ fun MoviesScreen(
     val activeListState = if (uiState.isFilteredMode) filteredListState else homeListState
 
     var isFilterRowVisible by remember { mutableStateOf(true) }
+    var showExpandedFilters by remember { mutableStateOf(false) }
+    var collectionPickerTarget by remember { mutableStateOf<MovieTitleSummary?>(null) }
     var prevIndex by remember(uiState.isFilteredMode) { mutableIntStateOf(0) }
     var prevOffset by remember(uiState.isFilteredMode) { mutableIntStateOf(0) }
+
+    LaunchedEffect(uiState.actionFeedbackMessage) {
+        if (uiState.actionFeedbackMessage != null) {
+            delay(2_600L)
+            onClearActionFeedback()
+        }
+    }
+
+    collectionPickerTarget?.let { target ->
+        MovieCollectionPickerDialog(
+            title = target.title,
+            collections = uiState.collections,
+            onSelectCollection = { colId ->
+                onAddToCollection(target, colId)
+                collectionPickerTarget = null
+            },
+            onCreateAndAddCollection = { name ->
+                onCreateAndAddToCollection(target, name)
+                collectionPickerTarget = null
+            },
+            onDismiss = { collectionPickerTarget = null }
+        )
+    }
 
     LaunchedEffect(activeListState) {
         snapshotFlow {
@@ -268,121 +314,263 @@ fun MoviesScreen(
                             }
                         }
 
+                        // Action feedback toast/banner
+                        uiState.actionFeedbackMessage?.let { feedback ->
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = colors.accentContainer,
+                                border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.3f)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                                    .testTag("movies_home_feedback_banner")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = feedback,
+                                        style = typography.metaText.copy(fontWeight = FontWeight.Medium),
+                                        color = colors.accentPrimary,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    TextButton(onClick = onClearActionFeedback) {
+                                        Text("Dismiss", color = colors.accentPrimary)
+                                    }
+                                }
+                            }
+                        }
+
                         // Single consolidated horizontal filter row that collapses on scroll down and reveals on scroll up
+                        val expandedFilterCount = remember(
+                            uiState.selectedLanguage,
+                            uiState.selectedYear,
+                            uiState.selectedRuntimeBucket
+                        ) {
+                            listOf(
+                                uiState.selectedLanguage != "All",
+                                uiState.selectedYear != "All",
+                                uiState.selectedRuntimeBucket != RuntimeBucket.ALL
+                            ).count { it }
+                        }
                         AnimatedVisibility(
                             visible = isFilterRowVisible,
                             enter = expandVertically() + fadeIn(),
                             exit = shrinkVertically() + fadeOut()
                         ) {
-                            LazyRow(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(top = 2.dp, bottom = 8.dp)
-                                    .testTag("movies_home_filters_row"),
-                                contentPadding = PaddingValues(horizontal = 16.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                if (uiState.isFilteredMode) {
-                                    item(key = "filter_reset") {
-                                        TextButton(
-                                            onClick = {
-                                                focusManager.clearFocus()
-                                                onResetFilters()
-                                            },
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                            modifier = Modifier.testTag("movies_home_reset_filters")
-                                        ) {
-                                            Text(
-                                                text = "Reset",
-                                                style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
-                                                color = colors.accentPrimary
+                            Column {
+                                LazyRow(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 2.dp, bottom = 8.dp)
+                                        .testTag("movies_home_filters_row"),
+                                    contentPadding = PaddingValues(horizontal = 16.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    if (uiState.isFilteredMode) {
+                                        item(key = "filter_reset") {
+                                            TextButton(
+                                                onClick = {
+                                                    focusManager.clearFocus()
+                                                    onResetFilters()
+                                                },
+                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                                modifier = Modifier.testTag("movies_home_reset_filters")
+                                            ) {
+                                                Text(
+                                                    text = "Reset",
+                                                    style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                                    color = colors.accentPrimary
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    item(key = "filters_toggle") {
+                                        FilterChipPill(
+                                            label = if (expandedFilterCount > 0) "Filters ($expandedFilterCount)" else "Filters",
+                                            selected = showExpandedFilters || expandedFilterCount > 0,
+                                            onClick = { showExpandedFilters = !showExpandedFilters },
+                                            modifier = Modifier.testTag("movies_filters_toggle")
+                                        )
+                                    }
+
+                                    // Kind chips (All / Movies / TV Series)
+                                    item(key = "kind_all") {
+                                        FilterChipPill(
+                                            label = "All",
+                                            selected = uiState.selectedKind == null,
+                                            onClick = { onSelectKind(null) },
+                                            modifier = Modifier.testTag("movies_home_kind_all")
+                                        )
+                                    }
+                                    item(key = "kind_movie") {
+                                        FilterChipPill(
+                                            label = "Movies",
+                                            selected = uiState.selectedKind == MediaKind.MOVIE,
+                                            onClick = { onSelectKind(MediaKind.MOVIE) },
+                                            modifier = Modifier.testTag("movies_home_kind_movie")
+                                        )
+                                    }
+                                    item(key = "kind_tv") {
+                                        FilterChipPill(
+                                            label = "TV Series",
+                                            selected = uiState.selectedKind == MediaKind.TV_SERIES,
+                                            onClick = { onSelectKind(MediaKind.TV_SERIES) },
+                                            modifier = Modifier.testTag("movies_home_kind_tv")
+                                        )
+                                    }
+
+                                    item(key = "kind_shortcut_divider") {
+                                        FilterRowVerticalDivider()
+                                    }
+
+                                    // Discovery shortcuts (Hollywood, Bollywood, Western, K-Drama)
+                                    items(MoviesDiscoveryShortcut.entries, key = { "shortcut_${it.id}" }) { shortcut ->
+                                        FilterChipPill(
+                                            label = shortcut.label,
+                                            selected = uiState.activeShortcut == shortcut,
+                                            onClick = { onSelectShortcut(shortcut) },
+                                            modifier = Modifier.testTag("movies_home_shortcut_${shortcut.id}")
+                                        )
+                                    }
+
+                                    item(key = "shortcut_sort_divider") {
+                                        FilterRowVerticalDivider()
+                                    }
+
+                                    // Sort chips (Popular, Top Rated, Newest)
+                                    items(CatalogueSort.entries, key = { "sort_${it.wireValue}" }) { sort ->
+                                        FilterChipPill(
+                                            label = sort.label,
+                                            selected = uiState.selectedSort == sort,
+                                            onClick = { onSelectSort(sort) },
+                                            modifier = Modifier.testTag("movies_home_sort_${sort.wireValue}")
+                                        )
+                                    }
+
+                                    // Country chips
+                                    if (uiState.availableCountries.isNotEmpty()) {
+                                        item(key = "sort_country_divider") {
+                                            FilterRowVerticalDivider()
+                                        }
+                                        items(uiState.availableCountries, key = { "country_$it" }) { country ->
+                                            FilterChipPill(
+                                                label = if (country == "All") "All Regions" else country,
+                                                selected = uiState.selectedCountry == country,
+                                                onClick = { onSelectCountry(country) },
+                                                modifier = Modifier.testTag("movies_home_country_${country.lowercase().replace(' ', '_')}")
+                                            )
+                                        }
+                                    }
+
+                                    // Genre chips
+                                    if (genresList.size > 1) {
+                                        item(key = "country_genre_divider") {
+                                            FilterRowVerticalDivider()
+                                        }
+                                        items(genresList, key = { "genre_$it" }) { genre ->
+                                            FilterChipPill(
+                                                label = genre,
+                                                selected = uiState.selectedGenre == genre,
+                                                onClick = { onSelectGenre(genre) },
+                                                modifier = Modifier.testTag("movies_home_genre_${genre.lowercase().replace(' ', '_')}")
                                             )
                                         }
                                     }
                                 }
 
-                                // Kind chips (All / Movies / TV Series)
-                                item(key = "kind_all") {
-                                    FilterChipPill(
-                                        label = "All",
-                                        selected = uiState.selectedKind == null,
-                                        onClick = { onSelectKind(null) },
-                                        modifier = Modifier.testTag("movies_home_kind_all")
-                                    )
-                                }
-                                item(key = "kind_movie") {
-                                    FilterChipPill(
-                                        label = "Movies",
-                                        selected = uiState.selectedKind == MediaKind.MOVIE,
-                                        onClick = { onSelectKind(MediaKind.MOVIE) },
-                                        modifier = Modifier.testTag("movies_home_kind_movie")
-                                    )
-                                }
-                                item(key = "kind_tv") {
-                                    FilterChipPill(
-                                        label = "TV Series",
-                                        selected = uiState.selectedKind == MediaKind.TV_SERIES,
-                                        onClick = { onSelectKind(MediaKind.TV_SERIES) },
-                                        modifier = Modifier.testTag("movies_home_kind_tv")
-                                    )
-                                }
+                                AnimatedVisibility(visible = showExpandedFilters) {
+                                    Surface(
+                                        shape = RoundedCornerShape(14.dp),
+                                        color = colors.surfacePrimary,
+                                        border = BorderStroke(0.75.dp, colors.borderSubtle),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 16.dp, vertical = 4.dp)
+                                            .testTag("movies_expanded_filters_panel")
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(vertical = 10.dp),
+                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            // Year / Era row
+                                            LazyRow(
+                                                contentPadding = PaddingValues(horizontal = 12.dp),
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                item(key = "year_label") {
+                                                    Text(
+                                                        text = "Year",
+                                                        style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                                        color = colors.textSecondary,
+                                                        modifier = Modifier.padding(end = 4.dp)
+                                                    )
+                                                }
+                                                items(YEAR_FILTER_OPTIONS, key = { "year_$it" }) { yr ->
+                                                    FilterChipPill(
+                                                        label = yr,
+                                                        selected = uiState.selectedYear == yr,
+                                                        onClick = { onSelectYear(yr) },
+                                                        modifier = Modifier.testTag("movies_home_year_${yr.lowercase()}")
+                                                    )
+                                                }
+                                            }
 
-                                item(key = "kind_shortcut_divider") {
-                                    FilterRowVerticalDivider()
-                                }
+                                            // Runtime row
+                                            LazyRow(
+                                                contentPadding = PaddingValues(horizontal = 12.dp),
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                item(key = "runtime_label") {
+                                                    Text(
+                                                        text = "Length",
+                                                        style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                                        color = colors.textSecondary,
+                                                        modifier = Modifier.padding(end = 4.dp)
+                                                    )
+                                                }
+                                                items(RuntimeBucket.entries, key = { "rt_${it.name}" }) { bucket ->
+                                                    FilterChipPill(
+                                                        label = bucket.label,
+                                                        selected = uiState.selectedRuntimeBucket == bucket,
+                                                        onClick = { onSelectRuntimeBucket(bucket) },
+                                                        modifier = Modifier.testTag("movies_home_runtime_${bucket.name.lowercase()}")
+                                                    )
+                                                }
+                                            }
 
-                                // Discovery shortcuts (Hollywood, Bollywood, Western, K-Drama)
-                                items(MoviesDiscoveryShortcut.entries, key = { "shortcut_${it.id}" }) { shortcut ->
-                                    FilterChipPill(
-                                        label = shortcut.label,
-                                        selected = uiState.activeShortcut == shortcut,
-                                        onClick = { onSelectShortcut(shortcut) },
-                                        modifier = Modifier.testTag("movies_home_shortcut_${shortcut.id}")
-                                    )
-                                }
-
-                                item(key = "shortcut_sort_divider") {
-                                    FilterRowVerticalDivider()
-                                }
-
-                                // Sort chips (Popular, Top Rated, Newest)
-                                items(CatalogueSort.entries, key = { "sort_${it.wireValue}" }) { sort ->
-                                    FilterChipPill(
-                                        label = sort.label,
-                                        selected = uiState.selectedSort == sort,
-                                        onClick = { onSelectSort(sort) },
-                                        modifier = Modifier.testTag("movies_home_sort_${sort.wireValue}")
-                                    )
-                                }
-
-                                // Country chips
-                                if (uiState.availableCountries.isNotEmpty()) {
-                                    item(key = "sort_country_divider") {
-                                        FilterRowVerticalDivider()
-                                    }
-                                    items(uiState.availableCountries, key = { "country_$it" }) { country ->
-                                        FilterChipPill(
-                                            label = if (country == "All") "All Regions" else country,
-                                            selected = uiState.selectedCountry == country,
-                                            onClick = { onSelectCountry(country) },
-                                            modifier = Modifier.testTag("movies_home_country_${country.lowercase().replace(' ', '_')}")
-                                        )
-                                    }
-                                }
-
-                                // Genre chips
-                                if (genresList.size > 1) {
-                                    item(key = "country_genre_divider") {
-                                        FilterRowVerticalDivider()
-                                    }
-                                    items(genresList, key = { "genre_$it" }) { genre ->
-                                        FilterChipPill(
-                                            label = genre,
-                                            selected = uiState.selectedGenre == genre,
-                                            onClick = { onSelectGenre(genre) },
-                                            modifier = Modifier.testTag("movies_home_genre_${genre.lowercase().replace(' ', '_')}")
-                                        )
+                                            // Language row (only when languages exist in catalogue)
+                                            if (uiState.availableLanguages.size > 1) {
+                                                LazyRow(
+                                                    contentPadding = PaddingValues(horizontal = 12.dp),
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    item(key = "lang_label") {
+                                                        Text(
+                                                            text = "Language",
+                                                            style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                                            color = colors.textSecondary,
+                                                            modifier = Modifier.padding(end = 4.dp)
+                                                        )
+                                                    }
+                                                    items(uiState.availableLanguages, key = { "lang_$it" }) { lang ->
+                                                        FilterChipPill(
+                                                            label = lang,
+                                                            selected = uiState.selectedLanguage == lang,
+                                                            onClick = { onSelectLanguage(lang) },
+                                                            modifier = Modifier.testTag("movies_home_lang_${lang.lowercase().replace(' ', '_')}")
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -417,6 +605,11 @@ fun MoviesScreen(
                                                     add(uiState.selectedKind?.label ?: "All Titles")
                                                     if (uiState.selectedGenre != "All") add(uiState.selectedGenre)
                                                     if (uiState.selectedCountry != "All") add(uiState.selectedCountry)
+                                                    if (uiState.selectedYear != "All") add(uiState.selectedYear)
+                                                    if (uiState.selectedLanguage != "All") add(uiState.selectedLanguage)
+                                                    if (uiState.selectedRuntimeBucket != RuntimeBucket.ALL) {
+                                                        add(uiState.selectedRuntimeBucket.label)
+                                                    }
                                                 }
                                                 add(uiState.selectedSort.label)
                                             }.joinToString(" · ")
@@ -535,10 +728,19 @@ fun MoviesScreen(
                                                 horizontalArrangement = Arrangement.spacedBy(10.dp)
                                             ) {
                                                 rowItems.forEach { item ->
+                                                    val isOffline = uiState.offlineMatches.any {
+                                                        it.matchesTitleComposite(item.providerId, item.id)
+                                                    }
                                                     MoviePosterCard(
                                                         item = item,
                                                         onClick = { onOpenDetail(item.providerId, item.id) },
-                                                        modifier = Modifier.weight(1f)
+                                                        modifier = Modifier.weight(1f),
+                                                        isOfflineDownloaded = isOffline,
+                                                        isInWatchlist = item.compositeId in watchlistIds,
+                                                        onToggleWatchlist = onToggleWatchlist,
+                                                        onAddToCollection = { collectionPickerTarget = it },
+                                                        onMarkWatched = onMarkWatched,
+                                                        onHideTitle = onHideTitle
                                                     )
                                                 }
                                                 repeat(3 - rowItems.size) {
@@ -576,6 +778,16 @@ fun MoviesScreen(
                             }
                         } else {
                             // Curated Discovery Feed
+                            val visibleBanners = remember(feed.featuredBanners, uiState.hiddenMediaKeys) {
+                                feed.featuredBanners.filterNot { it.stableMediaKey in uiState.hiddenMediaKeys }
+                            }
+                            val visibleTopRated = remember(uiState.topRatedRail, uiState.hiddenMediaKeys) {
+                                uiState.topRatedRail.filterNot { it.stableMediaKey in uiState.hiddenMediaKeys }
+                            }
+                            val visibleNewest = remember(uiState.newestRail, uiState.hiddenMediaKeys) {
+                                uiState.newestRail.filterNot { it.stableMediaKey in uiState.hiddenMediaKeys }
+                            }
+
                             LazyColumn(
                                 state = homeListState,
                                 modifier = Modifier
@@ -630,10 +842,10 @@ fun MoviesScreen(
                                 }
 
                                 // Featured Hero Carousel
-                                if (feed.featuredBanners.isNotEmpty()) {
+                                if (visibleBanners.isNotEmpty()) {
                                     item(key = "hero_carousel") {
                                         MoviesHeroCarousel(
-                                            banners = feed.featuredBanners,
+                                            banners = visibleBanners,
                                             watchlistIds = watchlistIds,
                                             onBannerClick = { item -> onOpenDetail(item.providerId, item.id) },
                                             onPlayClick = { item ->
@@ -660,6 +872,9 @@ fun MoviesScreen(
                                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                                             ) {
                                                 items(uiState.continueWatching, key = { it.compositeId + (it.episodeLabel ?: "") }) { entry ->
+                                                    val isOffline = uiState.offlineMatches.any {
+                                                        it.matchesTitleComposite(entry.providerId, entry.titleId)
+                                                    }
                                                     ContinueWatchingCard(
                                                         item = entry,
                                                         onClick = {
@@ -669,7 +884,307 @@ fun MoviesScreen(
                                                                 entry.seasonNumber,
                                                                 entry.episodeNumber
                                                             )
+                                                        },
+                                                        isOfflineDownloaded = isOffline,
+                                                        onOpenDetail = { onOpenDetail(entry.providerId, entry.titleId) },
+                                                        onRestartFromBeginning = { onRestartContinueWatching(entry) },
+                                                        onMarkWatched = { onMarkContinueWatchingWatched(entry) },
+                                                        onRemoveFromContinueWatching = { onRemoveContinueWatching(entry) }
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Recently Viewed Rail
+                                if (uiState.recentlyViewed.isNotEmpty()) {
+                                    item(key = "recently_viewed_rail") {
+                                        Column(
+                                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                                            modifier = Modifier.testTag("movies_home_recently_viewed_rail")
+                                        ) {
+                                            SectionHeaderRow(
+                                                title = "Recently Viewed",
+                                                subtitle = "Titles you checked out recently",
+                                                onSeeAll = null
+                                            )
+                                            LazyRow(
+                                                contentPadding = PaddingValues(horizontal = 16.dp),
+                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                            ) {
+                                                items(uiState.recentlyViewed, key = { "rv_${it.compositeId}" }) { item ->
+                                                    val isOffline = uiState.offlineMatches.any {
+                                                        it.matchesTitleComposite(item.providerId, item.id)
+                                                    }
+                                                    MoviePosterCard(
+                                                        item = item,
+                                                        onClick = { onOpenDetail(item.providerId, item.id) },
+                                                        isOfflineDownloaded = isOffline,
+                                                        isInWatchlist = item.compositeId in watchlistIds,
+                                                        onToggleWatchlist = onToggleWatchlist,
+                                                        onAddToCollection = { collectionPickerTarget = it },
+                                                        onMarkWatched = onMarkWatched,
+                                                        onHideTitle = onHideTitle
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Your Collections Quick Strip
+                                if (uiState.collectionsWithCounts.isNotEmpty()) {
+                                    item(key = "collections_strip") {
+                                        Column(
+                                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                                            modifier = Modifier.testTag("movies_home_collections_rail")
+                                        ) {
+                                            SectionHeaderRow(
+                                                title = "Your Collections",
+                                                subtitle = "Mixed shelves of saved links, films & series",
+                                                onSeeAll = null
+                                            )
+                                            LazyRow(
+                                                contentPadding = PaddingValues(horizontal = 16.dp),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                items(uiState.collectionsWithCounts, key = { "col_${it.collection.id}" }) { colWithCount ->
+                                                    Surface(
+                                                        shape = RoundedCornerShape(14.dp),
+                                                        color = colors.surfacePrimary,
+                                                        border = BorderStroke(0.75.dp, colors.borderSubtle),
+                                                        modifier = Modifier
+                                                            .clip(RoundedCornerShape(14.dp))
+                                                            .clickable {
+                                                                onOpenCollection(colWithCount.collection.id, colWithCount.collection.name)
+                                                            }
+                                                            .testTag("movies_home_collection_${colWithCount.collection.id}")
+                                                    ) {
+                                                        Row(
+                                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                                                            verticalAlignment = Alignment.CenterVertically,
+                                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                        ) {
+                                                            Icon(
+                                                                painter = painterResource(LaterboxIcons.Folder),
+                                                                contentDescription = null,
+                                                                tint = colors.accentPrimary,
+                                                                modifier = Modifier.size(16.dp)
+                                                            )
+                                                            Text(
+                                                                text = colWithCount.collection.name,
+                                                                style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
+                                                                color = colors.textPrimary
+                                                            )
                                                         }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Because You Watched Rails
+                                uiState.becauseYouWatchedGroups.forEachIndexed { idx, group ->
+                                    if (group.items.isNotEmpty()) {
+                                        item(key = "byw_${idx}_${group.anchorTitle}") {
+                                            Column(
+                                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                                                modifier = Modifier.testTag("movies_home_byw_rail_$idx")
+                                            ) {
+                                                SectionHeaderRow(
+                                                    title = "Because You Watched ${group.anchorTitle}",
+                                                    subtitle = "Recommended from your viewing history",
+                                                    onSeeAll = null
+                                                )
+                                                LazyRow(
+                                                    contentPadding = PaddingValues(horizontal = 16.dp),
+                                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                                ) {
+                                                    items(group.items, key = { "byw_${idx}_${it.compositeId}" }) { item ->
+                                                        val isOffline = uiState.offlineMatches.any {
+                                                            it.matchesTitleComposite(item.providerId, item.id)
+                                                        }
+                                                        MoviePosterCard(
+                                                            item = item,
+                                                            onClick = { onOpenDetail(item.providerId, item.id) },
+                                                            isOfflineDownloaded = isOffline,
+                                                            isInWatchlist = item.compositeId in watchlistIds,
+                                                            onToggleWatchlist = onToggleWatchlist,
+                                                            onAddToCollection = { collectionPickerTarget = it },
+                                                            onMarkWatched = onMarkWatched,
+                                                            onHideTitle = onHideTitle
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Surprise Me Spotlight Card
+                                uiState.surprisePick?.let { surprise ->
+                                    item(key = "surprise_me_card") {
+                                        Surface(
+                                            shape = RoundedCornerShape(16.dp),
+                                            color = colors.surfacePrimary,
+                                            border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.28f)),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 16.dp)
+                                                .testTag("movies_home_surprise_card")
+                                        ) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clickable { onOpenDetail(surprise.pick.providerId, surprise.pick.id) }
+                                                    .padding(12.dp),
+                                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .width(72.dp)
+                                                        .height(104.dp)
+                                                        .clip(RoundedCornerShape(10.dp))
+                                                        .background(colors.surfaceSecondary),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    if (!surprise.pick.posterUrl.isNullOrBlank()) {
+                                                        AsyncImage(
+                                                            model = surprise.pick.posterUrl,
+                                                            contentDescription = surprise.pick.title,
+                                                            contentScale = ContentScale.Crop,
+                                                            modifier = Modifier.fillMaxSize()
+                                                        )
+                                                    } else {
+                                                        Icon(
+                                                            painter = painterResource(LaterboxIcons.Sparkles),
+                                                            contentDescription = null,
+                                                            tint = colors.accentPrimary
+                                                        )
+                                                    }
+                                                }
+                                                Column(
+                                                    modifier = Modifier.weight(1f),
+                                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                                ) {
+                                                    Text(
+                                                        text = "SURPRISE ME",
+                                                        style = typography.caption.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
+                                                        color = colors.accentPrimary
+                                                    )
+                                                    Text(
+                                                        text = surprise.pick.title,
+                                                        style = typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
+                                                        color = colors.textPrimary,
+                                                        maxLines = 2,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                    Text(
+                                                        text = surprise.rationale,
+                                                        style = typography.metaText,
+                                                        color = colors.textSecondary,
+                                                        maxLines = 2,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                    Row(
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        modifier = Modifier.padding(top = 4.dp)
+                                                    ) {
+                                                        Button(
+                                                            onClick = { onOpenDetail(surprise.pick.providerId, surprise.pick.id) },
+                                                            colors = ButtonDefaults.buttonColors(containerColor = colors.accentPrimary),
+                                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                                        ) {
+                                                            Text("Open", style = typography.caption.copy(fontWeight = FontWeight.SemiBold))
+                                                        }
+                                                        OutlinedButton(
+                                                            onClick = { onRerollSurprise(null) },
+                                                            border = BorderStroke(0.75.dp, colors.borderSubtle),
+                                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                                            modifier = Modifier.testTag("movies_surprise_reroll")
+                                                        ) {
+                                                            Text(
+                                                                text = "Pick another",
+                                                                style = typography.caption,
+                                                                color = colors.textPrimary
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Quick Picks (<90m) Rail
+                                if (uiState.quickRuntimePicks.isNotEmpty()) {
+                                    item(key = "quick_picks_rail") {
+                                        Column(
+                                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                                            modifier = Modifier.testTag("movies_home_quick_picks_rail")
+                                        ) {
+                                            SectionHeaderRow(
+                                                title = "Quick Picks (<90m)",
+                                                subtitle = "Easy to finish tonight",
+                                                onSeeAll = null
+                                            )
+                                            LazyRow(
+                                                contentPadding = PaddingValues(horizontal = 16.dp),
+                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                            ) {
+                                                items(uiState.quickRuntimePicks, key = { "qp_${it.compositeId}" }) { item ->
+                                                    val isOffline = uiState.offlineMatches.any {
+                                                        it.matchesTitleComposite(item.providerId, item.id)
+                                                    }
+                                                    MoviePosterCard(
+                                                        item = item,
+                                                        onClick = { onOpenDetail(item.providerId, item.id) },
+                                                        isOfflineDownloaded = isOffline,
+                                                        isInWatchlist = item.compositeId in watchlistIds,
+                                                        onToggleWatchlist = onToggleWatchlist,
+                                                        onAddToCollection = { collectionPickerTarget = it },
+                                                        onMarkWatched = onMarkWatched,
+                                                        onHideTitle = onHideTitle
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Grounded Recently Added Rail
+                                if (uiState.recentlyAddedRail.isNotEmpty()) {
+                                    item(key = "recently_added_rail") {
+                                        Column(
+                                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                                            modifier = Modifier.testTag("movies_home_recently_added_rail")
+                                        ) {
+                                            SectionHeaderRow(
+                                                title = "Recently Added",
+                                                subtitle = "Latest verified additions & releases",
+                                                onSeeAll = null
+                                            )
+                                            LazyRow(
+                                                contentPadding = PaddingValues(horizontal = 16.dp),
+                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                            ) {
+                                                items(uiState.recentlyAddedRail, key = { "ra_${it.compositeId}" }) { item ->
+                                                    val isOffline = uiState.offlineMatches.any {
+                                                        it.matchesTitleComposite(item.providerId, item.id)
+                                                    }
+                                                    MoviePosterCard(
+                                                        item = item,
+                                                        onClick = { onOpenDetail(item.providerId, item.id) },
+                                                        isOfflineDownloaded = isOffline,
+                                                        isInWatchlist = item.compositeId in watchlistIds,
+                                                        onToggleWatchlist = onToggleWatchlist,
+                                                        onAddToCollection = { collectionPickerTarget = it },
+                                                        onMarkWatched = onMarkWatched,
+                                                        onHideTitle = onHideTitle
                                                     )
                                                 }
                                             }
@@ -678,7 +1193,7 @@ fun MoviesScreen(
                                 }
 
                                 // Top Rated Rail
-                                if (uiState.topRatedRail.isNotEmpty()) {
+                                if (visibleTopRated.isNotEmpty()) {
                                     item(key = "top_rated_rail") {
                                         Column(
                                             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -693,10 +1208,19 @@ fun MoviesScreen(
                                                 contentPadding = PaddingValues(horizontal = 16.dp),
                                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                                             ) {
-                                                items(uiState.topRatedRail, key = { "tr_${it.compositeId}" }) { item ->
+                                                items(visibleTopRated, key = { "tr_${it.compositeId}" }) { item ->
+                                                    val isOffline = uiState.offlineMatches.any {
+                                                        it.matchesTitleComposite(item.providerId, item.id)
+                                                    }
                                                     MoviePosterCard(
                                                         item = item,
-                                                        onClick = { onOpenDetail(item.providerId, item.id) }
+                                                        onClick = { onOpenDetail(item.providerId, item.id) },
+                                                        isOfflineDownloaded = isOffline,
+                                                        isInWatchlist = item.compositeId in watchlistIds,
+                                                        onToggleWatchlist = onToggleWatchlist,
+                                                        onAddToCollection = { collectionPickerTarget = it },
+                                                        onMarkWatched = onMarkWatched,
+                                                        onHideTitle = onHideTitle
                                                     )
                                                 }
                                             }
@@ -705,7 +1229,7 @@ fun MoviesScreen(
                                 }
 
                                 // Newest Rail
-                                if (uiState.newestRail.isNotEmpty()) {
+                                if (visibleNewest.isNotEmpty()) {
                                     item(key = "newest_rail") {
                                         Column(
                                             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -720,10 +1244,19 @@ fun MoviesScreen(
                                                 contentPadding = PaddingValues(horizontal = 16.dp),
                                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                                             ) {
-                                                items(uiState.newestRail, key = { "nw_${it.compositeId}" }) { item ->
+                                                items(visibleNewest, key = { "nw_${it.compositeId}" }) { item ->
+                                                    val isOffline = uiState.offlineMatches.any {
+                                                        it.matchesTitleComposite(item.providerId, item.id)
+                                                    }
                                                     MoviePosterCard(
                                                         item = item,
-                                                        onClick = { onOpenDetail(item.providerId, item.id) }
+                                                        onClick = { onOpenDetail(item.providerId, item.id) },
+                                                        isOfflineDownloaded = isOffline,
+                                                        isInWatchlist = item.compositeId in watchlistIds,
+                                                        onToggleWatchlist = onToggleWatchlist,
+                                                        onAddToCollection = { collectionPickerTarget = it },
+                                                        onMarkWatched = onMarkWatched,
+                                                        onHideTitle = onHideTitle
                                                     )
                                                 }
                                             }
@@ -745,9 +1278,18 @@ fun MoviesScreen(
                                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                                             ) {
                                                 items(uiState.watchlist, key = { "wl_${it.compositeId}" }) { item ->
+                                                    val isOffline = uiState.offlineMatches.any {
+                                                        it.matchesTitleComposite(item.providerId, item.id)
+                                                    }
                                                     MoviePosterCard(
                                                         item = item,
-                                                        onClick = { onOpenDetail(item.providerId, item.id) }
+                                                        onClick = { onOpenDetail(item.providerId, item.id) },
+                                                        isOfflineDownloaded = isOffline,
+                                                        isInWatchlist = true,
+                                                        onToggleWatchlist = onToggleWatchlist,
+                                                        onAddToCollection = { collectionPickerTarget = it },
+                                                        onMarkWatched = onMarkWatched,
+                                                        onHideTitle = onHideTitle
                                                     )
                                                 }
                                             }
@@ -757,9 +1299,10 @@ fun MoviesScreen(
 
                                 // Discovery Feed Rails
                                 items(feed.sections, key = { it.id }) { section ->
-                                    if (section.items.isNotEmpty()) {
+                                    val sectionItems = section.items.filterNot { it.stableMediaKey in uiState.hiddenMediaKeys }
+                                    if (sectionItems.isNotEmpty()) {
                                         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                            val inferKind = section.items.firstOrNull()?.kind
+                                            val inferKind = sectionItems.firstOrNull()?.kind
                                             SectionHeaderRow(
                                                 title = section.title,
                                                 subtitle = section.subtitle,
@@ -769,10 +1312,19 @@ fun MoviesScreen(
                                                 contentPadding = PaddingValues(horizontal = 16.dp),
                                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                                             ) {
-                                                items(section.items, key = { "${section.id}_${it.compositeId}" }) { item ->
+                                                items(sectionItems, key = { "${section.id}_${it.compositeId}" }) { item ->
+                                                    val isOffline = uiState.offlineMatches.any {
+                                                        it.matchesTitleComposite(item.providerId, item.id)
+                                                    }
                                                     MoviePosterCard(
                                                         item = item,
-                                                        onClick = { onOpenDetail(item.providerId, item.id) }
+                                                        onClick = { onOpenDetail(item.providerId, item.id) },
+                                                        isOfflineDownloaded = isOffline,
+                                                        isInWatchlist = item.compositeId in watchlistIds,
+                                                        onToggleWatchlist = onToggleWatchlist,
+                                                        onAddToCollection = { collectionPickerTarget = it },
+                                                        onMarkWatched = onMarkWatched,
+                                                        onHideTitle = onHideTitle
                                                     )
                                                 }
                                             }

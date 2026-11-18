@@ -439,4 +439,196 @@ class MoviesRepositoryTest {
         repo.clearViewingHistory(trailersOnly = null)
         assertTrue(repo.observeViewingHistory().first().isEmpty())
     }
+
+    @Test
+    fun personalLibrary_splitHistoryRewatchRestartSeriesProgressAndHideControls() = runTest {
+        val repo = createRepository()
+        val movie = MovieTitleSummary(
+            id = "interstellar_1",
+            providerId = "moviebox",
+            kind = MediaKind.MOVIE,
+            title = "Interstellar",
+            durationMinutes = 169,
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+            isPlayableHint = true
+        )
+        val series = MovieTitleSummary(
+            id = "andor_1",
+            providerId = "moviebox",
+            kind = MediaKind.TV_SERIES,
+            title = "Andor",
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+            isPlayableHint = true
+        )
+
+        // 1. Record movie, episode, and trailer separately
+        repo.saveWatchProgress(movie, positionMs = 300_000L, durationMs = 1_000_000L)
+        fakeClockMs += 1_000L
+        repo.saveWatchProgress(
+            series,
+            positionMs = 980_000L,
+            durationMs = 1_000_000L,
+            seasonNumber = 1,
+            episodeNumber = 1,
+            episodeLabel = "S1 · E1"
+        )
+        fakeClockMs += 1_000L
+        repo.saveWatchProgress(
+            series,
+            positionMs = 120_000L,
+            durationMs = 1_000_000L,
+            seasonNumber = 1,
+            episodeNumber = 2,
+            episodeLabel = "S1 · E2"
+        )
+        fakeClockMs += 1_000L
+        repo.recordTrailerWatch(movie, positionMs = 15_000L, durationMs = 90_000L)
+
+        assertEquals(1, repo.observeMovieWatchHistory().first().size)
+        assertEquals(2, repo.observeEpisodeWatchHistory().first().size)
+        assertEquals(1, repo.observeTrailerHistory().first().size)
+
+        // Next unwatched episode skips S1E1 (completed) and returns S1E2
+        val seasons = listOf(
+            com.laterbox.app.movies.domain.model.SeasonSummary(seasonNumber = 1, episodeCount = 3)
+        )
+        assertEquals(1 to 2, repo.computeNextUnwatchedEpisode("moviebox", "andor_1", seasons))
+
+        // Mark S1E2 watched -> next unwatched becomes S1E3
+        repo.markWatched(series, durationMs = 1_000_000L, seasonNumber = 1, episodeNumber = 2, episodeLabel = "S1 · E2")
+        assertEquals(1 to 3, repo.computeNextUnwatchedEpisode("moviebox", "andor_1", seasons))
+
+        // Series progress reflects 2 completed episodes
+        val progress = repo.observeSeriesProgress("moviebox", "andor_1", "Andor").first()
+        assertEquals(2, progress.totalWatchedEpisodes)
+        assertTrue(progress.episodeStates[1 to 1]?.isCompleted == true)
+        assertTrue(progress.episodeStates[1 to 2]?.isCompleted == true)
+
+        // 2. Restarting completed movie preserves completion & rewatchCount, and completing again increments rewatchCount
+        repo.markWatched(movie, durationMs = 1_000_000L)
+        val afterComplete = repo.observeMovieWatchHistory().first().first()
+        assertTrue(afterComplete.isCompleted)
+        assertEquals(0, afterComplete.rewatchCount)
+
+        fakeClockMs += 2_000L
+        repo.restartFromBeginning("moviebox", "interstellar_1")
+        val afterRestart = repo.observeMovieWatchHistory().first().first()
+        assertEquals(0L, afterRestart.positionMs)
+        assertTrue(afterRestart.isCompleted)
+        assertEquals(0, afterRestart.rewatchCount)
+
+        // Watching partway and then completing again increments rewatchCount -> 1
+        fakeClockMs += 2_000L
+        repo.saveWatchProgress(movie, positionMs = 50_000L, durationMs = 1_000_000L)
+        assertTrue(repo.observeContinueWatching().first().any { it.compositeId == "moviebox:interstellar_1" })
+
+        fakeClockMs += 2_000L
+        repo.saveWatchProgress(movie, positionMs = 970_000L, durationMs = 1_000_000L)
+        val afterRewatch = repo.observeMovieWatchHistory().first().first()
+        assertEquals(1, afterRewatch.rewatchCount)
+        assertTrue(afterRewatch.isCompleted)
+
+        // 3. Remove from Continue Watching & Hide/Unhide Title
+        repo.saveWatchProgress(movie, positionMs = 200_000L, durationMs = 1_000_000L)
+        repo.removeFromContinueWatching("moviebox", "interstellar_1")
+        assertFalse(repo.observeContinueWatching().first().any { it.compositeId == "moviebox:interstellar_1" })
+
+        repo.setTitleHidden("moviebox", "interstellar_1", hidden = true)
+        assertTrue(repo.observeMovieWatchHistory().first().isEmpty())
+        assertTrue(repo.observeHiddenHistory().first().any { it.compositeId == "moviebox:interstellar_1" })
+
+        repo.setTitleHidden("moviebox", "interstellar_1", hidden = false)
+        assertEquals(1, repo.observeMovieWatchHistory().first().size)
+
+        // 4. Mark unwatched removes episode completion
+        repo.markUnwatched("moviebox", "andor_1", seasonNumber = 1, episodeNumber = 1)
+        assertEquals(1 to 1, repo.computeNextUnwatchedEpisode("moviebox", "andor_1", seasons))
+    }
+
+    @Test
+    fun personalLibrary_recentlyViewedCollectionsSeriesPrefsRemindersAndOfflinePlayback() = runTest {
+        val mediaFile = File.createTempFile("laterbox_offline_test", ".mp4").apply {
+            writeText("fake video bytes")
+            deleteOnExit()
+        }
+        val repo = MoviesRepositoryImpl(
+            moviesDao = db.moviesDao(),
+            internetArchiveProvider = InternetArchiveMoviesProvider(OkHttpClient(), server.url("/").toString().trimEnd('/')),
+            tvMazeProvider = TvMazeSeriesProvider(OkHttpClient(), server.url("/").toString().trimEnd('/')),
+            tmdbProvider = TmdbOptionalMoviesProvider(OkHttpClient(), apiKeyProvider = { "" }, baseUrl = server.url("/").toString().trimEnd('/')),
+            useSampleFixturesOnlyProvider = { false },
+            nowMs = { fakeClockMs },
+            downloadedAssetDao = db.downloadedAssetDao(),
+            localMediaUriResolver = { relPath -> if (relPath == "offline/clip.mp4") mediaFile.toURI().toString() else null }
+        )
+
+        val item = MovieTitleSummary(
+            id = "arrival_99",
+            providerId = "moviebox",
+            kind = MediaKind.MOVIE,
+            title = "Arrival",
+            releaseYear = 2016,
+            genres = listOf("Sci-Fi"),
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+            isPlayableHint = true
+        )
+
+        // Recently viewed
+        repo.recordRecentlyViewed(item)
+        assertEquals(1, repo.observeRecentlyViewed().first().size)
+        assertEquals("Arrival", repo.observeRecentlyViewed().first().first().title)
+
+        // Collections membership
+        val colId = db.collectionDao().insertCollection(
+            com.laterbox.app.data.local.entity.CollectionEntity(name = "Sci-Fi Classics")
+        )
+        repo.addMediaToCollection(item, colId)
+        assertEquals(listOf(colId), repo.observeCollectionIdsForMedia("moviebox", "arrival_99").first())
+        assertEquals(1, repo.observeMediaInCollection(colId).first().size)
+
+        // Series preferences & reminder mute
+        repo.saveSeriesAudioPreference("moviebox", "arrival_99", language = "ja", label = "Japanese")
+        repo.saveSeriesSubtitlePreference("moviebox", "arrival_99", language = "en", label = "English", disabled = false)
+        repo.setSeriesRemindersMuted("moviebox", "arrival_99", muted = true)
+        val prefs = repo.getSeriesPreferences("moviebox", "arrival_99")
+        assertEquals("ja", prefs?.preferredAudioLanguage)
+        assertEquals("en", prefs?.preferredSubtitleLanguage)
+        assertFalse(prefs?.subtitlesDisabled ?: true)
+        assertTrue(prefs?.remindersMuted ?: false)
+
+        // Viewing reminder
+        repo.scheduleViewingReminder(item, triggerAtMillis = fakeClockMs + 60_000L, note = "Watch tonight")
+        assertEquals(1, repo.observeActiveViewingReminders().first().size)
+        assertEquals("Watch tonight", repo.observeViewingReminderForTitle("moviebox", "arrival_99").first()?.note)
+        repo.dismissViewingReminder("moviebox", "arrival_99")
+        assertTrue(repo.observeActiveViewingReminders().first().isEmpty())
+
+        // Offline playback availability and fallback when remote provider is unreachable
+        db.downloadedAssetDao().insertAsset(
+            com.laterbox.app.media.data.db.entity.DownloadedAssetEntity(
+                id = "off_1",
+                savedLinkId = null,
+                sourcePlatform = "MovieBox",
+                originalSourceUrl = "https://cdn.example/arrival.mp4",
+                title = "Arrival",
+                mimeType = "video/mp4",
+                mediaType = "VIDEO",
+                contentCategory = "MOVIE",
+                localPath = "offline/clip.mp4",
+                fileStatus = "AVAILABLE",
+                fileSize = 4096L,
+                checksum = "sum",
+                qualityLabel = "1080p",
+                sourceRef = "moviebox|arrival_99|0|0|1080p",
+                createdAt = fakeClockMs
+            )
+        )
+        assertEquals(1, repo.observeOfflineAvailability().first().size)
+        server.shutdown() // Force remote network error -> offline source still plays!
+        val offlinePlay = repo.resolvePlayback("moviebox", "arrival_99").getOrThrow()
+        assertTrue(offlinePlay is PlaybackResolution.Available)
+        val available = offlinePlay as PlaybackResolution.Available
+        assertTrue(available.sources.first().isOfflineLocal)
+        assertEquals(mediaFile.toURI().toString(), available.sources.first().url)
+    }
 }

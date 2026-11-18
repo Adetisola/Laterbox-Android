@@ -38,14 +38,21 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
@@ -71,6 +78,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -94,14 +102,19 @@ import com.laterbox.app.movies.data.provider.MovieBoxProvider
 import com.laterbox.app.movies.domain.model.CastMember
 import com.laterbox.app.movies.domain.model.EpisodeItem
 import com.laterbox.app.movies.domain.model.MediaKind
+import com.laterbox.app.movies.domain.model.OfflineMediaMatch
 import com.laterbox.app.movies.domain.model.PlaybackResolution
 import com.laterbox.app.movies.domain.model.PlaybackSource
+import com.laterbox.app.ui.components.CustomReminderPickerDialog
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.theme.LaterboxTheme
 import kotlinx.coroutines.delay
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
-@OptIn(ExperimentalLayoutApi::class, UnstableApi::class)
+@kotlin.OptIn(ExperimentalLayoutApi::class)
+@OptIn(UnstableApi::class)
 @Composable
 fun MovieDetailScreen(
     uiState: MovieDetailUiState,
@@ -125,6 +138,18 @@ fun MovieDetailScreen(
     onSetTrailerFullscreen: (fullscreen: Boolean, currentPositionMs: Long) -> Unit = { _, _ -> },
     onRecordTrailerProgress: (positionMs: Long, durationMs: Long) -> Unit = { _, _ -> },
     onTrailerPlaybackError: (String?) -> Unit = {},
+    onMarkWatched: (isRewatch: Boolean) -> Unit = {},
+    onMarkUnwatched: () -> Unit = {},
+    onRestartFromBeginning: () -> Unit = {},
+    onRemoveFromContinueWatching: () -> Unit = {},
+    onSetTitleHidden: (Boolean) -> Unit = {},
+    onToggleEpisodeWatched: (EpisodeItem) -> Unit = {},
+    onToggleCollectionMembership: (Long) -> Unit = {},
+    onCreateAndAddToCollection: (String) -> Unit = {},
+    onScheduleViewingReminder: (triggerAtMillis: Long, note: String?) -> Unit = { _, _ -> },
+    onDismissViewingReminder: () -> Unit = {},
+    onToggleMuteSeriesReminders: () -> Unit = {},
+    onClearActionFeedback: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -133,6 +158,11 @@ fun MovieDetailScreen(
     val activity = remember(context) { context.findDetailActivity() }
     var showDownloadDialog by remember { mutableStateOf(false) }
     var showPosterViewer by remember { mutableStateOf(false) }
+    var showMoreActionsMenu by remember { mutableStateOf(false) }
+    var showCollectionDialog by remember { mutableStateOf(false) }
+    var showReminderPicker by remember { mutableStateOf(false) }
+    var reminderNoteDraft by remember { mutableStateOf("") }
+    var newCollectionNameDraft by remember { mutableStateOf("") }
 
     val availableRes = uiState.playbackResolution as? PlaybackResolution.Available
     val canShowDownloadSheet = uiState.details != null && (
@@ -175,6 +205,93 @@ fun MovieDetailScreen(
             errorMessage = uiState.personError,
             onOpenCredit = onOpenRelated,
             onDismiss = onDismissPersonSheet
+        )
+    }
+
+    if (showCollectionDialog && uiState.details != null) {
+        AlertDialog(
+            onDismissRequest = { showCollectionDialog = false },
+            containerColor = colors.surfaceElevated,
+            modifier = Modifier.testTag("detail_collection_dialog"),
+            title = {
+                Text("Save to Collection", style = typography.sheetTitle, color = colors.textPrimary)
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (uiState.collections.isEmpty()) {
+                        Text(
+                            text = "No collections yet. Create one below.",
+                            style = typography.bodySecondary,
+                            color = colors.textSecondary
+                        )
+                    } else {
+                        uiState.collections.forEach { col ->
+                            val isMember = col.id in uiState.memberCollectionIds
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable { onToggleCollectionMembership(col.id) }
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(
+                                    checked = isMember,
+                                    onCheckedChange = { onToggleCollectionMembership(col.id) }
+                                )
+                                Text(
+                                    text = col.name,
+                                    style = typography.uiLabel,
+                                    color = colors.textPrimary
+                                )
+                            }
+                        }
+                    }
+                    OutlinedTextField(
+                        value = newCollectionNameDraft,
+                        onValueChange = { newCollectionNameDraft = it },
+                        label = { Text("New collection name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Button(
+                        onClick = {
+                            val clean = newCollectionNameDraft.trim()
+                            if (clean.isNotEmpty()) {
+                                onCreateAndAddToCollection(clean)
+                                newCollectionNameDraft = ""
+                            }
+                        },
+                        enabled = newCollectionNameDraft.isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(containerColor = colors.accentPrimary),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Create & Add")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showCollectionDialog = false }) {
+                    Text("Done", color = colors.accentPrimary)
+                }
+            }
+        )
+    }
+
+    if (showReminderPicker && uiState.details != null) {
+        CustomReminderPickerDialog(
+            initialTimestamp = uiState.viewingReminder?.triggerAtMillis,
+            onDismissRequest = { showReminderPicker = false },
+            onConfirm = { triggerAt ->
+                onScheduleViewingReminder(triggerAt, reminderNoteDraft.trim().takeIf { it.isNotBlank() })
+                reminderNoteDraft = ""
+                showReminderPicker = false
+            }
         )
     }
 
@@ -543,18 +660,128 @@ fun MovieDetailScreen(
                                                     )
                                                 }
                                             }
-                                            Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.50f)) {
-                                                IconButton(
-                                                    onClick = onToggleWatchlist,
-                                                    modifier = Modifier.testTag("detail_watchlist_button")
-                                                ) {
-                                                    Icon(
-                                                        painter = painterResource(
-                                                            if (uiState.isInWatchlist) LaterboxIcons.Check else LaterboxIcons.Bookmark
-                                                        ),
-                                                        contentDescription = if (uiState.isInWatchlist) "Saved to Watchlist" else "Add to Watchlist",
-                                                        tint = if (uiState.isInWatchlist) colors.accentPrimary else Color.White
-                                                    )
+                                            Row(
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.50f)) {
+                                                    IconButton(
+                                                        onClick = onToggleWatchlist,
+                                                        modifier = Modifier.testTag("detail_watchlist_button")
+                                                    ) {
+                                                        Icon(
+                                                            painter = painterResource(
+                                                                if (uiState.isInWatchlist) LaterboxIcons.Check else LaterboxIcons.Bookmark
+                                                            ),
+                                                            contentDescription = if (uiState.isInWatchlist) "Saved to Watchlist" else "Add to Watchlist",
+                                                            tint = if (uiState.isInWatchlist) colors.accentPrimary else Color.White
+                                                        )
+                                                    }
+                                                }
+                                                Box {
+                                                    Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.50f)) {
+                                                        IconButton(
+                                                            onClick = { showMoreActionsMenu = true },
+                                                            modifier = Modifier.testTag("detail_more_actions_button")
+                                                        ) {
+                                                            Icon(
+                                                                painter = painterResource(LaterboxIcons.MoreVertical),
+                                                                contentDescription = "More actions",
+                                                                tint = Color.White
+                                                            )
+                                                        }
+                                                    }
+                                                    DropdownMenu(
+                                                        expanded = showMoreActionsMenu,
+                                                        onDismissRequest = { showMoreActionsMenu = false }
+                                                    ) {
+                                                        DropdownMenuItem(
+                                                            text = { Text("Save to Collection") },
+                                                            onClick = {
+                                                                showMoreActionsMenu = false
+                                                                showCollectionDialog = true
+                                                            },
+                                                            modifier = Modifier.testTag("detail_action_collection")
+                                                        )
+                                                        DropdownMenuItem(
+                                                            text = {
+                                                                Text(
+                                                                    if (uiState.viewingReminder != null) "Update Viewing Reminder" else "Remind Me to Watch"
+                                                                )
+                                                            },
+                                                            onClick = {
+                                                                showMoreActionsMenu = false
+                                                                showReminderPicker = true
+                                                            },
+                                                            modifier = Modifier.testTag("detail_action_remind")
+                                                        )
+                                                        if (!uiState.isTitleCompleted) {
+                                                            DropdownMenuItem(
+                                                                text = { Text("Mark as Watched") },
+                                                                onClick = {
+                                                                    showMoreActionsMenu = false
+                                                                    onMarkWatched(false)
+                                                                },
+                                                                modifier = Modifier.testTag("detail_action_mark_watched")
+                                                            )
+                                                        } else {
+                                                            DropdownMenuItem(
+                                                                text = { Text("Log Rewatch") },
+                                                                onClick = {
+                                                                    showMoreActionsMenu = false
+                                                                    onMarkWatched(true)
+                                                                },
+                                                                modifier = Modifier.testTag("detail_action_rewatch")
+                                                            )
+                                                            DropdownMenuItem(
+                                                                text = { Text("Mark Unwatched") },
+                                                                onClick = {
+                                                                    showMoreActionsMenu = false
+                                                                    onMarkUnwatched()
+                                                                },
+                                                                modifier = Modifier.testTag("detail_action_mark_unwatched")
+                                                            )
+                                                        }
+                                                        if (uiState.savedPositionMs > 0L) {
+                                                            DropdownMenuItem(
+                                                                text = { Text("Restart from Beginning") },
+                                                                onClick = {
+                                                                    showMoreActionsMenu = false
+                                                                    onRestartFromBeginning()
+                                                                },
+                                                                modifier = Modifier.testTag("detail_action_restart")
+                                                            )
+                                                            DropdownMenuItem(
+                                                                text = { Text("Remove from Continue Watching") },
+                                                                onClick = {
+                                                                    showMoreActionsMenu = false
+                                                                    onRemoveFromContinueWatching()
+                                                                },
+                                                                modifier = Modifier.testTag("detail_action_remove_cw")
+                                                            )
+                                                        }
+                                                        if (summary.kind == MediaKind.TV_SERIES) {
+                                                            val isMuted = uiState.seriesPreferences?.remindersMuted == true
+                                                            DropdownMenuItem(
+                                                                text = {
+                                                                    Text(if (isMuted) "Unmute Series Alerts" else "Mute Series Alerts")
+                                                                },
+                                                                onClick = {
+                                                                    showMoreActionsMenu = false
+                                                                    onToggleMuteSeriesReminders()
+                                                                },
+                                                                modifier = Modifier.testTag("detail_action_mute_series")
+                                                            )
+                                                        }
+                                                        DropdownMenuItem(
+                                                            text = { Text("Hide Title") },
+                                                            onClick = {
+                                                                showMoreActionsMenu = false
+                                                                onSetTitleHidden(true)
+                                                            },
+                                                            modifier = Modifier.testTag("detail_action_hide")
+                                                        )
+                                                    }
                                                 }
                                             }
                                         }
@@ -705,10 +932,10 @@ fun MovieDetailScreen(
                                     val hasAuthorisedDownloads = resolution.sources.any { it.isAuthorised } ||
                                         (summary.kind == MediaKind.TV_SERIES && details.seasons.isNotEmpty())
                                     val playSeason = if (summary.kind == MediaKind.TV_SERIES) {
-                                        uiState.selectedSeasonNumber ?: 1
+                                        uiState.nextUnwatchedTarget?.first ?: uiState.selectedSeasonNumber ?: 1
                                     } else null
                                     val playEpisode = if (summary.kind == MediaKind.TV_SERIES) {
-                                        uiState.episodes.firstOrNull()?.episodeNumber ?: 1
+                                        uiState.nextUnwatchedTarget?.second ?: uiState.episodes.firstOrNull()?.episodeNumber ?: 1
                                     } else null
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
@@ -733,13 +960,18 @@ fun MovieDetailScreen(
                                                 modifier = Modifier.size(16.dp)
                                             )
                                             Spacer(modifier = Modifier.width(8.dp))
+                                            val watchedCount = uiState.seriesProgress?.totalWatchedEpisodes ?: 0
                                             val ctaLabel = when {
                                                 playSeason != null && playEpisode != null && isResume ->
                                                     "Resume S${playSeason}·E${playEpisode}"
+                                                playSeason != null && playEpisode != null && uiState.nextUnwatchedTarget != null && watchedCount > 0 ->
+                                                    "Continue S${playSeason}·E${playEpisode}"
                                                 playSeason != null && playEpisode != null ->
                                                     "Watch S${playSeason}·E${playEpisode}"
                                                 isResume ->
                                                     "Resume"
+                                                uiState.isTitleCompleted ->
+                                                    "Rewatch"
                                                 else ->
                                                     "Watch now"
                                             }
@@ -893,6 +1125,188 @@ fun MovieDetailScreen(
                                     }
                                 }
                             }
+
+                            // Personal Library Quick Actions & Status Pills
+                            val isTitleDownloaded = remember(uiState.offlineMatches, summary.providerId, summary.id) {
+                                uiState.offlineMatches.any { it.matchesTitleComposite(summary.providerId, summary.id) }
+                            }
+                            FlowRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(18.dp),
+                                    color = if (uiState.memberCollectionIds.isNotEmpty()) colors.accentContainer else colors.surfacePrimary,
+                                    border = BorderStroke(
+                                        0.75.dp,
+                                        if (uiState.memberCollectionIds.isNotEmpty()) colors.accentPrimary else colors.borderSubtle
+                                    ),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(18.dp))
+                                        .clickable { showCollectionDialog = true }
+                                        .testTag("detail_quick_collection_button")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(LaterboxIcons.FolderAdd),
+                                            contentDescription = null,
+                                            tint = if (uiState.memberCollectionIds.isNotEmpty()) colors.accentPrimary else colors.textSecondary,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Text(
+                                            text = if (uiState.memberCollectionIds.isNotEmpty()) {
+                                                "In ${uiState.memberCollectionIds.size} Collection${if (uiState.memberCollectionIds.size == 1) "" else "s"}"
+                                            } else "Add to Collection",
+                                            style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                            color = colors.textPrimary
+                                        )
+                                    }
+                                }
+
+                                Surface(
+                                    shape = RoundedCornerShape(18.dp),
+                                    color = if (uiState.viewingReminder != null) colors.accentContainer else colors.surfacePrimary,
+                                    border = BorderStroke(
+                                        0.75.dp,
+                                        if (uiState.viewingReminder != null) colors.accentPrimary else colors.borderSubtle
+                                    ),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(18.dp))
+                                        .clickable { showReminderPicker = true }
+                                        .testTag("detail_quick_remind_button")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(LaterboxIcons.Bell),
+                                            contentDescription = null,
+                                            tint = if (uiState.viewingReminder != null) colors.accentPrimary else colors.textSecondary,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Text(
+                                            text = if (uiState.viewingReminder != null) "Reminder Set" else "Remind Me",
+                                            style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                            color = colors.textPrimary
+                                        )
+                                    }
+                                }
+
+                                Surface(
+                                    shape = RoundedCornerShape(18.dp),
+                                    color = if (uiState.isTitleCompleted) colors.accentContainer else colors.surfacePrimary,
+                                    border = BorderStroke(
+                                        0.75.dp,
+                                        if (uiState.isTitleCompleted) colors.accentPrimary else colors.borderSubtle
+                                    ),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(18.dp))
+                                        .clickable { onMarkWatched(uiState.isTitleCompleted) }
+                                        .testTag("detail_quick_watched_button")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(LaterboxIcons.Check),
+                                            contentDescription = null,
+                                            tint = if (uiState.isTitleCompleted) colors.accentPrimary else colors.textSecondary,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Text(
+                                            text = if (uiState.isTitleCompleted) "Watched · Rewatch" else "Mark Watched",
+                                            style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                            color = colors.textPrimary
+                                        )
+                                    }
+                                }
+
+                                if (isTitleDownloaded) {
+                                    Surface(
+                                        shape = RoundedCornerShape(18.dp),
+                                        color = Color(0xFF1B5E20).copy(alpha = 0.18f),
+                                        border = BorderStroke(0.75.dp, Color(0xFF4CAF50).copy(alpha = 0.5f)),
+                                        modifier = Modifier.testTag("detail_offline_ready_badge")
+                                    ) {
+                                        Text(
+                                            text = "Offline Ready",
+                                            style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                            color = Color(0xFF4CAF50),
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            uiState.viewingReminder?.let { rem ->
+                                val df = remember { SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()) }
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = colors.surfacePrimary,
+                                    border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.35f)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("detail_active_reminder_banner")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = "Reminder: ${df.format(Date(rem.triggerAtMillis))}",
+                                            style = typography.metaText,
+                                            color = colors.textPrimary,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        TextButton(
+                                            onClick = onDismissViewingReminder,
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                                        ) {
+                                            Text("Cancel", style = typography.caption, color = colors.statusDanger)
+                                        }
+                                    }
+                                }
+                            }
+
+                            uiState.actionFeedbackMessage?.let { feedbackMsg ->
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = colors.accentContainer.copy(alpha = 0.7f),
+                                    border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.3f)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("detail_action_feedback")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = feedbackMsg,
+                                            style = typography.metaText,
+                                            color = colors.textPrimary,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        TextButton(
+                                            onClick = onClearActionFeedback,
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                                        ) {
+                                            Text("OK", style = typography.caption, color = colors.accentPrimary)
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -910,18 +1324,51 @@ fun MovieDetailScreen(
                                 color = colors.textPrimary
                             )
 
-                            val metaLines = buildList {
-                                details.directorOrCreator?.let { add("Director / Creator: $it") }
-                                details.networkOrStudio?.let { add("Studio / Network: $it") }
-                                if (details.availableSubtitles.isNotEmpty()) {
-                                    add("Subtitles: ${details.availableSubtitles.joinToString { it.language }}")
-                                }
-                            }
-                            if (metaLines.isNotEmpty()) {
-                                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                    metaLines.forEach { line ->
+                            if (details.directorOrCreator != null || details.networkOrStudio != null || details.availableSubtitles.isNotEmpty()) {
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    details.directorOrCreator?.let { director ->
+                                        val isDirectorClickable = !details.directorPersonId.isNullOrBlank()
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Text(
+                                                text = "Director / Creator:",
+                                                style = typography.metaText,
+                                                color = colors.textSecondary
+                                            )
+                                            Text(
+                                                text = director,
+                                                style = typography.metaText.copy(
+                                                    fontWeight = if (isDirectorClickable) FontWeight.SemiBold else FontWeight.Normal,
+                                                    textDecoration = if (isDirectorClickable) TextDecoration.Underline else null
+                                                ),
+                                                color = if (isDirectorClickable) colors.accentPrimary else colors.textSecondary,
+                                                modifier = Modifier
+                                                    .clickable(enabled = isDirectorClickable) {
+                                                        onCastMemberClick(
+                                                            CastMember(
+                                                                name = director,
+                                                                role = "Director",
+                                                                personId = details.directorPersonId,
+                                                                providerId = summary.providerId
+                                                            )
+                                                        )
+                                                    }
+                                                    .testTag("detail_director_link")
+                                            )
+                                        }
+                                    }
+                                    details.networkOrStudio?.let { studio ->
                                         Text(
-                                            text = line,
+                                            text = "Studio / Network: $studio",
+                                            style = typography.metaText,
+                                            color = colors.textSecondary
+                                        )
+                                    }
+                                    if (details.availableSubtitles.isNotEmpty()) {
+                                        Text(
+                                            text = "Subtitles: ${details.availableSubtitles.joinToString { it.language }}",
                                             style = typography.metaText,
                                             color = colors.textSecondary
                                         )
@@ -1202,8 +1649,16 @@ fun MovieDetailScreen(
                                 }
                                 uiState.episodes.isNotEmpty() -> {
                                     items(uiState.episodes, key = { "ep_${it.id}_${it.seasonNumber}_${it.episodeNumber}" }) { ep ->
+                                        val isWatched = uiState.seriesProgress?.episodeStates
+                                            ?.get(ep.seasonNumber to ep.episodeNumber)?.isCompleted == true
+                                        val isEpDownloaded = uiState.offlineMatches.any { match ->
+                                            match.matchesTitleEpisode(summary.providerId, summary.id, ep.seasonNumber, ep.episodeNumber)
+                                        }
                                         EpisodeRowCard(
                                             episode = ep,
+                                            isWatched = isWatched,
+                                            isDownloaded = isEpDownloaded,
+                                            onToggleWatched = { onToggleEpisodeWatched(ep) },
                                             onClick = { onPlayClick(ep.seasonNumber, ep.episodeNumber) },
                                             modifier = Modifier.padding(horizontal = 16.dp)
                                         )
@@ -1292,7 +1747,9 @@ fun MovieDetailScreen(
                     }
 
                     // Related Titles Rail
-                    if (details.relatedTitles.isNotEmpty()) {
+                    val displayRelated = (uiState.rankedRelatedTitles.ifEmpty { details.relatedTitles })
+                        .filter { it.stableMediaKey !in uiState.hiddenMediaKeys }
+                    if (displayRelated.isNotEmpty()) {
                         item(key = "detail_related") {
                             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                 Text(
@@ -1305,9 +1762,13 @@ fun MovieDetailScreen(
                                     contentPadding = PaddingValues(horizontal = 16.dp),
                                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                                 ) {
-                                    items(details.relatedTitles, key = { "rel_${it.compositeId}" }) { rel ->
+                                    items(displayRelated, key = { "rel_${it.compositeId}" }) { rel ->
+                                        val isRelOffline = uiState.offlineMatches.any {
+                                            it.matchesTitleComposite(rel.providerId, rel.id)
+                                        }
                                         MoviePosterCard(
                                             item = rel,
+                                            isOfflineDownloaded = isRelOffline,
                                             onClick = { onOpenRelated(rel.providerId, rel.id) }
                                         )
                                     }
@@ -1348,7 +1809,10 @@ private fun MetadataPillChip(
 private fun EpisodeRowCard(
     episode: EpisodeItem,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isWatched: Boolean = false,
+    isDownloaded: Boolean = false,
+    onToggleWatched: () -> Unit = {}
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -1361,7 +1825,10 @@ private fun EpisodeRowCard(
             .testTag("episode_row_${episode.seasonNumber}_${episode.episodeNumber}"),
         shape = RoundedCornerShape(14.dp),
         color = colors.surfacePrimary,
-        border = BorderStroke(0.75.dp, colors.borderSubtle)
+        border = BorderStroke(
+            0.75.dp,
+            if (isWatched) colors.accentPrimary.copy(alpha = 0.45f) else colors.borderSubtle
+        )
     ) {
         Row(
             modifier = Modifier.padding(10.dp),
@@ -1390,6 +1857,23 @@ private fun EpisodeRowCard(
                         color = colors.textTertiary
                     )
                 }
+                if (isDownloaded) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = Color(0xFF1B5E20).copy(alpha = 0.88f),
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(4.dp)
+                            .testTag("episode_offline_badge_${episode.seasonNumber}_${episode.episodeNumber}")
+                    ) {
+                        Text(
+                            text = "OFFLINE",
+                            style = typography.caption.copy(fontSize = 8.sp, fontWeight = FontWeight.Bold),
+                            color = Color.White,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                        )
+                    }
+                }
             }
             Column(
                 modifier = Modifier.weight(1f),
@@ -1405,12 +1889,13 @@ private fun EpisodeRowCard(
                 val epMeta = buildList {
                     episode.runtimeMinutes?.let { add("${it}m") }
                     episode.airDate?.let { add(it) }
+                    if (isWatched) add("Watched")
                 }.joinToString(" · ")
                 if (epMeta.isNotBlank()) {
                     Text(
                         text = epMeta,
                         style = typography.caption,
-                        color = colors.textSecondary
+                        color = if (isWatched) colors.accentPrimary else colors.textSecondary
                     )
                 }
                 episode.overview?.let { overview ->
@@ -1421,6 +1906,31 @@ private fun EpisodeRowCard(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
+                }
+            }
+            IconButton(
+                onClick = onToggleWatched,
+                modifier = Modifier
+                    .size(34.dp)
+                    .testTag("episode_watched_toggle_${episode.seasonNumber}_${episode.episodeNumber}")
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = if (isWatched) colors.accentPrimary else colors.surfaceSecondary,
+                    border = BorderStroke(
+                        0.75.dp,
+                        if (isWatched) colors.accentPrimary else colors.borderSubtle
+                    ),
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            painter = painterResource(LaterboxIcons.Check),
+                            contentDescription = if (isWatched) "Mark episode unwatched" else "Mark episode watched",
+                            tint = if (isWatched) colors.onAccentPrimary else colors.textTertiary,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
                 }
             }
             Surface(
@@ -1442,6 +1952,23 @@ private fun EpisodeRowCard(
             }
         }
     }
+}
+
+internal fun OfflineMediaMatch.matchesTitleComposite(providerId: String, titleId: String): Boolean {
+    val parts = sourceRef.split("|")
+    return parts.size >= 2 &&
+        parts[0].equals(providerId, ignoreCase = true) &&
+        parts[1].equals(titleId, ignoreCase = true)
+}
+
+internal fun OfflineMediaMatch.matchesTitleEpisode(
+    providerId: String,
+    titleId: String,
+    seasonNum: Int,
+    episodeNum: Int
+): Boolean {
+    if (!matchesTitleComposite(providerId, titleId)) return false
+    return seasonNumber == seasonNum && episodeNumber == episodeNum
 }
 
 @OptIn(UnstableApi::class)

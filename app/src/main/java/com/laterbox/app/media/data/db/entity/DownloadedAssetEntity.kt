@@ -22,7 +22,8 @@ import com.laterbox.app.media.domain.model.MediaType
     indices = [
         Index("savedLinkId"),
         Index("checksum"),
-        Index("localPath")
+        Index("localPath"),
+        Index("sourceRef")
     ]
 )
 data class DownloadedAssetEntity(
@@ -49,7 +50,8 @@ data class DownloadedAssetEntity(
     val spotifyTrackId: String? = null,
     val versionTag: String? = null,
     val thumbnailPath: String? = null,
-    val contentCategory: String? = null
+    val contentCategory: String? = null,
+    val sourceRef: String? = null
 ) {
     fun toDomain(): MediaAsset = MediaAsset(
         id = id,
@@ -75,7 +77,8 @@ data class DownloadedAssetEntity(
         spotifyTrackId = spotifyTrackId,
         versionTag = versionTag,
         thumbnailPath = thumbnailPath,
-        contentCategory = contentCategory
+        contentCategory = contentCategory,
+        sourceRef = sourceRef
     )
 
     companion object {
@@ -103,7 +106,8 @@ data class DownloadedAssetEntity(
             spotifyTrackId = asset.spotifyTrackId,
             versionTag = asset.versionTag,
             thumbnailPath = asset.thumbnailPath,
-            contentCategory = asset.contentCategory
+            contentCategory = asset.contentCategory,
+            sourceRef = asset.sourceRef
         )
     }
 }

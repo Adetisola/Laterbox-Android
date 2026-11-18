@@ -418,7 +418,8 @@ class DownloadWorker(
                             spotifyTrackId = task.spotifyTrackId,
                             versionTag = task.versionTag,
                             thumbnailPath = thumbPath,
-                            contentCategory = task.contentCategory
+                            contentCategory = task.contentCategory,
+                            sourceRef = activeTask.sourceRef
                         )
 
                         assetDao.insertAsset(assetEntity)

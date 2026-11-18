@@ -111,6 +111,7 @@ import com.laterbox.app.data.preferences.SubtitleStyleConfig
 import com.laterbox.app.movies.data.cache.MoviesMediaCache
 import com.laterbox.app.movies.domain.model.AudioDubInfo
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
+import com.laterbox.app.movies.domain.model.PlaybackMarkerWindow
 import com.laterbox.app.movies.domain.model.PlaybackResolution
 import com.laterbox.app.movies.domain.model.PlaybackSource
 import com.laterbox.app.movies.domain.model.SubtitleTrack
@@ -141,6 +142,7 @@ fun MoviePlayerScreen(
     onDownloadSource: (PlaybackSource) -> Unit = {},
     onDismissDownloadStatus: () -> Unit = {},
     onSelectAudioDub: (dub: AudioDubInfo, currentPosMs: Long) -> Unit = { _, _ -> },
+    onSelectInStreamAudio: (language: String?, label: String?) -> Unit = { _, _ -> },
     onNextEpisode: () -> Unit = {},
     onSubtitleStyleChange: (SubtitleStyleConfig) -> Unit = {},
     onOpenRelatedTitle: (providerId: String, titleId: String) -> Unit = { _, _ -> },
@@ -209,6 +211,10 @@ fun MoviePlayerScreen(
                     nextEpisodePreview = uiState.nextEpisodePreview,
                     relatedTitles = uiState.relatedTitles,
                     playbackPreferences = uiState.playbackPreferences,
+                    preferredAudioLanguage = uiState.preferredAudioLanguage,
+                    isPlayingOffline = uiState.isPlayingOffline || uiState.selectedSource.isOfflineLocal,
+                    introWindow = uiState.introWindow,
+                    recapWindow = uiState.recapWindow,
                     seasonNumber = uiState.seasonNumber,
                     episodeNumber = uiState.episodeNumber,
                     isEnqueuingDownload = uiState.isEnqueuingDownload,
@@ -219,6 +225,7 @@ fun MoviePlayerScreen(
                     onSelectSource = onSelectSource,
                     onSelectSubtitle = onSelectSubtitle,
                     onSelectAudioDub = onSelectAudioDub,
+                    onSelectInStreamAudio = onSelectInStreamAudio,
                     onNextEpisode = onNextEpisode,
                     onSaveProgress = onSaveProgress,
                     onOpenExternalUrl = onOpenExternalUrl,
@@ -320,6 +327,10 @@ fun LocalVideoPlayerScreen(
             nextEpisodePreview = null,
             relatedTitles = emptyList(),
             playbackPreferences = playbackPreferences,
+            preferredAudioLanguage = null,
+            isPlayingOffline = true,
+            introWindow = null,
+            recapWindow = null,
             seasonNumber = null,
             episodeNumber = null,
             isEnqueuingDownload = false,
@@ -329,6 +340,7 @@ fun LocalVideoPlayerScreen(
             onSelectSource = { _, _ -> },
             onSelectSubtitle = { _, _ -> },
             onSelectAudioDub = { _, _ -> },
+            onSelectInStreamAudio = { _, _ -> },
             onNextEpisode = {},
             onSaveProgress = { pos, _ ->
                 if (pos > 0L) {
@@ -365,6 +377,10 @@ private fun ActiveVideoPlayerContent(
     nextEpisodePreview: NextEpisodePreview?,
     relatedTitles: List<MovieTitleSummary>,
     playbackPreferences: PlayerPlaybackPreferences,
+    preferredAudioLanguage: String?,
+    isPlayingOffline: Boolean,
+    introWindow: PlaybackMarkerWindow?,
+    recapWindow: PlaybackMarkerWindow?,
     seasonNumber: Int?,
     episodeNumber: Int?,
     isEnqueuingDownload: Boolean,
@@ -375,6 +391,7 @@ private fun ActiveVideoPlayerContent(
     onSelectSource: (PlaybackSource, Long) -> Unit,
     onSelectSubtitle: (SubtitleTrack?, Long) -> Unit,
     onSelectAudioDub: (AudioDubInfo, Long) -> Unit,
+    onSelectInStreamAudio: (String?, String?) -> Unit,
     onNextEpisode: () -> Unit,
     onSaveProgress: (Long, Long) -> Unit,
     onOpenExternalUrl: (String) -> Unit,
@@ -411,6 +428,9 @@ private fun ActiveVideoPlayerContent(
 
     var inStreamAudioTracks by remember { mutableStateOf<List<PlayerAudioTrackOption>>(emptyList()) }
     var hasManualAudioOverride by remember { mutableStateOf(false) }
+    var hasAppliedPreferredAudio by remember(activeTitleId, seasonNumber, episodeNumber, selectedSource.id) {
+        mutableStateOf(false)
+    }
 
     var showQualityDialog by remember { mutableStateOf(false) }
     var showSubtitleDialog by remember { mutableStateOf(false) }
@@ -613,6 +633,22 @@ private fun ActiveVideoPlayerContent(
             audioBoostController.release()
             exoPlayer.removeListener(listener)
             exoPlayer.release()
+        }
+    }
+
+    LaunchedEffect(inStreamAudioTracks, preferredAudioLanguage, hasManualAudioOverride, hasAppliedPreferredAudio) {
+        val pref = preferredAudioLanguage?.trim().takeIf { !it.isNullOrEmpty() } ?: return@LaunchedEffect
+        if (hasAppliedPreferredAudio || hasManualAudioOverride || inStreamAudioTracks.size <= 1) return@LaunchedEffect
+        val match = inStreamAudioTracks.firstOrNull { opt ->
+            opt.languageCode?.equals(pref, ignoreCase = true) == true ||
+                opt.label.contains(pref, ignoreCase = true)
+        }
+        hasAppliedPreferredAudio = true
+        if (match != null && !match.isSelected) {
+            exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon()
+                .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+                .addOverride(TrackSelectionOverride(match.group, match.trackIndex))
+                .build()
         }
     }
 
@@ -976,6 +1012,24 @@ private fun ActiveVideoPlayerContent(
                                     color = Color.White.copy(alpha = 0.78f),
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
+                        if (isPlayingOffline || isLocalFile) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color(0xFF1B5E20).copy(alpha = 0.85f),
+                                border = BorderStroke(0.75.dp, Color(0xFF81C784).copy(alpha = 0.7f)),
+                                modifier = Modifier
+                                    .padding(end = 6.dp)
+                                    .testTag("player_offline_badge")
+                            ) {
+                                Text(
+                                    text = "OFFLINE",
+                                    style = typography.caption.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
+                                    color = Color.White,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
                                 )
                             }
                         }
@@ -1723,6 +1777,60 @@ private fun ActiveVideoPlayerContent(
             }
         }
 
+        // Metadata-gated Skip Intro / Skip Recap floating pills (never shown if windows are null)
+        val activeSkipWindow = when {
+            isLocked || playerErrorText != null || isHorizontalScrubbing || showNextEpisodeCard || showMovieEndCard -> null
+            introWindow != null && currentPositionMs >= introWindow.startMs && currentPositionMs < introWindow.endMs ->
+                Triple(introWindow, "Skip Intro", "player_skip_intro_button")
+            recapWindow != null && currentPositionMs >= recapWindow.startMs && currentPositionMs < recapWindow.endMs ->
+                Triple(recapWindow, "Skip Recap", "player_skip_recap_button")
+            else -> null
+        }
+        AnimatedVisibility(
+            visible = activeSkipWindow != null,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .navigationBarsPadding()
+                .padding(end = 20.dp, bottom = if (showControls) 96.dp else 28.dp)
+        ) {
+            activeSkipWindow?.let { (window, label, tag) ->
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color.Black.copy(alpha = 0.84f),
+                    border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.75f)),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable {
+                            val target = window.endMs.coerceAtLeast(0L)
+                            exoPlayer.seekTo(target)
+                            currentPositionMs = target
+                            latestSaveProgress(target, exoPlayer.duration.coerceAtLeast(0L))
+                        }
+                        .testTag(tag)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = label,
+                            style = typography.uiLabel.copy(fontWeight = FontWeight.Bold),
+                            color = Color.White
+                        )
+                        Icon(
+                            painter = painterResource(LaterboxIcons.ChevronRight),
+                            contentDescription = label,
+                            tint = colors.accentPrimary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            }
+        }
+
         // TV Series Next-Episode Netflix-Style Preview & Countdown Card
         AnimatedVisibility(
             visible = showNextEpisodeCard,
@@ -2084,6 +2192,7 @@ private fun ActiveVideoPlayerContent(
                                         .buildUpon()
                                         .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
                                         .build()
+                                    onSelectInStreamAudio(null, null)
                                     showAudioDialog = false
                                 }
                                 .padding(vertical = 6.dp),
@@ -2104,6 +2213,7 @@ private fun ActiveVideoPlayerContent(
                                             .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
                                             .addOverride(TrackSelectionOverride(option.group, option.trackIndex))
                                             .build()
+                                        onSelectInStreamAudio(option.languageCode ?: option.label, option.label)
                                         showAudioDialog = false
                                     }
                                     .padding(vertical = 6.dp)

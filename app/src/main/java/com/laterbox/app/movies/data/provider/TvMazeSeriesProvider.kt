@@ -419,7 +419,8 @@ class TvMazeSeriesProvider(
                 genresArr.optString(i).takeIf { it.isNotBlank() }?.let { add(it) }
             }
         }
-        val year = obj.optString("premiered").takeIf { it.length >= 4 }?.take(4)?.toIntOrNull()
+        val premiered = obj.optString("premiered").takeIf { it.isNotBlank() && it != "null" }
+        val year = premiered?.takeIf { it.length >= 4 }?.take(4)?.toIntOrNull()
         val runtime = if (obj.isNull("averageRuntime")) {
             if (obj.isNull("runtime")) null else obj.optInt("runtime").takeIf { it > 0 }
         } else {
@@ -449,7 +450,8 @@ class TvMazeSeriesProvider(
             sourceBadge = sourceBadge,
             isPlayableHint = false,
             imdbId = imdbId,
-            tvmazeId = id
+            tvmazeId = id,
+            releaseDate = premiered
         )
     }
 

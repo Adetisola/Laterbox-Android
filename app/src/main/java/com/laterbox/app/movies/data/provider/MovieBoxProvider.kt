@@ -15,6 +15,7 @@ import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.model.MoviesHomeFeed
 import com.laterbox.app.movies.domain.model.PersonFilmography
+import com.laterbox.app.movies.domain.model.PlaybackMarkerWindow
 import com.laterbox.app.movies.domain.model.PlaybackResolution
 import com.laterbox.app.movies.domain.model.PlaybackSource
 import com.laterbox.app.movies.domain.model.SearchSuggestion
@@ -76,6 +77,7 @@ class MovieBoxProvider(
     private val trailerCache = ConcurrentHashMap<String, String>()
     private val trailerHeadersCache = ConcurrentHashMap<String, Map<String, String>>()
     private val episodeSizesCache = ConcurrentHashMap<String, ConcurrentHashMap<Int, Map<Int, Double>>>()
+    private val markerWindowCache = ConcurrentHashMap<String, Pair<PlaybackMarkerWindow?, PlaybackMarkerWindow?>>()
 
     @Volatile
     private var cachedGenres: List<String> = emptyList()
@@ -141,6 +143,7 @@ class MovieBoxProvider(
                                     val dp = entry.optCleanString("detailPath")
                                     cacheMetadata(id, title, dp, trailerUrl)
                                     val cover = entry.optJSONObject("cover")?.optCleanString("url") ?: bannerImage
+                                    val releaseDateStr = entry.optCleanString("releaseDate") ?: entry.optCleanString("release_date")
                                     banners.add(
                                         MovieTitleSummary(
                                             id = id,
@@ -150,12 +153,17 @@ class MovieBoxProvider(
                                                 entry.optCleanString("type")
                                             ),
                                             title = title,
+                                            releaseYear = parseYear(releaseDateStr, entry.optCleanString("year")),
+                                            durationMinutes = parseDurationMinutes(entry.optLongOrNull("duration")),
                                             posterUrl = cover,
                                             backdropUrl = bannerImage,
+                                            language = entry.optCleanString("language"),
+                                            country = entry.optCleanString("countryName") ?: entry.optCleanString("country"),
                                             detailPath = dp,
                                             trailerUrl = trailerUrl,
                                             sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
-                                            isPlayableHint = true
+                                            isPlayableHint = true,
+                                            releaseDate = releaseDateStr
                                         )
                                     )
                                 }
@@ -306,21 +314,25 @@ class MovieBoxProvider(
                     val cover = obj.optCleanString("cover")
                     val stillsUrl = obj.optJSONObject("stills")?.optCleanString("url")
                     val itemKind = obj.optIntOrNull("subject_type")?.let { parseMediaKind(it, null) } ?: kind
+                    val releaseDateStr = obj.optCleanString("release_date")
                     add(
                         MovieTitleSummary(
                             id = id,
                             providerId = PROVIDER_ID,
                             kind = itemKind,
                             title = title,
-                            releaseYear = parseYear(null, obj.optCleanString("year")),
+                            releaseYear = parseYear(releaseDateStr, obj.optCleanString("year")),
                             rating = obj.optRating("rating", "imdb_rating"),
+                            durationMinutes = parseDurationMinutes(obj.optLongOrNull("duration")),
                             posterUrl = cover,
                             backdropUrl = stillsUrl,
                             genres = parseGenres(obj.optCleanString("genre")),
+                            language = obj.optCleanString("language"),
                             country = obj.optCleanString("country"),
                             detailPath = dp,
                             sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
-                            isPlayableHint = true
+                            isPlayableHint = true,
+                            releaseDate = releaseDateStr
                         )
                     )
                 }
@@ -384,21 +396,25 @@ class MovieBoxProvider(
                         obj.optIntOrNull("subject_type"),
                         obj.optCleanString("type")
                     )
+                    val releaseDateStr = obj.optCleanString("release_date")
                     add(
                         MovieTitleSummary(
                             id = id,
                             providerId = PROVIDER_ID,
                             kind = itemKind,
                             title = title,
-                            releaseYear = parseYear(obj.optCleanString("release_date")),
+                            releaseYear = parseYear(releaseDateStr),
                             rating = obj.optRating("imdb_rating", "rating"),
+                            durationMinutes = parseDurationMinutes(obj.optLongOrNull("duration")),
                             posterUrl = cover,
                             backdropUrl = stillsUrl,
                             genres = parseGenres(obj.optCleanString("genre")),
                             language = obj.optCleanString("language"),
+                            country = obj.optCleanString("country"),
                             detailPath = dp,
                             sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
-                            isPlayableHint = true
+                            isPlayableHint = true,
+                            releaseDate = releaseDateStr
                         )
                     )
                 }
@@ -509,14 +525,17 @@ class MovieBoxProvider(
             }
 
             var directorOrCreator: String? = null
+            var directorPersonId: String? = null
             val cast = buildList {
                 val starsArr = root.optJSONArray("stars") ?: JSONArray()
                 for (i in 0 until starsArr.length()) {
                     val star = starsArr.optJSONObject(i) ?: continue
                     val name = star.optCleanString("name") ?: continue
                     val staffType = star.optIntOrNull("staff_type")
+                    val staffId = star.optCleanString("staff_id")
                     if (staffType == 2 && directorOrCreator == null) {
                         directorOrCreator = name
+                        directorPersonId = staffId
                     }
                     val role = star.optCleanString("character")
                         ?: if (staffType == 2) "Director" else null
@@ -525,7 +544,7 @@ class MovieBoxProvider(
                             name = name,
                             role = role,
                             imageUrl = star.optCleanString("avatar_url"),
-                            personId = star.optCleanString("staff_id"),
+                            personId = staffId,
                             providerId = PROVIDER_ID
                         )
                     )
@@ -547,12 +566,19 @@ class MovieBoxProvider(
                 }
             }
 
+            val detailIntro = parseMarkerWindow(root, "intro")
+            val detailRecap = parseMarkerWindow(root, "recap")
+            if (detailIntro != null || detailRecap != null) {
+                markerWindowCache[id] = detailIntro to detailRecap
+            }
+
+            val releaseDateStr = root.optCleanString("release_date")
             val summary = MovieTitleSummary(
                 id = id,
                 providerId = PROVIDER_ID,
                 kind = kind,
                 title = title,
-                releaseYear = parseYear(root.optCleanString("release_date")),
+                releaseYear = parseYear(releaseDateStr),
                 rating = root.optRating("imdb_rating", "rating"),
                 durationMinutes = parseDurationMinutes(root.optLongOrNull("duration")),
                 posterUrl = cover,
@@ -566,13 +592,15 @@ class MovieBoxProvider(
                 trailerHeaders = trailerHeaders,
                 sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
                 isPlayableHint = true,
-                imdbId = root.optCleanString("imdbId") ?: root.optCleanString("imdb_id")
+                imdbId = root.optCleanString("imdbId") ?: root.optCleanString("imdb_id"),
+                releaseDate = releaseDateStr
             )
 
             MediaDetails(
                 summary = summary,
                 fullDescription = description,
                 directorOrCreator = directorOrCreator,
+                directorPersonId = directorPersonId,
                 cast = cast,
                 seasons = seasons,
                 audioDubs = dubs,
@@ -781,20 +809,24 @@ class MovieBoxProvider(
             obj.optIntOrNull("subject_type"),
             obj.optCleanString("type")
         )
+        val releaseDateStr = obj.optCleanString("release_date") ?: obj.optCleanString("releaseDate")
         return MovieTitleSummary(
             id = id,
             providerId = PROVIDER_ID,
             kind = kind,
             title = title,
-            releaseYear = parseYear(obj.optCleanString("release_date"), obj.optCleanString("year")),
+            releaseYear = parseYear(releaseDateStr, obj.optCleanString("year")),
             rating = obj.optRating("imdb_rating", "rating"),
+            durationMinutes = parseDurationMinutes(obj.optLongOrNull("duration")),
             posterUrl = cover,
             backdropUrl = stillsUrl,
             genres = parseGenres(obj.optCleanString("genre")),
+            language = obj.optCleanString("language"),
             country = obj.optCleanString("country"),
             detailPath = dp,
             sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
-            isPlayableHint = true
+            isPlayableHint = true,
+            releaseDate = releaseDateStr
         )
     }
 
@@ -893,13 +925,18 @@ class MovieBoxProvider(
                 val subtitles = getSubtitles(titleId, seasonNumber, episodeNumber)
                     .getOrDefault(emptyList())
                 val heading = if (se > 0 && ep > 0) "Season $se · Episode $ep" else null
+                val cachedDetailMarkers = markerWindowCache[titleId]
+                val introWindow = parseMarkerWindow(root, "intro") ?: cachedDetailMarkers?.first
+                val recapWindow = parseMarkerWindow(root, "recap") ?: cachedDetailMarkers?.second
                 PlaybackResolution.Available(
                     title = resolvedTitle,
                     subtitleHeading = heading,
                     sources = sources,
                     subtitles = subtitles,
                     providerName = displayName,
-                    sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+                    sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+                    introWindow = introWindow,
+                    recapWindow = recapWindow
                 )
             }
         }
@@ -950,6 +987,17 @@ class MovieBoxProvider(
         }
     }
 
+    private fun parseMarkerWindow(obj: JSONObject, prefix: String): PlaybackMarkerWindow? {
+        val startMs = obj.optLongOrNull("${prefix}_start_ms")
+            ?: obj.optLongOrNull("${prefix}StartMs")
+        val endMs = obj.optLongOrNull("${prefix}_end_ms")
+            ?: obj.optLongOrNull("${prefix}EndMs")
+        if (startMs != null && endMs != null && startMs >= 0L && endMs > startMs) {
+            return PlaybackMarkerWindow(startMs = startMs, endMs = endMs)
+        }
+        return null
+    }
+
     private fun parseSubjectObject(
         obj: JSONObject,
         backdropOverride: String? = null,
@@ -973,13 +1021,14 @@ class MovieBoxProvider(
         val trailerHeaders = parseHeadersObject(trailerObj?.optJSONObject("headers"))
         cacheMetadata(id, title, dp, trailerUrl, trailerHeaders)
         val hasResource = if (obj.has("hasResource")) obj.optBoolean("hasResource", true) else true
+        val releaseDateStr = obj.optCleanString("releaseDate") ?: obj.optCleanString("release_date")
 
         return MovieTitleSummary(
             id = id,
             providerId = PROVIDER_ID,
             kind = parseMediaKind(subjectType, obj.optCleanString("type")),
             title = title,
-            releaseYear = parseYear(obj.optCleanString("releaseDate") ?: obj.optCleanString("release_date")),
+            releaseYear = parseYear(releaseDateStr),
             rating = obj.optRating("imdbRatingValue", "imdb_rating", "rating"),
             durationMinutes = parseDurationMinutes(obj.optLongOrNull("duration")),
             posterUrl = coverUrl,
@@ -993,7 +1042,8 @@ class MovieBoxProvider(
             trailerHeaders = trailerHeaders,
             sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
             isPlayableHint = hasResource,
-            imdbId = obj.optCleanString("imdbId") ?: obj.optCleanString("imdb_id")
+            imdbId = obj.optCleanString("imdbId") ?: obj.optCleanString("imdb_id"),
+            releaseDate = releaseDateStr
         )
     }
 

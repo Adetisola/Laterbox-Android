@@ -5,13 +5,21 @@ import androidx.lifecycle.viewModelScope
 import com.laterbox.app.BuildConfig
 import com.laterbox.app.data.preferences.MovieBoxEndpointConfig
 import com.laterbox.app.data.preferences.UserPreferencesRepository
+import com.laterbox.app.data.repository.CollectionRepository
+import com.laterbox.app.domain.model.Collection
+import com.laterbox.app.domain.model.CollectionWithCount
 import com.laterbox.app.movies.data.provider.MovieBoxProvider
+import com.laterbox.app.movies.domain.engine.MoviesDiscoveryEngine
+import com.laterbox.app.movies.domain.model.BecauseYouWatchedGroup
 import com.laterbox.app.movies.domain.model.CatalogueSort
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.model.MoviesDiscoveryShortcut
 import com.laterbox.app.movies.domain.model.MoviesHomeFeed
+import com.laterbox.app.movies.domain.model.OfflineMediaMatch
+import com.laterbox.app.movies.domain.model.RuntimeBucket
 import com.laterbox.app.movies.domain.model.SearchSuggestion
+import com.laterbox.app.movies.domain.model.SurprisePickResult
 import com.laterbox.app.movies.domain.model.WatchHistoryItem
 import com.laterbox.app.movies.domain.repository.MoviesRepository
 import kotlinx.coroutines.Job
@@ -21,6 +29,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -58,12 +67,32 @@ data class MoviesHomeUiState(
     val filteredHasMore: Boolean = false,
     val isLoadingFiltered: Boolean = false,
     val isLoadingMoreFiltered: Boolean = false,
-    val filteredError: String? = null
+    val filteredError: String? = null,
+    // Personal Library & Discovery Engine
+    val recentlyViewed: List<MovieTitleSummary> = emptyList(),
+    val collectionsWithCounts: List<CollectionWithCount> = emptyList(),
+    val becauseYouWatchedGroups: List<BecauseYouWatchedGroup> = emptyList(),
+    val quickRuntimePicks: List<MovieTitleSummary> = emptyList(),
+    val recentlyAddedRail: List<MovieTitleSummary> = emptyList(),
+    val surprisePick: SurprisePickResult? = null,
+    val offlineMatches: List<OfflineMediaMatch> = emptyList(),
+    val hiddenMediaKeys: Set<String> = emptySet(),
+    val availableLanguages: List<String> = listOf("All"),
+    val selectedLanguage: String = "All",
+    val selectedYear: String = "All",
+    val selectedRuntimeBucket: RuntimeBucket = RuntimeBucket.ALL,
+    val actionFeedbackMessage: String? = null
 ) {
+    val collections: List<Collection>
+        get() = collectionsWithCounts.map { it.collection }
+
     val isFilteredMode: Boolean
         get() = selectedKind != null ||
             selectedGenre != "All" ||
             selectedCountry != "All" ||
+            selectedLanguage != "All" ||
+            selectedYear != "All" ||
+            selectedRuntimeBucket != RuntimeBucket.ALL ||
             activeShortcut != null ||
             selectedSort != CatalogueSort.POPULAR ||
             activeSearchQuery.isNotBlank()
@@ -84,7 +113,8 @@ private data class MoviesConfigSnapshot(
 
 class MoviesHomeViewModel(
     private val moviesRepository: MoviesRepository,
-    private val userPreferencesRepository: UserPreferencesRepository
+    private val userPreferencesRepository: UserPreferencesRepository,
+    private val collectionRepository: CollectionRepository? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MoviesHomeUiState())
@@ -94,16 +124,70 @@ class MoviesHomeViewModel(
     private var filterJob: Job? = null
     private var suggestJob: Job? = null
     private var lastConfigKey: MoviesConfigSnapshot? = null
+    private var latestNonTrailerHistory: List<WatchHistoryItem> = emptyList()
+    private var rawFilteredItems: List<MovieTitleSummary> = emptyList()
+    private var rawWatchlist: List<MovieTitleSummary> = emptyList()
+    private var rawRecentlyViewed: List<MovieTitleSummary> = emptyList()
+    private var surpriseSeed: Long = 101L
+    private var surprisePreferredKind: MediaKind? = null
 
     init {
         viewModelScope.launch {
             moviesRepository.observeWatchlist().collect { list ->
-                _uiState.update { it.copy(watchlist = list) }
+                rawWatchlist = list
+                val hidden = _uiState.value.hiddenMediaKeys
+                _uiState.update { it.copy(watchlist = list.filterNot { m -> m.stableMediaKey in hidden }) }
+                recomputeDiscovery()
             }
         }
         viewModelScope.launch {
             moviesRepository.observeContinueWatching(12).collect { history ->
                 _uiState.update { it.copy(continueWatching = history) }
+            }
+        }
+        viewModelScope.launch {
+            combine(
+                moviesRepository.observeMovieWatchHistory(30),
+                moviesRepository.observeEpisodeWatchHistory(30)
+            ) { movies, episodes ->
+                (movies + episodes).sortedByDescending { it.lastWatchedAt }
+            }.collect { combined ->
+                latestNonTrailerHistory = combined
+                recomputeDiscovery()
+            }
+        }
+        viewModelScope.launch {
+            moviesRepository.observeRecentlyViewed(20).collect { list ->
+                rawRecentlyViewed = list
+                val hidden = _uiState.value.hiddenMediaKeys
+                _uiState.update { it.copy(recentlyViewed = list.filterNot { m -> m.stableMediaKey in hidden }) }
+                recomputeDiscovery()
+            }
+        }
+        viewModelScope.launch {
+            moviesRepository.observeOfflineAvailability().collect { matches ->
+                _uiState.update { it.copy(offlineMatches = matches) }
+            }
+        }
+        viewModelScope.launch {
+            moviesRepository.observeHiddenHistory(100).collect { hiddenList ->
+                val keys = hiddenList.map { it.stableMediaKey }.toSet()
+                _uiState.update { current ->
+                    current.copy(
+                        hiddenMediaKeys = keys,
+                        watchlist = rawWatchlist.filterNot { it.stableMediaKey in keys },
+                        recentlyViewed = rawRecentlyViewed.filterNot { it.stableMediaKey in keys }
+                    )
+                }
+                applyClientFiltersToFilteredItems()
+                recomputeDiscovery()
+            }
+        }
+        if (collectionRepository != null) {
+            viewModelScope.launch {
+                collectionRepository.collectionsWithCounts.collect { cols ->
+                    _uiState.update { it.copy(collectionsWithCounts = cols) }
+                }
             }
         }
         viewModelScope.launch {
@@ -193,6 +277,7 @@ class MoviesHomeViewModel(
                             errorMessage = null
                         )
                     }
+                    recomputeDiscovery()
                 },
                 onFailure = { error ->
                     _uiState.update {
@@ -311,6 +396,7 @@ class MoviesHomeViewModel(
         if (_uiState.value.isFilteredMode) {
             loadFiltered(page = 1, append = false)
         } else {
+            rawFilteredItems = emptyList()
             _uiState.update { it.copy(filteredItems = emptyList(), filteredError = null) }
         }
     }
@@ -336,6 +422,7 @@ class MoviesHomeViewModel(
         if (_uiState.value.isFilteredMode) {
             loadFiltered(page = 1, append = false)
         } else {
+            rawFilteredItems = emptyList()
             _uiState.update { it.copy(filteredItems = emptyList(), filteredError = null) }
         }
     }
@@ -355,6 +442,7 @@ class MoviesHomeViewModel(
         if (_uiState.value.isFilteredMode) {
             loadFiltered(page = 1, append = false)
         } else {
+            rawFilteredItems = emptyList()
             _uiState.update { it.copy(filteredItems = emptyList(), filteredError = null) }
         }
     }
@@ -374,6 +462,57 @@ class MoviesHomeViewModel(
         if (_uiState.value.isFilteredMode) {
             loadFiltered(page = 1, append = false)
         } else {
+            rawFilteredItems = emptyList()
+            _uiState.update { it.copy(filteredItems = emptyList(), filteredError = null) }
+        }
+    }
+
+    fun selectLanguage(language: String) {
+        if (_uiState.value.selectedLanguage == language) return
+        suggestJob?.cancel()
+        _uiState.update { it.copy(selectedLanguage = language, isSearchFocused = false, isLoadingSuggestions = false) }
+        if (_uiState.value.isFilteredMode) {
+            if (rawFilteredItems.isEmpty()) {
+                loadFiltered(page = 1, append = false)
+            } else {
+                applyClientFiltersToFilteredItems()
+            }
+        } else {
+            rawFilteredItems = emptyList()
+            _uiState.update { it.copy(filteredItems = emptyList(), filteredError = null) }
+        }
+    }
+
+    fun selectYear(year: String) {
+        if (_uiState.value.selectedYear == year) return
+        suggestJob?.cancel()
+        _uiState.update { it.copy(selectedYear = year, isSearchFocused = false, isLoadingSuggestions = false) }
+        if (_uiState.value.isFilteredMode) {
+            loadFiltered(page = 1, append = false)
+        } else {
+            rawFilteredItems = emptyList()
+            _uiState.update { it.copy(filteredItems = emptyList(), filteredError = null) }
+        }
+    }
+
+    fun selectRuntimeBucket(bucket: RuntimeBucket) {
+        if (_uiState.value.selectedRuntimeBucket == bucket) return
+        suggestJob?.cancel()
+        _uiState.update {
+            it.copy(
+                selectedRuntimeBucket = bucket,
+                isSearchFocused = false,
+                isLoadingSuggestions = false
+            )
+        }
+        if (_uiState.value.isFilteredMode) {
+            if (rawFilteredItems.isEmpty()) {
+                loadFiltered(page = 1, append = false)
+            } else {
+                applyClientFiltersToFilteredItems()
+            }
+        } else {
+            rawFilteredItems = emptyList()
             _uiState.update { it.copy(filteredItems = emptyList(), filteredError = null) }
         }
     }
@@ -405,6 +544,7 @@ class MoviesHomeViewModel(
         if (_uiState.value.isFilteredMode) {
             loadFiltered(page = 1, append = false)
         } else {
+            rawFilteredItems = emptyList()
             _uiState.update { it.copy(filteredItems = emptyList(), filteredError = null) }
         }
     }
@@ -416,6 +556,7 @@ class MoviesHomeViewModel(
         if (_uiState.value.isFilteredMode) {
             loadFiltered(page = 1, append = false)
         } else {
+            rawFilteredItems = emptyList()
             _uiState.update { it.copy(filteredItems = emptyList(), filteredError = null) }
         }
     }
@@ -423,6 +564,7 @@ class MoviesHomeViewModel(
     fun resetFilters() {
         suggestJob?.cancel()
         filterJob?.cancel()
+        rawFilteredItems = emptyList()
         _uiState.update {
             it.copy(
                 searchQuery = "",
@@ -434,6 +576,9 @@ class MoviesHomeViewModel(
                 selectedKind = null,
                 selectedGenre = "All",
                 selectedCountry = "All",
+                selectedLanguage = "All",
+                selectedYear = "All",
+                selectedRuntimeBucket = RuntimeBucket.ALL,
                 activeShortcut = null,
                 selectedSort = CatalogueSort.POPULAR,
                 filteredItems = emptyList(),
@@ -444,6 +589,151 @@ class MoviesHomeViewModel(
                 filteredError = null
             )
         }
+    }
+
+    fun rerollSurpriseMe(preferredKind: MediaKind? = surprisePreferredKind) {
+        surprisePreferredKind = preferredKind
+        surpriseSeed = surpriseSeed * 6364136223846793005L + 1442695040888963407L + System.nanoTime()
+        recomputeDiscovery()
+    }
+
+    fun markWatched(item: MovieTitleSummary) {
+        viewModelScope.launch {
+            moviesRepository.markWatched(item = item, durationMs = (item.durationMinutes ?: 90) * 60_000L)
+            _uiState.update { it.copy(actionFeedbackMessage = "Marked ${item.title} as watched") }
+        }
+    }
+
+    fun hideTitle(item: MovieTitleSummary) {
+        viewModelScope.launch {
+            moviesRepository.setTitleHidden(item.providerId, item.id, true)
+            _uiState.update { it.copy(actionFeedbackMessage = "Hidden ${item.title}") }
+        }
+    }
+
+    fun restartFromBeginning(entry: WatchHistoryItem) {
+        viewModelScope.launch {
+            moviesRepository.restartFromBeginning(
+                providerId = entry.providerId,
+                titleId = entry.titleId,
+                seasonNumber = entry.seasonNumber,
+                episodeNumber = entry.episodeNumber
+            )
+            _uiState.update { it.copy(actionFeedbackMessage = "Reset progress for ${entry.title}") }
+        }
+    }
+
+    fun removeFromContinueWatching(entry: WatchHistoryItem) {
+        viewModelScope.launch {
+            moviesRepository.removeFromContinueWatching(entry.providerId, entry.titleId)
+            _uiState.update { it.copy(actionFeedbackMessage = "Removed ${entry.title} from Continue Watching") }
+        }
+    }
+
+    fun markHistoryEntryWatched(entry: WatchHistoryItem) {
+        viewModelScope.launch {
+            val summary = MovieTitleSummary(
+                id = entry.titleId,
+                providerId = entry.providerId,
+                kind = entry.kind,
+                title = entry.title,
+                posterUrl = entry.posterUrl,
+                backdropUrl = entry.backdropUrl,
+                canonicalId = entry.canonicalId
+            )
+            moviesRepository.markWatched(
+                item = summary,
+                durationMs = entry.durationMs.coerceAtLeast(1_000L),
+                seasonNumber = entry.seasonNumber,
+                episodeNumber = entry.episodeNumber,
+                episodeLabel = entry.episodeLabel
+            )
+            _uiState.update { it.copy(actionFeedbackMessage = "Marked ${entry.title} as watched") }
+        }
+    }
+
+    fun addToCollection(item: MovieTitleSummary, collectionId: Long) {
+        viewModelScope.launch {
+            moviesRepository.addMediaToCollection(item, collectionId)
+            val colName = _uiState.value.collections.firstOrNull { it.id == collectionId }?.name ?: "collection"
+            _uiState.update { it.copy(actionFeedbackMessage = "Added ${item.title} to $colName") }
+        }
+    }
+
+    fun createAndAddToCollection(item: MovieTitleSummary, name: String) {
+        val clean = name.trim()
+        if (clean.isEmpty() || collectionRepository == null) return
+        viewModelScope.launch {
+            val id = collectionRepository.createCollection(clean)
+            moviesRepository.addMediaToCollection(item, id)
+            _uiState.update { it.copy(actionFeedbackMessage = "Added ${item.title} to $clean") }
+        }
+    }
+
+    fun clearActionFeedback() {
+        _uiState.update { it.copy(actionFeedbackMessage = null) }
+    }
+
+    private fun applyDiscovery(state: MoviesHomeUiState): MoviesHomeUiState {
+        val hidden = state.hiddenMediaKeys
+        val candidatePool = (
+            state.feed?.featuredBanners.orEmpty() +
+                state.feed?.sections.orEmpty().flatMap { it.items } +
+                state.topRatedRail +
+                state.newestRail
+            ).distinctBy { it.stableMediaKey }
+
+        val byw = MoviesDiscoveryEngine.buildBecauseYouWatchedGroups(
+            watchHistory = latestNonTrailerHistory,
+            watchlist = rawWatchlist,
+            candidatePool = candidatePool,
+            hiddenMediaKeys = hidden
+        )
+        val quick = MoviesDiscoveryEngine.selectQuickRuntimePicks(
+            items = candidatePool,
+            hiddenMediaKeys = hidden
+        )
+        val recentAdded = MoviesDiscoveryEngine.selectRecentlyAdded(
+            items = candidatePool,
+            hiddenMediaKeys = hidden
+        )
+        val languages = MoviesDiscoveryEngine.extractAvailableLanguages(candidatePool)
+        val surprise = MoviesDiscoveryEngine.pickSurpriseMe(
+            watchHistory = latestNonTrailerHistory,
+            recentlyViewed = rawRecentlyViewed,
+            hiddenMediaKeys = hidden,
+            watchlist = rawWatchlist,
+            candidatePool = candidatePool,
+            seed = surpriseSeed,
+            preferredKind = surprisePreferredKind
+        )
+
+        return state.copy(
+            becauseYouWatchedGroups = byw,
+            quickRuntimePicks = quick,
+            recentlyAddedRail = recentAdded,
+            availableLanguages = languages,
+            surprisePick = surprise
+        )
+    }
+
+    private fun recomputeDiscovery() {
+        _uiState.update { current -> applyDiscovery(current) }
+    }
+
+    private fun applyClientFiltersToFilteredItems() {
+        val state = _uiState.value
+        val filtered = MoviesDiscoveryEngine.filterTitles(
+            items = rawFilteredItems,
+            kind = state.selectedKind,
+            genre = state.selectedGenre,
+            language = state.selectedLanguage,
+            country = state.selectedCountry,
+            year = state.selectedYear,
+            runtimeBucket = state.selectedRuntimeBucket,
+            hiddenMediaKeys = state.hiddenMediaKeys
+        )
+        _uiState.update { it.copy(filteredItems = filtered) }
     }
 
     private fun matchingShortcut(
@@ -476,6 +766,7 @@ class MoviesHomeViewModel(
             }
             val state = _uiState.value
             val query = state.activeSearchQuery.trim()
+            val exactYearParam = state.selectedYear.takeIf { Regex("\\d{4}").matches(it) }
             val result = if (query.isNotBlank()) {
                 moviesRepository.search(query = query, kind = state.selectedKind, page = page, pageSize = 20)
             } else {
@@ -485,20 +776,33 @@ class MoviesHomeViewModel(
                     pageSize = 20,
                     genre = state.selectedGenre.takeUnless { it == "All" },
                     sort = state.selectedSort,
-                    country = state.selectedCountry.takeUnless { it == "All" }
+                    country = state.selectedCountry.takeUnless { it == "All" },
+                    year = exactYearParam
                 )
             }
 
             result.fold(
                 onSuccess = { pageResult ->
+                    val mergedRaw = if (append) {
+                        (rawFilteredItems + pageResult.items).distinctBy { it.compositeId }
+                    } else {
+                        pageResult.items
+                    }
+                    rawFilteredItems = mergedRaw
+                    val latest = _uiState.value
+                    val filtered = MoviesDiscoveryEngine.filterTitles(
+                        items = mergedRaw,
+                        kind = latest.selectedKind,
+                        genre = latest.selectedGenre,
+                        language = latest.selectedLanguage,
+                        country = latest.selectedCountry,
+                        year = latest.selectedYear,
+                        runtimeBucket = latest.selectedRuntimeBucket,
+                        hiddenMediaKeys = latest.hiddenMediaKeys
+                    )
                     _uiState.update { current ->
-                        val merged = if (append) {
-                            (current.filteredItems + pageResult.items).distinctBy { it.compositeId }
-                        } else {
-                            pageResult.items
-                        }
                         current.copy(
-                            filteredItems = merged,
+                            filteredItems = filtered,
                             filteredPage = page,
                             filteredHasMore = pageResult.hasMore,
                             isLoadingFiltered = false,

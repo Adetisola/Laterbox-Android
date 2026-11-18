@@ -1816,4 +1816,136 @@ class LaterboxDatabaseTest {
             context.deleteDatabase(dbName)
         }
     }
+
+    @Test
+    fun migration15To16_addsPersonalLibraryTablesAndOfflineSourceRefAndPreservesData() {
+        val instrumentation = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+        val helper = androidx.room.testing.MigrationTestHelper(
+            instrumentation,
+            LaterboxDatabase::class.java
+        )
+        val dbName = "migration_15_16_test.db"
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        context.deleteDatabase(dbName)
+
+        helper.createDatabase(dbName, 15).use { v15Db ->
+            v15Db.execSQL(
+                "INSERT INTO `collections` (`id`, `name`, `created_at`, `updated_at`) VALUES (1, 'Sci-Fi Vault', 1000, 1000)"
+            )
+            v15Db.execSQL(
+                "INSERT INTO `downloaded_asset` (`id`, `savedLinkId`, `sourcePlatform`, `originalSourceUrl`, `title`, `mimeType`, `mediaType`, `localPath`, `fileStatus`, `fileSize`, `checksum`, `createdAt`) " +
+                    "VALUES ('asset_1', NULL, 'MovieBox', 'https://cdn.example/f1.mp4', 'Arrival', 'video/mp4', 'VIDEO', 'movies/arrival.mp4', 'AVAILABLE', 250000, 'chk', 1500)"
+            )
+            v15Db.execSQL(
+                "INSERT INTO `movie_watch_history` (`history_key`, `composite_id`, `provider_id`, `title_id`, `kind`, `title`, `position_ms`, `duration_ms`, `last_watched_at`, `is_trailer`) " +
+                    "VALUES ('moviebox:10:0:0', 'moviebox:10', 'moviebox', '10', 'movie', 'Completed Film', 98000, 100000, 2000, 0)"
+            )
+            v15Db.execSQL(
+                "INSERT INTO `movie_watch_history` (`history_key`, `composite_id`, `provider_id`, `title_id`, `kind`, `title`, `position_ms`, `duration_ms`, `last_watched_at`, `is_trailer`) " +
+                    "VALUES ('moviebox:11:0:0', 'moviebox:11', 'moviebox', '11', 'movie', 'In Progress Film', 40000, 100000, 2500, 0)"
+            )
+            v15Db.execSQL(
+                "INSERT INTO `movie_watch_history` (`history_key`, `composite_id`, `provider_id`, `title_id`, `kind`, `title`, `position_ms`, `duration_ms`, `last_watched_at`, `is_trailer`) " +
+                    "VALUES ('trailer:moviebox:12', 'moviebox:12', 'moviebox', '12', 'movie', 'Trailer Clip', 99000, 100000, 3000, 1)"
+            )
+        }
+
+        val migratedDb = helper.runMigrationsAndValidate(
+            dbName,
+            16,
+            true,
+            LaterboxDatabase.MIGRATION_15_16
+        )
+        try {
+            migratedDb.execSQL("PRAGMA foreign_keys = ON")
+
+            // Backfill marks non-trailer >= 96% as completed, leaves <96% and trailers incomplete
+            migratedDb.query("SELECT is_completed, completed_at, rewatch_count, hidden_from_continue_watching, is_hidden_title FROM `movie_watch_history` WHERE history_key = 'moviebox:10:0:0'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals(1, c.getInt(0))
+                assertEquals(2000L, c.getLong(1))
+                assertEquals(0, c.getInt(2))
+                assertEquals(0, c.getInt(3))
+                assertEquals(0, c.getInt(4))
+            }
+            migratedDb.query("SELECT is_completed FROM `movie_watch_history` WHERE history_key = 'moviebox:11:0:0'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals(0, c.getInt(0))
+            }
+            migratedDb.query("SELECT is_completed FROM `movie_watch_history` WHERE history_key = 'trailer:moviebox:12'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals(0, c.getInt(0))
+            }
+
+            // downloaded_asset.sourceRef exists and defaults to NULL
+            migratedDb.query("SELECT sourceRef FROM `downloaded_asset` WHERE id = 'asset_1'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertTrue(c.isNull(0))
+            }
+
+            // Insert into all 4 new tables
+            migratedDb.execSQL(
+                "INSERT INTO `movie_recently_viewed` (`media_key`, `composite_id`, `provider_id`, `title_id`, `kind`, `title`, `genres_csv`, `source_badge`, `is_playable_hint`, `viewed_at`) " +
+                    "VALUES ('moviebox:10', 'moviebox:10', 'moviebox', '10', 'movie', 'Completed Film', 'Sci-Fi', 'LIVE_MOVIEBOX', 1, 5000)"
+            )
+            migratedDb.execSQL(
+                "INSERT INTO `movie_series_preferences` (`media_key`, `preferred_audio_language`, `subtitles_disabled`, `reminders_muted`, `updated_at`) " +
+                    "VALUES ('moviebox:99', 'en', 0, 1, 6000)"
+            )
+            migratedDb.execSQL(
+                "INSERT INTO `movie_viewing_reminders` (`media_key`, `composite_id`, `provider_id`, `title_id`, `kind`, `title`, `trigger_at_millis`, `is_dismissed`, `created_at`, `updated_at`) " +
+                    "VALUES ('moviebox:10', 'moviebox:10', 'moviebox', '10', 'movie', 'Completed Film', 9000000, 0, 6000, 6000)"
+            )
+            migratedDb.execSQL(
+                "INSERT INTO `media_collection_cross_ref` (`media_key`, `collection_id`, `composite_id`, `provider_id`, `title_id`, `kind`, `title`, `genres_csv`, `source_badge`, `is_playable_hint`, `added_at`) " +
+                    "VALUES ('moviebox:10', 1, 'moviebox:10', 'moviebox', '10', 'movie', 'Completed Film', 'Sci-Fi', 'LIVE_MOVIEBOX', 1, 7000)"
+            )
+
+            // Deleting collection cascades to media_collection_cross_ref
+            migratedDb.execSQL("DELETE FROM `collections` WHERE id = 1")
+            migratedDb.query("SELECT COUNT(*) FROM `media_collection_cross_ref`").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals(0, c.getInt(0))
+            }
+        } finally {
+            migratedDb.close()
+            context.deleteDatabase(dbName)
+        }
+    }
+
+    @Test
+    fun collectionDao_countsUnarchivedLinksAndMediaItemsTogether() = runTest {
+        val colId = collectionDao.insertCollection(CollectionEntity(name = "Mixed Vault"))
+        linkDao.insertLink(
+            SavedLinkEntity(
+                originalUrl = "https://example.com/essay",
+                normalizedUrl = "https://example.com/essay",
+                title = "Essay",
+                domain = "example.com",
+                collectionId = colId
+            )
+        )
+        db.moviesDao().upsertMediaCollectionCrossRef(
+            com.laterbox.app.movies.data.local.entity.MediaCollectionCrossRef(
+                mediaKey = "moviebox:42",
+                collectionId = colId,
+                compositeId = "moviebox:42",
+                providerId = "moviebox",
+                titleId = "42",
+                kind = "movie",
+                title = "Sample Film",
+                genresCsv = "Drama",
+                sourceBadge = "LIVE_MOVIEBOX",
+                isPlayableHint = true,
+                addedAt = 1000L
+            )
+        )
+
+        val counts = collectionDao.getCollectionsWithCounts().first()
+        assertEquals(1, counts.size)
+        assertEquals(2, counts[0].itemCount)
+
+        collectionDao.deleteCollection(colId)
+        assertTrue(db.moviesDao().observeMediaInCollection(colId).first().isEmpty())
+    }
 }

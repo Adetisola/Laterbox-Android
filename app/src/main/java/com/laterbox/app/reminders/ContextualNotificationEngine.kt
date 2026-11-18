@@ -10,6 +10,7 @@ import com.laterbox.app.diagnostics.AppHealthChecker
 import com.laterbox.app.diagnostics.AppHealthReport
 import com.laterbox.app.diagnostics.IssueSeverity
 import com.laterbox.app.domain.model.ContentType
+import com.laterbox.app.movies.domain.repository.MoviesRepository
 import kotlinx.coroutines.flow.first
 import java.util.Calendar
 
@@ -218,14 +219,179 @@ class ContextualNotificationEngine(
         return false
     }
 
+    suspend fun maybeNotifyMoviesAndTv(
+        moviesRepository: MoviesRepository? = null,
+        nowMs: Long = System.currentTimeMillis(),
+        currentHour: Int = currentHourOfDay()
+    ): Boolean {
+        val prefs = userPreferencesRepository.userPreferencesFlow.first()
+        if (!prefs.smartRemindersEnabled || !prefs.smartNotificationsMoviesTv) return false
+        if (prefs.quietHoursEnabled && NotificationHelper.isWithinQuietHours(currentHour, prefs.quietHoursStartHour, prefs.quietHoursEndHour)) {
+            return false
+        }
+        if (prefs.lastMoviesNotificationAt > 0L && (nowMs - prefs.lastMoviesNotificationAt) < MOVIES_NUDGE_COOLDOWN_MS) {
+            return false
+        }
+        if (!NotificationManagerCompat.from(appContext).areNotificationsEnabled()) return false
+
+        val dao = database.moviesDao()
+        val mutedKeys = dao.getAllSeriesPreferencesSnapshot()
+            .filter { it.remindersMuted }
+            .map { it.mediaKey }
+            .toSet()
+
+        fun isMuted(canonicalId: String?, compositeId: String): Boolean =
+            (canonicalId != null && canonicalId in mutedKeys) || compositeId in mutedKeys
+
+        // 1. Continue Watching / Next Episode Nudge
+        val continueWatching = dao.observeContinueWatching(5).first()
+        val cwCandidate = continueWatching.firstOrNull { entry ->
+            !entry.isTrailer &&
+                !entry.isHiddenTitle &&
+                !isMuted(entry.canonicalId, entry.compositeId) &&
+                (nowMs - entry.lastWatchedAt) >= CONTINUE_WATCHING_STALE_MS
+        }
+        if (cwCandidate != null) {
+            val title = "Continue \"${cwCandidate.title}\""
+            val body = if (cwCandidate.kind == "tv_series" &&
+                cwCandidate.seasonNumber != null &&
+                cwCandidate.episodeNumber != null
+            ) {
+                "Pick up S${cwCandidate.seasonNumber}E${cwCandidate.episodeNumber} where you left off in Movies & TV."
+            } else {
+                "Pick up where you left off in Movies & TV."
+            }
+            val posted = NotificationHelper.showMoviesSmartNudgeNotification(
+                context = appContext,
+                dedupKey = "movies_cw:${cwCandidate.historyKey}:${cwCandidate.lastWatchedAt}",
+                notificationId = MOVIES_CW_NOTIFICATION_BASE + (cwCandidate.compositeId.hashCode() and 0x0FFF),
+                providerId = cwCandidate.providerId,
+                titleId = cwCandidate.titleId,
+                title = title,
+                body = body,
+                originTag = "MOVIES_CONTINUE_WATCHING",
+                posterUrl = cwCandidate.posterUrl
+            )
+            if (posted) {
+                userPreferencesRepository.recordMoviesNotificationPosted(nowMs)
+                activityEventRepository.recordEvent(
+                    type = ActivityEventType.NOTIFICATION_POSTED,
+                    title = title,
+                    detail = body
+                )
+                return true
+            }
+        }
+
+        // 2. Verified New Season Alert (TVMaze only)
+        if (moviesRepository != null) {
+            data class SeriesCandidate(
+                val titleId: String,
+                val compositeId: String,
+                val canonicalId: String?,
+                val title: String,
+                val posterUrl: String?
+            )
+            val watchlistSeries = dao.getWatchlistSnapshot()
+                .filter { it.providerId == "tvmaze" && it.kind == "tv_series" }
+                .map { SeriesCandidate(it.titleId, it.compositeId, it.canonicalId, it.title, it.posterUrl) }
+            val historySeries = dao.getWatchHistorySnapshot(30)
+                .filter { it.providerId == "tvmaze" && it.kind == "tv_series" && !it.isTrailer && !it.isHiddenTitle }
+                .map { SeriesCandidate(it.titleId, it.compositeId, it.canonicalId, it.title, it.posterUrl) }
+            val candidates = (historySeries + watchlistSeries)
+                .distinctBy { it.titleId }
+                .filter { !isMuted(it.canonicalId, it.compositeId) }
+                .take(4)
+
+            for (candidate in candidates) {
+                val seriesHistory = dao.getHistoryListForTitle(candidate.compositeId, candidate.canonicalId)
+                if (seriesHistory.any { it.isHiddenTitle }) continue
+                val knownMaxSeason = seriesHistory.mapNotNull { it.seasonNumber }.maxOrNull() ?: 0
+                if (knownMaxSeason <= 0) continue
+
+                val verifiedSeasons = moviesRepository.getSeasons("tvmaze", candidate.titleId)
+                    .getOrNull()
+                    .orEmpty()
+                val verifiedMaxSeason = verifiedSeasons.maxOfOrNull { it.seasonNumber } ?: 0
+                if (verifiedMaxSeason > knownMaxSeason) {
+                    val title = "New season of ${candidate.title}"
+                    val body = "Season $verifiedMaxSeason is now listed for ${candidate.title}."
+                    val posted = NotificationHelper.showMoviesSmartNudgeNotification(
+                        context = appContext,
+                        dedupKey = "tvmaze_new_season:${candidate.titleId}:s${verifiedMaxSeason}",
+                        notificationId = MOVIES_SEASON_NOTIFICATION_BASE + (candidate.titleId.hashCode() and 0x0FFF),
+                        providerId = "tvmaze",
+                        titleId = candidate.titleId,
+                        title = title,
+                        body = body,
+                        originTag = "MOVIES_NEW_SEASON",
+                        posterUrl = candidate.posterUrl
+                    )
+                    if (posted) {
+                        userPreferencesRepository.recordMoviesNotificationPosted(nowMs)
+                        activityEventRepository.recordEvent(
+                            type = ActivityEventType.NOTIFICATION_POSTED,
+                            title = title,
+                            detail = body
+                        )
+                        return true
+                    }
+                }
+            }
+        }
+
+        // 3. Unwatched Watchlist Nudge
+        val historySnapshot = dao.getWatchHistorySnapshot(50).filter { !it.isTrailer }
+        val touchedCompositeIds = historySnapshot.map { it.compositeId }.toSet()
+        val touchedCanonicalIds = historySnapshot.mapNotNull { it.canonicalId }.toSet()
+        val wlCandidate = dao.getWatchlistSnapshot().firstOrNull { item ->
+            (nowMs - item.addedAt) >= WATCHLIST_NUDGE_AGE_MS &&
+                !isMuted(item.canonicalId, item.compositeId) &&
+                item.compositeId !in touchedCompositeIds &&
+                (item.canonicalId == null || item.canonicalId !in touchedCanonicalIds)
+        }
+        if (wlCandidate != null) {
+            val title = "From your watchlist: ${wlCandidate.title}"
+            val body = "You saved \"${wlCandidate.title}\" to watch later in Movies & TV."
+            val posted = NotificationHelper.showMoviesSmartNudgeNotification(
+                context = appContext,
+                dedupKey = "movies_wl:${wlCandidate.compositeId}",
+                notificationId = MOVIES_WL_NOTIFICATION_BASE + (wlCandidate.compositeId.hashCode() and 0x0FFF),
+                providerId = wlCandidate.providerId,
+                titleId = wlCandidate.titleId,
+                title = title,
+                body = body,
+                originTag = "MOVIES_WATCHLIST",
+                posterUrl = wlCandidate.posterUrl
+            )
+            if (posted) {
+                userPreferencesRepository.recordMoviesNotificationPosted(nowMs)
+                activityEventRepository.recordEvent(
+                    type = ActivityEventType.NOTIFICATION_POSTED,
+                    title = title,
+                    detail = body
+                )
+                return true
+            }
+        }
+
+        return false
+    }
+
     private fun currentHourOfDay(): Int = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
 
     companion object {
         const val HEALTH_ALERT_COOLDOWN_MS = 24L * 60L * 60L * 1000L
         const val SUMMARY_COOLDOWN_MS = 20L * 60L * 60L * 1000L
         const val TIP_COOLDOWN_MS = 24L * 60L * 60L * 1000L
+        const val MOVIES_NUDGE_COOLDOWN_MS = 18L * 60L * 60L * 1000L
+        const val CONTINUE_WATCHING_STALE_MS = 6L * 60L * 60L * 1000L
+        const val WATCHLIST_NUDGE_AGE_MS = 24L * 60L * 60L * 1000L
         private const val SUMMARY_NOTIFICATION_ID = 940_100
         private const val TIP_NOTIFICATION_ID_BASE = 941_000
+        private const val MOVIES_CW_NOTIFICATION_BASE = 945_000
+        private const val MOVIES_SEASON_NOTIFICATION_BASE = 950_000
+        private const val MOVIES_WL_NOTIFICATION_BASE = 955_000
 
         val TIP_CATALOG: List<ContextualTip> = listOf(
             ContextualTip(

@@ -856,6 +856,8 @@ class MovieBoxProviderTest {
         assertEquals("https://cdn.example/dune-still.jpg", details.summary.backdropUrl)
         assertEquals("tt15239678", details.summary.imdbId)
         assertEquals("Denis Villeneuve", details.directorOrCreator)
+        assertEquals("101", details.directorPersonId)
+        assertEquals("2024-03-01", details.summary.releaseDate)
         assertEquals(2, details.cast.size)
         assertEquals("202", details.cast[1].personId)
         assertEquals("moviebox", details.cast[1].providerId)
@@ -871,5 +873,87 @@ class MovieBoxProviderTest {
         assertEquals("202", filmography.personId)
         assertEquals(2, filmography.credits.size)
         assertEquals("Wonka", filmography.credits[1].title)
+    }
+
+    @Test
+    fun streamMarkers_parseIntroAndRecapWhenPresentAndStayNullWhenOmitted() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/api/stream/with_markers/captions") ||
+                        path.startsWith("/api/stream/no_markers/captions") ->
+                        MockResponse().setResponseCode(200).setBody("""{"captions": []}""")
+                    path.startsWith("/api/stream/with_markers") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "subject_id": "with_markers",
+                          "title": "Test Show",
+                          "intro_start_ms": 15000,
+                          "intro_end_ms": 95000,
+                          "recap_start_ms": 2000,
+                          "recap_end_ms": 12000,
+                          "streams": [
+                            {"source": "CDN", "format": "MP4", "quality": "1080p", "quality_value": 1080, "url": "https://cdn.example/show.mp4"}
+                          ]
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/api/stream/no_markers") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "subject_id": "no_markers",
+                          "title": "Plain Film",
+                          "intro_start_ms": null,
+                          "intro_end_ms": null,
+                          "streams": [
+                            {"source": "CDN", "format": "MP4", "quality": "720p", "quality_value": 720, "url": "https://cdn.example/film.mp4"}
+                          ]
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/movies") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "page": 1,
+                          "per_page": 20,
+                          "total": 1,
+                          "items": [
+                            {
+                              "subject_id": "1001",
+                              "subject_type": 1,
+                              "title": "Long Epic",
+                              "release_date": "2024-05-10",
+                              "duration": 9300,
+                              "language": "English",
+                              "country": "United States",
+                              "genre": "Drama"
+                            }
+                          ]
+                        }
+                        """.trimIndent()
+                    )
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val withMarkers = provider.resolvePlaybackSources("with_markers", 1, 1).getOrThrow()
+            as PlaybackResolution.Available
+        assertEquals(15_000L, withMarkers.introWindow?.startMs)
+        assertEquals(95_000L, withMarkers.introWindow?.endMs)
+        assertTrue(withMarkers.introWindow?.contains(45_000L) == true)
+        assertEquals(2_000L, withMarkers.recapWindow?.startMs)
+        assertEquals(12_000L, withMarkers.recapWindow?.endMs)
+
+        val withoutMarkers = provider.resolvePlaybackSources("no_markers", null, null).getOrThrow()
+            as PlaybackResolution.Available
+        assertNull(withoutMarkers.introWindow)
+        assertNull(withoutMarkers.recapWindow)
+
+        val catalogue = provider.getCatalogue(MediaKind.MOVIE).getOrThrow()
+        assertEquals(155, catalogue.items.first().durationMinutes)
+        assertEquals("English", catalogue.items.first().language)
+        assertEquals("2024-05-10", catalogue.items.first().releaseDate)
     }
 }

@@ -164,6 +164,7 @@ data class UserPreferences(
     val smartNotificationsAppHealth: Boolean = true,
     val smartNotificationsSummaries: Boolean = true,
     val smartNotificationsTips: Boolean = false,
+    val smartNotificationsMoviesTv: Boolean = true,
     val quietHoursEnabled: Boolean = true,
     val quietHoursStartHour: Int = 22,
     val quietHoursEndHour: Int = 8,
@@ -171,6 +172,7 @@ data class UserPreferences(
     val lastAppHealthAlertAt: Long = 0L,
     val lastTipNotificationAt: Long = 0L,
     val lastSummaryNotificationAt: Long = 0L,
+    val lastMoviesNotificationAt: Long = 0L,
     // On-device only product activity counters (never sent off-device)
     val firstLaunchAt: Long = 0L,
     val firstLinkSavedAt: Long = 0L,
@@ -315,6 +317,7 @@ class UserPreferencesRepository(private val context: Context) {
         val SMART_NOTIF_APP_HEALTH = booleanPreferencesKey("smart_notif_app_health")
         val SMART_NOTIF_SUMMARIES = booleanPreferencesKey("smart_notif_summaries")
         val SMART_NOTIF_TIPS = booleanPreferencesKey("smart_notif_tips")
+        val SMART_NOTIF_MOVIES_TV = booleanPreferencesKey("smart_notif_movies_tv")
         val QUIET_HOURS_ENABLED = booleanPreferencesKey("quiet_hours_enabled")
         val QUIET_HOURS_START_HOUR = intPreferencesKey("quiet_hours_start_hour")
         val QUIET_HOURS_END_HOUR = intPreferencesKey("quiet_hours_end_hour")
@@ -322,6 +325,7 @@ class UserPreferencesRepository(private val context: Context) {
         val LAST_APP_HEALTH_ALERT_AT = longPreferencesKey("last_app_health_alert_at")
         val LAST_TIP_NOTIFICATION_AT = longPreferencesKey("last_tip_notification_at")
         val LAST_SUMMARY_NOTIFICATION_AT = longPreferencesKey("last_summary_notification_at")
+        val LAST_MOVIES_NOTIFICATION_AT = longPreferencesKey("last_movies_notif_at")
 
         val FIRST_LAUNCH_AT = longPreferencesKey("first_launch_at")
         val FIRST_LINK_SAVED_AT = longPreferencesKey("first_link_saved_at")
@@ -541,6 +545,7 @@ class UserPreferencesRepository(private val context: Context) {
             smartNotificationsAppHealth = preferences[PreferencesKeys.SMART_NOTIF_APP_HEALTH] ?: true,
             smartNotificationsSummaries = preferences[PreferencesKeys.SMART_NOTIF_SUMMARIES] ?: true,
             smartNotificationsTips = preferences[PreferencesKeys.SMART_NOTIF_TIPS] ?: false,
+            smartNotificationsMoviesTv = preferences[PreferencesKeys.SMART_NOTIF_MOVIES_TV] ?: true,
             quietHoursEnabled = preferences[PreferencesKeys.QUIET_HOURS_ENABLED] ?: true,
             quietHoursStartHour = (preferences[PreferencesKeys.QUIET_HOURS_START_HOUR] ?: 22).coerceIn(0, 23),
             quietHoursEndHour = (preferences[PreferencesKeys.QUIET_HOURS_END_HOUR] ?: 8).coerceIn(0, 23),
@@ -548,6 +553,7 @@ class UserPreferencesRepository(private val context: Context) {
             lastAppHealthAlertAt = preferences[PreferencesKeys.LAST_APP_HEALTH_ALERT_AT] ?: 0L,
             lastTipNotificationAt = preferences[PreferencesKeys.LAST_TIP_NOTIFICATION_AT] ?: 0L,
             lastSummaryNotificationAt = preferences[PreferencesKeys.LAST_SUMMARY_NOTIFICATION_AT] ?: 0L,
+            lastMoviesNotificationAt = preferences[PreferencesKeys.LAST_MOVIES_NOTIFICATION_AT] ?: 0L,
             firstLaunchAt = preferences[PreferencesKeys.FIRST_LAUNCH_AT] ?: 0L,
             firstLinkSavedAt = preferences[PreferencesKeys.FIRST_LINK_SAVED_AT] ?: 0L,
             remindersDeliveredCount = preferences[PreferencesKeys.REMINDERS_DELIVERED_COUNT] ?: 0,
@@ -908,6 +914,12 @@ class UserPreferencesRepository(private val context: Context) {
         }
     }
 
+    suspend fun setSmartNotificationsMoviesTv(enabled: Boolean) {
+        context.userDataStore.edit { preferences ->
+            preferences[PreferencesKeys.SMART_NOTIF_MOVIES_TV] = enabled
+        }
+    }
+
     suspend fun setQuietHoursEnabled(enabled: Boolean) {
         context.userDataStore.edit { preferences ->
             preferences[PreferencesKeys.QUIET_HOURS_ENABLED] = enabled
@@ -944,6 +956,12 @@ class UserPreferencesRepository(private val context: Context) {
     suspend fun recordSummaryNotificationPosted(timestamp: Long = System.currentTimeMillis()) {
         context.userDataStore.edit { preferences ->
             preferences[PreferencesKeys.LAST_SUMMARY_NOTIFICATION_AT] = timestamp
+        }
+    }
+
+    suspend fun recordMoviesNotificationPosted(timestamp: Long = System.currentTimeMillis()) {
+        context.userDataStore.edit { preferences ->
+            preferences[PreferencesKeys.LAST_MOVIES_NOTIFICATION_AT] = timestamp
         }
     }
 

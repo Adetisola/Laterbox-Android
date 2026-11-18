@@ -38,5 +38,6 @@ data class MediaAsset(
     val spotifyTrackId: String? = null,
     val versionTag: String? = null,
     val thumbnailPath: String? = null,
-    val contentCategory: String? = null
+    val contentCategory: String? = null,
+    val sourceRef: String? = null
 )

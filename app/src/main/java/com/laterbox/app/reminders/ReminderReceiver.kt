@@ -168,6 +168,7 @@ class ReminderReceiver : BroadcastReceiver() {
                         try {
                             appContainer.contextualNotificationEngine.evaluateAndNotifyAppHealthIfNeeded()
                             appContainer.contextualNotificationEngine.maybeSendContextualSummaryOrTip()
+                            appContainer.contextualNotificationEngine.maybeNotifyMoviesAndTv(appContainer.moviesRepository)
                         } catch (_: Throwable) {}
                         scheduler.scheduleNext(type)
                     }
@@ -177,6 +178,60 @@ class ReminderReceiver : BroadcastReceiver() {
                         ReminderScheduler(context).cancelLegacySmartDigest()
                         val prefs = userPreferencesRepository.userPreferencesFlow.first()
                         SmartReminderCoordinator.sync(context, prefs.toSmartReminderSettings())
+                    }
+
+                    ACTION_TRIGGER_MOVIE_REMINDER -> {
+                        val mediaKey = intent.getStringExtra(EXTRA_MEDIA_KEY)
+                        val providerId = intent.getStringExtra(EXTRA_PROVIDER_ID)
+                        val titleId = intent.getStringExtra(EXTRA_TITLE_ID)
+                        val fallbackTitle = intent.getStringExtra(EXTRA_TITLE).orEmpty()
+                        val fallbackNote = intent.getStringExtra(EXTRA_NOTE)
+                        if (mediaKey.isNullOrBlank() || providerId.isNullOrBlank() || titleId.isNullOrBlank()) {
+                            return@launch
+                        }
+
+                        val moviesDao = appContainer.database.moviesDao()
+                        val reminder = moviesDao.getViewingReminderByMediaKey(mediaKey)
+                        if (reminder == null || reminder.isDismissed) {
+                            return@launch
+                        }
+                        val seriesPrefs = moviesDao.getSeriesPreferences(mediaKey)
+                        if (seriesPrefs?.remindersMuted == true) {
+                            return@launch
+                        }
+
+                        val posted = NotificationHelper.showMovieViewingReminderNotification(
+                            context = context,
+                            mediaKey = mediaKey,
+                            providerId = reminder.providerId.ifBlank { providerId },
+                            titleId = reminder.titleId.ifBlank { titleId },
+                            title = reminder.title.ifBlank { fallbackTitle },
+                            note = reminder.note ?: fallbackNote,
+                            posterUrl = reminder.posterUrl
+                        )
+                        if (posted) {
+                            appContainer.moviesRepository.dismissViewingReminder(
+                                providerId = reminder.providerId.ifBlank { providerId },
+                                titleId = reminder.titleId.ifBlank { titleId }
+                            )
+                        }
+                    }
+
+                    ACTION_DISMISS_MOVIE_REMINDER -> {
+                        val mediaKey = intent.getStringExtra(EXTRA_MEDIA_KEY)
+                        val providerId = intent.getStringExtra(EXTRA_PROVIDER_ID)
+                        val titleId = intent.getStringExtra(EXTRA_TITLE_ID)
+                        if (!providerId.isNullOrBlank() && !titleId.isNullOrBlank()) {
+                            appContainer.moviesRepository.dismissViewingReminder(providerId, titleId)
+                        }
+                        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                        val notifId = intent.getIntExtra(EXTRA_NOTIFICATION_ID, -1)
+                        if (notifId != -1) {
+                            notificationManager?.cancel(notifId)
+                        }
+                        if (!mediaKey.isNullOrBlank()) {
+                            notificationManager?.cancel(ReminderScheduler.movieReminderRequestCode(mediaKey))
+                        }
                     }
 
                     ACTION_DISMISS_REMINDER -> {
@@ -208,6 +263,8 @@ class ReminderReceiver : BroadcastReceiver() {
         const val ACTION_TRIGGER_SMART_SCHEDULE = "com.laterbox.app.action.TRIGGER_SMART_SCHEDULE"
         const val ACTION_TRIGGER_SMART_DIGEST = "com.laterbox.app.action.TRIGGER_SMART_DIGEST"
         const val ACTION_DISMISS_REMINDER = "com.laterbox.app.action.DISMISS_REMINDER"
+        const val ACTION_TRIGGER_MOVIE_REMINDER = "com.laterbox.app.action.TRIGGER_MOVIE_REMINDER"
+        const val ACTION_DISMISS_MOVIE_REMINDER = "com.laterbox.app.action.DISMISS_MOVIE_REMINDER"
         const val EXTRA_LINK_ID = "extra_link_id"
         const val EXTRA_NOTIFICATION_ID = "extra_notification_id"
         const val EXTRA_TITLE = "extra_title"
@@ -215,6 +272,10 @@ class ReminderReceiver : BroadcastReceiver() {
         const val EXTRA_SCHEDULE_TYPE = "extra_schedule_type"
         const val EXTRA_SLOT_KEY = "extra_slot_key"
         const val EXTRA_TARGET_MILLIS = "extra_target_millis"
+        const val EXTRA_MEDIA_KEY = "extra_media_key"
+        const val EXTRA_PROVIDER_ID = "extra_provider_id"
+        const val EXTRA_TITLE_ID = "extra_title_id"
+        const val EXTRA_NOTE = "extra_note"
         const val STALE_THRESHOLD_MS = 3 * 60 * 60 * 1000L
     }
 }

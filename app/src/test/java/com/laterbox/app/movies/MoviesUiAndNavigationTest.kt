@@ -1423,4 +1423,294 @@ class MoviesUiAndNavigationTest {
         assertTrue(clearCalled)
         assertEquals(true, clearedTrailersOnly)
     }
+
+    @Test
+    fun moviesScreen_rendersExpandedFiltersRecentlyViewedBywSurpriseQuickPicksAndCollections() {
+        var selectedYear: String? = null
+        var selectedRuntime: com.laterbox.app.movies.domain.model.RuntimeBucket? = null
+        var rerolled = false
+        var openedCollectionId: Long? = null
+
+        val recMovie = sampleMovie.copy(id = "rec_1", title = "Arrival", releaseYear = 2016, durationMinutes = 84)
+        val recentMovie = sampleMovie.copy(id = "rv_1", title = "The Kid", releaseYear = 1921, durationMinutes = 68)
+        val surpriseMovie = sampleMovie.copy(id = "sur_1", title = "Charade", releaseYear = 1963)
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MoviesScreen(
+                    uiState = MoviesHomeUiState(
+                        isLoading = false,
+                        feed = MoviesHomeFeed(
+                            featuredBanners = listOf(sampleMovie),
+                            sections = listOf(BrowseSection("s1", "Featured", null, SectionStyle.RAIL, listOf(sampleMovie))),
+                            genres = listOf("All", "Comedy", "Drama")
+                        ),
+                        recentlyViewed = listOf(recentMovie),
+                        collectionsWithCounts = listOf(
+                            com.laterbox.app.domain.model.CollectionWithCount(
+                                collection = com.laterbox.app.domain.model.Collection(id = 7L, name = "Weekend Picks"),
+                                itemCount = 3
+                            )
+                        ),
+                        becauseYouWatchedGroups = listOf(
+                            com.laterbox.app.movies.domain.model.BecauseYouWatchedGroup(
+                                anchorTitle = "His Girl Friday",
+                                anchorKind = MediaKind.MOVIE,
+                                items = listOf(recMovie)
+                            )
+                        ),
+                        surprisePick = com.laterbox.app.movies.domain.model.SurprisePickResult(
+                            pick = surpriseMovie,
+                            rationale = "Classic wit matching your history"
+                        ),
+                        quickRuntimePicks = listOf(recMovie),
+                        recentlyAddedRail = listOf(sampleMovie),
+                        availableLanguages = listOf("All", "English", "French")
+                    ),
+                    onRefresh = {},
+                    onOpenCatalogue = { _, _ -> },
+                    onOpenDetail = { _, _ -> },
+                    onOpenPlayer = { _, _, _, _ -> },
+                    onToggleWatchlist = {},
+                    onToggleSampleFixtures = {},
+                    onSelectYear = { selectedYear = it },
+                    onSelectRuntimeBucket = { selectedRuntime = it },
+                    onRerollSurprise = { rerolled = true },
+                    onOpenCollection = { colId, _ -> openedCollectionId = colId }
+                )
+            }
+        }
+
+        // Expand Filters panel
+        composeTestRule.onNodeWithTag("movies_home_filters_row").performScrollToNode(hasTestTag("movies_filters_toggle"))
+        composeTestRule.onNodeWithTag("movies_filters_toggle").performClick()
+        composeTestRule.onNodeWithTag("movies_expanded_filters_panel").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("movies_home_year_2024").performClick()
+        assertEquals("2024", selectedYear)
+        composeTestRule.onNodeWithTag("movies_home_runtime_quick").performClick()
+        assertEquals(com.laterbox.app.movies.domain.model.RuntimeBucket.QUICK, selectedRuntime)
+
+        // Check curated rails & Surprise reroll
+        composeTestRule.onNodeWithTag("movies_home_list").performScrollToNode(hasTestTag("movies_home_recently_viewed_rail"))
+        composeTestRule.onNodeWithTag("movies_home_recently_viewed_rail").assertIsDisplayed()
+
+        composeTestRule.onNodeWithTag("movies_home_list").performScrollToNode(hasTestTag("movies_home_collections_rail"))
+        composeTestRule.onNodeWithTag("movies_home_collection_7").performClick()
+        assertEquals(7L, openedCollectionId)
+
+        composeTestRule.onNodeWithTag("movies_home_list").performScrollToNode(hasTestTag("movies_home_byw_rail_0"))
+        composeTestRule.onNodeWithTag("movies_home_byw_rail_0").assertIsDisplayed()
+
+        composeTestRule.onNodeWithTag("movies_home_list").performScrollToNode(hasTestTag("movies_home_surprise_card"))
+        composeTestRule.onNodeWithTag("movies_surprise_reroll").performClick()
+        assertTrue(rerolled)
+
+        composeTestRule.onNodeWithTag("movies_home_list").performScrollToNode(hasTestTag("movies_home_quick_picks_rail"))
+        composeTestRule.onNodeWithTag("movies_home_quick_picks_rail").assertIsDisplayed()
+    }
+
+    @Test
+    fun moviesCatalogueScreen_expandedFiltersAndCardOverflowMenuTriggerLibraryActions() {
+        var addedToCollectionId: Long? = null
+        var markedWatchedItem: MovieTitleSummary? = null
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MoviesCatalogueScreen(
+                    uiState = MoviesCatalogueUiState(
+                        items = listOf(sampleMovie),
+                        offlineMatches = listOf(
+                            com.laterbox.app.movies.domain.model.OfflineMediaMatch(
+                                assetId = "asset_1",
+                                sourceRef = "ia|his_girl_friday",
+                                localPath = "video/hgf.mp4",
+                                qualityLabel = "720p",
+                                fileSizeBytes = 1024L
+                            )
+                        ),
+                        collections = listOf(com.laterbox.app.domain.model.Collection(id = 12L, name = "Watch Soon"))
+                    ),
+                    onBackClick = {},
+                    onQueryChange = {},
+                    onSearchFocusChange = {},
+                    onSubmitSearch = {},
+                    onClearSearch = {},
+                    onSelectKind = {},
+                    onSelectGenre = {},
+                    onSelectSort = {},
+                    onLoadNextPage = {},
+                    onRetry = {},
+                    onClearSearchHistory = {},
+                    onOpenDetail = { _, _ -> },
+                    onMarkWatched = { markedWatchedItem = it },
+                    onAddToCollection = { _, cid -> addedToCollectionId = cid }
+                )
+            }
+        }
+
+        // Offline badge & overflow actions on poster card
+        composeTestRule.onNodeWithTag("poster_offline_badge_${sampleMovie.id}", useUnmergedTree = true).assertIsDisplayed()
+        composeTestRule.onNodeWithTag("poster_actions_${sampleMovie.id}").performClick()
+        composeTestRule.onNodeWithText("Mark Watched").performClick()
+        assertEquals(sampleMovie.id, markedWatchedItem?.id)
+
+        composeTestRule.onNodeWithTag("poster_actions_${sampleMovie.id}").performClick()
+        composeTestRule.onNodeWithText("Add to Collection").performClick()
+        composeTestRule.onNodeWithTag("movie_collection_picker_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Watch Soon").performClick()
+        assertEquals(12L, addedToCollectionId)
+    }
+
+    @Test
+    fun moviesViewingHistoryScreen_supportsSplitTabsRewatchRecentlyViewedAndUnhide() {
+        var unhiddenArgs: Pair<String, String>? = null
+        val movieEntry = WatchHistoryItem(
+            compositeId = "moviebox:m1",
+            providerId = "moviebox",
+            titleId = "m1",
+            kind = MediaKind.MOVIE,
+            title = "Dune",
+            positionMs = 600_000L,
+            durationMs = 600_000L,
+            lastWatchedAt = 4_000L,
+            historyKey = "moviebox:m1:0:0",
+            isCompleted = true,
+            rewatchCount = 2
+        )
+        val epEntry = WatchHistoryItem(
+            compositeId = "moviebox:s1",
+            providerId = "moviebox",
+            titleId = "s1",
+            kind = MediaKind.TV_SERIES,
+            title = "Severance",
+            episodeLabel = "S1E1",
+            seasonNumber = 1,
+            episodeNumber = 1,
+            positionMs = 300_000L,
+            durationMs = 2_400_000L,
+            lastWatchedAt = 3_000L,
+            historyKey = "moviebox:s1:1:1"
+        )
+        val hiddenEntry = WatchHistoryItem(
+            compositeId = "ia:hid_1",
+            providerId = "ia",
+            titleId = "hid_1",
+            kind = MediaKind.MOVIE,
+            title = "Hidden Film",
+            positionMs = 0L,
+            durationMs = 0L,
+            lastWatchedAt = 1_000L,
+            historyKey = "ia:hid_1:0:0",
+            isHiddenTitle = true
+        )
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MoviesViewingHistoryScreen(
+                    items = listOf(movieEntry, epEntry),
+                    onBackClick = {},
+                    onOpenDetail = { _, _ -> },
+                    onOpenPlayer = { _, _, _, _ -> },
+                    onDeleteItem = {},
+                    onClearHistory = {},
+                    recentlyViewed = listOf(sampleMovie),
+                    hiddenTitles = listOf(hiddenEntry),
+                    onUnhideTitle = { p, t -> unhiddenArgs = p to t }
+                )
+            }
+        }
+
+        // Movies tab shows rewatch badge
+        composeTestRule.onNodeWithTag("viewing_history_tab_movies").performClick()
+        composeTestRule.onNodeWithTag("viewing_history_item_moviebox:m1:0:0").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("viewing_history_rewatch_moviebox:m1:0:0", useUnmergedTree = true).assertIsDisplayed()
+        composeTestRule.onNodeWithTag("viewing_history_item_moviebox:s1:1:1").assertDoesNotExist()
+
+        // Episodes tab shows episode entry
+        composeTestRule.onNodeWithTag("viewing_history_tab_episodes").performClick()
+        composeTestRule.onNodeWithTag("viewing_history_item_moviebox:s1:1:1").assertIsDisplayed()
+
+        // Recently viewed tab shows recently viewed title
+        composeTestRule.onNodeWithTag("viewing_history_tab_recent").performClick()
+        composeTestRule.onNodeWithText("His Girl Friday").assertIsDisplayed()
+
+        // Hidden tab lets user unhide
+        composeTestRule.onNodeWithTag("viewing_history_tabs_row")
+            .performScrollToNode(hasTestTag("viewing_history_tab_hidden"))
+        composeTestRule.onNodeWithTag("viewing_history_tab_hidden").performClick()
+        composeTestRule.onNodeWithTag("viewing_history_unhide_hid_1").performClick()
+        assertEquals("ia" to "hid_1", unhiddenArgs)
+    }
+
+    @Test
+    fun collectionDetailScreen_rendersBothMediaItemsAndSavedLinks() {
+        var openedMedia: Pair<String, String>? = null
+        var removedId: String? = null
+        val mediaItem = com.laterbox.app.movies.domain.model.CollectionMediaItem(
+            mediaKey = sampleMovie.stableMediaKey,
+            collectionId = 3L,
+            addedAt = 1_000L,
+            summary = sampleMovie
+        )
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                com.laterbox.app.ui.collections.CollectionDetailScreen(
+                    uiState = com.laterbox.app.ui.collections.CollectionDetailUiState(
+                        collectionId = 3L,
+                        collectionName = "Favorites",
+                        links = emptyList(),
+                        mediaItems = listOf(mediaItem),
+                        isLoading = false
+                    ),
+                    onBackClick = {},
+                    onLinkClick = {},
+                    onQuickOpenClick = {},
+                    onOpenMovieDetail = { p, t -> openedMedia = p to t },
+                    onRemoveMediaItem = { removedId = it.summary.id }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithText("Movies & TV").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("collection_media_item_${sampleMovie.id}").performClick()
+        assertEquals("ia" to "his_girl_friday", openedMedia)
+        composeTestRule.onNodeWithTag("collection_media_remove_${sampleMovie.id}").performClick()
+        assertEquals(sampleMovie.id, removedId)
+    }
+
+    @Test
+    fun moviePlayerScreen_showsOfflineBadgeAndMetadataGatedSkipIntro() {
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MoviePlayerScreen(
+                    uiState = MoviePlayerUiState(
+                        isLoading = false,
+                        summary = sampleMovie,
+                        activeTitleId = sampleMovie.id,
+                        startPositionMs = 5_000L,
+                        isPlayingOffline = true,
+                        introWindow = com.laterbox.app.movies.domain.model.PlaybackMarkerWindow(0L, 60_000L),
+                        recapWindow = null,
+                        resolution = PlaybackResolution.Available(
+                            title = "His Girl Friday",
+                            sources = listOf(PlaybackSource("s720", "https://archive.org/720.mp4", "MP4", "720p", 720, providerName = "IA")),
+                            providerName = "IA"
+                        ),
+                        selectedSource = PlaybackSource("s720", "https://archive.org/720.mp4", "MP4", "720p", 720, providerName = "IA")
+                    ),
+                    onBackClick = {},
+                    onRetry = {},
+                    onSelectSource = { _, _ -> },
+                    onSelectSubtitle = { _, _ -> },
+                    onSaveProgress = { _, _ -> },
+                    onOpenExternalUrl = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("player_offline_badge").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_skip_intro_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_skip_recap_button").assertDoesNotExist()
+    }
 }

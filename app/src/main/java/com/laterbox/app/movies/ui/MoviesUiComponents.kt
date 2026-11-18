@@ -38,6 +38,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -45,6 +47,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -75,6 +78,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import coil.compose.AsyncImage
+import com.laterbox.app.domain.model.Collection
 import com.laterbox.app.movies.domain.model.CastMember
 import com.laterbox.app.movies.domain.model.DataSourceBadge
 import com.laterbox.app.movies.domain.model.EpisodeItem
@@ -130,10 +134,21 @@ fun MoviePosterCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     width: Dp = 132.dp,
-    testTag: String = "movie_card_${item.providerId}_${item.id}"
+    testTag: String = "movie_card_${item.providerId}_${item.id}",
+    isOfflineDownloaded: Boolean = false,
+    isInWatchlist: Boolean = false,
+    onToggleWatchlist: ((MovieTitleSummary) -> Unit)? = null,
+    onAddToCollection: ((MovieTitleSummary) -> Unit)? = null,
+    onMarkWatched: ((MovieTitleSummary) -> Unit)? = null,
+    onHideTitle: ((MovieTitleSummary) -> Unit)? = null
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
+    var menuExpanded by remember { mutableStateOf(false) }
+    val hasContextualActions = onToggleWatchlist != null ||
+        onAddToCollection != null ||
+        onMarkWatched != null ||
+        onHideTitle != null
 
     Column(
         modifier = modifier
@@ -199,6 +214,99 @@ fun MoviePosterCard(
                         color = Color(0xFFFFD54F),
                         modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
                     )
+                }
+            }
+
+            // Offline badge & contextual menu (top-right)
+            if (isOfflineDownloaded || hasContextualActions) {
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (isOfflineDownloaded) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = Color(0xFF1B5E20).copy(alpha = 0.88f),
+                            modifier = Modifier.testTag("poster_offline_badge_${item.id}")
+                        ) {
+                            Text(
+                                text = "OFFLINE",
+                                style = typography.caption.copy(fontSize = 8.sp, fontWeight = FontWeight.Bold),
+                                color = Color.White,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                    if (hasContextualActions) {
+                        Box {
+                            Surface(
+                                shape = CircleShape,
+                                color = Color.Black.copy(alpha = 0.65f),
+                                modifier = Modifier
+                                    .size(24.dp)
+                                    .clip(CircleShape)
+                                    .clickable { menuExpanded = true }
+                                    .testTag("poster_actions_${item.id}")
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        painter = painterResource(LaterboxIcons.MoreVertical),
+                                        contentDescription = "Title actions",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
+                            DropdownMenu(
+                                expanded = menuExpanded,
+                                onDismissRequest = { menuExpanded = false }
+                            ) {
+                                onToggleWatchlist?.let { toggle ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                if (isInWatchlist) "Remove from Watchlist" else "Add to Watchlist"
+                                            )
+                                        },
+                                        onClick = {
+                                            menuExpanded = false
+                                            toggle(item)
+                                        }
+                                    )
+                                }
+                                onAddToCollection?.let { addCol ->
+                                    DropdownMenuItem(
+                                        text = { Text("Add to Collection") },
+                                        onClick = {
+                                            menuExpanded = false
+                                            addCol(item)
+                                        }
+                                    )
+                                }
+                                onMarkWatched?.let { mark ->
+                                    DropdownMenuItem(
+                                        text = { Text("Mark Watched") },
+                                        onClick = {
+                                            menuExpanded = false
+                                            mark(item)
+                                        }
+                                    )
+                                }
+                                onHideTitle?.let { hide ->
+                                    DropdownMenuItem(
+                                        text = { Text("Hide Title") },
+                                        onClick = {
+                                            menuExpanded = false
+                                            hide(item)
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -360,10 +468,20 @@ fun BackdropArtworkBox(
 fun ContinueWatchingCard(
     item: WatchHistoryItem,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isOfflineDownloaded: Boolean = false,
+    onRestartFromBeginning: (() -> Unit)? = null,
+    onMarkWatched: (() -> Unit)? = null,
+    onOpenDetail: (() -> Unit)? = null,
+    onRemoveFromContinueWatching: (() -> Unit)? = null
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
+    var menuExpanded by remember { mutableStateOf(false) }
+    val hasMenuActions = onRestartFromBeginning != null ||
+        onMarkWatched != null ||
+        onOpenDetail != null ||
+        onRemoveFromContinueWatching != null
 
     Surface(
         modifier = modifier
@@ -410,6 +528,90 @@ fun ContinueWatchingCard(
                         }
                     }
                 }
+                if (isOfflineDownloaded) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = Color(0xFF1B5E20).copy(alpha = 0.88f),
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(6.dp)
+                            .testTag("continue_watching_offline_${item.titleId}")
+                    ) {
+                        Text(
+                            text = "OFFLINE",
+                            style = typography.caption.copy(fontSize = 8.sp, fontWeight = FontWeight.Bold),
+                            color = Color.White,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+                if (hasMenuActions) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(6.dp)
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color.Black.copy(alpha = 0.65f),
+                            modifier = Modifier
+                                .size(24.dp)
+                                .clip(CircleShape)
+                                .clickable { menuExpanded = true }
+                                .testTag("continue_watching_actions_${item.titleId}")
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    painter = painterResource(LaterboxIcons.MoreVertical),
+                                    contentDescription = "Continue watching options",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                        }
+                        DropdownMenu(
+                            expanded = menuExpanded,
+                            onDismissRequest = { menuExpanded = false }
+                        ) {
+                            onOpenDetail?.let { openDetail ->
+                                DropdownMenuItem(
+                                    text = { Text("View Details") },
+                                    onClick = {
+                                        menuExpanded = false
+                                        openDetail()
+                                    }
+                                )
+                            }
+                            onRestartFromBeginning?.let { restart ->
+                                DropdownMenuItem(
+                                    text = { Text("Restart from Beginning") },
+                                    onClick = {
+                                        menuExpanded = false
+                                        restart()
+                                    }
+                                )
+                            }
+                            onMarkWatched?.let { mark ->
+                                DropdownMenuItem(
+                                    text = { Text("Mark Watched") },
+                                    onClick = {
+                                        menuExpanded = false
+                                        mark()
+                                    }
+                                )
+                            }
+                            onRemoveFromContinueWatching?.let { remove ->
+                                DropdownMenuItem(
+                                    text = { Text("Remove from Continue Watching") },
+                                    onClick = {
+                                        menuExpanded = false
+                                        remove()
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
                 LinearProgressIndicator(
                     progress = { item.progressFraction.coerceAtLeast(0.04f) },
                     modifier = Modifier
@@ -439,6 +641,108 @@ fun ContinueWatchingCard(
             }
         }
     }
+}
+
+@Composable
+fun MovieCollectionPickerDialog(
+    title: String,
+    collections: List<Collection>,
+    memberCollectionIds: Set<Long> = emptySet(),
+    onSelectCollection: (Long) -> Unit,
+    onCreateAndAddCollection: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val colors = LaterboxTheme.colors
+    val typography = LaterboxTheme.typography
+    var newName by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = colors.surfaceElevated,
+        modifier = Modifier.testTag("movie_collection_picker_dialog"),
+        title = {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("Add to Collection", style = typography.sheetTitle, color = colors.textPrimary)
+                Text(
+                    text = title,
+                    style = typography.metaText,
+                    color = colors.textSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (collections.isEmpty()) {
+                    Text(
+                        text = "No collections yet. Create one below.",
+                        style = typography.bodySecondary,
+                        color = colors.textSecondary
+                    )
+                } else {
+                    collections.forEach { col ->
+                        val isMember = col.id in memberCollectionIds
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { onSelectCollection(col.id) }
+                                .padding(horizontal = 6.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                painter = painterResource(
+                                    if (isMember) LaterboxIcons.Check else LaterboxIcons.Folder
+                                ),
+                                contentDescription = null,
+                                tint = if (isMember) colors.accentPrimary else colors.textSecondary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = col.name,
+                                style = typography.uiLabel,
+                                color = colors.textPrimary,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = { newName = it },
+                    label = { Text("New collection name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Button(
+                    onClick = {
+                        val clean = newName.trim()
+                        if (clean.isNotEmpty()) {
+                            onCreateAndAddCollection(clean)
+                            newName = ""
+                        }
+                    },
+                    enabled = newName.isNotBlank(),
+                    colors = ButtonDefaults.buttonColors(containerColor = colors.accentPrimary),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Create & Add")
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Done", color = colors.accentPrimary)
+            }
+        }
+    )
 }
 
 @Composable

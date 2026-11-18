@@ -553,6 +553,12 @@ class SettingsViewModel(
         }
     }
 
+    fun setSmartNotificationsMoviesTv(enabled: Boolean) {
+        viewModelScope.launch {
+            userPreferencesRepository.setSmartNotificationsMoviesTv(enabled)
+        }
+    }
+
     fun setQuietHoursEnabled(enabled: Boolean) {
         viewModelScope.launch {
             userPreferencesRepository.setQuietHoursEnabled(enabled)
@@ -621,6 +627,39 @@ class SettingsViewModel(
 
     fun observeViewingHistory(limit: Int = 100): Flow<List<WatchHistoryItem>> =
         moviesRepository?.observeViewingHistory(limit) ?: emptyFlow()
+
+    fun observeMovieWatchHistory(limit: Int = 100): Flow<List<WatchHistoryItem>> =
+        moviesRepository?.observeMovieWatchHistory(limit) ?: emptyFlow()
+
+    fun observeEpisodeWatchHistory(limit: Int = 100): Flow<List<WatchHistoryItem>> =
+        moviesRepository?.observeEpisodeWatchHistory(limit) ?: emptyFlow()
+
+    fun observeTrailerHistory(limit: Int = 100): Flow<List<WatchHistoryItem>> =
+        moviesRepository?.observeTrailerHistory(limit) ?: emptyFlow()
+
+    fun observeHiddenHistory(limit: Int = 100): Flow<List<WatchHistoryItem>> =
+        moviesRepository?.observeHiddenHistory(limit) ?: emptyFlow()
+
+    fun observeRecentlyViewed(limit: Int = 50): Flow<List<com.laterbox.app.movies.domain.model.MovieTitleSummary>> =
+        moviesRepository?.observeRecentlyViewed(limit) ?: emptyFlow()
+
+    fun unhideMovieTitle(providerId: String, titleId: String) {
+        viewModelScope.launch {
+            moviesRepository?.setTitleHidden(providerId, titleId, false)
+        }
+    }
+
+    fun removeRecentlyViewed(providerId: String, titleId: String) {
+        viewModelScope.launch {
+            moviesRepository?.removeRecentlyViewed(providerId, titleId)
+        }
+    }
+
+    fun clearRecentlyViewed() {
+        viewModelScope.launch {
+            moviesRepository?.clearRecentlyViewed()
+        }
+    }
 
     fun deleteViewingHistoryEntry(historyKey: String) {
         viewModelScope.launch {

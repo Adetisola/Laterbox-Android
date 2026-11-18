@@ -19,10 +19,14 @@ import com.laterbox.app.data.preferences.UserPreferencesRepository
 import com.laterbox.app.data.repository.ChatMessageStatus
 import com.laterbox.app.data.repository.ChatRepository
 import com.laterbox.app.data.repository.ChatRole
+import com.laterbox.app.data.repository.CollectionRepository
 import com.laterbox.app.data.repository.LinkRepository
 import com.laterbox.app.diagnostics.AppHealthChecker
 import com.laterbox.app.diagnostics.AppHealthReport
 import com.laterbox.app.media.domain.repository.MediaRepository
+import com.laterbox.app.movies.domain.model.MovieTitleSummary
+import com.laterbox.app.movies.domain.repository.MoviesRepository
+import com.laterbox.app.reminders.ReminderScheduler
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -32,6 +36,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
@@ -64,7 +69,10 @@ class ChatViewModel(
     private val appHealthChecker: AppHealthChecker,
     private val linkRepository: LinkRepository,
     private val mediaRepository: MediaRepository,
-    private val speech: SpeechTranscriptionCoordinator? = null
+    private val speech: SpeechTranscriptionCoordinator? = null,
+    private val moviesRepository: MoviesRepository? = null,
+    private val collectionRepository: CollectionRepository? = null,
+    private val reminderScheduler: ReminderScheduler? = null
 ) : ViewModel() {
 
     private val _activeConversationId = MutableStateFlow<String?>(null)
@@ -377,6 +385,47 @@ class ChatViewModel(
         }
     }
 
+    private suspend fun resolveMovieSummary(providerId: String, titleId: String): MovieTitleSummary? {
+        val repo = moviesRepository ?: return null
+        val targetComposite = "$providerId:$titleId"
+        repo.observeWatchlist().firstOrNull().orEmpty().firstOrNull {
+            (it.providerId == providerId && it.id == titleId) || it.compositeId == targetComposite
+        }?.let { return it }
+
+        repo.observeRecentlyViewed(30).firstOrNull().orEmpty().firstOrNull {
+            (it.providerId == providerId && it.id == titleId) || it.compositeId == targetComposite
+        }?.let { return it }
+
+        repo.observeViewingHistory(50).firstOrNull().orEmpty().firstOrNull {
+            (it.providerId == providerId && it.titleId == titleId) || it.compositeId == targetComposite
+        }?.let { h ->
+            return MovieTitleSummary(
+                id = h.titleId,
+                providerId = h.providerId,
+                kind = h.kind,
+                title = h.title,
+                posterUrl = h.posterUrl,
+                backdropUrl = h.backdropUrl,
+                canonicalId = h.canonicalId
+            )
+        }
+
+        repo.observeActiveViewingReminders().firstOrNull().orEmpty().firstOrNull {
+            (it.providerId == providerId && it.titleId == titleId) || it.compositeId == targetComposite
+        }?.let { r ->
+            return MovieTitleSummary(
+                id = r.titleId,
+                providerId = r.providerId,
+                kind = r.kind,
+                title = r.title,
+                posterUrl = r.posterUrl,
+                canonicalId = r.canonicalId
+            )
+        }
+
+        return repo.getDetails(providerId, titleId).getOrNull()?.summary
+    }
+
     private suspend fun validateActionTarget(action: ChatAction): String? = when (action) {
         is ChatAction.RetryInspection -> validateLink(action.linkId)
         is ChatAction.RefreshMetadata -> validateLink(action.linkId)
@@ -389,6 +438,42 @@ class ChatViewModel(
                     task.status != DownloadState.PAUSED -> "that download isn't stopped or failed."
                 else -> null
             }
+        }
+        is ChatAction.ToggleMovieWatchlist -> when {
+            moviesRepository == null -> "Movies & TV library isn't available."
+            action.providerId.isBlank() || action.titleId.isBlank() -> "that title reference is incomplete."
+            resolveMovieSummary(action.providerId, action.titleId) == null -> "that title could not be found."
+            else -> null
+        }
+        is ChatAction.AddMovieToCollection -> when {
+            moviesRepository == null || collectionRepository == null -> "collections aren't available here."
+            action.providerId.isBlank() || action.titleId.isBlank() -> "that title reference is incomplete."
+            action.collectionId == null && action.collectionName.isNullOrBlank() -> "no target collection was specified."
+            action.collectionId != null && action.collectionName.isNullOrBlank() &&
+                collectionRepository.getCollectionById(action.collectionId).first() == null ->
+                "that collection no longer exists."
+            resolveMovieSummary(action.providerId, action.titleId) == null -> "that title could not be found."
+            else -> null
+        }
+        is ChatAction.MarkMovieWatched -> when {
+            moviesRepository == null -> "Movies & TV library isn't available."
+            action.providerId.isBlank() || action.titleId.isBlank() -> "that title reference is incomplete."
+            action.watched && resolveMovieSummary(action.providerId, action.titleId) == null ->
+                "that title could not be found."
+            else -> null
+        }
+        is ChatAction.ScheduleMovieReminder -> when {
+            moviesRepository == null -> "Movies & TV library isn't available."
+            action.providerId.isBlank() || action.titleId.isBlank() -> "that title reference is incomplete."
+            action.triggerAtMillis <= System.currentTimeMillis() -> "that reminder time is already in the past."
+            resolveMovieSummary(action.providerId, action.titleId) == null -> "that title could not be found."
+            else -> null
+        }
+        is ChatAction.MuteSeriesReminders -> when {
+            moviesRepository == null -> "Movies & TV library isn't available."
+            action.providerId.isBlank() || action.titleId.isBlank() -> "that title reference is incomplete."
+            resolveMovieSummary(action.providerId, action.titleId) == null -> "that title could not be found."
+            else -> null
         }
         else -> "that action isn't supported."
     }
@@ -407,6 +492,11 @@ class ChatViewModel(
             is ChatAction.RetryInspection -> "RI:${action.linkId}"
             is ChatAction.RefreshMetadata -> "RM:${action.linkId}"
             is ChatAction.RetryDownload -> "RD:${action.taskId}"
+            is ChatAction.ToggleMovieWatchlist -> "TMW:${action.providerId}:${action.titleId}:${action.add}"
+            is ChatAction.AddMovieToCollection -> "AMC:${action.providerId}:${action.titleId}:${action.collectionId ?: action.collectionName.orEmpty()}"
+            is ChatAction.MarkMovieWatched -> "MMW:${action.providerId}:${action.titleId}:${action.seasonNumber}:${action.episodeNumber}:${action.watched}"
+            is ChatAction.ScheduleMovieReminder -> "SMR:${action.providerId}:${action.titleId}:${action.triggerAtMillis}"
+            is ChatAction.MuteSeriesReminders -> "MSR:${action.providerId}:${action.titleId}:${action.muted}"
             else -> return
         }
         if (!executingActionKeys.add(dedupeKey)) return
@@ -442,6 +532,97 @@ class ChatViewModel(
                     } else {
                         "I tried to re-queue \"${action.title}\" but it is still stopped."
                     }
+                }
+                is ChatAction.ToggleMovieWatchlist -> {
+                    val repo = moviesRepository ?: return
+                    val summary = resolveMovieSummary(action.providerId, action.titleId)
+                        ?: return postReceipt(conversationId, "I couldn't find \"${action.title}\". Nothing was changed.")
+                    val currentlyIn = repo.observeIsInWatchlist(summary.compositeId).first()
+                    if (currentlyIn == action.add) {
+                        if (action.add) "\"${summary.title}\" is already in your Movies & TV watchlist."
+                        else "\"${summary.title}\" is already removed from your Movies & TV watchlist."
+                    } else {
+                        val nowIn = repo.toggleWatchlist(summary)
+                        if (nowIn) "Added \"${summary.title}\" to your Movies & TV watchlist."
+                        else "Removed \"${summary.title}\" from your Movies & TV watchlist."
+                    }
+                }
+                is ChatAction.AddMovieToCollection -> {
+                    val repo = moviesRepository ?: return
+                    val colRepo = collectionRepository ?: return
+                    val summary = resolveMovieSummary(action.providerId, action.titleId)
+                        ?: return postReceipt(conversationId, "I couldn't find \"${action.title}\". Nothing was changed.")
+                    val existingById = action.collectionId?.let { colRepo.getCollectionById(it).first() }
+                    val trimmedName = action.collectionName?.trim()?.takeIf { it.isNotBlank() }
+                    val existingByName = if (existingById == null && trimmedName != null) {
+                        colRepo.collectionsWithCounts.firstOrNull().orEmpty()
+                            .firstOrNull { it.collection.name.equals(trimmedName, ignoreCase = true) }
+                            ?.collection
+                    } else null
+                    val targetColId = existingById?.id
+                        ?: existingByName?.id
+                        ?: trimmedName?.let { colRepo.createCollection(it) }
+                        ?: return postReceipt(conversationId, "I couldn't resolve the target collection. Nothing was changed.")
+                    val targetColName = existingById?.name ?: existingByName?.name ?: trimmedName ?: "collection"
+                    repo.addMediaToCollection(summary, targetColId)
+                    "Added \"${summary.title}\" to collection \"$targetColName\"."
+                }
+                is ChatAction.MarkMovieWatched -> {
+                    val repo = moviesRepository ?: return
+                    val epSuffix = if (action.seasonNumber != null && action.episodeNumber != null) {
+                        " (S${action.seasonNumber}E${action.episodeNumber})"
+                    } else ""
+                    if (action.watched) {
+                        val summary = resolveMovieSummary(action.providerId, action.titleId)
+                            ?: return postReceipt(conversationId, "I couldn't find \"${action.title}\". Nothing was changed.")
+                        val episodeLabel = if (action.seasonNumber != null && action.episodeNumber != null) {
+                            "S${action.seasonNumber}E${action.episodeNumber}"
+                        } else null
+                        repo.markWatched(
+                            item = summary,
+                            seasonNumber = action.seasonNumber,
+                            episodeNumber = action.episodeNumber,
+                            episodeLabel = episodeLabel
+                        )
+                        "Marked \"${summary.title}\"$epSuffix as watched in your viewing history."
+                    } else {
+                        repo.markUnwatched(
+                            providerId = action.providerId,
+                            titleId = action.titleId,
+                            seasonNumber = action.seasonNumber,
+                            episodeNumber = action.episodeNumber
+                        )
+                        "Cleared watched status for \"${action.title}\"$epSuffix."
+                    }
+                }
+                is ChatAction.ScheduleMovieReminder -> {
+                    val repo = moviesRepository ?: return
+                    val summary = resolveMovieSummary(action.providerId, action.titleId)
+                        ?: return postReceipt(conversationId, "I couldn't find \"${action.title}\". Nothing was changed.")
+                    repo.scheduleViewingReminder(
+                        item = summary,
+                        triggerAtMillis = action.triggerAtMillis,
+                        note = action.note
+                    )
+                    reminderScheduler?.scheduleMovieViewingReminder(
+                        mediaKey = summary.stableMediaKey,
+                        providerId = summary.providerId,
+                        titleId = summary.id,
+                        title = summary.title,
+                        triggerAtMillis = action.triggerAtMillis,
+                        note = action.note
+                    )
+                    val formattedTime = java.text.SimpleDateFormat("MMM d 'at' h:mm a", java.util.Locale.US)
+                        .format(java.util.Date(action.triggerAtMillis))
+                    "Scheduled a viewing reminder for \"${summary.title}\" on $formattedTime."
+                }
+                is ChatAction.MuteSeriesReminders -> {
+                    val repo = moviesRepository ?: return
+                    val summary = resolveMovieSummary(action.providerId, action.titleId)
+                        ?: return postReceipt(conversationId, "I couldn't find \"${action.title}\". Nothing was changed.")
+                    repo.setSeriesRemindersMuted(summary.providerId, summary.id, action.muted)
+                    if (action.muted) "Muted proactive Smart Reminders for \"${summary.title}\"."
+                    else "Unmuted proactive Smart Reminders for \"${summary.title}\"."
                 }
                 else -> return
             }

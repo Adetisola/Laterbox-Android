@@ -381,6 +381,15 @@ fun LaterboxApp(
             dest == "chat" || dest == LaterboxDestination.Chat.BASE_ROUTE -> {
                 navController.navigate(LaterboxDestination.Chat.createRoute(initialPrompt = prompt))
             }
+            dest == "movies" || dest == LaterboxDestination.Movies.route -> {
+                navController.navigate(LaterboxDestination.Movies.route) {
+                    popUpTo(LaterboxDestination.Inbox.route)
+                    launchSingleTop = true
+                }
+            }
+            dest.startsWith("movies/detail/") -> {
+                navController.navigate(dest) { launchSingleTop = true }
+            }
             dest.startsWith("settings") -> {
                 navController.navigate(dest) { launchSingleTop = true }
             }
@@ -869,9 +878,44 @@ fun LaterboxApp(
                                         is ChatAction.RunHealthCheck -> {
                                             chatViewModel.runAppHealthCheck()
                                         }
+                                        is ChatAction.OpenMoviesHome -> {
+                                            navigateTopLevel(LaterboxDestination.Movies.route)
+                                        }
+                                        is ChatAction.SearchMovies -> {
+                                            navController.navigate(
+                                                LaterboxDestination.MoviesCatalogue.createRoute(
+                                                    kind = action.kind,
+                                                    genre = action.genre,
+                                                    query = action.query.takeIf { it.isNotBlank() }
+                                                )
+                                            )
+                                        }
+                                        is ChatAction.OpenMovieDetail -> {
+                                            navController.navigate(
+                                                LaterboxDestination.MovieDetail.createRoute(
+                                                    providerId = action.providerId,
+                                                    titleId = action.titleId
+                                                )
+                                            )
+                                        }
+                                        is ChatAction.OpenMoviePlayer -> {
+                                            navController.navigate(
+                                                LaterboxDestination.MoviePlayer.createRoute(
+                                                    providerId = action.providerId,
+                                                    titleId = action.titleId,
+                                                    seasonNumber = action.seasonNumber,
+                                                    episodeNumber = action.episodeNumber
+                                                )
+                                            )
+                                        }
                                         is ChatAction.RetryInspection,
                                         is ChatAction.RetryDownload,
-                                        is ChatAction.RefreshMetadata -> {
+                                        is ChatAction.RefreshMetadata,
+                                        is ChatAction.ToggleMovieWatchlist,
+                                        is ChatAction.AddMovieToCollection,
+                                        is ChatAction.MarkMovieWatched,
+                                        is ChatAction.ScheduleMovieReminder,
+                                        is ChatAction.MuteSeriesReminders -> {
                                             chatViewModel.requestMutatingActionConfirmation(action)
                                         }
                                     }
@@ -960,7 +1004,13 @@ fun LaterboxApp(
                                             inboxViewModel.unarchive(link.id)
                                         }
                                     }
-                                }
+                                },
+                                onOpenMovieDetail = { providerId, titleId ->
+                                    navController.navigate(
+                                        LaterboxDestination.MovieDetail.createRoute(providerId, titleId)
+                                    )
+                                },
+                                onRemoveMediaItem = collectionDetailViewModel::onRemoveMediaItem
                             )
                         }
 
@@ -1070,6 +1120,23 @@ fun LaterboxApp(
                                 onSelectSort = moviesHomeViewModel::selectSort,
                                 onResetFilters = moviesHomeViewModel::resetFilters,
                                 onLoadMoreFiltered = moviesHomeViewModel::loadMoreFiltered,
+                                onSelectLanguage = moviesHomeViewModel::selectLanguage,
+                                onSelectYear = moviesHomeViewModel::selectYear,
+                                onSelectRuntimeBucket = moviesHomeViewModel::selectRuntimeBucket,
+                                onRerollSurprise = moviesHomeViewModel::rerollSurpriseMe,
+                                onMarkWatched = moviesHomeViewModel::markWatched,
+                                onHideTitle = moviesHomeViewModel::hideTitle,
+                                onAddToCollection = moviesHomeViewModel::addToCollection,
+                                onCreateAndAddToCollection = moviesHomeViewModel::createAndAddToCollection,
+                                onRestartContinueWatching = moviesHomeViewModel::restartFromBeginning,
+                                onRemoveContinueWatching = moviesHomeViewModel::removeFromContinueWatching,
+                                onMarkContinueWatchingWatched = moviesHomeViewModel::markHistoryEntryWatched,
+                                onOpenCollection = { colId, colName ->
+                                    navController.navigate(
+                                        LaterboxDestination.CollectionDetail.createRoute(colId, colName)
+                                    )
+                                },
+                                onClearActionFeedback = moviesHomeViewModel::clearActionFeedback,
                                 onMenuClick = openMenuHandler,
                                 bottomPaddingDp = if (showHandsetBottomBar) 96 else 24
                             )
@@ -1141,7 +1208,16 @@ fun LaterboxApp(
                                     navController.navigate(
                                         LaterboxDestination.MovieDetail.createRoute(providerId, titleId)
                                     )
-                                }
+                                },
+                                onSelectLanguage = moviesCatalogueViewModel::selectLanguage,
+                                onSelectYear = moviesCatalogueViewModel::selectYear,
+                                onSelectRuntimeBucket = moviesCatalogueViewModel::selectRuntimeBucket,
+                                onToggleWatchlist = moviesCatalogueViewModel::toggleWatchlist,
+                                onMarkWatched = moviesCatalogueViewModel::markWatched,
+                                onHideTitle = moviesCatalogueViewModel::hideTitle,
+                                onAddToCollection = moviesCatalogueViewModel::addToCollection,
+                                onCreateAndAddToCollection = moviesCatalogueViewModel::createAndAddToCollection,
+                                onClearActionFeedback = moviesCatalogueViewModel::clearActionFeedback
                             )
                         }
 
@@ -1202,7 +1278,24 @@ fun LaterboxApp(
                                 onToggleTrailerMute = movieDetailViewModel::onToggleTrailerMute,
                                 onSetTrailerFullscreen = movieDetailViewModel::onSetTrailerFullscreen,
                                 onRecordTrailerProgress = movieDetailViewModel::onRecordTrailerProgress,
-                                onTrailerPlaybackError = movieDetailViewModel::onTrailerPlaybackError
+                                onTrailerPlaybackError = movieDetailViewModel::onTrailerPlaybackError,
+                                onMarkWatched = movieDetailViewModel::markTitleWatched,
+                                onMarkUnwatched = movieDetailViewModel::markTitleUnwatched,
+                                onRestartFromBeginning = movieDetailViewModel::restartTitleFromBeginning,
+                                onRemoveFromContinueWatching = movieDetailViewModel::removeFromContinueWatching,
+                                onSetTitleHidden = { hidden ->
+                                    movieDetailViewModel.setTitleHidden(hidden)
+                                    if (hidden) {
+                                        navController.popBackStack()
+                                    }
+                                },
+                                onToggleEpisodeWatched = movieDetailViewModel::toggleEpisodeWatched,
+                                onToggleCollectionMembership = movieDetailViewModel::toggleCollectionMembership,
+                                onCreateAndAddToCollection = movieDetailViewModel::createAndAddToCollection,
+                                onScheduleViewingReminder = movieDetailViewModel::scheduleViewingReminder,
+                                onDismissViewingReminder = movieDetailViewModel::dismissViewingReminder,
+                                onToggleMuteSeriesReminders = movieDetailViewModel::toggleMuteSeriesReminders,
+                                onClearActionFeedback = movieDetailViewModel::clearActionFeedback
                             )
                         }
 
@@ -1248,6 +1341,7 @@ fun LaterboxApp(
                                 onDownloadSource = moviePlayerViewModel::downloadSource,
                                 onDismissDownloadStatus = moviePlayerViewModel::clearDownloadStatus,
                                 onSelectAudioDub = moviePlayerViewModel::selectAudioDub,
+                                onSelectInStreamAudio = moviePlayerViewModel::saveStreamAudioPreference,
                                 onNextEpisode = moviePlayerViewModel::playNextEpisode,
                                 onSubtitleStyleChange = moviePlayerViewModel::updateSubtitleStyle,
                                 onOpenRelatedTitle = { relProvider, relId ->
@@ -1316,6 +1410,7 @@ fun LaterboxApp(
                                 onSmartNotificationsAppHealthChange = settingsViewModel::setSmartNotificationsAppHealth,
                                 onSmartNotificationsSummariesChange = settingsViewModel::setSmartNotificationsSummaries,
                                 onSmartNotificationsTipsChange = settingsViewModel::setSmartNotificationsTips,
+                                onSmartNotificationsMoviesTvChange = settingsViewModel::setSmartNotificationsMoviesTv,
                                 onQuietHoursEnabledChange = settingsViewModel::setQuietHoursEnabled,
                                 onQuietHoursWindowChange = settingsViewModel::setQuietHoursWindow
                             )
@@ -1400,6 +1495,12 @@ fun LaterboxApp(
                             val historyItems by remember {
                                 settingsViewModel.observeViewingHistory(limit = 100)
                             }.collectAsState(initial = emptyList())
+                            val recentlyViewedItems by remember {
+                                settingsViewModel.observeRecentlyViewed(limit = 50)
+                            }.collectAsState(initial = emptyList())
+                            val hiddenHistoryItems by remember {
+                                settingsViewModel.observeHiddenHistory(limit = 100)
+                            }.collectAsState(initial = emptyList())
                             com.laterbox.app.movies.ui.MoviesViewingHistoryScreen(
                                 items = historyItems,
                                 onBackClick = { navController.popBackStack() },
@@ -1419,7 +1520,12 @@ fun LaterboxApp(
                                     )
                                 },
                                 onDeleteItem = settingsViewModel::deleteViewingHistoryEntry,
-                                onClearHistory = settingsViewModel::clearViewingHistory
+                                onClearHistory = settingsViewModel::clearViewingHistory,
+                                recentlyViewed = recentlyViewedItems,
+                                hiddenTitles = hiddenHistoryItems,
+                                onUnhideTitle = settingsViewModel::unhideMovieTitle,
+                                onRemoveRecentlyViewed = settingsViewModel::removeRecentlyViewed,
+                                onClearRecentlyViewed = settingsViewModel::clearRecentlyViewed
                             )
                         }
 

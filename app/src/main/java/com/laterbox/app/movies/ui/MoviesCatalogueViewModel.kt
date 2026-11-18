@@ -2,11 +2,16 @@ package com.laterbox.app.movies.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.laterbox.app.data.repository.CollectionRepository
+import com.laterbox.app.domain.model.Collection
 import com.laterbox.app.movies.data.provider.MovieBoxProvider
+import com.laterbox.app.movies.domain.engine.MoviesDiscoveryEngine
 import com.laterbox.app.movies.domain.model.CatalogueSort
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.model.MoviesDiscoveryShortcut
+import com.laterbox.app.movies.domain.model.OfflineMediaMatch
+import com.laterbox.app.movies.domain.model.RuntimeBucket
 import com.laterbox.app.movies.domain.model.SearchSuggestion
 import com.laterbox.app.movies.domain.repository.MoviesRepository
 import kotlinx.coroutines.Job
@@ -37,7 +42,16 @@ data class MoviesCatalogueUiState(
     val suggestionsError: String? = null,
     val recentSearches: List<String> = emptyList(),
     val isSearchFocused: Boolean = false,
-    val showSuggestionsDropdown: Boolean = false
+    val showSuggestionsDropdown: Boolean = false,
+    val availableLanguages: List<String> = listOf("All"),
+    val selectedLanguage: String = "All",
+    val selectedYear: String = "All",
+    val selectedRuntimeBucket: RuntimeBucket = RuntimeBucket.ALL,
+    val offlineMatches: List<OfflineMediaMatch> = emptyList(),
+    val hiddenMediaKeys: Set<String> = emptySet(),
+    val watchlistIds: Set<String> = emptySet(),
+    val collections: List<Collection> = emptyList(),
+    val actionFeedbackMessage: String? = null
 ) {
     companion object {
         val DEFAULT_GENRES = MovieBoxProvider.DEFAULT_GENRES
@@ -45,7 +59,8 @@ data class MoviesCatalogueUiState(
 }
 
 class MoviesCatalogueViewModel(
-    private val moviesRepository: MoviesRepository
+    private val moviesRepository: MoviesRepository,
+    private val collectionRepository: CollectionRepository? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MoviesCatalogueUiState())
@@ -54,6 +69,7 @@ class MoviesCatalogueViewModel(
     private var fetchJob: Job? = null
     private var suggestJob: Job? = null
     private var lastInitializedKey: String? = null
+    private var rawItems: List<MovieTitleSummary> = emptyList()
 
     init {
         viewModelScope.launch {
@@ -65,6 +81,30 @@ class MoviesCatalogueViewModel(
                         recentSearches = recent,
                         showSuggestionsDropdown = if (current.isSearchFocused) shouldShow else current.showSuggestionsDropdown
                     )
+                }
+            }
+        }
+        viewModelScope.launch {
+            moviesRepository.observeOfflineAvailability().collect { matches ->
+                _uiState.update { it.copy(offlineMatches = matches) }
+            }
+        }
+        viewModelScope.launch {
+            moviesRepository.observeWatchlist().collect { list ->
+                _uiState.update { it.copy(watchlistIds = list.map { m -> m.compositeId }.toSet()) }
+            }
+        }
+        viewModelScope.launch {
+            moviesRepository.observeHiddenHistory(100).collect { hiddenList ->
+                val keys = hiddenList.map { it.stableMediaKey }.toSet()
+                _uiState.update { it.copy(hiddenMediaKeys = keys) }
+                applyClientFilters()
+            }
+        }
+        if (collectionRepository != null) {
+            viewModelScope.launch {
+                collectionRepository.collections.collect { cols ->
+                    _uiState.update { it.copy(collections = cols) }
                 }
             }
         }
@@ -86,7 +126,7 @@ class MoviesCatalogueViewModel(
         initialSort: CatalogueSort? = null,
         initialCountry: String? = null
     ) {
-        if (lastInitializedKey == sessionKey && _uiState.value.items.isNotEmpty()) return
+        if (lastInitializedKey == sessionKey && rawItems.isNotEmpty()) return
         lastInitializedKey = sessionKey
         val cleanGenre = initialGenre?.takeIf { g -> g.isNotBlank() } ?: "All"
         val cleanCountry = initialCountry?.takeIf { c -> c.isNotBlank() } ?: "All"
@@ -95,6 +135,9 @@ class MoviesCatalogueViewModel(
                 selectedKind = initialKind,
                 selectedGenre = cleanGenre,
                 selectedCountry = cleanCountry,
+                selectedLanguage = "All",
+                selectedYear = "All",
+                selectedRuntimeBucket = RuntimeBucket.ALL,
                 activeShortcut = matchingShortcut(initialKind, cleanGenre, cleanCountry),
                 sort = initialSort ?: CatalogueSort.POPULAR,
                 query = initialQuery.orEmpty(),
@@ -287,6 +330,66 @@ class MoviesCatalogueViewModel(
         loadPage(page = 1, append = false)
     }
 
+    fun selectLanguage(language: String) {
+        if (_uiState.value.selectedLanguage == language) return
+        _uiState.update { it.copy(selectedLanguage = language) }
+        applyClientFilters()
+    }
+
+    fun selectYear(year: String) {
+        if (_uiState.value.selectedYear == year) return
+        _uiState.update { it.copy(selectedYear = year) }
+        loadPage(page = 1, append = false)
+    }
+
+    fun selectRuntimeBucket(bucket: RuntimeBucket) {
+        if (_uiState.value.selectedRuntimeBucket == bucket) return
+        _uiState.update { it.copy(selectedRuntimeBucket = bucket) }
+        applyClientFilters()
+    }
+
+    fun toggleWatchlist(item: MovieTitleSummary) {
+        viewModelScope.launch {
+            moviesRepository.toggleWatchlist(item)
+        }
+    }
+
+    fun markWatched(item: MovieTitleSummary) {
+        viewModelScope.launch {
+            moviesRepository.markWatched(item = item, durationMs = (item.durationMinutes ?: 90) * 60_000L)
+            _uiState.update { it.copy(actionFeedbackMessage = "Marked ${item.title} as watched") }
+        }
+    }
+
+    fun hideTitle(item: MovieTitleSummary) {
+        viewModelScope.launch {
+            moviesRepository.setTitleHidden(item.providerId, item.id, true)
+            _uiState.update { it.copy(actionFeedbackMessage = "Hidden ${item.title}") }
+        }
+    }
+
+    fun addToCollection(item: MovieTitleSummary, collectionId: Long) {
+        viewModelScope.launch {
+            moviesRepository.addMediaToCollection(item, collectionId)
+            val colName = _uiState.value.collections.firstOrNull { it.id == collectionId }?.name ?: "collection"
+            _uiState.update { it.copy(actionFeedbackMessage = "Added ${item.title} to $colName") }
+        }
+    }
+
+    fun createAndAddToCollection(item: MovieTitleSummary, name: String) {
+        val clean = name.trim()
+        if (clean.isEmpty() || collectionRepository == null) return
+        viewModelScope.launch {
+            val id = collectionRepository.createCollection(clean)
+            moviesRepository.addMediaToCollection(item, id)
+            _uiState.update { it.copy(actionFeedbackMessage = "Added ${item.title} to $clean") }
+        }
+    }
+
+    fun clearActionFeedback() {
+        _uiState.update { it.copy(actionFeedbackMessage = null) }
+    }
+
     fun resetFilters() {
         suggestJob?.cancel()
         _uiState.update {
@@ -295,6 +398,9 @@ class MoviesCatalogueViewModel(
                 selectedKind = null,
                 selectedGenre = "All",
                 selectedCountry = "All",
+                selectedLanguage = "All",
+                selectedYear = "All",
+                selectedRuntimeBucket = RuntimeBucket.ALL,
                 activeShortcut = null,
                 sort = CatalogueSort.POPULAR,
                 isSearchFocused = false,
@@ -323,6 +429,21 @@ class MoviesCatalogueViewModel(
         }
     }
 
+    private fun applyClientFilters() {
+        val state = _uiState.value
+        val filtered = MoviesDiscoveryEngine.filterTitles(
+            items = rawItems,
+            kind = state.selectedKind,
+            genre = state.selectedGenre,
+            language = state.selectedLanguage,
+            country = state.selectedCountry,
+            year = state.selectedYear,
+            runtimeBucket = state.selectedRuntimeBucket,
+            hiddenMediaKeys = state.hiddenMediaKeys
+        )
+        _uiState.update { it.copy(items = filtered) }
+    }
+
     private fun matchingShortcut(
         kind: MediaKind?,
         genre: String,
@@ -345,6 +466,7 @@ class MoviesCatalogueViewModel(
             }
             val state = _uiState.value
             val query = state.query.trim()
+            val exactYearParam = state.selectedYear.takeIf { Regex("\\d{4}").matches(it) }
             val result = if (query.isNotBlank()) {
                 moviesRepository.search(query = query, kind = state.selectedKind, page = page, pageSize = 20)
             } else {
@@ -354,20 +476,35 @@ class MoviesCatalogueViewModel(
                     pageSize = 20,
                     genre = state.selectedGenre.takeUnless { it == "All" },
                     sort = state.sort,
-                    country = state.selectedCountry.takeUnless { it == "All" }
+                    country = state.selectedCountry.takeUnless { it == "All" },
+                    year = exactYearParam
                 )
             }
 
             result.fold(
                 onSuccess = { pageResult ->
+                    val mergedRaw = if (append) {
+                        (rawItems + pageResult.items).distinctBy { it.compositeId }
+                    } else {
+                        pageResult.items
+                    }
+                    rawItems = mergedRaw
+                    val latest = _uiState.value
+                    val langs = MoviesDiscoveryEngine.extractAvailableLanguages(mergedRaw)
+                    val filtered = MoviesDiscoveryEngine.filterTitles(
+                        items = mergedRaw,
+                        kind = latest.selectedKind,
+                        genre = latest.selectedGenre,
+                        language = latest.selectedLanguage,
+                        country = latest.selectedCountry,
+                        year = latest.selectedYear,
+                        runtimeBucket = latest.selectedRuntimeBucket,
+                        hiddenMediaKeys = latest.hiddenMediaKeys
+                    )
                     _uiState.update { current ->
-                        val merged = if (append) {
-                            (current.items + pageResult.items).distinctBy { it.compositeId }
-                        } else {
-                            pageResult.items
-                        }
                         current.copy(
-                            items = merged,
+                            items = filtered,
+                            availableLanguages = langs,
                             page = page,
                             hasMore = pageResult.hasMore,
                             isLoading = false,

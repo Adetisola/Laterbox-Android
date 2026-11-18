@@ -74,7 +74,9 @@ data class MovieWatchlistEntity(
         Index(value = ["composite_id"]),
         Index(value = ["last_watched_at"]),
         Index(value = ["canonical_id"]),
-        Index(value = ["is_trailer"])
+        Index(value = ["is_trailer"]),
+        Index(value = ["is_completed"]),
+        Index(value = ["is_hidden_title"])
     ]
 )
 data class MovieWatchHistoryEntity(
@@ -110,7 +112,17 @@ data class MovieWatchHistoryEntity(
     @ColumnInfo(name = "canonical_id")
     val canonicalId: String? = null,
     @ColumnInfo(name = "is_trailer", defaultValue = "0")
-    val isTrailer: Boolean = false
+    val isTrailer: Boolean = false,
+    @ColumnInfo(name = "is_completed", defaultValue = "0")
+    val isCompleted: Boolean = false,
+    @ColumnInfo(name = "completed_at")
+    val completedAt: Long? = null,
+    @ColumnInfo(name = "rewatch_count", defaultValue = "0")
+    val rewatchCount: Int = 0,
+    @ColumnInfo(name = "hidden_from_continue_watching", defaultValue = "0")
+    val hiddenFromContinueWatching: Boolean = false,
+    @ColumnInfo(name = "is_hidden_title", defaultValue = "0")
+    val isHiddenTitle: Boolean = false
 )
 
 @Entity(
@@ -179,6 +191,163 @@ data class MediaProviderLinkEntity(
     val providerTitleId: String,
     @ColumnInfo(name = "confidence")
     val confidence: String,
+    @ColumnInfo(name = "updated_at")
+    val updatedAt: Long
+)
+
+@Entity(
+    tableName = "movie_recently_viewed",
+    indices = [
+        Index(value = ["viewed_at"]),
+        Index(value = ["canonical_id"])
+    ]
+)
+data class MovieRecentlyViewedEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "media_key")
+    val mediaKey: String,
+    @ColumnInfo(name = "composite_id")
+    val compositeId: String,
+    @ColumnInfo(name = "provider_id")
+    val providerId: String,
+    @ColumnInfo(name = "title_id")
+    val titleId: String,
+    @ColumnInfo(name = "canonical_id")
+    val canonicalId: String? = null,
+    @ColumnInfo(name = "kind")
+    val kind: String,
+    @ColumnInfo(name = "title")
+    val title: String,
+    @ColumnInfo(name = "poster_url")
+    val posterUrl: String? = null,
+    @ColumnInfo(name = "backdrop_url")
+    val backdropUrl: String? = null,
+    @ColumnInfo(name = "release_year")
+    val releaseYear: Int? = null,
+    @ColumnInfo(name = "rating")
+    val rating: Double? = null,
+    @ColumnInfo(name = "genres_csv")
+    val genresCsv: String = "",
+    @ColumnInfo(name = "source_badge")
+    val sourceBadge: String,
+    @ColumnInfo(name = "is_playable_hint", defaultValue = "0")
+    val isPlayableHint: Boolean = false,
+    @ColumnInfo(name = "viewed_at")
+    val viewedAt: Long
+)
+
+@Entity(
+    tableName = "movie_series_preferences"
+)
+data class MovieSeriesPreferencesEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "media_key")
+    val mediaKey: String,
+    @ColumnInfo(name = "preferred_audio_language")
+    val preferredAudioLanguage: String? = null,
+    @ColumnInfo(name = "preferred_audio_label")
+    val preferredAudioLabel: String? = null,
+    @ColumnInfo(name = "preferred_subtitle_language")
+    val preferredSubtitleLanguage: String? = null,
+    @ColumnInfo(name = "preferred_subtitle_label")
+    val preferredSubtitleLabel: String? = null,
+    @ColumnInfo(name = "subtitles_disabled", defaultValue = "0")
+    val subtitlesDisabled: Boolean = false,
+    @ColumnInfo(name = "reminders_muted", defaultValue = "0")
+    val remindersMuted: Boolean = false,
+    @ColumnInfo(name = "updated_at")
+    val updatedAt: Long
+)
+
+@Entity(
+    tableName = "media_collection_cross_ref",
+    primaryKeys = ["media_key", "collection_id"],
+    foreignKeys = [
+        androidx.room.ForeignKey(
+            entity = com.laterbox.app.data.local.entity.CollectionEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["collection_id"],
+            onDelete = androidx.room.ForeignKey.CASCADE
+        )
+    ],
+    indices = [
+        Index(value = ["collection_id"]),
+        Index(value = ["media_key"]),
+        Index(value = ["added_at"])
+    ]
+)
+data class MediaCollectionCrossRef(
+    @ColumnInfo(name = "media_key")
+    val mediaKey: String,
+    @ColumnInfo(name = "collection_id")
+    val collectionId: Long,
+    @ColumnInfo(name = "composite_id")
+    val compositeId: String,
+    @ColumnInfo(name = "provider_id")
+    val providerId: String,
+    @ColumnInfo(name = "title_id")
+    val titleId: String,
+    @ColumnInfo(name = "canonical_id")
+    val canonicalId: String? = null,
+    @ColumnInfo(name = "kind")
+    val kind: String,
+    @ColumnInfo(name = "title")
+    val title: String,
+    @ColumnInfo(name = "poster_url")
+    val posterUrl: String? = null,
+    @ColumnInfo(name = "backdrop_url")
+    val backdropUrl: String? = null,
+    @ColumnInfo(name = "release_year")
+    val releaseYear: Int? = null,
+    @ColumnInfo(name = "rating")
+    val rating: Double? = null,
+    @ColumnInfo(name = "genres_csv")
+    val genresCsv: String = "",
+    @ColumnInfo(name = "source_badge")
+    val sourceBadge: String,
+    @ColumnInfo(name = "is_playable_hint", defaultValue = "0")
+    val isPlayableHint: Boolean = false,
+    @ColumnInfo(name = "added_at")
+    val addedAt: Long
+)
+
+@Entity(
+    tableName = "movie_viewing_reminders",
+    indices = [
+        Index(value = ["trigger_at_millis"]),
+        Index(value = ["is_dismissed"])
+    ]
+)
+data class MovieViewingReminderEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "media_key")
+    val mediaKey: String,
+    @ColumnInfo(name = "composite_id")
+    val compositeId: String,
+    @ColumnInfo(name = "provider_id")
+    val providerId: String,
+    @ColumnInfo(name = "title_id")
+    val titleId: String,
+    @ColumnInfo(name = "canonical_id")
+    val canonicalId: String? = null,
+    @ColumnInfo(name = "kind")
+    val kind: String,
+    @ColumnInfo(name = "title")
+    val title: String,
+    @ColumnInfo(name = "season_number")
+    val seasonNumber: Int? = null,
+    @ColumnInfo(name = "episode_number")
+    val episodeNumber: Int? = null,
+    @ColumnInfo(name = "poster_url")
+    val posterUrl: String? = null,
+    @ColumnInfo(name = "note")
+    val note: String? = null,
+    @ColumnInfo(name = "trigger_at_millis")
+    val triggerAtMillis: Long,
+    @ColumnInfo(name = "is_dismissed", defaultValue = "0")
+    val isDismissed: Boolean = false,
+    @ColumnInfo(name = "created_at")
+    val createdAt: Long,
     @ColumnInfo(name = "updated_at")
     val updatedAt: Long
 )

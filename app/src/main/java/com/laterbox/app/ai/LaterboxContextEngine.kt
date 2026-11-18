@@ -72,6 +72,46 @@ class LaterboxContextEngine(
         } catch (_: Throwable) {
             0
         }
+        val offlineMovieAssets = try {
+            database.downloadedAssetDao().filterAssetsByCategory("MOVIES", "").first()
+        } catch (_: Throwable) {
+            emptyList()
+        }
+        val collectionsList = try {
+            database.collectionDao().getCollectionsWithCounts().first()
+        } catch (_: Throwable) {
+            emptyList()
+        }
+        val watchlistItems = try {
+            database.moviesDao().observeWatchlist().first()
+        } catch (_: Throwable) {
+            emptyList()
+        }
+        val viewingHistory = try {
+            database.moviesDao().observeViewingHistory(30).first()
+        } catch (_: Throwable) {
+            emptyList()
+        }
+        val recentlyViewed = try {
+            database.moviesDao().getRecentlyViewedSnapshot(8)
+        } catch (_: Throwable) {
+            emptyList()
+        }
+        val activeMovieReminders = try {
+            database.moviesDao().getActiveViewingRemindersSnapshot()
+        } catch (_: Throwable) {
+            emptyList()
+        }
+        val seriesPrefs = try {
+            database.moviesDao().getAllSeriesPreferencesSnapshot()
+        } catch (_: Throwable) {
+            emptyList()
+        }
+        val collectionMedia = try {
+            database.moviesDao().getCollectionMediaSnapshot(50)
+        } catch (_: Throwable) {
+            emptyList()
+        }
         val recentNotifications = try {
             database.notificationHistoryDao().getRecentHistorySnapshot(8)
         } catch (_: Throwable) {
@@ -110,6 +150,18 @@ class LaterboxContextEngine(
         } else {
             false
         }
+        val nonTrailerHistory = viewingHistory.filter { !it.isTrailer }
+        val inProgressHistory = nonTrailerHistory.filter { h ->
+            h.durationMs <= 0L || (h.positionMs.toDouble() / h.durationMs.toDouble()) < 0.96
+        }
+        val completedHistory = nonTrailerHistory.filter { h ->
+            h.durationMs > 0L && (h.positionMs.toDouble() / h.durationMs.toDouble()) >= 0.96
+        }
+        val quietHoursSummary = if (prefs.quietHoursEnabled) {
+            "%02d:00–%02d:00".format(prefs.quietHoursStartHour, prefs.quietHoursEndHour)
+        } else {
+            "Disabled"
+        }
         val capabilitySnapshot = CapabilitySnapshot(
             ytDlpState = ytDlpState?.name ?: "NOT_INITIALIZED",
             ytDlpVersion = ytDlpVersion,
@@ -119,7 +171,16 @@ class LaterboxContextEngine(
             youtubeTranscriptsReady = ytDlpState !is YtDlpInitState.Failed,
             storedDocumentCount = storedDocumentCount,
             configuredExportFolderName = prefs.customExportDirectoryName?.let { sanitize(it, 60) },
-            configuredExportFolderWritable = exportFolderWritable
+            configuredExportFolderWritable = exportFolderWritable,
+            assistantEnabled = prefs.assistantEnabled,
+            smartRemindersEnabled = prefs.smartRemindersEnabled,
+            quietHoursSummary = quietHoursSummary,
+            moviesWatchlistCount = watchlistItems.size,
+            moviesInProgressCount = inProgressHistory.size,
+            moviesCompletedCount = completedHistory.size,
+            moviesOfflineCount = offlineMovieAssets.size,
+            collectionsCount = collectionsList.size,
+            moviesActiveRemindersCount = activeMovieReminders.size
         )
 
         val asksAboutHealthOrDiagnostics = listOf(
@@ -141,14 +202,38 @@ class LaterboxContextEngine(
             "read the whole", "word for word", "entire page", "full text"
         ).any { lowerPrompt.contains(it) }
 
+        val rankedWatchlist = rankByKeywords(watchlistItems, keywords, 8) { w ->
+            "${w.title} ${w.kind} ${w.genresCsv} ${w.summary.orEmpty()}"
+        }
+        val rankedHistory = rankByKeywords(nonTrailerHistory, keywords, 8) { h ->
+            "${h.title} ${h.kind} ${h.episodeLabel.orEmpty()}"
+        }
+        val rankedRecentlyViewed = rankByKeywords(recentlyViewed, keywords, 5) { rv ->
+            "${rv.title} ${rv.kind} ${rv.genresCsv}"
+        }
+        val mutedSeriesCount = seriesPrefs.count { it.remindersMuted }
+
         val contextBlock = buildString {
             appendLine("=== LATERBOX USER CONTEXT SNAPSHOT ===")
             if (prefs.userName.isNotBlank()) {
                 appendLine("User name: ${sanitize(prefs.userName, 40)}")
             }
-            appendLine("Library summary: $inboxCount inbox links, $archivedCount archived links, $downloadedAssetCount downloaded media files ($storedDocumentCount saved documents).")
+            appendLine(
+                "Library summary: $inboxCount inbox links, $archivedCount archived links, " +
+                    "${collectionsList.size} collections (${collectionMedia.size} Movies & TV items), $downloadedAssetCount downloaded media files " +
+                    "($storedDocumentCount saved documents, ${offlineMovieAssets.size} offline movies/episodes), " +
+                    "${watchlistItems.size} Movies & TV watchlist items, ${activeMovieReminders.size} Movies & TV reminders" +
+                    (if (mutedSeriesCount > 0) ", $mutedSeriesCount muted series." else ".")
+            )
             appendLine()
             appendLine(AppCapabilityRegistry.formatLiveCapabilitiesBlock(capabilitySnapshot))
+
+            if (collectionsList.isNotEmpty()) {
+                appendLine("\nCollections (max 10):")
+                for (col in collectionsList.take(10)) {
+                    appendLine("- [collectionId=${col.id}] name=\"${sanitize(col.name, 50)}\" items=${col.itemCount}")
+                }
+            }
 
             if (rankedLinks.isNotEmpty()) {
                 appendLine("\nRelevant & recent saved links (max ${rankedLinks.size}):")
@@ -166,6 +251,63 @@ class LaterboxContextEngine(
                     if (!l.description.isNullOrBlank()) {
                         append(" desc=\"${sanitize(l.description, 120)}\"")
                     }
+                    appendLine()
+                }
+            }
+
+            if (rankedWatchlist.isNotEmpty()) {
+                appendLine("\nMovies & TV Watchlist (max ${rankedWatchlist.size}):")
+                for (w in rankedWatchlist) {
+                    append("- [providerId=${sanitize(w.providerId, 30)} titleId=${sanitize(w.titleId, 60)}] ")
+                    append("title=\"${sanitize(w.title, 70)}\" kind=${w.kind}")
+                    w.releaseYear?.let { append(" year=$it") }
+                    if (w.genresCsv.isNotBlank()) append(" genres=\"${sanitize(w.genresCsv, 60)}\"")
+                    appendLine()
+                }
+            }
+
+            if (rankedHistory.isNotEmpty()) {
+                appendLine("\nMovies & TV Watch History (max ${rankedHistory.size}):")
+                for (h in rankedHistory) {
+                    val pct = if (h.durationMs > 0L) ((h.positionMs * 100L) / h.durationMs).coerceIn(0L, 100L) else 0L
+                    append("- [providerId=${sanitize(h.providerId, 30)} titleId=${sanitize(h.titleId, 60)}] ")
+                    append("title=\"${sanitize(h.title, 70)}\" kind=${h.kind}")
+                    if (h.seasonNumber != null && h.episodeNumber != null) {
+                        append(" S${h.seasonNumber}E${h.episodeNumber}")
+                    }
+                    append(" progress=${pct}%")
+                    if (h.rewatchCount > 0) append(" rewatches=${h.rewatchCount}")
+                    appendLine()
+                }
+            }
+
+            if (rankedRecentlyViewed.isNotEmpty()) {
+                appendLine("\nMovies & TV Recently Viewed (max ${rankedRecentlyViewed.size}):")
+                for (rv in rankedRecentlyViewed) {
+                    append("- [providerId=${sanitize(rv.providerId, 30)} titleId=${sanitize(rv.titleId, 60)}] ")
+                    append("title=\"${sanitize(rv.title, 70)}\" kind=${rv.kind}")
+                    rv.releaseYear?.let { append(" year=$it") }
+                    appendLine()
+                }
+            }
+
+            if (activeMovieReminders.isNotEmpty()) {
+                val reminderSlice = activeMovieReminders.take(5)
+                val dateFmt = java.text.SimpleDateFormat("MMM d HH:mm", java.util.Locale.US)
+                appendLine("\nMovies & TV Viewing Reminders (max ${reminderSlice.size}):")
+                for (rem in reminderSlice) {
+                    append("- [providerId=${sanitize(rem.providerId, 30)} titleId=${sanitize(rem.titleId, 60)}] ")
+                    append("title=\"${sanitize(rem.title, 70)}\" triggerAt=\"${dateFmt.format(java.util.Date(rem.triggerAtMillis))}\"")
+                    if (!rem.note.isNullOrBlank()) append(" note=\"${sanitize(rem.note, 80)}\"")
+                    appendLine()
+                }
+            }
+
+            if (offlineMovieAssets.isNotEmpty()) {
+                appendLine("\nOffline Downloaded Movies & Episodes (max 6):")
+                for (asset in offlineMovieAssets.take(6)) {
+                    append("- title=\"${sanitize(asset.title ?: "Downloaded title", 70)}\" category=${asset.contentCategory ?: asset.mediaType}")
+                    if (!asset.qualityLabel.isNullOrBlank()) append(" quality=${sanitize(asset.qualityLabel, 20)}")
                     appendLine()
                 }
             }
@@ -224,7 +366,7 @@ class LaterboxContextEngine(
         val systemInstruction = buildString {
             appendLine("You are the Laterbox Assistant embedded inside the Laterbox Android app.")
             appendLine("Be concise, warm, accurate, and grounded strictly in Laterbox's real features and the provided user context snapshot.")
-            appendLine("Never invent saved links, URLs, formats, IDs, or app settings that do not exist.")
+            appendLine("Never invent saved links, Movies & TV titles, providerId/titleId/linkId/taskId values, URLs, formats, release dates, timestamps, or app settings that do not exist.")
             appendLine()
             appendLine(LaterboxKnowledgeBase.FEATURE_GUIDE)
             appendLine()
@@ -244,6 +386,24 @@ class LaterboxContextEngine(
             .split(Regex("[^a-z0-9]+"))
             .filter { it.length >= 3 && it !in STOP_WORDS }
             .toSet()
+    }
+
+    private fun <T> rankByKeywords(
+        items: List<T>,
+        keywords: Set<String>,
+        maxItems: Int,
+        haystackSelector: (T) -> String
+    ): List<T> {
+        if (items.isEmpty()) return emptyList()
+        if (keywords.isEmpty()) return items.take(maxItems)
+        return items.sortedByDescending { item ->
+            val haystack = haystackSelector(item).lowercase()
+            var score = 0
+            for (kw in keywords) {
+                if (haystack.contains(kw)) score += 10
+            }
+            score
+        }.take(maxItems)
     }
 
     private fun rankRelevantLinks(

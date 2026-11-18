@@ -11,7 +11,14 @@ sealed interface ChatAction {
     /** Read-only actions run after allowlist + target validation; state-changing ones need approval. */
     val category: ActionCategory
         get() = when (this) {
-            is RetryInspection, is RetryDownload, is RefreshMetadata -> ActionCategory.STATE_CHANGING
+            is RetryInspection,
+            is RetryDownload,
+            is RefreshMetadata,
+            is ToggleMovieWatchlist,
+            is AddMovieToCollection,
+            is MarkMovieWatched,
+            is ScheduleMovieReminder,
+            is MuteSeriesReminders -> ActionCategory.STATE_CHANGING
             else -> ActionCategory.READ_ONLY
         }
 
@@ -21,6 +28,11 @@ sealed interface ChatAction {
             is RetryInspection -> "RETRY_INSPECTION"
             is RetryDownload -> "RETRY_DOWNLOAD"
             is RefreshMetadata -> "REFRESH_METADATA"
+            is ToggleMovieWatchlist -> "TOGGLE_MOVIE_WATCHLIST"
+            is AddMovieToCollection -> "ADD_MOVIE_TO_COLLECTION"
+            is MarkMovieWatched -> "MARK_MOVIE_WATCHED"
+            is ScheduleMovieReminder -> "SCHEDULE_MOVIE_REMINDER"
+            is MuteSeriesReminders -> "MUTE_SERIES_REMINDERS"
             else -> null
         }
 
@@ -29,6 +41,11 @@ sealed interface ChatAction {
             is RetryInspection -> "Retry media inspection"
             is RetryDownload -> "Retry download"
             is RefreshMetadata -> "Refresh link details"
+            is ToggleMovieWatchlist -> if (add) "Add to watchlist" else "Remove from watchlist"
+            is AddMovieToCollection -> "Add title to collection"
+            is MarkMovieWatched -> if (watched) "Mark as watched" else "Mark as unwatched"
+            is ScheduleMovieReminder -> "Schedule viewing reminder"
+            is MuteSeriesReminders -> if (muted) "Mute series reminders" else "Unmute series reminders"
             else -> label
         }
 
@@ -37,6 +54,26 @@ sealed interface ChatAction {
             is RetryInspection -> "Check this saved link again for downloadable media."
             is RetryDownload -> "Restart this failed or stopped download."
             is RefreshMetadata -> "Fetch this link's title and preview again."
+            is ToggleMovieWatchlist -> if (add) {
+                "Save \"${title}\" to your Movies & TV watchlist."
+            } else {
+                "Remove \"${title}\" from your Movies & TV watchlist."
+            }
+            is AddMovieToCollection -> {
+                val targetCol = collectionName?.takeIf { it.isNotBlank() } ?: "your selected collection"
+                "Add \"${title}\" to collection \"$targetCol\"."
+            }
+            is MarkMovieWatched -> if (watched) {
+                "Record \"${title}\" as watched in your viewing history."
+            } else {
+                "Clear completed watched status for \"${title}\"."
+            }
+            is ScheduleMovieReminder -> "Schedule a Movies & TV viewing reminder for \"${title}\"."
+            is MuteSeriesReminders -> if (muted) {
+                "Stop proactive Smart Reminders for \"${title}\"."
+            } else {
+                "Re-enable proactive Smart Reminders for \"${title}\"."
+            }
             else -> label
         }
 
@@ -45,6 +82,11 @@ sealed interface ChatAction {
             is RetryInspection -> title
             is RetryDownload -> title
             is RefreshMetadata -> title
+            is ToggleMovieWatchlist -> title
+            is AddMovieToCollection -> title
+            is MarkMovieWatched -> title
+            is ScheduleMovieReminder -> title
+            is MuteSeriesReminders -> title
             else -> null
         }
 
@@ -53,6 +95,11 @@ sealed interface ChatAction {
             is RetryInspection -> "Uses the network. Nothing is deleted."
             is RetryDownload -> "Uses the network and device storage. Nothing is deleted."
             is RefreshMetadata -> "Uses the network. Saved notes and collections are kept."
+            is ToggleMovieWatchlist -> "Updates your local watchlist only. Nothing is deleted permanently."
+            is AddMovieToCollection -> "Links this title to a local Laterbox collection."
+            is MarkMovieWatched -> "Updates your local watch history & completion state."
+            is ScheduleMovieReminder -> "Schedules a local reminder notification."
+            is MuteSeriesReminders -> "Updates reminder mute state for this series locally."
             else -> "Opens a screen. Nothing changes."
         }
 
@@ -88,6 +135,7 @@ sealed interface ChatAction {
         override val label: String get() = when (route) {
             "settings/reminders_ai" -> "Reminders & AI settings"
             "settings/media_downloads" -> "Media & Downloads settings"
+            "settings/movies_tv" -> "Movies & TV settings"
             "settings/capture_shortcuts" -> "Capture & Shortcuts settings"
             "settings/about_privacy" -> "About & Privacy settings"
             "settings/data_storage" -> "Data & Storage settings"
@@ -122,6 +170,110 @@ sealed interface ChatAction {
     ) : ChatAction {
         override val label: String get() = "Refresh details: ${title.take(24)}"
     }
+
+    data object OpenMoviesHome : ChatAction {
+        override val label: String get() = "Open Movies & TV"
+    }
+
+    data class SearchMovies(
+        val query: String,
+        val kind: String? = null,
+        val genre: String? = null
+    ) : ChatAction {
+        override val label: String get() = when {
+            query.isNotBlank() -> "Search Movies: \"${query.take(24)}\""
+            !genre.isNullOrBlank() -> "Browse ${genre.take(24)}"
+            else -> "Browse Movies & TV"
+        }
+    }
+
+    data class OpenMovieDetail(
+        val providerId: String,
+        val titleId: String,
+        val title: String
+    ) : ChatAction {
+        override val label: String get() = "Open ${title.take(28)}"
+    }
+
+    data class OpenMoviePlayer(
+        val providerId: String,
+        val titleId: String,
+        val seasonNumber: Int? = null,
+        val episodeNumber: Int? = null,
+        val title: String
+    ) : ChatAction {
+        override val label: String get() = if (seasonNumber != null && episodeNumber != null) {
+            "Play ${title.take(18)} S${seasonNumber}E$episodeNumber"
+        } else {
+            "Play ${title.take(26)}"
+        }
+    }
+
+    data class ToggleMovieWatchlist(
+        val providerId: String,
+        val titleId: String,
+        val add: Boolean,
+        val title: String,
+        val requiresConfirmation: Boolean = true
+    ) : ChatAction {
+        override val label: String get() = if (add) {
+            "Add to watchlist: ${title.take(22)}"
+        } else {
+            "Remove watchlist: ${title.take(22)}"
+        }
+    }
+
+    data class AddMovieToCollection(
+        val providerId: String,
+        val titleId: String,
+        val collectionId: Long? = null,
+        val collectionName: String? = null,
+        val title: String,
+        val requiresConfirmation: Boolean = true
+    ) : ChatAction {
+        override val label: String get() = "Add ${title.take(18)} to ${collectionName?.take(14) ?: "collection"}"
+    }
+
+    data class MarkMovieWatched(
+        val providerId: String,
+        val titleId: String,
+        val seasonNumber: Int? = null,
+        val episodeNumber: Int? = null,
+        val watched: Boolean = true,
+        val title: String,
+        val requiresConfirmation: Boolean = true
+    ) : ChatAction {
+        override val label: String get() = if (watched) {
+            "Mark watched: ${title.take(22)}"
+        } else {
+            "Mark unwatched: ${title.take(22)}"
+        }
+    }
+
+    data class ScheduleMovieReminder(
+        val providerId: String,
+        val titleId: String,
+        val triggerAtMillis: Long,
+        val note: String? = null,
+        val title: String,
+        val requiresConfirmation: Boolean = true
+    ) : ChatAction {
+        override val label: String get() = "Remind: ${title.take(26)}"
+    }
+
+    data class MuteSeriesReminders(
+        val providerId: String,
+        val titleId: String,
+        val muted: Boolean = true,
+        val title: String,
+        val requiresConfirmation: Boolean = true
+    ) : ChatAction {
+        override val label: String get() = if (muted) {
+            "Mute reminders: ${title.take(20)}"
+        } else {
+            "Unmute reminders: ${title.take(20)}"
+        }
+    }
 }
 
 data class ParsedAssistantResponse(
@@ -138,9 +290,12 @@ object AssistantActionHandler {
         "settings/capture_shortcuts",
         "settings/reading_behavior",
         "settings/media_downloads",
+        "settings/movies_tv",
         "settings/data_storage",
         "settings/about_privacy"
     )
+
+    private val ALLOWED_MEDIA_KINDS = setOf("movie", "tv_series")
 
     private val ACTION_BLOCK_REGEX = Regex(
         """\[ACTIONS\]\s*(.*?)\s*\[/ACTIONS\]""",
@@ -237,6 +392,73 @@ object AssistantActionHandler {
                     obj.put("title", action.title)
                     obj.put("requiresConfirmation", true)
                 }
+                is ChatAction.OpenMoviesHome -> {
+                    obj.put("type", "OPEN_MOVIES_HOME")
+                }
+                is ChatAction.SearchMovies -> {
+                    obj.put("type", "SEARCH_MOVIES")
+                    obj.put("query", action.query)
+                    if (!action.kind.isNullOrBlank()) obj.put("kind", action.kind)
+                    if (!action.genre.isNullOrBlank()) obj.put("genre", action.genre)
+                }
+                is ChatAction.OpenMovieDetail -> {
+                    obj.put("type", "OPEN_MOVIE_DETAIL")
+                    obj.put("providerId", action.providerId)
+                    obj.put("titleId", action.titleId)
+                    obj.put("title", action.title)
+                }
+                is ChatAction.OpenMoviePlayer -> {
+                    obj.put("type", "OPEN_MOVIE_PLAYER")
+                    obj.put("providerId", action.providerId)
+                    obj.put("titleId", action.titleId)
+                    action.seasonNumber?.let { obj.put("seasonNumber", it) }
+                    action.episodeNumber?.let { obj.put("episodeNumber", it) }
+                    obj.put("title", action.title)
+                }
+                is ChatAction.ToggleMovieWatchlist -> {
+                    obj.put("type", "TOGGLE_MOVIE_WATCHLIST")
+                    obj.put("providerId", action.providerId)
+                    obj.put("titleId", action.titleId)
+                    obj.put("add", action.add)
+                    obj.put("title", action.title)
+                    obj.put("requiresConfirmation", true)
+                }
+                is ChatAction.AddMovieToCollection -> {
+                    obj.put("type", "ADD_MOVIE_TO_COLLECTION")
+                    obj.put("providerId", action.providerId)
+                    obj.put("titleId", action.titleId)
+                    action.collectionId?.let { obj.put("collectionId", it) }
+                    if (!action.collectionName.isNullOrBlank()) obj.put("collectionName", action.collectionName)
+                    obj.put("title", action.title)
+                    obj.put("requiresConfirmation", true)
+                }
+                is ChatAction.MarkMovieWatched -> {
+                    obj.put("type", "MARK_MOVIE_WATCHED")
+                    obj.put("providerId", action.providerId)
+                    obj.put("titleId", action.titleId)
+                    action.seasonNumber?.let { obj.put("seasonNumber", it) }
+                    action.episodeNumber?.let { obj.put("episodeNumber", it) }
+                    obj.put("watched", action.watched)
+                    obj.put("title", action.title)
+                    obj.put("requiresConfirmation", true)
+                }
+                is ChatAction.ScheduleMovieReminder -> {
+                    obj.put("type", "SCHEDULE_MOVIE_REMINDER")
+                    obj.put("providerId", action.providerId)
+                    obj.put("titleId", action.titleId)
+                    obj.put("triggerAtMillis", action.triggerAtMillis)
+                    if (!action.note.isNullOrBlank()) obj.put("note", action.note)
+                    obj.put("title", action.title)
+                    obj.put("requiresConfirmation", true)
+                }
+                is ChatAction.MuteSeriesReminders -> {
+                    obj.put("type", "MUTE_SERIES_REMINDERS")
+                    obj.put("providerId", action.providerId)
+                    obj.put("titleId", action.titleId)
+                    obj.put("muted", action.muted)
+                    obj.put("title", action.title)
+                    obj.put("requiresConfirmation", true)
+                }
             }
             array.put(obj)
         }
@@ -290,6 +512,110 @@ object AssistantActionHandler {
                 val linkId = obj.optLong("linkId", -1L)
                 val title = obj.optString("title").trim().ifBlank { "Saved link" }.take(60)
                 if (linkId > 0L) ChatAction.RefreshMetadata(linkId, title, requiresConfirmation = true) else null
+            }
+            "OPEN_MOVIES_HOME" -> ChatAction.OpenMoviesHome
+            "SEARCH_MOVIES" -> {
+                val q = obj.optString("query").trim().take(80)
+                val rawKind = obj.optString("kind").trim().lowercase().takeIf { it in ALLOWED_MEDIA_KINDS }
+                val genre = obj.optString("genre").trim().takeIf { it.isNotBlank() }?.take(40)
+                if (q.isNotBlank() || genre != null || rawKind != null) {
+                    ChatAction.SearchMovies(query = q, kind = rawKind, genre = genre)
+                } else null
+            }
+            "OPEN_MOVIE_DETAIL" -> {
+                val providerId = obj.optString("providerId").trim().take(40)
+                val titleId = obj.optString("titleId").trim().take(80)
+                val title = obj.optString("title").trim().ifBlank { "Title" }.take(60)
+                if (providerId.isNotBlank() && titleId.isNotBlank()) {
+                    ChatAction.OpenMovieDetail(providerId, titleId, title)
+                } else null
+            }
+            "OPEN_MOVIE_PLAYER" -> {
+                val providerId = obj.optString("providerId").trim().take(40)
+                val titleId = obj.optString("titleId").trim().take(80)
+                val season = obj.optInt("seasonNumber", -1).takeIf { it > 0 }
+                val episode = obj.optInt("episodeNumber", -1).takeIf { it > 0 }
+                val title = obj.optString("title").trim().ifBlank { "Title" }.take(60)
+                if (providerId.isNotBlank() && titleId.isNotBlank()) {
+                    ChatAction.OpenMoviePlayer(providerId, titleId, season, episode, title)
+                } else null
+            }
+            "TOGGLE_MOVIE_WATCHLIST" -> {
+                val providerId = obj.optString("providerId").trim().take(40)
+                val titleId = obj.optString("titleId").trim().take(80)
+                val add = obj.optBoolean("add", true)
+                val title = obj.optString("title").trim().ifBlank { "Title" }.take(60)
+                if (providerId.isNotBlank() && titleId.isNotBlank()) {
+                    ChatAction.ToggleMovieWatchlist(providerId, titleId, add, title, requiresConfirmation = true)
+                } else null
+            }
+            "ADD_MOVIE_TO_COLLECTION" -> {
+                val providerId = obj.optString("providerId").trim().take(40)
+                val titleId = obj.optString("titleId").trim().take(80)
+                val collectionId = obj.optLong("collectionId", -1L).takeIf { it > 0L }
+                val collectionName = obj.optString("collectionName").trim().takeIf { it.isNotBlank() }?.take(50)
+                val title = obj.optString("title").trim().ifBlank { "Title" }.take(60)
+                if (providerId.isNotBlank() && titleId.isNotBlank() && (collectionId != null || collectionName != null)) {
+                    ChatAction.AddMovieToCollection(
+                        providerId = providerId,
+                        titleId = titleId,
+                        collectionId = collectionId,
+                        collectionName = collectionName,
+                        title = title,
+                        requiresConfirmation = true
+                    )
+                } else null
+            }
+            "MARK_MOVIE_WATCHED" -> {
+                val providerId = obj.optString("providerId").trim().take(40)
+                val titleId = obj.optString("titleId").trim().take(80)
+                val season = obj.optInt("seasonNumber", -1).takeIf { it > 0 }
+                val episode = obj.optInt("episodeNumber", -1).takeIf { it > 0 }
+                val watched = obj.optBoolean("watched", true)
+                val title = obj.optString("title").trim().ifBlank { "Title" }.take(60)
+                if (providerId.isNotBlank() && titleId.isNotBlank()) {
+                    ChatAction.MarkMovieWatched(
+                        providerId = providerId,
+                        titleId = titleId,
+                        seasonNumber = season,
+                        episodeNumber = episode,
+                        watched = watched,
+                        title = title,
+                        requiresConfirmation = true
+                    )
+                } else null
+            }
+            "SCHEDULE_MOVIE_REMINDER" -> {
+                val providerId = obj.optString("providerId").trim().take(40)
+                val titleId = obj.optString("titleId").trim().take(80)
+                val triggerAtMillis = obj.optLong("triggerAtMillis", -1L)
+                val note = obj.optString("note").trim().takeIf { it.isNotBlank() }?.take(120)
+                val title = obj.optString("title").trim().ifBlank { "Title" }.take(60)
+                if (providerId.isNotBlank() && titleId.isNotBlank() && triggerAtMillis > 0L) {
+                    ChatAction.ScheduleMovieReminder(
+                        providerId = providerId,
+                        titleId = titleId,
+                        triggerAtMillis = triggerAtMillis,
+                        note = note,
+                        title = title,
+                        requiresConfirmation = true
+                    )
+                } else null
+            }
+            "MUTE_SERIES_REMINDERS" -> {
+                val providerId = obj.optString("providerId").trim().take(40)
+                val titleId = obj.optString("titleId").trim().take(80)
+                val muted = obj.optBoolean("muted", true)
+                val title = obj.optString("title").trim().ifBlank { "Series" }.take(60)
+                if (providerId.isNotBlank() && titleId.isNotBlank()) {
+                    ChatAction.MuteSeriesReminders(
+                        providerId = providerId,
+                        titleId = titleId,
+                        muted = muted,
+                        title = title,
+                        requiresConfirmation = true
+                    )
+                } else null
             }
             // Destructive or unknown types (delete, clear, wipe, export...) are never accepted.
             else -> null

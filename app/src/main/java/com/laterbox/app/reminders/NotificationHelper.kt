@@ -583,6 +583,193 @@ object NotificationHelper {
         return true
     }
 
+    suspend fun showMovieViewingReminderNotification(
+        context: Context,
+        mediaKey: String,
+        providerId: String,
+        titleId: String,
+        title: String,
+        note: String? = null,
+        posterUrl: String? = null
+    ): Boolean {
+        createNotificationChannels(context)
+        if (!hasNotificationPermission(context)) return false
+
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            ?: return false
+
+        val notificationId = ReminderScheduler.movieReminderRequestCode(mediaKey)
+        val destinationRoute = com.laterbox.app.ui.navigation.LaterboxDestination.MovieDetail.createRoute(
+            providerId = providerId,
+            titleId = titleId
+        )
+        val deepLinkUrl = "laterbox://$destinationRoute"
+        val cleanTitle = title.ifBlank { "Movies & TV reminder" }
+        val body = if (!note.isNullOrBlank()) {
+            "\"${note.trim()}\" • Time to watch $cleanTitle."
+        } else {
+            "Your reminder for \"$cleanTitle\" is ready in Movies & TV."
+        }
+
+        val app = context.applicationContext as? com.laterbox.app.LaterboxApplication
+        val recordId = app?.container?.notificationHistoryRepository?.recordNotification(
+            linkId = null,
+            url = deepLinkUrl,
+            title = cleanTitle,
+            body = body,
+            origin = "MOVIE_REMINDER",
+            domain = "movies",
+            siteName = "Movies & TV",
+            previewImageUrl = posterUrl,
+            faviconUrl = null,
+            isRead = false,
+            createdAt = System.currentTimeMillis()
+        ) ?: -1L
+
+        val openDetailIntent = NotificationOpenActivity.createIntent(
+            context = context,
+            linkId = -1L,
+            url = deepLinkUrl,
+            notificationRecordId = recordId,
+            notificationId = notificationId,
+            mode = NotificationOpenActivity.MODE_OPEN_DESTINATION,
+            destination = destinationRoute
+        )
+        val contentPendingIntent = PendingIntent.getActivity(
+            context,
+            notificationId,
+            openDetailIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val dismissIntent = Intent(context, ReminderReceiver::class.java).apply {
+            action = ReminderReceiver.ACTION_DISMISS_MOVIE_REMINDER
+            putExtra(ReminderReceiver.EXTRA_MEDIA_KEY, mediaKey)
+            putExtra(ReminderReceiver.EXTRA_PROVIDER_ID, providerId)
+            putExtra(ReminderReceiver.EXTRA_TITLE_ID, titleId)
+            putExtra(ReminderReceiver.EXTRA_NOTIFICATION_ID, notificationId)
+        }
+        val dismissPendingIntent = PendingIntent.getBroadcast(
+            context,
+            notificationId + 100_000,
+            dismissIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val posterBitmap = fetchPreviewImage(context, posterUrl)
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID_REMINDERS)
+            .setSmallIcon(R.drawable.ic_stat_laterbox)
+            .setContentTitle(cleanTitle)
+            .setContentText(body)
+            .setContentIntent(contentPendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .addAction(
+                R.drawable.ic_huge_close,
+                "Dismiss",
+                dismissPendingIntent
+            )
+
+        if (posterBitmap != null) {
+            builder.setLargeIcon(posterBitmap)
+            builder.setStyle(
+                NotificationCompat.BigPictureStyle()
+                    .bigPicture(posterBitmap)
+                    .setBigContentTitle(cleanTitle)
+                    .setSummaryText(body)
+            )
+        } else {
+            builder.setStyle(NotificationCompat.BigTextStyle().bigText(body))
+        }
+
+        notificationManager.notify(notificationId, builder.build())
+        try {
+            app?.container?.userPreferencesRepository?.incrementRemindersDelivered()
+        } catch (_: Throwable) {}
+        return true
+    }
+
+    suspend fun showMoviesSmartNudgeNotification(
+        context: Context,
+        dedupKey: String,
+        notificationId: Int,
+        providerId: String,
+        titleId: String,
+        title: String,
+        body: String,
+        originTag: String = "MOVIES_NUDGE",
+        posterUrl: String? = null
+    ): Boolean {
+        createNotificationChannels(context)
+        if (!hasNotificationPermission(context)) return false
+        if (!claimDedupKey(context, dedupKey)) return false
+
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            ?: return false
+
+        val destinationRoute = com.laterbox.app.ui.navigation.LaterboxDestination.MovieDetail.createRoute(
+            providerId = providerId,
+            titleId = titleId
+        )
+        val deepLinkUrl = "laterbox://$destinationRoute"
+        val app = context.applicationContext as? com.laterbox.app.LaterboxApplication
+        val recordId = app?.container?.notificationHistoryRepository?.recordNotification(
+            linkId = null,
+            url = deepLinkUrl,
+            title = title,
+            body = body,
+            origin = originTag,
+            domain = "movies",
+            siteName = "Movies & TV",
+            previewImageUrl = posterUrl,
+            faviconUrl = null,
+            isRead = false,
+            createdAt = System.currentTimeMillis()
+        ) ?: -1L
+
+        val openDetailIntent = NotificationOpenActivity.createIntent(
+            context = context,
+            linkId = -1L,
+            url = deepLinkUrl,
+            notificationRecordId = recordId,
+            notificationId = notificationId,
+            mode = NotificationOpenActivity.MODE_OPEN_DESTINATION,
+            destination = destinationRoute
+        )
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            notificationId,
+            openDetailIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val posterBitmap = fetchPreviewImage(context, posterUrl)
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID_REMINDERS)
+            .setSmallIcon(R.drawable.ic_stat_laterbox)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
+
+        if (posterBitmap != null) {
+            builder.setLargeIcon(posterBitmap)
+            builder.setStyle(
+                NotificationCompat.BigPictureStyle()
+                    .bigPicture(posterBitmap)
+                    .setBigContentTitle(title)
+                    .setSummaryText(body)
+            )
+        } else {
+            builder.setStyle(NotificationCompat.BigTextStyle().bigText(body))
+        }
+
+        notificationManager.notify(notificationId, builder.build())
+        return true
+    }
+
     @DrawableRes
     fun resolvePlatformIcon(domain: String): Int {
         return com.laterbox.app.domain.util.PlatformBrandResolver.resolve(domain)?.iconRes

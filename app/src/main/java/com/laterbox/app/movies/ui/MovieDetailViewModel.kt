@@ -5,16 +5,25 @@ import androidx.lifecycle.viewModelScope
 import com.laterbox.app.BuildConfig
 import com.laterbox.app.data.preferences.SubtitleStyleConfig
 import com.laterbox.app.data.preferences.UserPreferencesRepository
+import com.laterbox.app.data.repository.CollectionRepository
+import com.laterbox.app.domain.model.Collection
 import com.laterbox.app.movies.data.download.MoviesDownloadBridge
+import com.laterbox.app.movies.domain.engine.MoviesDiscoveryEngine
 import com.laterbox.app.movies.domain.model.CastMember
 import com.laterbox.app.movies.domain.model.EpisodeItem
 import com.laterbox.app.movies.domain.model.MediaDetails
 import com.laterbox.app.movies.domain.model.MediaKind
+import com.laterbox.app.movies.domain.model.MovieTitleSummary
+import com.laterbox.app.movies.domain.model.OfflineMediaMatch
 import com.laterbox.app.movies.domain.model.PersonFilmography
 import com.laterbox.app.movies.domain.model.PlaybackResolution
 import com.laterbox.app.movies.domain.model.PlaybackSource
 import com.laterbox.app.movies.domain.model.ProviderLinkRecord
+import com.laterbox.app.movies.domain.model.SeriesPreferences
+import com.laterbox.app.movies.domain.model.SeriesProgressSummary
+import com.laterbox.app.movies.domain.model.ViewingReminderItem
 import com.laterbox.app.movies.domain.repository.MoviesRepository
+import com.laterbox.app.reminders.ReminderScheduler
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -48,13 +57,26 @@ data class MovieDetailUiState(
     val isTrailerFullscreen: Boolean = false,
     val trailerError: String? = null,
     val subtitleStyle: SubtitleStyleConfig = SubtitleStyleConfig(),
+    val seriesProgress: SeriesProgressSummary? = null,
+    val nextUnwatchedTarget: Pair<Int, Int>? = null,
+    val isTitleCompleted: Boolean = false,
+    val collections: List<Collection> = emptyList(),
+    val memberCollectionIds: Set<Long> = emptySet(),
+    val offlineMatches: List<OfflineMediaMatch> = emptyList(),
+    val viewingReminder: ViewingReminderItem? = null,
+    val seriesPreferences: SeriesPreferences? = null,
+    val hiddenMediaKeys: Set<String> = emptySet(),
+    val rankedRelatedTitles: List<MovieTitleSummary> = emptyList(),
+    val actionFeedbackMessage: String? = null,
     val errorMessage: String? = null
 )
 
 class MovieDetailViewModel(
     private val moviesRepository: MoviesRepository,
     private val moviesDownloadBridge: MoviesDownloadBridge? = null,
-    private val userPreferencesRepository: UserPreferencesRepository? = null
+    private val userPreferencesRepository: UserPreferencesRepository? = null,
+    private val collectionRepository: CollectionRepository? = null,
+    private val reminderScheduler: ReminderScheduler? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MovieDetailUiState())
@@ -62,6 +84,7 @@ class MovieDetailViewModel(
 
     private var loadJob: Job? = null
     private var watchlistJob: Job? = null
+    private var libraryObserversJob: Job? = null
     private var episodesJob: Job? = null
     private var episodeSizesJob: Job? = null
     private var playbackJob: Job? = null
@@ -81,6 +104,34 @@ class MovieDetailViewModel(
                 }
             }
         }
+        collectionRepository?.let { repo ->
+            viewModelScope.launch {
+                repo.collections.collect { cols ->
+                    _uiState.update { it.copy(collections = cols) }
+                }
+            }
+        }
+        viewModelScope.launch {
+            moviesRepository.observeOfflineAvailability().collect { matches ->
+                _uiState.update { it.copy(offlineMatches = matches) }
+            }
+        }
+        viewModelScope.launch {
+            moviesRepository.observeHiddenHistory(100).collect { hidden ->
+                val keys = hidden.map { it.stableMediaKey }.toSet()
+                _uiState.update { current ->
+                    val reranked = current.details?.let { details ->
+                        MoviesDiscoveryEngine.rankMoreLikeThis(
+                            anchor = details.summary,
+                            relatedTitles = details.relatedTitles,
+                            candidatePool = emptyList(),
+                            hiddenMediaKeys = keys
+                        )
+                    } ?: current.rankedRelatedTitles
+                    current.copy(hiddenMediaKeys = keys, rankedRelatedTitles = reranked)
+                }
+            }
+        }
     }
 
     fun load(providerId: String, titleId: String, forceRefresh: Boolean = false) {
@@ -95,55 +146,136 @@ class MovieDetailViewModel(
             }
         }
 
+        libraryObserversJob?.cancel()
+        libraryObserversJob = viewModelScope.launch {
+            launch {
+                moviesRepository.observeSeriesProgress(providerId, titleId).collect { progress ->
+                    val currentDetails = _uiState.value.details
+                    val nextTarget = if (currentDetails != null && currentDetails.summary.kind == MediaKind.TV_SERIES) {
+                        val epMap = _uiState.value.selectedSeasonNumber?.let { sn ->
+                            if (_uiState.value.episodes.isNotEmpty()) mapOf(sn to _uiState.value.episodes) else emptyMap()
+                        } ?: emptyMap()
+                        moviesRepository.computeNextUnwatchedEpisode(
+                            currentDetails.summary.providerId,
+                            currentDetails.summary.id,
+                            currentDetails.seasons,
+                            epMap
+                        )
+                    } else null
+                    val seriesCompleted = currentDetails != null &&
+                        currentDetails.summary.kind == MediaKind.TV_SERIES &&
+                        currentDetails.seasons.isNotEmpty() &&
+                        progress.totalWatchedEpisodes > 0 &&
+                        nextTarget == null
+                    _uiState.update { current ->
+                        current.copy(
+                            seriesProgress = progress,
+                            nextUnwatchedTarget = nextTarget ?: current.nextUnwatchedTarget,
+                            isTitleCompleted = if (currentDetails?.summary?.kind == MediaKind.TV_SERIES) {
+                                seriesCompleted
+                            } else current.isTitleCompleted
+                        )
+                    }
+                }
+            }
+            launch {
+                moviesRepository.observeMovieWatchHistory(100).collect { history ->
+                    val currentDetails = _uiState.value.details ?: return@collect
+                    if (currentDetails.summary.kind == MediaKind.MOVIE) {
+                        val mKey = currentDetails.summary.stableMediaKey
+                        val completed = history.any {
+                            (it.stableMediaKey == mKey || it.compositeId == currentDetails.summary.compositeId) && it.isCompleted
+                        }
+                        _uiState.update { it.copy(isTitleCompleted = completed) }
+                    }
+                }
+            }
+            launch {
+                moviesRepository.observeCollectionIdsForMedia(providerId, titleId).collect { ids ->
+                    _uiState.update { it.copy(memberCollectionIds = ids.toSet()) }
+                }
+            }
+            launch {
+                moviesRepository.observeViewingReminderForTitle(providerId, titleId).collect { rem ->
+                    _uiState.update { it.copy(viewingReminder = rem) }
+                }
+            }
+            launch {
+                moviesRepository.observeSeriesPreferences(providerId, titleId).collect { prefs ->
+                    _uiState.update { it.copy(seriesPreferences = prefs) }
+                }
+            }
+        }
+
         loadJob?.cancel()
         playbackJob?.cancel()
         episodesJob?.cancel()
         episodeSizesJob?.cancel()
         personJob?.cancel()
         loadJob = viewModelScope.launch {
-            val currentTrailerMuted = _uiState.value.trailerMuted
-            val currentSubStyle = _uiState.value.subtitleStyle
+            val prev = _uiState.value
             _uiState.update {
                 MovieDetailUiState(
                     isLoading = true,
-                    isInWatchlist = _uiState.value.isInWatchlist,
-                    trailerMuted = currentTrailerMuted,
-                    subtitleStyle = currentSubStyle
+                    isInWatchlist = prev.isInWatchlist,
+                    trailerMuted = prev.trailerMuted,
+                    subtitleStyle = prev.subtitleStyle,
+                    collections = prev.collections,
+                    offlineMatches = prev.offlineMatches,
+                    hiddenMediaKeys = prev.hiddenMediaKeys
                 )
             }
             val result = moviesRepository.getDetails(providerId, titleId, forceRefresh)
             result.fold(
                 onSuccess = { details ->
+                    moviesRepository.recordRecentlyViewed(details.summary)
                     val isSeries = details.summary.kind == MediaKind.TV_SERIES
-                    val firstSeason = if (isSeries) {
-                        details.seasons.firstOrNull()?.seasonNumber ?: 1
+                    val nextUnwatched = if (isSeries) {
+                        moviesRepository.computeNextUnwatchedEpisode(
+                            providerId = details.summary.providerId,
+                            titleId = details.summary.id,
+                            seasons = details.seasons
+                        )
                     } else null
-                    val defaultEp = if (isSeries) 1 else null
+                    val initialSeason = if (isSeries) {
+                        nextUnwatched?.first ?: details.seasons.firstOrNull()?.seasonNumber ?: 1
+                    } else null
+                    val initialEp = if (isSeries) {
+                        nextUnwatched?.second ?: 1
+                    } else null
                     val savedPos = moviesRepository.getSavedPositionMs(
                         details.summary.providerId,
                         details.summary.id,
-                        firstSeason,
-                        defaultEp
+                        initialSeason,
+                        initialEp
                     )
                     val links = if (BuildConfig.DEBUG) {
                         moviesRepository.getProviderLinks(details.summary.providerId, details.summary.id)
                     } else {
                         emptyList()
                     }
+                    val rankedRelated = MoviesDiscoveryEngine.rankMoreLikeThis(
+                        anchor = details.summary,
+                        relatedTitles = details.relatedTitles,
+                        candidatePool = emptyList(),
+                        hiddenMediaKeys = _uiState.value.hiddenMediaKeys
+                    )
                     _uiState.update {
                         it.copy(
                             isLoading = false,
                             details = details,
-                            selectedSeasonNumber = firstSeason,
+                            selectedSeasonNumber = initialSeason,
+                            nextUnwatchedTarget = nextUnwatched,
                             savedPositionMs = savedPos,
                             providerLinks = links,
+                            rankedRelatedTitles = rankedRelated,
                             errorMessage = null
                         )
                     }
-                    if (isSeries && firstSeason != null) {
-                        loadEpisodes(details.summary.providerId, details.summary.id, firstSeason)
+                    if (isSeries && initialSeason != null) {
+                        loadEpisodes(details.summary.providerId, details.summary.id, initialSeason)
                     }
-                    checkPlayback(details.summary.providerId, details.summary.id, firstSeason, defaultEp)
+                    checkPlayback(details.summary.providerId, details.summary.id, initialSeason, initialEp)
                 },
                 onFailure = { error ->
                     _uiState.update {
@@ -155,6 +287,224 @@ class MovieDetailViewModel(
                     }
                 }
             )
+        }
+    }
+
+    fun clearActionFeedback() {
+        _uiState.update { it.copy(actionFeedbackMessage = null) }
+    }
+
+    fun markTitleWatched(isRewatch: Boolean = false) {
+        val state = _uiState.value
+        val summary = state.details?.summary ?: return
+        viewModelScope.launch {
+            if (summary.kind == MediaKind.TV_SERIES) {
+                val target = state.nextUnwatchedTarget ?: (
+                    (state.selectedSeasonNumber ?: 1) to (state.episodes.firstOrNull()?.episodeNumber ?: 1)
+                )
+                moviesRepository.markWatched(
+                    item = summary,
+                    durationMs = 0L,
+                    seasonNumber = target.first,
+                    episodeNumber = target.second,
+                    episodeLabel = "S${target.first} · E${target.second}",
+                    isRewatch = isRewatch
+                )
+                val epMap = state.selectedSeasonNumber?.let { sn ->
+                    if (state.episodes.isNotEmpty()) mapOf(sn to state.episodes) else emptyMap()
+                } ?: emptyMap()
+                val nextTarget = moviesRepository.computeNextUnwatchedEpisode(
+                    summary.providerId,
+                    summary.id,
+                    state.details.seasons,
+                    epMap
+                )
+                _uiState.update {
+                    it.copy(
+                        nextUnwatchedTarget = nextTarget,
+                        savedPositionMs = 0L,
+                        actionFeedbackMessage = "Marked S${target.first}·E${target.second} watched"
+                    )
+                }
+            } else {
+                moviesRepository.markWatched(
+                    item = summary,
+                    durationMs = (summary.durationMinutes ?: 90) * 60_000L,
+                    isRewatch = isRewatch
+                )
+                _uiState.update {
+                    it.copy(
+                        isTitleCompleted = true,
+                        savedPositionMs = 0L,
+                        actionFeedbackMessage = if (isRewatch) "Logged rewatch" else "Marked as watched"
+                    )
+                }
+            }
+        }
+    }
+
+    fun markTitleUnwatched() {
+        val state = _uiState.value
+        val summary = state.details?.summary ?: return
+        viewModelScope.launch {
+            moviesRepository.markUnwatched(summary.providerId, summary.id)
+            val nextTarget = if (summary.kind == MediaKind.TV_SERIES) {
+                moviesRepository.computeNextUnwatchedEpisode(summary.providerId, summary.id, state.details.seasons)
+            } else null
+            _uiState.update {
+                it.copy(
+                    isTitleCompleted = false,
+                    nextUnwatchedTarget = nextTarget,
+                    savedPositionMs = 0L,
+                    actionFeedbackMessage = "Marked as unwatched"
+                )
+            }
+        }
+    }
+
+    fun restartTitleFromBeginning() {
+        val state = _uiState.value
+        val summary = state.details?.summary ?: return
+        viewModelScope.launch {
+            val se = if (summary.kind == MediaKind.TV_SERIES) state.selectedSeasonNumber ?: 1 else null
+            val ep = if (summary.kind == MediaKind.TV_SERIES) state.episodes.firstOrNull()?.episodeNumber ?: 1 else null
+            moviesRepository.restartFromBeginning(summary.providerId, summary.id, se, ep)
+            _uiState.update {
+                it.copy(
+                    savedPositionMs = 0L,
+                    actionFeedbackMessage = "Progress reset to beginning"
+                )
+            }
+        }
+    }
+
+    fun removeFromContinueWatching() {
+        val summary = _uiState.value.details?.summary ?: return
+        viewModelScope.launch {
+            moviesRepository.removeFromContinueWatching(summary.providerId, summary.id)
+            _uiState.update { it.copy(actionFeedbackMessage = "Removed from Continue Watching") }
+        }
+    }
+
+    fun setTitleHidden(hidden: Boolean) {
+        val summary = _uiState.value.details?.summary ?: return
+        viewModelScope.launch {
+            moviesRepository.setTitleHidden(summary.providerId, summary.id, hidden)
+            _uiState.update {
+                it.copy(actionFeedbackMessage = if (hidden) "Title hidden from discovery" else "Title unhidden")
+            }
+        }
+    }
+
+    fun toggleEpisodeWatched(episode: EpisodeItem) {
+        val state = _uiState.value
+        val summary = state.details?.summary ?: return
+        val currentlyCompleted = state.seriesProgress?.episodeStates
+            ?.get(episode.seasonNumber to episode.episodeNumber)?.isCompleted == true
+        viewModelScope.launch {
+            if (currentlyCompleted) {
+                moviesRepository.markUnwatched(
+                    providerId = summary.providerId,
+                    titleId = summary.id,
+                    seasonNumber = episode.seasonNumber,
+                    episodeNumber = episode.episodeNumber
+                )
+            } else {
+                moviesRepository.markWatched(
+                    item = summary,
+                    durationMs = (episode.runtimeMinutes ?: 45) * 60_000L,
+                    seasonNumber = episode.seasonNumber,
+                    episodeNumber = episode.episodeNumber,
+                    episodeLabel = "S${episode.seasonNumber} · E${episode.episodeNumber}"
+                )
+            }
+            val epMap = state.selectedSeasonNumber?.let { sn ->
+                if (state.episodes.isNotEmpty()) mapOf(sn to state.episodes) else emptyMap()
+            } ?: emptyMap()
+            val nextTarget = moviesRepository.computeNextUnwatchedEpisode(
+                summary.providerId,
+                summary.id,
+                state.details.seasons,
+                epMap
+            )
+            _uiState.update { it.copy(nextUnwatchedTarget = nextTarget) }
+        }
+    }
+
+    fun toggleCollectionMembership(collectionId: Long) {
+        val summary = _uiState.value.details?.summary ?: return
+        val isMember = collectionId in _uiState.value.memberCollectionIds
+        viewModelScope.launch {
+            if (isMember) {
+                moviesRepository.removeMediaFromCollection(summary, collectionId)
+                _uiState.update { it.copy(actionFeedbackMessage = "Removed from collection") }
+            } else {
+                moviesRepository.addMediaToCollection(summary, collectionId)
+                _uiState.update { it.copy(actionFeedbackMessage = "Added to collection") }
+            }
+        }
+    }
+
+    fun createAndAddToCollection(name: String) {
+        val summary = _uiState.value.details?.summary ?: return
+        val repo = collectionRepository ?: return
+        val clean = name.trim()
+        if (clean.isEmpty()) return
+        viewModelScope.launch {
+            val colId = repo.createCollection(clean)
+            moviesRepository.addMediaToCollection(summary, colId)
+            _uiState.update { it.copy(actionFeedbackMessage = "Added to \"$clean\"") }
+        }
+    }
+
+    fun scheduleViewingReminder(triggerAtMillis: Long, note: String? = null) {
+        val state = _uiState.value
+        val summary = state.details?.summary ?: return
+        val cleanNote = note?.trim()?.takeIf { it.isNotBlank() }
+        val target = if (summary.kind == MediaKind.TV_SERIES) state.nextUnwatchedTarget else null
+        viewModelScope.launch {
+            moviesRepository.scheduleViewingReminder(
+                item = summary,
+                triggerAtMillis = triggerAtMillis,
+                note = cleanNote,
+                seasonNumber = target?.first,
+                episodeNumber = target?.second
+            )
+            reminderScheduler?.scheduleMovieViewingReminder(
+                mediaKey = summary.stableMediaKey,
+                providerId = summary.providerId,
+                titleId = summary.id,
+                title = summary.title,
+                triggerAtMillis = triggerAtMillis,
+                note = cleanNote
+            )
+            _uiState.update { it.copy(actionFeedbackMessage = "Viewing reminder scheduled") }
+        }
+    }
+
+    fun dismissViewingReminder() {
+        val summary = _uiState.value.details?.summary ?: return
+        viewModelScope.launch {
+            moviesRepository.dismissViewingReminder(summary.providerId, summary.id)
+            reminderScheduler?.cancelMovieViewingReminder(summary.stableMediaKey)
+            _uiState.update { it.copy(actionFeedbackMessage = "Viewing reminder cancelled") }
+        }
+    }
+
+    fun toggleMuteSeriesReminders() {
+        val summary = _uiState.value.details?.summary ?: return
+        val newMuted = !(_uiState.value.seriesPreferences?.remindersMuted ?: false)
+        viewModelScope.launch {
+            moviesRepository.setSeriesRemindersMuted(summary.providerId, summary.id, newMuted)
+            _uiState.update {
+                it.copy(
+                    actionFeedbackMessage = if (newMuted) {
+                        "Muted alerts for ${summary.title}"
+                    } else {
+                        "Unmuted alerts for ${summary.title}"
+                    }
+                )
+            }
         }
     }
 
@@ -369,10 +719,20 @@ class MovieDetailViewModel(
                     } else {
                         episodes
                     }
+                    val seasons = _uiState.value.details?.seasons.orEmpty()
+                    val refinedNext = if (seasons.isNotEmpty()) {
+                        moviesRepository.computeNextUnwatchedEpisode(
+                            providerId = providerId,
+                            titleId = seriesId,
+                            seasons = seasons,
+                            episodesBySeason = mapOf(seasonNumber to seededEpisodes)
+                        )
+                    } else null
                     _uiState.update {
                         it.copy(
                             isLoadingEpisodes = false,
                             episodes = seededEpisodes,
+                            nextUnwatchedTarget = refinedNext ?: it.nextUnwatchedTarget,
                             episodesError = null
                         )
                     }

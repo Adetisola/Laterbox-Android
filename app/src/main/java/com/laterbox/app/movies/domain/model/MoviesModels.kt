@@ -51,6 +51,21 @@ enum class MoviesDiscoveryShortcut(
     K_DRAMA("k_drama", "K-Drama", MediaKind.TV_SERIES, genre = "Drama", country = "Korea")
 }
 
+enum class RuntimeBucket(val label: String, val minMinutes: Int?, val maxMinutes: Int?) {
+    ALL("Any length", null, null),
+    QUICK("Quick (<90m)", 1, 89),
+    FEATURE("Feature (90–140m)", 90, 140),
+    EPIC("Epic (140m+)", 141, null);
+
+    fun matches(durationMinutes: Int?): Boolean {
+        if (this == ALL) return true
+        val mins = durationMinutes?.takeIf { it > 0 } ?: return false
+        val minOk = minMinutes == null || mins >= minMinutes
+        val maxOk = maxMinutes == null || mins <= maxMinutes
+        return minOk && maxOk
+    }
+}
+
 enum class SectionStyle {
     HERO,
     RAIL,
@@ -78,9 +93,12 @@ data class MovieTitleSummary(
     val isPlayableHint: Boolean = false,
     val imdbId: String? = null,
     val tvmazeId: String? = null,
-    val canonicalId: String? = null
+    val canonicalId: String? = null,
+    val releaseDate: String? = null,
+    val addedAtMs: Long? = null
 ) {
     val compositeId: String get() = "$providerId:$id"
+    val stableMediaKey: String get() = canonicalId?.takeIf { it.isNotBlank() } ?: compositeId
 }
 
 data class ProviderLinkRecord(
@@ -177,6 +195,7 @@ data class MediaDetails(
     val summary: MovieTitleSummary,
     val fullDescription: String = "",
     val directorOrCreator: String? = null,
+    val directorPersonId: String? = null,
     val networkOrStudio: String? = null,
     val cast: List<CastMember> = emptyList(),
     val seasons: List<SeasonSummary> = emptyList(),
@@ -185,6 +204,14 @@ data class MediaDetails(
     val relatedTitles: List<MovieTitleSummary> = emptyList(),
     val externalInfoUrl: String? = null
 )
+
+data class PlaybackMarkerWindow(
+    val startMs: Long,
+    val endMs: Long
+) {
+    fun contains(positionMs: Long): Boolean =
+        endMs > startMs && startMs >= 0L && positionMs in startMs..endMs
+}
 
 data class PlaybackSource(
     val id: String,
@@ -197,7 +224,8 @@ data class PlaybackSource(
     val durationSeconds: Long? = null,
     val headers: Map<String, String> = emptyMap(),
     val isAuthorised: Boolean = true,
-    val providerName: String
+    val providerName: String,
+    val isOfflineLocal: Boolean = false
 )
 
 data class SubtitleTrack(
@@ -217,7 +245,9 @@ sealed interface PlaybackResolution {
         val subtitles: List<SubtitleTrack> = emptyList(),
         val startPositionMs: Long = 0L,
         val providerName: String = "",
-        val sourceBadge: DataSourceBadge = DataSourceBadge.LIVE_INTERNET_ARCHIVE
+        val sourceBadge: DataSourceBadge = DataSourceBadge.LIVE_INTERNET_ARCHIVE,
+        val introWindow: PlaybackMarkerWindow? = null,
+        val recapWindow: PlaybackMarkerWindow? = null
     ) : PlaybackResolution
 
     data class Unavailable(
@@ -244,8 +274,95 @@ data class WatchHistoryItem(
     val durationMs: Long,
     val lastWatchedAt: Long,
     val historyKey: String = "",
-    val isTrailer: Boolean = false
+    val isTrailer: Boolean = false,
+    val canonicalId: String? = null,
+    val isCompleted: Boolean = false,
+    val completedAt: Long? = null,
+    val rewatchCount: Int = 0,
+    val hiddenFromContinueWatching: Boolean = false,
+    val isHiddenTitle: Boolean = false
 ) {
+    val stableMediaKey: String get() = canonicalId?.takeIf { it.isNotBlank() } ?: compositeId
     val progressFraction: Float
         get() = if (durationMs > 0L) (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f
 }
+
+data class EpisodeProgressState(
+    val seasonNumber: Int,
+    val episodeNumber: Int,
+    val isCompleted: Boolean,
+    val positionMs: Long,
+    val durationMs: Long,
+    val rewatchCount: Int = 0,
+    val lastWatchedAt: Long = 0L
+)
+
+data class SeriesProgressSummary(
+    val mediaKey: String,
+    val compositeId: String,
+    val providerId: String,
+    val titleId: String,
+    val title: String,
+    val totalWatchedEpisodes: Int = 0,
+    val lastWatchedSeason: Int? = null,
+    val lastWatchedEpisode: Int? = null,
+    val lastWatchedAt: Long = 0L,
+    val nextUnwatchedSeason: Int? = null,
+    val nextUnwatchedEpisode: Int? = null,
+    val episodeStates: Map<Pair<Int, Int>, EpisodeProgressState> = emptyMap()
+)
+
+data class SeriesPreferences(
+    val mediaKey: String,
+    val preferredAudioLanguage: String? = null,
+    val preferredAudioLabel: String? = null,
+    val preferredSubtitleLanguage: String? = null,
+    val preferredSubtitleLabel: String? = null,
+    val subtitlesDisabled: Boolean = false,
+    val remindersMuted: Boolean = false,
+    val updatedAt: Long = 0L
+)
+
+data class ViewingReminderItem(
+    val mediaKey: String,
+    val compositeId: String,
+    val providerId: String,
+    val titleId: String,
+    val canonicalId: String? = null,
+    val kind: MediaKind,
+    val title: String,
+    val seasonNumber: Int? = null,
+    val episodeNumber: Int? = null,
+    val posterUrl: String? = null,
+    val note: String? = null,
+    val triggerAtMillis: Long,
+    val isDismissed: Boolean = false
+)
+
+data class OfflineMediaMatch(
+    val assetId: String,
+    val sourceRef: String,
+    val localPath: String,
+    val qualityLabel: String?,
+    val fileSizeBytes: Long,
+    val seasonNumber: Int? = null,
+    val episodeNumber: Int? = null
+)
+
+data class CollectionMediaItem(
+    val collectionId: Long,
+    val mediaKey: String,
+    val summary: MovieTitleSummary,
+    val addedAt: Long
+)
+
+data class BecauseYouWatchedGroup(
+    val anchorTitle: String,
+    val anchorKind: MediaKind,
+    val items: List<MovieTitleSummary>
+)
+
+data class SurprisePickResult(
+    val pick: MovieTitleSummary,
+    val rationale: String
+)

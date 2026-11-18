@@ -113,4 +113,44 @@ class AssistantActionHandlerTest {
         val roundTripped = AssistantActionHandler.fromJsonList(AssistantActionHandler.toJsonList(parsed.actions))
         assertEquals(parsed.actions, roundTripped)
     }
+
+    @Test
+    fun moviesActions_parseValidationEnforcesConfirmationAndRoundTrips() {
+        val raw = """
+            Here are your Movies & TV actions.
+            [ACTIONS]
+            [
+              {"type":"SEARCH_MOVIES","query":"dune","kind":"movie","genre":"Sci-Fi"},
+              {"type":"OPEN_MOVIE_DETAIL","providerId":"moviebox","titleId":"12345","title":"Dune"},
+              {"type":"TOGGLE_MOVIE_WATCHLIST","providerId":"moviebox","titleId":"12345","add":true,"title":"Dune","requiresConfirmation":false},
+              {"type":"SCHEDULE_MOVIE_REMINDER","providerId":"tvmaze","titleId":"66","triggerAtMillis":1800000000000,"note":"Episode 3 tonight","title":"Severance","requiresConfirmation":false}
+            ]
+            [/ACTIONS]
+        """.trimIndent()
+
+        val parsed = AssistantActionHandler.parseModelResponse(raw)
+        assertEquals(4, parsed.actions.size)
+        val search = parsed.actions[0] as ChatAction.SearchMovies
+        assertEquals("dune", search.query)
+        assertEquals("movie", search.kind)
+        assertEquals("Sci-Fi", search.genre)
+        assertEquals(ActionCategory.READ_ONLY, search.category)
+
+        val detail = parsed.actions[1] as ChatAction.OpenMovieDetail
+        assertEquals("moviebox", detail.providerId)
+        assertEquals(ActionCategory.READ_ONLY, detail.category)
+
+        val watchlist = parsed.actions[2] as ChatAction.ToggleMovieWatchlist
+        assertEquals(ActionCategory.STATE_CHANGING, watchlist.category)
+        assertTrue(watchlist.requiresConfirmation)
+        assertEquals("TOGGLE_MOVIE_WATCHLIST", watchlist.permissionKey)
+
+        val reminder = parsed.actions[3] as ChatAction.ScheduleMovieReminder
+        assertEquals(ActionCategory.STATE_CHANGING, reminder.category)
+        assertTrue(reminder.requiresConfirmation)
+        assertEquals("SCHEDULE_MOVIE_REMINDER", reminder.permissionKey)
+
+        val roundTripped = AssistantActionHandler.fromJsonList(AssistantActionHandler.toJsonList(parsed.actions))
+        assertEquals(parsed.actions, roundTripped)
+    }
 }

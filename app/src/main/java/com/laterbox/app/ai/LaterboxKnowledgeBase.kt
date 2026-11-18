@@ -17,12 +17,21 @@ object LaterboxKnowledgeBase {
         - {"type":"OPEN_DOWNLOADS","initialTab":0}  (0 = Library, 1 = Queue)
         - {"type":"OPEN_YOUTUBE_TRANSCRIPTS","url":"<optional youtube video or playlist url>","title":"<short label>"} (opens YouTube Transcript extractor sheet read-only; omit url to open manual input)
         - {"type":"OPEN_COLLECTIONS"}
-        - {"type":"OPEN_SETTINGS","route":"settings"} (valid routes: settings, settings/reminders_ai, settings/media_downloads, settings/capture_shortcuts, settings/about_privacy, settings/data_storage)
+        - {"type":"OPEN_SETTINGS","route":"settings"} (valid routes: settings, settings/reminders_ai, settings/media_downloads, settings/movies_tv, settings/capture_shortcuts, settings/about_privacy, settings/data_storage)
         - {"type":"RUN_HEALTH_CHECK"}
         - {"type":"RETRY_INSPECTION","linkId":123,"title":"<short label>"} (only when inspection failed for an exact linkId in context)
         - {"type":"RETRY_DOWNLOAD","taskId":"<exact taskId>","title":"<short label>"} (only when download failed for an exact taskId in context)
         - {"type":"REFRESH_METADATA","linkId":123,"title":"<short label>"} (to refresh title/preview for an exact linkId in context)
-        Never invent linkId or taskId values not present in the context.
+        - {"type":"OPEN_MOVIES_HOME"} (read-only: opens Movies & TV home)
+        - {"type":"SEARCH_MOVIES","query":"<search terms>","kind":"movie","genre":"<optional genre>"} (read-only: opens Movies & TV catalogue/search; kind/genre optional)
+        - {"type":"OPEN_MOVIE_DETAIL","providerId":"<providerId>","titleId":"<titleId>","title":"<short label>"} (read-only: exact providerId & titleId from context)
+        - {"type":"OPEN_MOVIE_PLAYER","providerId":"<providerId>","titleId":"<titleId>","seasonNumber":1,"episodeNumber":1,"title":"<short label>"} (read-only: seasonNumber & episodeNumber optional for movies)
+        - {"type":"TOGGLE_MOVIE_WATCHLIST","providerId":"<providerId>","titleId":"<titleId>","add":true,"title":"<short label>"} (confirmation-gated state change)
+        - {"type":"ADD_MOVIE_TO_COLLECTION","providerId":"<providerId>","titleId":"<titleId>","collectionId":1,"collectionName":"<name>","title":"<short label>"} (confirmation-gated state change; provide collectionId or collectionName)
+        - {"type":"MARK_MOVIE_WATCHED","providerId":"<providerId>","titleId":"<titleId>","seasonNumber":1,"episodeNumber":1,"watched":true,"title":"<short label>"} (confirmation-gated state change; season/episode optional)
+        - {"type":"SCHEDULE_MOVIE_REMINDER","providerId":"<providerId>","titleId":"<titleId>","triggerAtMillis":1730000000000,"note":"<optional note>","title":"<short label>"} (confirmation-gated state change)
+        - {"type":"MUTE_SERIES_REMINDERS","providerId":"<providerId>","titleId":"<titleId>","muted":true,"title":"<short label>"} (confirmation-gated state change)
+        Never invent linkId, taskId, providerId, or titleId values not present in the context.
     """.trimIndent()
 
     val FEATURE_GUIDE: String

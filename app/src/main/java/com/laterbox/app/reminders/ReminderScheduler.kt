@@ -101,8 +101,90 @@ class ReminderScheduler(private val context: Context) {
         }
     }
 
+    fun scheduleMovieViewingReminder(
+        mediaKey: String,
+        providerId: String,
+        titleId: String,
+        title: String,
+        triggerAtMillis: Long,
+        note: String? = null
+    ) {
+        if (alarmManager == null || triggerAtMillis <= System.currentTimeMillis()) {
+            return
+        }
+        val requestCode = movieReminderRequestCode(mediaKey)
+        val intent = Intent(context, ReminderReceiver::class.java).apply {
+            action = ReminderReceiver.ACTION_TRIGGER_MOVIE_REMINDER
+            putExtra(ReminderReceiver.EXTRA_MEDIA_KEY, mediaKey)
+            putExtra(ReminderReceiver.EXTRA_PROVIDER_ID, providerId)
+            putExtra(ReminderReceiver.EXTRA_TITLE_ID, titleId)
+            putExtra(ReminderReceiver.EXTRA_TITLE, title)
+            putExtra(ReminderReceiver.EXTRA_NOTE, note)
+        }
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            requestCode,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (alarmManager.canScheduleExactAlarms()) {
+                    alarmManager.setExactAndAllowWhileIdle(
+                        AlarmManager.RTC_WAKEUP,
+                        triggerAtMillis,
+                        pendingIntent
+                    )
+                } else {
+                    alarmManager.setWindow(
+                        AlarmManager.RTC_WAKEUP,
+                        triggerAtMillis,
+                        60_000L,
+                        pendingIntent
+                    )
+                }
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    triggerAtMillis,
+                    pendingIntent
+                )
+            } else {
+                alarmManager.setExact(
+                    AlarmManager.RTC_WAKEUP,
+                    triggerAtMillis,
+                    pendingIntent
+                )
+            }
+            Log.d(TAG, "Scheduled movie viewing reminder for $mediaKey at $triggerAtMillis")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to schedule movie viewing reminder for $mediaKey", e)
+        }
+    }
+
+    fun cancelMovieViewingReminder(mediaKey: String) {
+        if (alarmManager == null) return
+        val intent = Intent(context, ReminderReceiver::class.java).apply {
+            action = ReminderReceiver.ACTION_TRIGGER_MOVIE_REMINDER
+        }
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            movieReminderRequestCode(mediaKey),
+            intent,
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+        )
+        if (pendingIntent != null) {
+            alarmManager.cancel(pendingIntent)
+            pendingIntent.cancel()
+            Log.d(TAG, "Cancelled movie viewing reminder for $mediaKey")
+        }
+    }
+
     companion object {
         private const val TAG = "ReminderScheduler"
         const val SMART_DIGEST_REQUEST_CODE = 888_888
+
+        fun movieReminderRequestCode(mediaKey: String): Int =
+            700_000 + (mediaKey.hashCode() and 0x0FFF_FFFF) % 250_000
     }
 }

@@ -99,4 +99,20 @@ interface DownloadedAssetDao {
         ORDER BY createdAt DESC
     """)
     fun filterAssetsByCategory(category: String, query: String): Flow<List<DownloadedAssetEntity>>
+
+    @Query("""
+        SELECT * FROM downloaded_asset
+        WHERE fileStatus = 'AVAILABLE'
+          AND contentCategory IN ('MOVIE', 'EPISODE')
+        ORDER BY createdAt DESC
+    """)
+    fun observeAvailableOfflineMovieAssets(): Flow<List<DownloadedAssetEntity>>
+
+    @Query("""
+        SELECT * FROM downloaded_asset
+        WHERE fileStatus = 'AVAILABLE'
+          AND sourceRef LIKE :prefix || '%'
+        ORDER BY createdAt DESC
+    """)
+    suspend fun findAvailableBySourceRefPrefix(prefix: String): List<DownloadedAssetEntity>
 }

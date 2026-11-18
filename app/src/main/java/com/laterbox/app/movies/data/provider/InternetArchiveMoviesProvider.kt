@@ -278,8 +278,9 @@ class InternetArchiveMoviesProvider(
             val title = extractStringOrFirst(meta, "title")?.ifBlank { null } ?: titleId
             val rawDesc = extractStringOrJoin(meta, "description")
             val cleanDesc = cleanHtmlText(rawDesc).ifBlank { "Public domain feature archived on Internet Archive." }
+            val rawDate = extractStringOrFirst(meta, "date")?.takeIf { it.isNotBlank() }
             val year = meta.opt("year")?.toString()?.take(4)?.toIntOrNull()
-                ?: meta.opt("date")?.toString()?.take(4)?.toIntOrNull()
+                ?: rawDate?.take(4)?.toIntOrNull()
             val director = extractStringOrJoin(meta, "director").ifBlank { extractStringOrJoin(meta, "creator") }
                 .takeIf { it.isNotBlank() }
             val language = extractStringOrFirst(meta, "language")?.takeIf { it.isNotBlank() } ?: "English"
@@ -305,7 +306,8 @@ class InternetArchiveMoviesProvider(
                 language = language,
                 country = extractStringOrFirst(meta, "country"),
                 sourceBadge = sourceBadge,
-                isPlayableHint = streams.isNotEmpty()
+                isPlayableHint = streams.isNotEmpty(),
+                releaseDate = rawDate
             )
 
             val collections = extractStringList(meta, "collection")

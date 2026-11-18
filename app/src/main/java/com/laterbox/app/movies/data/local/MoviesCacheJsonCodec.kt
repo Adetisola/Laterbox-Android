@@ -59,6 +59,7 @@ object MoviesCacheJsonCodec {
         put("summary", encodeSummary(details.summary))
         put("fullDescription", details.fullDescription)
         put("directorOrCreator", details.directorOrCreator ?: JSONObject.NULL)
+        put("directorPersonId", details.directorPersonId ?: JSONObject.NULL)
         put("networkOrStudio", details.networkOrStudio ?: JSONObject.NULL)
         put("externalInfoUrl", details.externalInfoUrl ?: JSONObject.NULL)
         put("cast", JSONArray().apply {
@@ -288,6 +289,8 @@ object MoviesCacheJsonCodec {
         put("imdbId", item.imdbId ?: JSONObject.NULL)
         put("tvmazeId", item.tvmazeId ?: JSONObject.NULL)
         put("canonicalId", item.canonicalId ?: JSONObject.NULL)
+        put("releaseDate", item.releaseDate ?: JSONObject.NULL)
+        put("addedAtMs", item.addedAtMs ?: JSONObject.NULL)
     }
 
     private fun decodeSummary(o: JSONObject): MovieTitleSummary {
@@ -322,7 +325,9 @@ object MoviesCacheJsonCodec {
             isPlayableHint = o.optBoolean("isPlayableHint", false),
             imdbId = o.optNullableString("imdbId"),
             tvmazeId = o.optNullableString("tvmazeId"),
-            canonicalId = o.optNullableString("canonicalId")
+            canonicalId = o.optNullableString("canonicalId"),
+            releaseDate = o.optNullableString("releaseDate"),
+            addedAtMs = if (o.isNull("addedAtMs")) null else o.optLong("addedAtMs").takeIf { it > 0L }
         )
     }
 

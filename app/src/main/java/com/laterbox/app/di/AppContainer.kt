@@ -264,7 +264,13 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
                 com.laterbox.app.BuildConfig.DEBUG &&
                     userPreferencesRepository.userPreferencesFlow.first().moviesUseSampleFixturesOnly
             },
-            mediaResolver = com.laterbox.app.movies.data.resolver.MediaResolver(database.moviesDao())
+            mediaResolver = com.laterbox.app.movies.data.resolver.MediaResolver(database.moviesDao()),
+            downloadedAssetDao = database.downloadedAssetDao(),
+            localMediaUriResolver = { relPath ->
+                val file = com.laterbox.app.media.data.storage.MediaStorageManager(context.applicationContext)
+                    .resolveFile(relPath)
+                if (file.exists() && file.length() > 0L) android.net.Uri.fromFile(file).toString() else null
+            }
         )
     }
 

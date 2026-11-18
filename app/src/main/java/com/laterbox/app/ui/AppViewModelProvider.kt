@@ -36,7 +36,10 @@ object AppViewModelProvider {
         }
         initializer {
             val app = laterboxApplication()
-            CollectionDetailViewModel(app.container.linkRepository)
+            CollectionDetailViewModel(
+                linkRepository = app.container.linkRepository,
+                moviesRepository = app.container.moviesRepository
+            )
         }
         initializer {
             val app = laterboxApplication()
@@ -87,7 +90,10 @@ object AppViewModelProvider {
                 appHealthChecker = app.container.appHealthChecker,
                 linkRepository = app.container.linkRepository,
                 mediaRepository = app.container.mediaRepository,
-                speech = app.container.speechCoordinator
+                speech = app.container.speechCoordinator,
+                moviesRepository = app.container.moviesRepository,
+                collectionRepository = app.container.collectionRepository,
+                reminderScheduler = app.container.reminderScheduler
             )
         }
         initializer {
@@ -102,13 +108,15 @@ object AppViewModelProvider {
             val app = laterboxApplication()
             com.laterbox.app.movies.ui.MoviesHomeViewModel(
                 moviesRepository = app.container.moviesRepository,
-                userPreferencesRepository = app.container.userPreferencesRepository
+                userPreferencesRepository = app.container.userPreferencesRepository,
+                collectionRepository = app.container.collectionRepository
             )
         }
         initializer {
             val app = laterboxApplication()
             com.laterbox.app.movies.ui.MoviesCatalogueViewModel(
-                moviesRepository = app.container.moviesRepository
+                moviesRepository = app.container.moviesRepository,
+                collectionRepository = app.container.collectionRepository
             )
         }
         initializer {
@@ -116,7 +124,9 @@ object AppViewModelProvider {
             com.laterbox.app.movies.ui.MovieDetailViewModel(
                 moviesRepository = app.container.moviesRepository,
                 moviesDownloadBridge = app.container.moviesDownloadBridge,
-                userPreferencesRepository = app.container.userPreferencesRepository
+                userPreferencesRepository = app.container.userPreferencesRepository,
+                collectionRepository = app.container.collectionRepository,
+                reminderScheduler = app.container.reminderScheduler
             )
         }
         initializer {

@@ -8,6 +8,7 @@ import com.laterbox.app.movies.data.download.MoviesDownloadBridge
 import com.laterbox.app.movies.domain.model.AudioDubInfo
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
+import com.laterbox.app.movies.domain.model.PlaybackMarkerWindow
 import com.laterbox.app.movies.domain.model.PlaybackResolution
 import com.laterbox.app.movies.domain.model.PlaybackSource
 import com.laterbox.app.movies.domain.model.SeasonSummary
@@ -58,6 +59,10 @@ data class MoviePlayerUiState(
     val nextEpisodePreview: NextEpisodePreview? = null,
     val relatedTitles: List<MovieTitleSummary> = emptyList(),
     val playbackPreferences: PlayerPlaybackPreferences = PlayerPlaybackPreferences(),
+    val preferredAudioLanguage: String? = null,
+    val isPlayingOffline: Boolean = false,
+    val introWindow: PlaybackMarkerWindow? = null,
+    val recapWindow: PlaybackMarkerWindow? = null,
     val isEnqueuingDownload: Boolean = false,
     val downloadStatusMessage: String? = null,
     val errorMessage: String? = null
@@ -166,8 +171,24 @@ class MoviePlayerViewModel(
                 )
             }
 
-            val details = moviesRepository.getDetails(providerId, titleId, forceRefresh = false).getOrNull()
-            val result = moviesRepository.resolvePlayback(providerId, titleId, seasonNumber, episodeNumber)
+            val initialDetails = moviesRepository.getDetails(providerId, titleId, forceRefresh = false).getOrNull()
+            val seriesPrefs = moviesRepository.getSeriesPreferences(providerId, titleId)
+            val preferredDubRef = seriesPrefs?.preferredAudioLanguage?.takeIf { it.isNotBlank() }?.let { prefLang ->
+                initialDetails?.audioDubs?.firstOrNull { dub ->
+                    !dub.referenceId.isNullOrBlank() &&
+                        dub.referenceId != titleId &&
+                        (dub.language.equals(prefLang, ignoreCase = true) ||
+                            dub.label.equals(prefLang, ignoreCase = true))
+                }?.referenceId
+            }
+            val effectiveTitleId = preferredDubRef ?: titleId
+            val details = if (preferredDubRef != null) {
+                moviesRepository.getDetails(providerId, effectiveTitleId, forceRefresh = false).getOrNull()
+                    ?: initialDetails
+            } else {
+                initialDetails
+            }
+            val result = moviesRepository.resolvePlayback(providerId, effectiveTitleId, seasonNumber, episodeNumber)
             result.fold(
                 onSuccess = { resolution ->
                     when (resolution) {
@@ -176,11 +197,23 @@ class MoviePlayerViewModel(
                                 sources = resolution.sources,
                                 preferredQualityHeight = currentPrefs.defaultQualityHeight
                             )
-                            val defaultSub = resolution.subtitles.firstOrNull {
-                                it.languageCode.equals("en", ignoreCase = true)
-                            } ?: resolution.subtitles.firstOrNull()
+                            val defaultSub = when {
+                                seriesPrefs?.subtitlesDisabled == true -> null
+                                !seriesPrefs?.preferredSubtitleLanguage.isNullOrBlank() -> {
+                                    val prefSub = seriesPrefs!!.preferredSubtitleLanguage!!
+                                    resolution.subtitles.firstOrNull {
+                                        it.languageCode.equals(prefSub, ignoreCase = true) ||
+                                            it.language.equals(prefSub, ignoreCase = true)
+                                    } ?: resolution.subtitles.firstOrNull {
+                                        it.languageCode.equals("en", ignoreCase = true)
+                                    } ?: resolution.subtitles.firstOrNull()
+                                }
+                                else -> resolution.subtitles.firstOrNull {
+                                    it.languageCode.equals("en", ignoreCase = true)
+                                } ?: resolution.subtitles.firstOrNull()
+                            }
                             val summary = details?.summary ?: MovieTitleSummary(
-                                id = titleId,
+                                id = effectiveTitleId,
                                 providerId = providerId,
                                 kind = if (seasonNumber != null) MediaKind.TV_SERIES else MediaKind.MOVIE,
                                 title = resolution.title,
@@ -224,12 +257,16 @@ class MoviePlayerViewModel(
                                     selectedSubtitleTrack = defaultSub,
                                     startPositionMs = resolution.startPositionMs,
                                     summary = summary,
-                                    activeTitleId = titleId,
+                                    activeTitleId = effectiveTitleId,
                                     availableDubs = details?.audioDubs.orEmpty(),
                                     seasons = details?.seasons.orEmpty(),
                                     episodeLabel = epLabel,
                                     nextEpisodePreview = nextPreview,
                                     relatedTitles = details?.relatedTitles.orEmpty().take(8),
+                                    preferredAudioLanguage = seriesPrefs?.preferredAudioLanguage,
+                                    isPlayingOffline = defaultSource?.isOfflineLocal == true,
+                                    introWindow = resolution.introWindow,
+                                    recapWindow = resolution.recapWindow,
                                     errorMessage = null
                                 )
                             }
@@ -240,10 +277,14 @@ class MoviePlayerViewModel(
                                     isLoading = false,
                                     resolution = resolution,
                                     summary = details?.summary,
-                                    activeTitleId = titleId,
+                                    activeTitleId = effectiveTitleId,
                                     availableDubs = details?.audioDubs.orEmpty(),
                                     seasons = details?.seasons.orEmpty(),
                                     relatedTitles = details?.relatedTitles.orEmpty().take(8),
+                                    preferredAudioLanguage = seriesPrefs?.preferredAudioLanguage,
+                                    isPlayingOffline = false,
+                                    introWindow = null,
+                                    recapWindow = null,
                                     errorMessage = null
                                 )
                             }
@@ -254,7 +295,7 @@ class MoviePlayerViewModel(
                     _uiState.update {
                         it.copy(
                             isLoading = false,
-                            activeTitleId = titleId,
+                            activeTitleId = effectiveTitleId,
                             errorMessage = error.message?.takeIf { m -> m.isNotBlank() }
                                 ?: "Unable to resolve playback stream."
                         )
@@ -268,6 +309,7 @@ class MoviePlayerViewModel(
         _uiState.update {
             it.copy(
                 selectedSource = source,
+                isPlayingOffline = source.isOfflineLocal,
                 startPositionMs = currentPositionMs.coerceAtLeast(0L)
             )
         }
@@ -279,6 +321,37 @@ class MoviePlayerViewModel(
                 selectedSubtitleTrack = track,
                 startPositionMs = currentPositionMs.coerceAtLeast(0L)
             )
+        }
+        val state = _uiState.value
+        val providerId = state.summary?.providerId ?: activeProviderId
+        val titleId = state.summary?.id ?: state.activeTitleId
+        if (providerId.isNotBlank() && titleId.isNotBlank()) {
+            viewModelScope.launch {
+                moviesRepository.saveSeriesSubtitlePreference(
+                    providerId = providerId,
+                    titleId = titleId,
+                    language = track?.languageCode ?: track?.language,
+                    label = track?.label,
+                    disabled = track == null
+                )
+            }
+        }
+    }
+
+    fun saveStreamAudioPreference(language: String?, label: String?) {
+        _uiState.update { it.copy(preferredAudioLanguage = language) }
+        val state = _uiState.value
+        val providerId = state.summary?.providerId ?: activeProviderId
+        val titleId = state.summary?.id ?: state.activeTitleId
+        if (providerId.isNotBlank() && titleId.isNotBlank()) {
+            viewModelScope.launch {
+                moviesRepository.saveSeriesAudioPreference(
+                    providerId = providerId,
+                    titleId = titleId,
+                    language = language,
+                    label = label
+                )
+            }
         }
     }
 
@@ -304,9 +377,16 @@ class MoviePlayerViewModel(
             _uiState.update {
                 it.copy(
                     isLoading = true,
+                    preferredAudioLanguage = dub.language,
                     errorMessage = null
                 )
             }
+            moviesRepository.saveSeriesAudioPreference(
+                providerId = providerId,
+                titleId = targetId,
+                language = dub.language,
+                label = dub.label
+            )
             val dubDetails = moviesRepository.getDetails(providerId, targetId, forceRefresh = false).getOrNull()
             moviesRepository.resolvePlayback(providerId, targetId, seasonNumber, episodeNumber).fold(
                 onSuccess = { resolution ->
@@ -339,6 +419,9 @@ class MoviePlayerViewModel(
                                     activeTitleId = targetId,
                                     availableDubs = dubDetails?.audioDubs?.takeIf { d -> d.isNotEmpty() } ?: previousDubs,
                                     seasons = dubDetails?.seasons?.takeIf { s -> s.isNotEmpty() } ?: previousSeasons,
+                                    isPlayingOffline = matchedSource?.isOfflineLocal == true,
+                                    introWindow = resolution.introWindow,
+                                    recapWindow = resolution.recapWindow,
                                     errorMessage = null
                                 )
                             }
@@ -352,6 +435,9 @@ class MoviePlayerViewModel(
                                     activeTitleId = targetId,
                                     availableDubs = dubDetails?.audioDubs?.takeIf { d -> d.isNotEmpty() } ?: previousDubs,
                                     seasons = dubDetails?.seasons?.takeIf { s -> s.isNotEmpty() } ?: previousSeasons,
+                                    isPlayingOffline = false,
+                                    introWindow = null,
+                                    recapWindow = null,
                                     errorMessage = null
                                 )
                             }

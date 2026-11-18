@@ -5,6 +5,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,6 +27,7 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -39,10 +41,15 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -59,10 +66,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.laterbox.app.movies.domain.model.CatalogueSort
 import com.laterbox.app.movies.domain.model.MediaKind
+import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.model.MoviesDiscoveryShortcut
+import com.laterbox.app.movies.domain.model.RuntimeBucket
 import com.laterbox.app.movies.domain.model.SearchSuggestion
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.theme.LaterboxTheme
+import kotlinx.coroutines.delay
+
+private val CATALOGUE_YEAR_OPTIONS = listOf("All", "2025", "2024", "2020s", "2010s", "2000s", "Classic")
 
 @Composable
 fun MoviesCatalogueScreen(
@@ -82,12 +94,46 @@ fun MoviesCatalogueScreen(
     onSelectCountry: (String) -> Unit = {},
     onSelectShortcut: (MoviesDiscoveryShortcut) -> Unit = {},
     onResetFilters: () -> Unit = {},
+    onSelectLanguage: (String) -> Unit = {},
+    onSelectYear: (String) -> Unit = {},
+    onSelectRuntimeBucket: (RuntimeBucket) -> Unit = {},
+    onToggleWatchlist: (MovieTitleSummary) -> Unit = {},
+    onMarkWatched: (MovieTitleSummary) -> Unit = {},
+    onHideTitle: (MovieTitleSummary) -> Unit = {},
+    onAddToCollection: (MovieTitleSummary, Long) -> Unit = { _, _ -> },
+    onCreateAndAddToCollection: (MovieTitleSummary, String) -> Unit = { _, _ -> },
+    onClearActionFeedback: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
+    var showExpandedFilters by remember { mutableStateOf(false) }
+    var collectionPickerTarget by remember { mutableStateOf<MovieTitleSummary?>(null) }
+
+    LaunchedEffect(uiState.actionFeedbackMessage) {
+        if (uiState.actionFeedbackMessage != null) {
+            delay(2_600L)
+            onClearActionFeedback()
+        }
+    }
+
+    collectionPickerTarget?.let { target ->
+        MovieCollectionPickerDialog(
+            title = target.title,
+            collections = uiState.collections,
+            onSelectCollection = { colId ->
+                onAddToCollection(target, colId)
+                collectionPickerTarget = null
+            },
+            onCreateAndAddCollection = { name ->
+                onCreateAndAddToCollection(target, name)
+                collectionPickerTarget = null
+            },
+            onDismiss = { collectionPickerTarget = null }
+        )
+    }
 
     val dismissSearch: () -> Unit = {
         keyboardController?.hide()
@@ -222,12 +268,48 @@ fun MoviesCatalogueScreen(
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             Column(modifier = Modifier.fillMaxSize()) {
 
-        // Kind Filters + Reset Row
+        uiState.actionFeedbackMessage?.let { feedback ->
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = colors.accentContainer,
+                border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.3f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .testTag("catalogue_feedback_banner")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = feedback,
+                        style = typography.metaText.copy(fontWeight = FontWeight.Medium),
+                        color = colors.accentPrimary,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = onClearActionFeedback) {
+                        Text("Dismiss", color = colors.accentPrimary)
+                    }
+                }
+            }
+        }
+
+        // Kind Filters + Expanded Filters Toggle + Reset Row
         val hasActiveFilters = uiState.selectedKind != null ||
             uiState.selectedGenre != "All" ||
             uiState.selectedCountry != "All" ||
+            uiState.selectedLanguage != "All" ||
+            uiState.selectedYear != "All" ||
+            uiState.selectedRuntimeBucket != RuntimeBucket.ALL ||
             uiState.activeShortcut != null ||
             uiState.sort != CatalogueSort.POPULAR
+        val expandedCount = listOf(
+            uiState.selectedLanguage != "All",
+            uiState.selectedYear != "All",
+            uiState.selectedRuntimeBucket != RuntimeBucket.ALL
+        ).count { it }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -235,18 +317,43 @@ fun MoviesCatalogueScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            listOf(
-                null to "All",
-                MediaKind.MOVIE to "Movies",
-                MediaKind.TV_SERIES to "TV Series"
-            ).forEach { (kind, label) ->
-                val selected = uiState.selectedKind == kind
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                listOf(
+                    null to "All",
+                    MediaKind.MOVIE to "Movies",
+                    MediaKind.TV_SERIES to "TV Series"
+                ).forEach { (kind, label) ->
+                    val selected = uiState.selectedKind == kind
+                    FilterChip(
+                        selected = selected,
+                        onClick = { onSelectKind(kind) },
+                        label = {
+                            Text(
+                                text = label,
+                                style = typography.uiLabel.copy(fontSize = 12.sp)
+                            )
+                        },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = colors.accentContainer,
+                            selectedLabelColor = colors.accentPrimary,
+                            containerColor = colors.surfacePrimary,
+                            labelColor = colors.textSecondary
+                        ),
+                        modifier = Modifier.testTag("filter_kind_${kind?.wireValue ?: "all"}")
+                    )
+                }
                 FilterChip(
-                    selected = selected,
-                    onClick = { onSelectKind(kind) },
+                    selected = showExpandedFilters || expandedCount > 0,
+                    onClick = { showExpandedFilters = !showExpandedFilters },
                     label = {
                         Text(
-                            text = label,
+                            text = if (expandedCount > 0) "Filters ($expandedCount)" else "Filters",
                             style = typography.uiLabel.copy(fontSize = 12.sp)
                         )
                     },
@@ -256,10 +363,9 @@ fun MoviesCatalogueScreen(
                         containerColor = colors.surfacePrimary,
                         labelColor = colors.textSecondary
                     ),
-                    modifier = Modifier.testTag("filter_kind_${kind?.wireValue ?: "all"}")
+                    modifier = Modifier.testTag("catalogue_filters_toggle")
                 )
             }
-            Spacer(modifier = Modifier.weight(1f))
             if (hasActiveFilters) {
                 TextButton(
                     onClick = onResetFilters,
@@ -271,6 +377,122 @@ fun MoviesCatalogueScreen(
                         style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
                         color = colors.accentPrimary
                     )
+                }
+            }
+        }
+
+        AnimatedVisibility(visible = showExpandedFilters) {
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = colors.surfacePrimary,
+                border = BorderStroke(0.75.dp, colors.borderSubtle),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .testTag("catalogue_expanded_filters_panel")
+            ) {
+                Column(
+                    modifier = Modifier.padding(vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        item(key = "cat_year_lbl") {
+                            Text(
+                                text = "Year",
+                                style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                color = colors.textSecondary,
+                                modifier = Modifier.padding(end = 4.dp)
+                            )
+                        }
+                        items(CATALOGUE_YEAR_OPTIONS, key = { "cat_yr_$it" }) { yr ->
+                            val selected = uiState.selectedYear == yr
+                            Surface(
+                                shape = RoundedCornerShape(18.dp),
+                                color = if (selected) colors.accentPrimary else colors.surfaceSecondary,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(18.dp))
+                                    .clickable { onSelectYear(yr) }
+                                    .testTag("catalogue_year_${yr.lowercase()}")
+                            ) {
+                                Text(
+                                    text = yr,
+                                    style = typography.uiLabel.copy(fontSize = 11.sp),
+                                    color = if (selected) colors.onAccentPrimary else colors.textPrimary,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                )
+                            }
+                        }
+                    }
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        item(key = "cat_rt_lbl") {
+                            Text(
+                                text = "Length",
+                                style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                color = colors.textSecondary,
+                                modifier = Modifier.padding(end = 4.dp)
+                            )
+                        }
+                        items(RuntimeBucket.entries, key = { "cat_rt_${it.name}" }) { bucket ->
+                            val selected = uiState.selectedRuntimeBucket == bucket
+                            Surface(
+                                shape = RoundedCornerShape(18.dp),
+                                color = if (selected) colors.accentPrimary else colors.surfaceSecondary,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(18.dp))
+                                    .clickable { onSelectRuntimeBucket(bucket) }
+                                    .testTag("catalogue_runtime_${bucket.name.lowercase()}")
+                            ) {
+                                Text(
+                                    text = bucket.label,
+                                    style = typography.uiLabel.copy(fontSize = 11.sp),
+                                    color = if (selected) colors.onAccentPrimary else colors.textPrimary,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                )
+                            }
+                        }
+                    }
+                    if (uiState.availableLanguages.size > 1) {
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            item(key = "cat_lang_lbl") {
+                                Text(
+                                    text = "Language",
+                                    style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                    color = colors.textSecondary,
+                                    modifier = Modifier.padding(end = 4.dp)
+                                )
+                            }
+                            items(uiState.availableLanguages, key = { "cat_lang_$it" }) { lang ->
+                                val selected = uiState.selectedLanguage == lang
+                                Surface(
+                                    shape = RoundedCornerShape(18.dp),
+                                    color = if (selected) colors.accentPrimary else colors.surfaceSecondary,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(18.dp))
+                                        .clickable { onSelectLanguage(lang) }
+                                        .testTag("catalogue_lang_${lang.lowercase().replace(' ', '_')}")
+                                ) {
+                                    Text(
+                                        text = lang,
+                                        style = typography.uiLabel.copy(fontSize = 11.sp),
+                                        color = if (selected) colors.onAccentPrimary else colors.textPrimary,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -468,10 +690,19 @@ fun MoviesCatalogueScreen(
                         if (index >= uiState.items.lastIndex - 3 && uiState.hasMore && !uiState.isLoadingMore) {
                             onLoadNextPage()
                         }
+                        val isOffline = uiState.offlineMatches.any {
+                            it.matchesTitleComposite(item.providerId, item.id)
+                        }
                         MoviePosterCard(
                             item = item,
                             onClick = { onOpenDetail(item.providerId, item.id) },
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier.fillMaxWidth(),
+                            isOfflineDownloaded = isOffline,
+                            isInWatchlist = item.compositeId in uiState.watchlistIds,
+                            onToggleWatchlist = onToggleWatchlist,
+                            onAddToCollection = { collectionPickerTarget = it },
+                            onMarkWatched = onMarkWatched,
+                            onHideTitle = onHideTitle
                         )
                     }
 

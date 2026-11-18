@@ -85,6 +85,7 @@ fun RemindersAiSettingsScreen(
     onSmartNotificationsAppHealthChange: (Boolean) -> Unit = {},
     onSmartNotificationsSummariesChange: (Boolean) -> Unit = {},
     onSmartNotificationsTipsChange: (Boolean) -> Unit = {},
+    onSmartNotificationsMoviesTvChange: (Boolean) -> Unit = {},
     onQuietHoursEnabledChange: (Boolean) -> Unit = {},
     onQuietHoursWindowChange: (Int, Int) -> Unit = { _, _ -> }
 ) {
@@ -632,6 +633,14 @@ fun RemindersAiSettingsScreen(
                         description = "Occasional discovery tips for Laterbox shortcuts & media features",
                         enabled = preferences.smartNotificationsTips,
                         onEnabledChange = onSmartNotificationsTipsChange,
+                        content = {}
+                    )
+                    SettingsDivider()
+                    ScheduleRow(
+                        title = "Movies & TV Reminders",
+                        description = "Continue Watching nudges, unwatched watchlist reminders, and verified new season alerts",
+                        enabled = preferences.smartNotificationsMoviesTv,
+                        onEnabledChange = onSmartNotificationsMoviesTvChange,
                         content = {}
                     )
                     SettingsDivider()
