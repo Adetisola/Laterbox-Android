@@ -709,6 +709,9 @@ fun MoviesCatalogueScreen(
                 }
             }
             else -> {
+                val offlineLookup = remember(uiState.offlineMatches) {
+                    OfflineMediaLookup.from(uiState.offlineMatches)
+                }
                 LazyVerticalGrid(
                     columns = GridCells.Adaptive(minSize = 112.dp),
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
@@ -727,9 +730,7 @@ fun MoviesCatalogueScreen(
                                 onLoadNextPage()
                             }
                         }
-                        val isOffline = uiState.offlineMatches.any {
-                            it.matchesTitleComposite(item.providerId, item.id)
-                        }
+                        val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
                         MoviePosterCard(
                             item = item,
                             onClick = { onOpenDetail(item.providerId, item.id) },

@@ -13,6 +13,8 @@ import com.laterbox.app.media.data.adapters.ytdlp.YtDlpInitState
 import com.laterbox.app.media.data.adapters.ytdlp.YtDlpRuntimeManager
 import com.laterbox.app.media.domain.model.MediaType
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 
@@ -36,92 +38,139 @@ class LaterboxContextEngine(
         val lowerPrompt = prompt.lowercase()
 
         val linkDao = database.savedLinkDao()
-        val inboxCount = try { linkDao.getInboxCount() } catch (_: Throwable) { 0 }
-        val archivedCount = try { linkDao.getArchivedCount() } catch (_: Throwable) { 0 }
-        val candidateLinks = try {
-            val recent = linkDao.getRecentInboxLinksSnapshot(limit = 20)
-            if (keywords.isEmpty()) recent
-            else {
-                val matched = keywords.take(4).flatMap { kw ->
-                    linkDao.searchInboxLinksSnapshot(kw, limit = 10)
+        val inboxCountDef = async { try { linkDao.getInboxCount() } catch (_: Throwable) { 0 } }
+        val archivedCountDef = async { try { linkDao.getArchivedCount() } catch (_: Throwable) { 0 } }
+        val candidateLinksDef = async {
+            try {
+                val recent = linkDao.getRecentInboxLinksSnapshot(limit = 20)
+                if (keywords.isEmpty()) recent
+                else {
+                    val matched = keywords.take(4).flatMap { kw ->
+                        linkDao.searchInboxLinksSnapshot(kw, limit = 10)
+                    }
+                    (matched + recent).distinctBy { it.link.id }
                 }
-                (matched + recent).distinctBy { it.link.id }
+            } catch (_: Throwable) {
+                emptyList()
             }
-        } catch (_: Throwable) {
-            emptyList()
+        }
+        val inspectionsDef = async {
+            try {
+                database.mediaInspectionDao().getRecentInspectionsSnapshot(15)
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        }
+        val downloadTasksDef = async {
+            try {
+                database.downloadTaskDao().getRecentTasksSnapshot(15)
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        }
+        val downloadedAssetCountDef = async {
+            try {
+                database.downloadedAssetDao().getAssetCount().first()
+            } catch (_: Throwable) {
+                0
+            }
+        }
+        val storedDocumentCountDef = async {
+            try {
+                database.downloadedAssetDao().filterAssets(MediaType.DOCUMENT.name, "").first().size
+            } catch (_: Throwable) {
+                0
+            }
+        }
+        val offlineMovieAssetsDef = async {
+            try {
+                database.downloadedAssetDao().filterAssetsByCategory("MOVIES", "").first()
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        }
+        val collectionsListDef = async {
+            try {
+                database.collectionDao().getCollectionsWithCounts().first()
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        }
+        val watchlistItemsDef = async {
+            try {
+                database.moviesDao().observeWatchlist().first()
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        }
+        val viewingHistoryDef = async {
+            try {
+                database.moviesDao().observeViewingHistory(30).first()
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        }
+        val recentlyViewedDef = async {
+            try {
+                database.moviesDao().getRecentlyViewedSnapshot(8)
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        }
+        val activeMovieRemindersDef = async {
+            try {
+                database.moviesDao().getActiveViewingRemindersSnapshot()
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        }
+        val seriesPrefsDef = async {
+            try {
+                database.moviesDao().getAllSeriesPreferencesSnapshot()
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        }
+        val collectionMediaDef = async {
+            try {
+                database.moviesDao().getCollectionMediaSnapshot(50)
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        }
+        val recentNotificationsDef = async {
+            try {
+                database.notificationHistoryDao().getRecentHistorySnapshot(8)
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        }
+        val recentEventsDef = async {
+            try {
+                activityEventRepository.getRecentEvents(15)
+            } catch (_: Throwable) {
+                emptyList()
+            }
         }
 
+        val inboxCount = inboxCountDef.await()
+        val archivedCount = archivedCountDef.await()
+        val candidateLinks = candidateLinksDef.await()
         val rankedLinks = rankRelevantLinks(candidateLinks, keywords, maxItems = 10)
-        val inspections = try {
-            database.mediaInspectionDao().getRecentInspectionsSnapshot(15)
-        } catch (_: Throwable) {
-            emptyList()
-        }
-        val downloadTasks = try {
-            database.downloadTaskDao().getRecentTasksSnapshot(15)
-        } catch (_: Throwable) {
-            emptyList()
-        }
-        val downloadedAssetCount = try {
-            database.downloadedAssetDao().getAssetCount().first()
-        } catch (_: Throwable) {
-            0
-        }
-        val storedDocumentCount = try {
-            database.downloadedAssetDao().filterAssets(MediaType.DOCUMENT.name, "").first().size
-        } catch (_: Throwable) {
-            0
-        }
-        val offlineMovieAssets = try {
-            database.downloadedAssetDao().filterAssetsByCategory("MOVIES", "").first()
-        } catch (_: Throwable) {
-            emptyList()
-        }
-        val collectionsList = try {
-            database.collectionDao().getCollectionsWithCounts().first()
-        } catch (_: Throwable) {
-            emptyList()
-        }
-        val watchlistItems = try {
-            database.moviesDao().observeWatchlist().first()
-        } catch (_: Throwable) {
-            emptyList()
-        }
-        val viewingHistory = try {
-            database.moviesDao().observeViewingHistory(30).first()
-        } catch (_: Throwable) {
-            emptyList()
-        }
-        val recentlyViewed = try {
-            database.moviesDao().getRecentlyViewedSnapshot(8)
-        } catch (_: Throwable) {
-            emptyList()
-        }
-        val activeMovieReminders = try {
-            database.moviesDao().getActiveViewingRemindersSnapshot()
-        } catch (_: Throwable) {
-            emptyList()
-        }
-        val seriesPrefs = try {
-            database.moviesDao().getAllSeriesPreferencesSnapshot()
-        } catch (_: Throwable) {
-            emptyList()
-        }
-        val collectionMedia = try {
-            database.moviesDao().getCollectionMediaSnapshot(50)
-        } catch (_: Throwable) {
-            emptyList()
-        }
-        val recentNotifications = try {
-            database.notificationHistoryDao().getRecentHistorySnapshot(8)
-        } catch (_: Throwable) {
-            emptyList()
-        }
-        val recentEvents = try {
-            activityEventRepository.getRecentEvents(15)
-        } catch (_: Throwable) {
-            emptyList()
-        }
+        val inspections = inspectionsDef.await()
+        val downloadTasks = downloadTasksDef.await()
+        val downloadedAssetCount = downloadedAssetCountDef.await()
+        val storedDocumentCount = storedDocumentCountDef.await()
+        val offlineMovieAssets = offlineMovieAssetsDef.await()
+        val collectionsList = collectionsListDef.await()
+        val watchlistItems = watchlistItemsDef.await()
+        val viewingHistory = viewingHistoryDef.await()
+        val recentlyViewed = recentlyViewedDef.await()
+        val activeMovieReminders = activeMovieRemindersDef.await()
+        val seriesPrefs = seriesPrefsDef.await()
+        val collectionMedia = collectionMediaDef.await()
+        val recentNotifications = recentNotificationsDef.await()
+        val recentEvents = recentEventsDef.await()
 
         val ytDlpState = ytDlpRuntimeManager?.ytDlpState?.value
         val ffmpegState = ytDlpRuntimeManager?.ffmpegState?.value

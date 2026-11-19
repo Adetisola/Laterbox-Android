@@ -348,6 +348,9 @@ fun MoviesScreen(
                         val watchlistIds = remember(uiState.watchlist) {
                             uiState.watchlist.map { it.compositeId }.toSet()
                         }
+                        val offlineLookup = remember(uiState.offlineMatches) {
+                            OfflineMediaLookup.from(uiState.offlineMatches)
+                        }
                         val genresList = remember(feed.genres) {
                             val cleaned = feed.genres.distinct()
                             if (cleaned.any { it.equals("All", ignoreCase = true) }) {
@@ -771,9 +774,7 @@ fun MoviesScreen(
                                                 horizontalArrangement = Arrangement.spacedBy(10.dp)
                                             ) {
                                                 rowItems.forEach { item ->
-                                                    val isOffline = uiState.offlineMatches.any {
-                                                        it.matchesTitleComposite(item.providerId, item.id)
-                                                    }
+                                                    val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
                                                     MoviePosterCard(
                                                         item = item,
                                                         onClick = { onOpenDetail(item.providerId, item.id) },
@@ -915,9 +916,7 @@ fun MoviesScreen(
                                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                                             ) {
                                                 items(uiState.continueWatching, key = { it.compositeId + (it.episodeLabel ?: "") }) { entry ->
-                                                    val isOffline = uiState.offlineMatches.any {
-                                                        it.matchesTitleComposite(entry.providerId, entry.titleId)
-                                                    }
+                                                    val isOffline = offlineLookup.hasTitle(entry.providerId, entry.titleId)
                                                     ContinueWatchingCard(
                                                         item = entry,
                                                         onClick = {
@@ -960,9 +959,7 @@ fun MoviesScreen(
                                                     items = uiState.recentlyViewed,
                                                     key = { idx, it -> "rv_${idx}_${it.compositeId}" }
                                                 ) { _, item ->
-                                                    val isOffline = uiState.offlineMatches.any {
-                                                        it.matchesTitleComposite(item.providerId, item.id)
-                                                    }
+                                                    val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
                                                     MoviePosterCard(
                                                         item = item,
                                                         onClick = { onOpenDetail(item.providerId, item.id) },
@@ -1051,9 +1048,7 @@ fun MoviesScreen(
                                                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                                                 ) {
                                                     items(group.items, key = { "byw_${idx}_${it.compositeId}" }) { item ->
-                                                        val isOffline = uiState.offlineMatches.any {
-                                                            it.matchesTitleComposite(item.providerId, item.id)
-                                                        }
+                                                        val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
                                                         MoviePosterCard(
                                                             item = item,
                                                             onClick = { onOpenDetail(item.providerId, item.id) },
@@ -1185,9 +1180,7 @@ fun MoviesScreen(
                                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                                             ) {
                                                 items(uiState.quickRuntimePicks, key = { "qp_${it.compositeId}" }) { item ->
-                                                    val isOffline = uiState.offlineMatches.any {
-                                                        it.matchesTitleComposite(item.providerId, item.id)
-                                                    }
+                                                    val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
                                                     MoviePosterCard(
                                                         item = item,
                                                         onClick = { onOpenDetail(item.providerId, item.id) },
@@ -1221,9 +1214,7 @@ fun MoviesScreen(
                                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                                             ) {
                                                 items(uiState.recentlyAddedRail, key = { "ra_${it.compositeId}" }) { item ->
-                                                    val isOffline = uiState.offlineMatches.any {
-                                                        it.matchesTitleComposite(item.providerId, item.id)
-                                                    }
+                                                    val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
                                                     MoviePosterCard(
                                                         item = item,
                                                         onClick = { onOpenDetail(item.providerId, item.id) },
@@ -1257,9 +1248,7 @@ fun MoviesScreen(
                                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                                             ) {
                                                 items(visibleTopRated, key = { "tr_${it.compositeId}" }) { item ->
-                                                    val isOffline = uiState.offlineMatches.any {
-                                                        it.matchesTitleComposite(item.providerId, item.id)
-                                                    }
+                                                    val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
                                                     MoviePosterCard(
                                                         item = item,
                                                         onClick = { onOpenDetail(item.providerId, item.id) },
@@ -1293,9 +1282,7 @@ fun MoviesScreen(
                                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                                             ) {
                                                 items(visibleNewest, key = { "nw_${it.compositeId}" }) { item ->
-                                                    val isOffline = uiState.offlineMatches.any {
-                                                        it.matchesTitleComposite(item.providerId, item.id)
-                                                    }
+                                                    val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
                                                     MoviePosterCard(
                                                         item = item,
                                                         onClick = { onOpenDetail(item.providerId, item.id) },
@@ -1326,9 +1313,7 @@ fun MoviesScreen(
                                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                                             ) {
                                                 items(uiState.watchlist, key = { "wl_${it.compositeId}" }) { item ->
-                                                    val isOffline = uiState.offlineMatches.any {
-                                                        it.matchesTitleComposite(item.providerId, item.id)
-                                                    }
+                                                    val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
                                                     MoviePosterCard(
                                                         item = item,
                                                         onClick = { onOpenDetail(item.providerId, item.id) },
@@ -1361,9 +1346,7 @@ fun MoviesScreen(
                                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                                             ) {
                                                 items(sectionItems, key = { "${section.id}_${it.compositeId}" }) { item ->
-                                                    val isOffline = uiState.offlineMatches.any {
-                                                        it.matchesTitleComposite(item.providerId, item.id)
-                                                    }
+                                                    val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
                                                     MoviePosterCard(
                                                         item = item,
                                                         onClick = { onOpenDetail(item.providerId, item.id) },

@@ -66,6 +66,9 @@ class MoviesRepositoryImpl(
     private val subtitleDownloadManager: com.laterbox.app.movies.data.download.SubtitleDownloadManager? = null
 ) : MoviesRepository {
 
+    @Volatile
+    private var hasBackfilledCanonicalState: Boolean = false
+
     private suspend fun isDebugSampleFixturesEnabled(): Boolean =
         BuildConfig.DEBUG && useSampleFixturesOnlyProvider()
 
@@ -74,7 +77,10 @@ class MoviesRepositoryImpl(
             return fixtureProvider.getHomeFeed()
         }
 
-        mediaResolver.backfillWatchlistAndHistoryIfNeeded()
+        if (!hasBackfilledCanonicalState) {
+            mediaResolver.backfillWatchlistAndHistoryIfNeeded()
+            hasBackfilledCanonicalState = true
+        }
 
         val currentMs = nowMs()
         val mb = movieBoxProvider

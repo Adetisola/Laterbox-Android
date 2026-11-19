@@ -610,6 +610,9 @@ fun MovieDetailScreen(
                 var visibleEpisodeCount by remember(summary.id, uiState.selectedSeasonNumber) {
                     mutableIntStateOf(10)
                 }
+                val offlineLookup = remember(uiState.offlineMatches) {
+                    OfflineMediaLookup.from(uiState.offlineMatches)
+                }
 
                 LazyColumn(
                     modifier = Modifier
@@ -1173,8 +1176,8 @@ fun MovieDetailScreen(
                             }
 
                             // Personal Library Quick Actions & Status Pills
-                            val isTitleDownloaded = remember(uiState.offlineMatches, summary.providerId, summary.id) {
-                                uiState.offlineMatches.any { it.matchesTitleComposite(summary.providerId, summary.id) }
+                            val isTitleDownloaded = remember(offlineLookup, summary.providerId, summary.id) {
+                                offlineLookup.hasTitle(summary.providerId, summary.id)
                             }
                             FlowRow(
                                 modifier = Modifier.fillMaxWidth(),
@@ -1621,9 +1624,7 @@ fun MovieDetailScreen(
                                         items = displayRelated,
                                         key = { index, rel -> "rel_${index}_${rel.compositeId}" }
                                     ) { _, rel ->
-                                        val isRelOffline = uiState.offlineMatches.any {
-                                            it.matchesTitleComposite(rel.providerId, rel.id)
-                                        }
+                                        val isRelOffline = offlineLookup.hasTitle(rel.providerId, rel.id)
                                         MoviePosterCard(
                                             item = rel,
                                             isOfflineDownloaded = isRelOffline,
@@ -1738,9 +1739,7 @@ fun MovieDetailScreen(
                                     ) { _, ep ->
                                         val isWatched = uiState.seriesProgress?.episodeStates
                                             ?.get(ep.seasonNumber to ep.episodeNumber)?.isCompleted == true
-                                        val isEpDownloaded = uiState.offlineMatches.any { match ->
-                                            match.matchesTitleEpisode(summary.providerId, summary.id, ep.seasonNumber, ep.episodeNumber)
-                                        }
+                                        val isEpDownloaded = offlineLookup.hasEpisode(summary.providerId, summary.id, ep.seasonNumber, ep.episodeNumber)
                                         EpisodeRowCard(
                                             episode = ep,
                                             isWatched = isWatched,
@@ -2045,6 +2044,38 @@ internal fun OfflineMediaMatch.matchesTitleEpisode(
 ): Boolean {
     if (!matchesTitleComposite(providerId, titleId)) return false
     return seasonNumber == seasonNum && episodeNumber == episodeNum
+}
+
+internal class OfflineMediaLookup(
+    private val titleKeys: Set<String>,
+    private val episodeKeys: Set<String>
+) {
+    fun hasTitle(providerId: String, titleId: String): Boolean =
+        titleKeys.contains("${providerId.lowercase(java.util.Locale.US)}|${titleId.lowercase(java.util.Locale.US)}")
+
+    fun hasEpisode(providerId: String, titleId: String, seasonNum: Int, episodeNum: Int): Boolean =
+        episodeKeys.contains("${providerId.lowercase(java.util.Locale.US)}|${titleId.lowercase(java.util.Locale.US)}|$seasonNum|$episodeNum")
+
+    companion object {
+        fun from(matches: List<OfflineMediaMatch>): OfflineMediaLookup {
+            if (matches.isEmpty()) return OfflineMediaLookup(emptySet(), emptySet())
+            val titles = HashSet<String>(matches.size * 2)
+            val episodes = HashSet<String>(matches.size * 2)
+            for (match in matches) {
+                val parts = match.sourceRef.split("|")
+                if (parts.size >= 2) {
+                    val baseKey = "${parts[0].lowercase(java.util.Locale.US)}|${parts[1].lowercase(java.util.Locale.US)}"
+                    titles.add(baseKey)
+                    val s = match.seasonNumber
+                    val e = match.episodeNumber
+                    if (s != null && e != null) {
+                        episodes.add("$baseKey|$s|$e")
+                    }
+                }
+            }
+            return OfflineMediaLookup(titles, episodes)
+        }
+    }
 }
 
 @Stable
