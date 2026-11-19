@@ -15,10 +15,10 @@ enum class DataSourceBadge(
     val isLiveNetwork: Boolean,
     val isSampleFixture: Boolean = false
 ) {
-    LIVE_MOVIEBOX("MovieBox", isLiveNetwork = true),
+    LIVE_MOVIEBOX("Live Catalogue", isLiveNetwork = true),
     LIVE_INTERNET_ARCHIVE("Internet Archive", isLiveNetwork = true),
-    LIVE_TVMAZE("TVMaze", isLiveNetwork = true),
-    LIVE_TMDB("TMDB", isLiveNetwork = true),
+    LIVE_TVMAZE("TV Guide", isLiveNetwork = true),
+    LIVE_TMDB("Film Guide", isLiveNetwork = true),
     SAMPLE_FIXTURE("Sample Fixture", isLiveNetwork = false, isSampleFixture = true);
 
     companion object {

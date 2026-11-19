@@ -117,7 +117,7 @@ class MoviesRepositoryImpl(
                     ?.let { cachedFeed ->
                         return Result.success(
                             cachedFeed.copy(
-                                activeProviderNotice = "Offline cache: showing previously loaded MovieBox feed"
+                                activeProviderNotice = "Offline cache: showing previously loaded catalogue"
                             )
                         )
                     }
@@ -296,7 +296,7 @@ class MoviesRepositoryImpl(
                     if (pages.isEmpty()) {
                         val err = moviesRes.exceptionOrNull()
                             ?: seriesRes.exceptionOrNull()
-                            ?: IllegalStateException("MovieBox catalogue request failed.")
+                            ?: IllegalStateException("Catalogue request failed.")
                         Result.failure(err)
                     } else {
                         val combined = interleaveLists(pages.map { it.items }).distinctBy { it.compositeId }
@@ -532,7 +532,7 @@ class MoviesRepositoryImpl(
     private suspend fun fetchProviderDetails(providerId: String, titleId: String): Result<MediaDetails> =
         when (providerId) {
             MovieBoxProvider.PROVIDER_ID -> movieBoxProvider?.getDetails(titleId)
-                ?: Result.failure(IllegalStateException("MovieBox provider is not configured."))
+                ?: Result.failure(IllegalStateException("Streaming service is not configured."))
             InternetArchiveMoviesProvider.PROVIDER_ID -> internetArchiveProvider.getDetails(titleId)
             TvMazeSeriesProvider.PROVIDER_ID -> tvMazeProvider.getDetails(titleId)
             TmdbOptionalMoviesProvider.PROVIDER_ID -> tmdbProvider.getDetails(titleId)
@@ -547,7 +547,7 @@ class MoviesRepositoryImpl(
     ): Result<PersonFilmography> {
         val result = when (providerId) {
             MovieBoxProvider.PROVIDER_ID -> movieBoxProvider?.getPersonFilmography(personId, personName, personImageUrl)
-                ?: Result.failure(IllegalStateException("MovieBox provider is not configured."))
+                ?: Result.failure(IllegalStateException("Streaming service is not configured."))
             TvMazeSeriesProvider.PROVIDER_ID -> tvMazeProvider.getPersonFilmography(personId, personName, personImageUrl)
             else -> Result.failure(UnsupportedOperationException("Person filmography is not supported for $providerId"))
         }
@@ -564,7 +564,7 @@ class MoviesRepositoryImpl(
         )
         val primary = when (resolvedProviderId) {
             MovieBoxProvider.PROVIDER_ID -> movieBoxProvider?.getSeasons(resolvedSeriesId)
-                ?: Result.failure(IllegalStateException("MovieBox provider is not configured."))
+                ?: Result.failure(IllegalStateException("Streaming service is not configured."))
             TvMazeSeriesProvider.PROVIDER_ID -> tvMazeProvider.getSeasons(resolvedSeriesId)
             TmdbOptionalMoviesProvider.PROVIDER_ID -> tmdbProvider.getSeasons(resolvedSeriesId)
             DevelopmentMoviesFixtureProvider.PROVIDER_ID -> fixtureProvider.getSeasons(resolvedSeriesId)
@@ -601,7 +601,7 @@ class MoviesRepositoryImpl(
 
         val result = when (resolvedProviderId) {
             MovieBoxProvider.PROVIDER_ID -> movieBoxProvider?.getEpisodes(resolvedSeriesId, seasonNumber)
-                ?: Result.failure(IllegalStateException("MovieBox provider is not configured."))
+                ?: Result.failure(IllegalStateException("Streaming service is not configured."))
             TvMazeSeriesProvider.PROVIDER_ID -> tvMazeProvider.getEpisodes(resolvedSeriesId, seasonNumber)
             TmdbOptionalMoviesProvider.PROVIDER_ID -> tmdbProvider.getEpisodes(resolvedSeriesId, seasonNumber)
             else -> Result.success(emptyList())
@@ -686,7 +686,7 @@ class MoviesRepositoryImpl(
         val result = when (resolvedProviderId) {
             MovieBoxProvider.PROVIDER_ID ->
                 movieBoxProvider?.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
-                    ?: Result.failure(IllegalStateException("MovieBox provider is not configured."))
+                    ?: Result.failure(IllegalStateException("Streaming service is not configured."))
             InternetArchiveMoviesProvider.PROVIDER_ID ->
                 internetArchiveProvider.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
             TvMazeSeriesProvider.PROVIDER_ID ->
@@ -1571,6 +1571,6 @@ class MoviesRepositoryImpl(
         const val CACHE_TTL_MS = 6L * 60 * 60 * 1000L
         const val STALE_RETENTION_MS = 7L * 24 * 60 * 60 * 1000L
         const val MOVIEBOX_FALLBACK_NOTICE =
-            "MovieBox unavailable — showing Internet Archive & TVMaze catalogue"
+            "Main catalogue temporarily unavailable — showing archive & TV guide"
     }
 }

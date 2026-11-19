@@ -255,7 +255,8 @@ class MoviesRepositoryTest {
         val staleFeed = repo.getHomeFeed(forceRefresh = false).getOrThrow()
         assertTrue(staleFeed.isOfflineCached)
         assertEquals("moviebox", staleFeed.featuredBanners.first().providerId)
-        assertTrue(staleFeed.activeProviderNotice.orEmpty().contains("MovieBox"))
+        assertTrue(staleFeed.activeProviderNotice.orEmpty().contains("Offline cache", ignoreCase = true))
+        assertFalse(staleFeed.activeProviderNotice.orEmpty().contains("MovieBox", ignoreCase = true))
     }
 
     @Test

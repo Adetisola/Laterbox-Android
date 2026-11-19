@@ -47,7 +47,7 @@ data class CapabilitySnapshot(
     val assistantEnabled: Boolean = true,
     val smartRemindersEnabled: Boolean = true,
     val quietHoursSummary: String = "Enabled (22:00–08:00)",
-    val moviesProvidersSummary: String = "MovieBox API, Internet Archive, TVMaze",
+    val moviesProvidersSummary: String = "Live Streaming Catalogue, Internet Archive, TV Series Guide",
     val moviesWatchlistCount: Int = 0,
     val moviesInProgressCount: Int = 0,
     val moviesCompletedCount: Int = 0,
@@ -105,7 +105,7 @@ object AppCapabilityRegistry {
             summary = "Discovery, Personal Library, Offline Playback, and unified full-screen Media Player.",
             capabilities = listOf(
                 "Browse curated rails, Surprise Me picks, Because You Watched & More Like This recommendations, Runtime-aware picks, and expandable filters (Kind, Genre, Language, Country, Year, Runtime, Sort).",
-                "Canonical cross-provider identities across MovieBox API, Internet Archive, and TVMaze so watchlist & history do not duplicate.",
+                "Canonical cross-provider identities across live streaming catalogue, Internet Archive, and TV series guide so watchlist & history do not duplicate.",
                 "Watch History split separately for Movies, Episodes, and Trailers; Continue Watching management (Resume, Restart from beginning, Remove from Continue Watching, Hide title); Rewatch tracking; Episode watched/unwatched toggles & next unwatched episode; Recently Viewed; Custom Collections.",
                 "Full-screen ExoPlayer with vertical brightness/volume swipe gestures, horizontal swipe-to-seek with adjustable sensitivity, double-tap seek, up to 200% LoudnessEnhancer volume boost, subtitle styling, per-series audio/subtitle preferences, next-episode autoplay, and verified intro/recap skip buttons when timestamps are provided by metadata.",
                 "Offline playback directly from downloaded Movie/Episode files in Downloads."

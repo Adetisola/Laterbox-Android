@@ -46,7 +46,7 @@ class TmdbOptionalMoviesProvider(
     PlaybackSourceProvider {
 
     override val providerId: String = PROVIDER_ID
-    override val displayName: String = "TMDB Catalogue"
+    override val displayName: String = "Film & TV Guide"
     override val sourceBadge: DataSourceBadge = DataSourceBadge.LIVE_TMDB
 
     suspend fun isConfigured(): Boolean = apiKeyProvider().isNotBlank()
@@ -54,7 +54,7 @@ class TmdbOptionalMoviesProvider(
     override suspend fun getHomeFeed(): Result<MoviesHomeFeed> = withContext(Dispatchers.IO) {
         val key = apiKeyProvider().trim()
         if (key.isBlank()) {
-            return@withContext Result.failure(IllegalStateException("TMDB API key not configured"))
+            return@withContext Result.failure(IllegalStateException("Film guide API key not configured"))
         }
         runCatching {
             coroutineScope {
@@ -74,17 +74,17 @@ class TmdbOptionalMoviesProvider(
                     featuredBanners = trending.take(5),
                     sections = listOfNotNull(
                         trending.takeIf { it.isNotEmpty() }?.let {
-                            BrowseSection("tmdb_trending", "TMDB Trending Today", "Global trending film & series", SectionStyle.RAIL, it)
+                            BrowseSection("tmdb_trending", "Trending Today", "Global trending film & series", SectionStyle.RAIL, it)
                         },
                         popMovies.takeIf { it.isNotEmpty() }?.let {
-                            BrowseSection("tmdb_movies", "Popular Movies (TMDB)", "Top theatrical & streaming releases", SectionStyle.RAIL, it)
+                            BrowseSection("tmdb_movies", "Popular Movies", "Top theatrical & streaming releases", SectionStyle.RAIL, it)
                         },
                         popTv.takeIf { it.isNotEmpty() }?.let {
-                            BrowseSection("tmdb_tv", "Popular Series (TMDB)", "Trending series metadata & seasons", SectionStyle.RAIL, it)
+                            BrowseSection("tmdb_tv", "Popular Series", "Trending series metadata & seasons", SectionStyle.RAIL, it)
                         }
                     ),
                     genres = GENRES_BY_ID.values.distinct().sorted(),
-                    activeProviderNotice = "TMDB metadata active with your configured API key"
+                    activeProviderNotice = "Extended film & series metadata active"
                 )
             }
         }
@@ -101,7 +101,7 @@ class TmdbOptionalMoviesProvider(
     ): Result<CataloguePage> = withContext(Dispatchers.IO) {
         val key = apiKeyProvider().trim()
         if (key.isBlank()) {
-            return@withContext Result.failure(IllegalStateException("TMDB API key not configured"))
+            return@withContext Result.failure(IllegalStateException("Film guide API key not configured"))
         }
         runCatching {
             val endpoint = if (kind == MediaKind.MOVIE) "/discover/movie" else "/discover/tv"
@@ -144,7 +144,7 @@ class TmdbOptionalMoviesProvider(
     ): Result<CataloguePage> = withContext(Dispatchers.IO) {
         val key = apiKeyProvider().trim()
         if (key.isBlank()) {
-            return@withContext Result.failure(IllegalStateException("TMDB API key not configured"))
+            return@withContext Result.failure(IllegalStateException("Film guide API key not configured"))
         }
         runCatching {
             val path = when (kind) {
@@ -180,7 +180,7 @@ class TmdbOptionalMoviesProvider(
     override suspend fun getDetails(titleId: String): Result<MediaDetails> = withContext(Dispatchers.IO) {
         val key = apiKeyProvider().trim()
         if (key.isBlank()) {
-            return@withContext Result.failure(IllegalStateException("TMDB API key not configured"))
+            return@withContext Result.failure(IllegalStateException("Film guide API key not configured"))
         }
         val (kindPrefix, rawId) = parseCompositeId(titleId)
         runCatching {
@@ -240,7 +240,7 @@ class TmdbOptionalMoviesProvider(
         withContext(Dispatchers.IO) {
             val key = apiKeyProvider().trim()
             if (key.isBlank()) {
-                return@withContext Result.failure(IllegalStateException("TMDB API key not configured"))
+                return@withContext Result.failure(IllegalStateException("Film guide API key not configured"))
             }
             val (_, rawId) = parseCompositeId(seriesId)
             runCatching {
@@ -280,8 +280,8 @@ class TmdbOptionalMoviesProvider(
         val kindPath = if (kind == MediaKind.TV_SERIES) "tv" else "movie"
         return Result.success(
             PlaybackResolution.Unavailable(
-                title = "TMDB Title #$rawId",
-                reason = "TMDB provides official metadata only; feature playback requires a licensed streaming provider.",
+                title = "Title #$rawId",
+                reason = "Metadata only; feature playback requires a streaming source.",
                 providerName = displayName,
                 externalReferenceUrl = "https://www.themoviedb.org/$kindPath/$rawId",
                 sourceBadge = sourceBadge
@@ -355,9 +355,9 @@ class TmdbOptionalMoviesProvider(
             .build()
         okHttpClient.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
-                throw IOException("TMDB returned HTTP ${response.code}")
+                throw IOException("Film guide is temporarily unavailable.")
             }
-            return response.body?.string() ?: throw IOException("Empty response from TMDB")
+            return response.body?.string() ?: throw IOException("Empty response from film guide.")
         }
     }
 

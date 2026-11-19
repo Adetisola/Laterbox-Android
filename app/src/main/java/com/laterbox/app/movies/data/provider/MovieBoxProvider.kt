@@ -69,7 +69,7 @@ class MovieBoxProvider(
     SubtitleProvider {
 
     override val providerId: String = PROVIDER_ID
-    override val displayName: String = "MovieBox"
+    override val displayName: String = "Streaming Catalogue"
     override val sourceBadge: DataSourceBadge = DataSourceBadge.LIVE_MOVIEBOX
 
     private val detailPathCache = ConcurrentHashMap<String, String>()
@@ -1224,24 +1224,45 @@ class MovieBoxProvider(
         code: Int,
         detail: String?,
         sentAppCheckToken: Boolean = false
-    ): String = when (code) {
-        401, 403 -> buildString {
-            append("Access could not be verified right now. ")
-            if (sentAppCheckToken) {
-                append("Please check your connection or update the app and try again.")
-            } else {
-                append("Verification is temporarily unavailable on this device.")
+    ): String {
+        val safeDetail = sanitizeDetailForUser(detail)
+        return when (code) {
+            401, 403 -> buildString {
+                append("Access could not be verified right now. ")
+                if (sentAppCheckToken) {
+                    append("Please check your connection or update the app and try again.")
+                } else {
+                    append("Verification is temporarily unavailable on this device.")
+                }
+                if (safeDetail != null) {
+                    append(" ").append(safeDetail)
+                }
             }
-            if (!detail.isNullOrBlank() &&
-                !detail.contains("App Check", ignoreCase = true) &&
-                !detail.contains("token", ignoreCase = true)
-            ) {
-                append(" ").append(detail)
-            }
+            404 -> safeDetail ?: "This title is not currently available."
+            429 -> "Too many requests right now. Please try again in a moment."
+            502, 503, 504 -> safeDetail ?: "The streaming service is temporarily unavailable. Please retry shortly."
+            else -> safeDetail ?: "Could not load catalogue data right now."
         }
-        404 -> detail ?: "This title is not currently available."
-        502, 503, 504 -> detail ?: "The catalogue service is temporarily unavailable. Please retry shortly."
-        else -> detail ?: "Could not load catalogue data right now."
+    }
+
+    private fun sanitizeDetailForUser(detail: String?): String? {
+        val clean = detail?.trim()?.takeIf { it.isNotBlank() } ?: return null
+        val blockedTerms = listOf(
+            "moviebox",
+            "tvmaze",
+            "tmdb",
+            "x-user",
+            "app check",
+            "appcheck",
+            "bootstrap",
+            "token",
+            "http ",
+            "upstream"
+        )
+        if (blockedTerms.any { clean.contains(it, ignoreCase = true) }) {
+            return null
+        }
+        return clean
     }
 
     private fun buildNetworkErrorMessage(error: IOException): String = when (error) {

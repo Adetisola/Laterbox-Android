@@ -460,7 +460,15 @@ class MovieBoxProviderTest {
         }
 
         val err = provider.getHomeFeed().exceptionOrNull()
-        assertEquals("Failed to bootstrap MovieBox token", err?.message)
+        assertTrue(err is com.laterbox.app.movies.data.provider.MovieBoxApiException)
+        val apiErr = err as com.laterbox.app.movies.data.provider.MovieBoxApiException
+        assertEquals(502, apiErr.httpCode)
+        assertFalse(apiErr.isAuthFailure)
+        val msg = err.message.orEmpty()
+        assertTrue(msg.contains("temporarily unavailable", ignoreCase = true))
+        assertFalse(msg.contains("MovieBox", ignoreCase = true))
+        assertFalse(msg.contains("bootstrap", ignoreCase = true))
+        assertFalse(msg.contains("token", ignoreCase = true))
 
         val unconfigured = MovieBoxProvider(
             okHttpClient = OkHttpClient(),
@@ -468,6 +476,52 @@ class MovieBoxProviderTest {
         )
         val configErr = unconfigured.getHomeFeed().exceptionOrNull()
         assertTrue(configErr?.message.orEmpty().contains("not configured"))
+    }
+
+    @Test
+    fun httpErrorCodes_distinguishUpstreamFailuresFromAppCheckAndSanitizeCopy() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                return when {
+                    request.path?.startsWith("/home") == true -> MockResponse()
+                        .setResponseCode(503)
+                        .setBody("""{"detail":"Upstream x-user bootstrap error"}""")
+                    request.path?.startsWith("/detail/") == true -> MockResponse()
+                        .setResponseCode(403)
+                        .setBody("""{"detail":"Invalid Firebase App Check token"}""")
+                    else -> MockResponse().setResponseCode(429)
+                }
+            }
+        }
+
+        val upstreamErr = provider.getHomeFeed().exceptionOrNull() as com.laterbox.app.movies.data.provider.MovieBoxApiException
+        assertEquals(503, upstreamErr.httpCode)
+        assertFalse(upstreamErr.isAuthFailure)
+        val upstreamMsg = upstreamErr.message.orEmpty()
+        assertTrue(upstreamMsg.contains("temporarily unavailable", ignoreCase = true))
+        assertFalse(upstreamMsg.contains("x-user", ignoreCase = true))
+        assertFalse(upstreamMsg.contains("bootstrap", ignoreCase = true))
+        assertFalse(upstreamMsg.contains("upstream", ignoreCase = true))
+
+        val authProvider = MovieBoxProvider(
+            okHttpClient = OkHttpClient(),
+            baseUrlProvider = { server.url("/").toString() },
+            retryDelayMs = 0L,
+            appCheckTokenProvider = { "valid.appcheck.jwt" }
+        )
+        val authErr = authProvider.getDetails("123").exceptionOrNull() as com.laterbox.app.movies.data.provider.MovieBoxApiException
+        assertEquals(403, authErr.httpCode)
+        assertTrue(authErr.isAuthFailure)
+        val authMsg = authErr.message.orEmpty()
+        assertTrue(authMsg.contains("verified", ignoreCase = true))
+        assertTrue(authMsg.contains("update the app", ignoreCase = true))
+        assertFalse(authMsg.contains("App Check", ignoreCase = true))
+        assertFalse(authMsg.contains("token", ignoreCase = true))
+
+        val rateErr = provider.search("dune", page = 1).exceptionOrNull() as com.laterbox.app.movies.data.provider.MovieBoxApiException
+        assertEquals(429, rateErr.httpCode)
+        assertFalse(rateErr.isAuthFailure)
+        assertTrue(rateErr.message.orEmpty().contains("Too many requests", ignoreCase = true))
     }
 
     @Test

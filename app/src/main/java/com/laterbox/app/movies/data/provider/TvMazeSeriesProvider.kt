@@ -43,7 +43,7 @@ class TvMazeSeriesProvider(
     PlaybackSourceProvider {
 
     override val providerId: String = PROVIDER_ID
-    override val displayName: String = "TVMaze Series Guide"
+    override val displayName: String = "Series Guide"
     override val sourceBadge: DataSourceBadge = DataSourceBadge.LIVE_TVMAZE
 
     override suspend fun getHomeFeed(): Result<MoviesHomeFeed> = withContext(Dispatchers.IO) {
@@ -82,7 +82,7 @@ class TvMazeSeriesProvider(
                             BrowseSection(
                                 id = "tvmaze_trending_tonight",
                                 title = "Trending TV Series",
-                                subtitle = "Streaming & on air via TVMaze guide",
+                                subtitle = "Streaming & on air series schedule",
                                 style = SectionStyle.RAIL,
                                 items = trendingToday
                             )
@@ -116,7 +116,7 @@ class TvMazeSeriesProvider(
                     featuredBanners = banners,
                     sections = sections,
                     genres = SUPPORTED_GENRES,
-                    activeProviderNotice = "TVMaze series metadata & episode guides active"
+                    activeProviderNotice = "Series metadata & episode guides active"
                 )
             }
         }
@@ -534,9 +534,9 @@ class TvMazeSeriesProvider(
             .build()
         okHttpClient.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
-                throw IOException("TVMaze returned HTTP ${response.code}")
+                throw IOException("Series guide is temporarily unavailable.")
             }
-            return response.body?.string() ?: throw IOException("Empty response from TVMaze")
+            return response.body?.string() ?: throw IOException("Empty response from series guide.")
         }
     }
 
