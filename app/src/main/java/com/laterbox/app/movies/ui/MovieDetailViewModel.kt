@@ -57,6 +57,7 @@ data class MovieDetailUiState(
     val isTrailerFullscreen: Boolean = false,
     val trailerError: String? = null,
     val subtitleStyle: SubtitleStyleConfig = SubtitleStyleConfig(),
+    val playbackPreferences: PlayerPlaybackPreferences = PlayerPlaybackPreferences(),
     val seriesProgress: SeriesProgressSummary? = null,
     val nextUnwatchedTarget: Pair<Int, Int>? = null,
     val isTitleCompleted: Boolean = false,
@@ -95,10 +96,23 @@ class MovieDetailViewModel(
         userPreferencesRepository?.let { repo ->
             viewModelScope.launch {
                 repo.userPreferencesFlow.collect { prefs ->
+                    val style = prefs.toSubtitleStyleConfig()
+                    val mappedPrefs = PlayerPlaybackPreferences(
+                        doubleTapSeekSeconds = prefs.moviesDoubleTapSeekSeconds.coerceIn(5, 60),
+                        swipeToSeekEnabled = prefs.moviesSwipeToSeekEnabled,
+                        swipeSeekSensitivity = prefs.moviesSwipeSeekSensitivity,
+                        brightnessGestureEnabled = prefs.moviesBrightnessGestureEnabled,
+                        volumeGestureEnabled = prefs.moviesVolumeGestureEnabled,
+                        autoplayNextEpisode = prefs.moviesAutoplayNextEpisode,
+                        autoplayCountdownSeconds = prefs.moviesAutoplayCountdownSeconds.coerceIn(3, 30),
+                        defaultQualityHeight = prefs.moviesDefaultQualityHeight,
+                        subtitleStyle = style
+                    )
                     _uiState.update {
                         it.copy(
                             trailerMuted = prefs.moviesTrailerMuted,
-                            subtitleStyle = prefs.toSubtitleStyleConfig()
+                            subtitleStyle = style,
+                            playbackPreferences = mappedPrefs
                         )
                     }
                 }
@@ -220,6 +234,7 @@ class MovieDetailViewModel(
                     isInWatchlist = prev.isInWatchlist,
                     trailerMuted = prev.trailerMuted,
                     subtitleStyle = prev.subtitleStyle,
+                    playbackPreferences = prev.playbackPreferences,
                     collections = prev.collections,
                     offlineMatches = prev.offlineMatches,
                     hiddenMediaKeys = prev.hiddenMediaKeys

@@ -1654,4 +1654,35 @@ class MoviesViewModelsTest {
         assertTrue(vm.uiState.value.recentlyViewed.isEmpty())
         assertEquals("Removed Arrival from Viewed", vm.uiState.value.actionFeedbackMessage)
     }
+
+    @Test
+    fun movieDetailViewModel_exposesSavedPlaybackPreferencesAndPreservesAcrossLoad() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = createIsolatedPrefs(context)
+        prefs.setMoviesDoubleTapSeekSeconds(15)
+        prefs.setMoviesSwipeSeekSensitivity(2.0f)
+        prefs.setMoviesSwipeToSeekEnabled(false)
+        prefs.setMoviesBrightnessGestureEnabled(false)
+        prefs.setMoviesVolumeGestureEnabled(true)
+
+        val repo = FakeMoviesRepository()
+        val vm = MovieDetailViewModel(
+            moviesRepository = repo,
+            moviesDownloadBridge = null,
+            userPreferencesRepository = prefs
+        )
+        val initial = vm.uiState.first { it.playbackPreferences.doubleTapSeekSeconds == 15 }
+        assertEquals(2.0f, initial.playbackPreferences.swipeSeekSensitivity)
+        assertFalse(initial.playbackPreferences.swipeToSeekEnabled)
+        assertFalse(initial.playbackPreferences.brightnessGestureEnabled)
+        assertTrue(initial.playbackPreferences.volumeGestureEnabled)
+
+        vm.load("ia", "his_girl_friday")
+        // Preserved synchronously during reset and after load completion
+        assertEquals(15, vm.uiState.value.playbackPreferences.doubleTapSeekSeconds)
+        val loaded = vm.uiState.first { !it.isLoading }
+        assertEquals(15, loaded.playbackPreferences.doubleTapSeekSeconds)
+        assertEquals(2.0f, loaded.playbackPreferences.swipeSeekSensitivity)
+        assertFalse(loaded.playbackPreferences.swipeToSeekEnabled)
+    }
 }

@@ -2116,4 +2116,58 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithTag("nav_detail_screen").assertIsDisplayed()
         assertEquals("moviebox" to "tt/123?a=1#b", navigatedTarget)
     }
+
+    @Test
+    fun trailerFullscreen_rendersMinimalHudWithoutLockButtonAndWiresSavedPreferences() {
+        val movieWithTrailer = sampleMovie.copy(
+            id = "m_trailer_fs",
+            trailerUrl = "https://cdn.example/trailer.mp4"
+        )
+        var exitFullscreenCalled = false
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MovieDetailScreen(
+                    uiState = MovieDetailUiState(
+                        isLoading = false,
+                        details = MediaDetails(summary = movieWithTrailer, fullDescription = "Sci-fi epic."),
+                        isTrailerPlaying = true,
+                        isTrailerFullscreen = true,
+                        trailerMuted = false,
+                        playbackPreferences = com.laterbox.app.movies.ui.PlayerPlaybackPreferences(
+                            doubleTapSeekSeconds = 15,
+                            swipeSeekSensitivity = 2.0f,
+                            swipeToSeekEnabled = true,
+                            brightnessGestureEnabled = true,
+                            volumeGestureEnabled = true
+                        )
+                    ),
+                    onBackClick = {},
+                    onRetry = {},
+                    onToggleWatchlist = {},
+                    onPlayClick = { _, _ -> },
+                    onSelectSeason = {},
+                    onOpenRelated = { _, _ -> },
+                    onOpenExternalUrl = {},
+                    onSetTrailerFullscreen = { full, _ -> if (!full) exitFullscreenCalled = true }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("detail_trailer_fullscreen_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("detail_fullscreen_trailer_player").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("detail_trailer_close_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("detail_trailer_mute_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("detail_trailer_play_pause_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("detail_trailer_seek_slider").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("detail_trailer_expand_button").assertIsDisplayed()
+
+        // No lock button in trailer minimal HUD
+        composeTestRule.onNodeWithTag("player_lock_button").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Lock").assertDoesNotExist()
+
+        // Exit fullscreen callback works
+        composeTestRule.onNodeWithTag("detail_trailer_expand_button").performClick()
+        assertTrue(exitFullscreenCalled)
+    }
 }

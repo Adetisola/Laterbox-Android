@@ -20,6 +20,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -68,6 +70,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -81,6 +84,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -120,7 +124,9 @@ import com.laterbox.app.movies.ui.player.PlayerAudioBoostController
 import com.laterbox.app.movies.ui.player.PlayerBrightnessHelper
 import com.laterbox.app.movies.ui.player.PlayerBrightnessHud
 import com.laterbox.app.movies.ui.player.PlayerGesturesMath
+import com.laterbox.app.movies.ui.player.PlayerHold2xSpeedBadge
 import com.laterbox.app.movies.ui.player.PlayerHorizontalScrubHud
+import com.laterbox.app.movies.ui.player.PlayerSeekFeedbackBadge
 import com.laterbox.app.movies.ui.player.PlayerVolumeBoostHud
 import com.laterbox.app.movies.ui.player.SeekSensitivityTier
 import com.laterbox.app.movies.ui.player.playerDragGestures
@@ -128,9 +134,11 @@ import com.laterbox.app.ui.components.CustomReminderPickerDialog
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.theme.LaterboxTheme
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 @kotlin.OptIn(ExperimentalLayoutApi::class)
@@ -321,9 +329,9 @@ fun MovieDetailScreen(
     }
 
     // Single shared ExoPlayer instance for the active trailer across inline and landscape fullscreen
-    var trailerIsPlaying by remember(summaryForTrailer?.id, validTrailerUrl) { mutableStateOf(true) }
-    var trailerPosMs by remember(summaryForTrailer?.id, validTrailerUrl) { mutableLongStateOf(uiState.trailerPositionMs) }
-    var trailerDurMs by remember(summaryForTrailer?.id, validTrailerUrl) { mutableLongStateOf(0L) }
+    val trailerClock = remember(summaryForTrailer?.id, validTrailerUrl) {
+        TrailerPlaybackClockState(initialPositionMs = uiState.trailerPositionMs)
+    }
 
     val trailerPlayer: ExoPlayer? = if (uiState.isTrailerPlaying && validTrailerUrl != null) {
         val headers = remember(summaryForTrailer?.trailerHeaders) {
@@ -360,7 +368,7 @@ fun MovieDetailScreen(
         DisposableEffect(player) {
             val listener = object : Player.Listener {
                 override fun onIsPlayingChanged(playing: Boolean) {
-                    trailerIsPlaying = playing
+                    trailerClock.isPlaying = playing
                 }
 
                 override fun onPlaybackStateChanged(playbackState: Int) {
@@ -385,21 +393,11 @@ fun MovieDetailScreen(
             }
         }
 
-        LaunchedEffect(player) {
-            var tick = 0
-            while (true) {
-                val cur = player.currentPosition.coerceAtLeast(0L)
-                val dur = player.duration.coerceAtLeast(0L)
-                trailerPosMs = cur
-                trailerDurMs = dur
-                trailerIsPlaying = player.isPlaying || (player.playWhenReady && player.playbackState == Player.STATE_BUFFERING)
-                tick++
-                if (tick % 8 == 0 && player.isPlaying) {
-                    latestOnRecordProgress(cur, dur)
-                }
-                delay(350L)
-            }
-        }
+        TrailerProgressPoller(
+            player = player,
+            clockState = trailerClock,
+            onRecordProgress = latestOnRecordProgress
+        )
 
         if (uiState.isTrailerFullscreen) {
             BackHandler {
@@ -431,6 +429,25 @@ fun MovieDetailScreen(
                     decorFitsSystemWindows = false
                 )
             ) {
+                val dialogWindow = (LocalView.current.parent as? DialogWindowProvider)?.window
+                SideEffect {
+                    dialogWindow?.let { win ->
+                        win.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+                        win.setBackgroundDrawable(ColorDrawable(AndroidColor.BLACK))
+                        win.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                        WindowCompat.setDecorFitsSystemWindows(win, false)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                            win.attributes = win.attributes.apply {
+                                layoutInDisplayCutoutMode =
+                                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                            }
+                        }
+                        val controller = WindowCompat.getInsetsController(win, win.decorView)
+                        controller.systemBarsBehavior =
+                            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                        controller.hide(WindowInsetsCompat.Type.systemBars())
+                    }
+                }
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -441,17 +458,16 @@ fun MovieDetailScreen(
                     InlineTrailerPlayerSurface(
                         exoPlayer = player,
                         title = summaryForTrailer?.title ?: "Trailer",
-                        isPlaying = trailerIsPlaying,
+                        clockState = trailerClock,
                         isMuted = uiState.trailerMuted,
-                        currentPositionMs = trailerPosMs,
-                        durationMs = trailerDurMs,
                         isFullscreen = true,
+                        playbackPreferences = uiState.playbackPreferences,
                         onTogglePlayPause = {
                             if (player.isPlaying) player.pause() else player.play()
                         },
                         onSeekTo = { target ->
                             player.seekTo(target)
-                            trailerPosMs = target
+                            trailerClock.positionMs = target
                         },
                         onToggleMute = onToggleTrailerMute,
                         onToggleFullscreen = {
@@ -617,29 +633,36 @@ fun MovieDetailScreen(
                                 label = "detail_hero_trailer_crossfade"
                             ) { playingTrailer ->
                                 if (playingTrailer && trailerPlayer != null) {
-                                    InlineTrailerPlayerSurface(
-                                        exoPlayer = trailerPlayer,
-                                        title = summary.title,
-                                        isPlaying = trailerIsPlaying,
-                                        isMuted = uiState.trailerMuted,
-                                        currentPositionMs = trailerPosMs,
-                                        durationMs = trailerDurMs,
-                                        isFullscreen = false,
-                                        attachVideoSurface = !uiState.isTrailerFullscreen,
-                                        onTogglePlayPause = {
-                                            if (trailerPlayer.isPlaying) trailerPlayer.pause() else trailerPlayer.play()
-                                        },
-                                        onSeekTo = { target ->
-                                            trailerPlayer.seekTo(target)
-                                            trailerPosMs = target
-                                        },
-                                        onToggleMute = onToggleTrailerMute,
-                                        onToggleFullscreen = {
-                                            onSetTrailerFullscreen(true, trailerPlayer.currentPosition.coerceAtLeast(0L))
-                                        },
-                                        onClose = onStopTrailer,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
+                                    if (!uiState.isTrailerFullscreen) {
+                                        InlineTrailerPlayerSurface(
+                                            exoPlayer = trailerPlayer,
+                                            title = summary.title,
+                                            clockState = trailerClock,
+                                            isMuted = uiState.trailerMuted,
+                                            isFullscreen = false,
+                                            playbackPreferences = uiState.playbackPreferences,
+                                            attachVideoSurface = true,
+                                            onTogglePlayPause = {
+                                                if (trailerPlayer.isPlaying) trailerPlayer.pause() else trailerPlayer.play()
+                                            },
+                                            onSeekTo = { target ->
+                                                trailerPlayer.seekTo(target)
+                                                trailerClock.positionMs = target
+                                            },
+                                            onToggleMute = onToggleTrailerMute,
+                                            onToggleFullscreen = {
+                                                onSetTrailerFullscreen(true, trailerPlayer.currentPosition.coerceAtLeast(0L))
+                                            },
+                                            onClose = onStopTrailer,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    } else {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .background(Color.Black)
+                                        )
+                                    }
                                 } else {
                                     Box(modifier = Modifier.fillMaxSize()) {
                                         BackdropArtworkBox(
@@ -2024,16 +2047,46 @@ internal fun OfflineMediaMatch.matchesTitleEpisode(
     return seasonNumber == seasonNum && episodeNumber == episodeNum
 }
 
+@Stable
+private class TrailerPlaybackClockState(initialPositionMs: Long = 0L) {
+    var positionMs by mutableLongStateOf(initialPositionMs)
+    var durationMs by mutableLongStateOf(0L)
+    var isPlaying by mutableStateOf(true)
+}
+
+@Composable
+private fun TrailerProgressPoller(
+    player: ExoPlayer,
+    clockState: TrailerPlaybackClockState,
+    onRecordProgress: (Long, Long) -> Unit
+) {
+    val latestOnRecord by rememberUpdatedState(onRecordProgress)
+    LaunchedEffect(player, clockState) {
+        var tick = 0
+        while (true) {
+            val cur = player.currentPosition.coerceAtLeast(0L)
+            val dur = player.duration.coerceAtLeast(0L)
+            clockState.positionMs = cur
+            clockState.durationMs = dur
+            clockState.isPlaying = player.isPlaying || (player.playWhenReady && player.playbackState == Player.STATE_BUFFERING)
+            tick++
+            if (tick % 8 == 0 && player.isPlaying) {
+                latestOnRecord(cur, dur)
+            }
+            delay(350L)
+        }
+    }
+}
+
 @OptIn(UnstableApi::class)
 @Composable
 private fun InlineTrailerPlayerSurface(
     exoPlayer: ExoPlayer,
     title: String,
-    isPlaying: Boolean,
+    clockState: TrailerPlaybackClockState,
     isMuted: Boolean,
-    currentPositionMs: Long,
-    durationMs: Long,
     isFullscreen: Boolean,
+    playbackPreferences: PlayerPlaybackPreferences = PlayerPlaybackPreferences(),
     onTogglePlayPause: () -> Unit,
     onSeekTo: (Long) -> Unit,
     onToggleMute: () -> Unit,
@@ -2048,13 +2101,17 @@ private fun InlineTrailerPlayerSurface(
     val colors = LaterboxTheme.colors
     var controlsVisible by remember { mutableStateOf(true) }
     var isScrubbing by remember { mutableStateOf(false) }
-    var scrubFraction by remember { mutableFloatStateOf(0f) }
+
+    val baseSensitivityTier = remember(playbackPreferences.swipeSeekSensitivity) {
+        SeekSensitivityTier.fromPreference(playbackPreferences.swipeSeekSensitivity)
+    }
+    val seekJumpSeconds = playbackPreferences.doubleTapSeekSeconds.coerceIn(5, 60)
+    val seekJumpMs = seekJumpSeconds * 1000L
 
     val latestIsMuted by rememberUpdatedState(isMuted)
     val latestOnSeekTo by rememberUpdatedState(onSeekTo)
     val latestOnToggleMute by rememberUpdatedState(onToggleMute)
-    val latestCurrentPosMs by rememberUpdatedState(currentPositionMs)
-    val latestDurationMs by rememberUpdatedState(durationMs)
+    val latestBaseSensitivity by rememberUpdatedState(baseSensitivityTier)
 
     val targetWindow = if (isFullscreen) {
         (dialogView.parent as? DialogWindowProvider)?.window ?: context.findDetailActivity()?.window
@@ -2088,7 +2145,18 @@ private fun InlineTrailerPlayerSurface(
     var isHorizontalScrubbing by remember(isFullscreen) { mutableStateOf(false) }
     var scrubTargetMs by remember(isFullscreen) { mutableLongStateOf(0L) }
     var scrubDeltaMs by remember(isFullscreen) { mutableLongStateOf(0L) }
-    var scrubSensitivity by remember(isFullscreen) { mutableStateOf(SeekSensitivityTier.NORMAL) }
+    var scrubSensitivity by remember(isFullscreen, baseSensitivityTier) { mutableStateOf(baseSensitivityTier) }
+
+    var isHolding2x by remember(isFullscreen) { mutableStateOf(false) }
+    var ignoreNextTap by remember(isFullscreen) { mutableStateOf(false) }
+    var seekFeedbackText by remember(isFullscreen) { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(seekFeedbackText) {
+        if (seekFeedbackText != null) {
+            delay(700L)
+            seekFeedbackText = null
+        }
+    }
 
     if (isFullscreen && brightnessHelper != null) {
         DisposableEffect(brightnessHelper) {
@@ -2138,8 +2206,9 @@ private fun InlineTrailerPlayerSurface(
         }
     }
 
-    LaunchedEffect(controlsVisible, isPlaying, isScrubbing, isHorizontalScrubbing) {
-        if (controlsVisible && isPlaying && !isScrubbing && !isHorizontalScrubbing) {
+    val isCurrentlyPlaying = clockState.isPlaying
+    LaunchedEffect(controlsVisible, isCurrentlyPlaying, isScrubbing, isHorizontalScrubbing) {
+        if (controlsVisible && isCurrentlyPlaying && !isScrubbing && !isHorizontalScrubbing) {
             delay(3500L)
             controlsVisible = false
         }
@@ -2151,17 +2220,17 @@ private fun InlineTrailerPlayerSurface(
             .background(Color.Black)
             .playerDragGestures(
                 enabled = isFullscreen,
-                swipeToSeekEnabled = isFullscreen,
-                brightnessGestureEnabled = isFullscreen,
-                volumeGestureEnabled = isFullscreen,
-                baseSensitivity = SeekSensitivityTier.NORMAL,
-                currentPositionProvider = { exoPlayer.currentPosition.coerceAtLeast(latestCurrentPosMs) },
-                durationProvider = { exoPlayer.duration.coerceAtLeast(latestDurationMs) },
+                swipeToSeekEnabled = isFullscreen && playbackPreferences.swipeToSeekEnabled,
+                brightnessGestureEnabled = isFullscreen && playbackPreferences.brightnessGestureEnabled,
+                volumeGestureEnabled = isFullscreen && playbackPreferences.volumeGestureEnabled,
+                baseSensitivity = baseSensitivityTier,
+                currentPositionProvider = { exoPlayer.currentPosition.coerceAtLeast(clockState.positionMs) },
+                durationProvider = { exoPlayer.duration.coerceAtLeast(clockState.durationMs) },
                 onHorizontalScrubStart = { startPos ->
                     isHorizontalScrubbing = true
                     scrubTargetMs = startPos
                     scrubDeltaMs = 0L
-                    scrubSensitivity = SeekSensitivityTier.NORMAL
+                    scrubSensitivity = latestBaseSensitivity
                 },
                 onHorizontalScrubUpdate = { targetMs, deltaMs, sensitivity ->
                     scrubTargetMs = targetMs
@@ -2217,10 +2286,82 @@ private fun InlineTrailerPlayerSurface(
                     unmutedDuringDrag = false
                 }
             )
-            .pointerInput(isFullscreen) {
+            .pointerInput(isFullscreen, exoPlayer) {
+                if (!isFullscreen) return@pointerInput
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    ignoreNextTap = false
+                    val downPos = down.position
+                    val slop = viewConfiguration.touchSlop
+                    var activatedHold = false
+                    var releasedOrMovedOut = false
+
+                    try {
+                        val deadline = System.currentTimeMillis() + 320L
+                        while (!releasedOrMovedOut && !activatedHold) {
+                            val remaining = (deadline - System.currentTimeMillis()).coerceAtLeast(1L)
+                            val event = withTimeoutOrNull(remaining) {
+                                awaitPointerEvent(PointerEventPass.Initial)
+                            }
+                            if (event == null) {
+                                activatedHold = true
+                                isHolding2x = true
+                                ignoreNextTap = true
+                                exoPlayer.setPlaybackSpeed(2.0f)
+                            } else {
+                                val change = event.changes.firstOrNull { it.id == down.id }
+                                if (change == null || !change.pressed ||
+                                    abs(change.position.x - downPos.x) > slop ||
+                                    abs(change.position.y - downPos.y) > slop
+                                ) {
+                                    releasedOrMovedOut = true
+                                }
+                            }
+                        }
+
+                        while (activatedHold) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val change = event.changes.firstOrNull { it.id == down.id }
+                            if (change == null || !change.pressed) {
+                                break
+                            }
+                        }
+                    } finally {
+                        if (activatedHold) {
+                            isHolding2x = false
+                            exoPlayer.setPlaybackSpeed(1.0f)
+                        }
+                    }
+                }
+            }
+            .pointerInput(isFullscreen, exoPlayer, seekJumpMs, seekJumpSeconds) {
                 detectTapGestures(
                     onTap = {
-                        controlsVisible = !controlsVisible
+                        if (ignoreNextTap) {
+                            ignoreNextTap = false
+                        } else {
+                            controlsVisible = !controlsVisible
+                        }
+                    },
+                    onDoubleTap = { offset ->
+                        ignoreNextTap = false
+                        if (!isFullscreen) return@detectTapGestures
+                        val widthPx = size.width.toFloat().coerceAtLeast(1f)
+                        val cur = exoPlayer.currentPosition.coerceAtLeast(clockState.positionMs)
+                        val dur = exoPlayer.duration.coerceAtLeast(clockState.durationMs)
+                        if (offset.x < widthPx / 2f) {
+                            val target = (cur - seekJumpMs).coerceAtLeast(0L)
+                            latestOnSeekTo(target)
+                            seekFeedbackText = "-${seekJumpSeconds}s"
+                        } else {
+                            val target = if (dur > 0L) {
+                                (cur + seekJumpMs).coerceAtMost(dur)
+                            } else {
+                                cur + seekJumpMs
+                            }
+                            latestOnSeekTo(target)
+                            seekFeedbackText = "+${seekJumpSeconds}s"
+                        }
                     }
                 )
             }
@@ -2231,6 +2372,9 @@ private fun InlineTrailerPlayerSurface(
                 factory = { ctx ->
                     PlayerView(ctx).apply {
                         useController = false
+                        controllerAutoShow = false
+                        isClickable = false
+                        isFocusable = false
                         resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                         keepScreenOn = true
                         player = exoPlayer
@@ -2240,7 +2384,7 @@ private fun InlineTrailerPlayerSurface(
                     if (view.player !== exoPlayer) {
                         view.player = exoPlayer
                     }
-                    view.keepScreenOn = isPlaying
+                    view.keepScreenOn = clockState.isPlaying
                 },
                 onRelease = { view ->
                     view.player = null
@@ -2357,95 +2501,45 @@ private fun InlineTrailerPlayerSurface(
                     ) {
                         Icon(
                             painter = painterResource(
-                                if (isPlaying) LaterboxIcons.Pause else LaterboxIcons.Play
+                                if (clockState.isPlaying) LaterboxIcons.Pause else LaterboxIcons.Play
                             ),
-                            contentDescription = if (isPlaying) "Pause trailer" else "Play trailer",
+                            contentDescription = if (clockState.isPlaying) "Pause trailer" else "Play trailer",
                             tint = Color.White,
                             modifier = Modifier.size(22.dp)
                         )
                     }
                 }
 
-                // Bottom scrubber + single combined Expand/Rotate button
-                Row(
+                // Isolated scrubber row so 350ms position ticks only recompose this row
+                TrailerScrubberRow(
+                    clockState = clockState,
+                    isFullscreen = isFullscreen,
+                    onScrubbingChanged = { isScrubbing = it },
+                    onSeekTo = onSeekTo,
+                    onToggleFullscreen = onToggleFullscreen,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .align(Alignment.BottomCenter),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    val safeDuration = durationMs.coerceAtLeast(1L)
-                    val displayPos = if (isScrubbing) {
-                        (scrubFraction * safeDuration).toLong()
-                    } else {
-                        currentPositionMs.coerceIn(0L, safeDuration)
-                    }
-                    val sliderVal = if (isScrubbing) {
-                        scrubFraction
-                    } else if (durationMs > 0L) {
-                        (currentPositionMs.toFloat() / safeDuration.toFloat()).coerceIn(0f, 1f)
-                    } else {
-                        0f
-                    }
-
-                    Text(
-                        text = formatTrailerClock(displayPos),
-                        style = typography.caption.copy(fontSize = 11.sp),
-                        color = Color.White
-                    )
-                    Slider(
-                        value = sliderVal,
-                        onValueChange = { frac ->
-                            isScrubbing = true
-                            scrubFraction = frac.coerceIn(0f, 1f)
-                        },
-                        onValueChangeFinished = {
-                            if (durationMs > 0L) {
-                                onSeekTo((scrubFraction * durationMs).toLong().coerceIn(0L, durationMs))
-                            }
-                            isScrubbing = false
-                        },
-                        colors = SliderDefaults.colors(
-                            thumbColor = colors.accentPrimary,
-                            activeTrackColor = colors.accentPrimary,
-                            inactiveTrackColor = Color.White.copy(alpha = 0.30f)
-                        ),
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(28.dp)
-                            .testTag("detail_trailer_seek_slider")
-                    )
-                    Text(
-                        text = formatTrailerClock(durationMs),
-                        style = typography.caption.copy(fontSize = 11.sp),
-                        color = Color.White.copy(alpha = 0.8f)
-                    )
-
-                    Surface(
-                        shape = CircleShape,
-                        color = Color.Black.copy(alpha = 0.55f)
-                    ) {
-                        IconButton(
-                            onClick = onToggleFullscreen,
-                            modifier = Modifier
-                                .size(34.dp)
-                                .testTag("detail_trailer_expand_button")
-                        ) {
-                            Icon(
-                                painter = painterResource(
-                                    if (isFullscreen) LaterboxIcons.FullscreenExit else LaterboxIcons.Fullscreen
-                                ),
-                                contentDescription = if (isFullscreen) "Exit fullscreen" else "Expand trailer",
-                                tint = Color.White,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                    }
-                }
+                        .align(Alignment.BottomCenter)
+                )
             }
         }
 
         if (isFullscreen) {
+            PlayerHold2xSpeedBadge(
+                visible = isHolding2x,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 18.dp)
+            )
+
+            PlayerSeekFeedbackBadge(
+                visible = seekFeedbackText != null && !isHorizontalScrubbing,
+                text = seekFeedbackText.orEmpty(),
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(bottom = if (controlsVisible) 88.dp else 0.dp)
+            )
+
             PlayerBrightnessHud(
                 visible = showBrightnessHud,
                 brightnessFraction = brightnessFraction,
@@ -2468,10 +2562,103 @@ private fun InlineTrailerPlayerSurface(
                 visible = isHorizontalScrubbing,
                 scrubTargetMs = scrubTargetMs,
                 scrubDeltaMs = scrubDeltaMs,
-                durationMs = exoPlayer.duration.coerceAtLeast(durationMs),
+                durationMs = exoPlayer.duration.coerceAtLeast(clockState.durationMs),
                 sensitivityTier = scrubSensitivity,
                 modifier = Modifier.align(Alignment.Center)
             )
+        }
+    }
+}
+
+@Composable
+private fun TrailerScrubberRow(
+    clockState: TrailerPlaybackClockState,
+    isFullscreen: Boolean,
+    onScrubbingChanged: (Boolean) -> Unit,
+    onSeekTo: (Long) -> Unit,
+    onToggleFullscreen: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val colors = LaterboxTheme.colors
+    val typography = LaterboxTheme.typography
+    var isScrubbing by remember { mutableStateOf(false) }
+    var scrubFraction by remember { mutableFloatStateOf(0f) }
+
+    val currentPositionMs = clockState.positionMs
+    val durationMs = clockState.durationMs
+    val safeDuration = durationMs.coerceAtLeast(1L)
+    val displayPos = if (isScrubbing) {
+        (scrubFraction * safeDuration).toLong()
+    } else {
+        currentPositionMs.coerceIn(0L, safeDuration)
+    }
+    val sliderVal = if (isScrubbing) {
+        scrubFraction
+    } else if (durationMs > 0L) {
+        (currentPositionMs.toFloat() / safeDuration.toFloat()).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            text = formatTrailerClock(displayPos),
+            style = typography.caption.copy(fontSize = 11.sp),
+            color = Color.White
+        )
+        Slider(
+            value = sliderVal,
+            onValueChange = { frac ->
+                isScrubbing = true
+                onScrubbingChanged(true)
+                scrubFraction = frac.coerceIn(0f, 1f)
+            },
+            onValueChangeFinished = {
+                if (durationMs > 0L) {
+                    onSeekTo((scrubFraction * durationMs).toLong().coerceIn(0L, durationMs))
+                }
+                isScrubbing = false
+                onScrubbingChanged(false)
+            },
+            colors = SliderDefaults.colors(
+                thumbColor = colors.accentPrimary,
+                activeTrackColor = colors.accentPrimary,
+                inactiveTrackColor = Color.White.copy(alpha = 0.30f)
+            ),
+            modifier = Modifier
+                .weight(1f)
+                .height(28.dp)
+                .testTag("detail_trailer_seek_slider")
+        )
+        Text(
+            text = formatTrailerClock(durationMs),
+            style = typography.caption.copy(fontSize = 11.sp),
+            color = Color.White.copy(alpha = 0.8f)
+        )
+
+        Surface(
+            shape = CircleShape,
+            color = Color.Black.copy(alpha = 0.55f)
+        ) {
+            IconButton(
+                onClick = onToggleFullscreen,
+                modifier = Modifier
+                    .size(34.dp)
+                    .testTag("detail_trailer_expand_button")
+            ) {
+                Icon(
+                    painter = painterResource(
+                        if (isFullscreen) LaterboxIcons.FullscreenExit else LaterboxIcons.Fullscreen
+                    ),
+                    contentDescription = if (isFullscreen) "Exit fullscreen" else "Expand trailer",
+                    tint = Color.White,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
         }
     }
 }
