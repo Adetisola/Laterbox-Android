@@ -471,7 +471,7 @@ class MovieBoxProviderTest {
     }
 
     @Test
-    fun homeFeed_excludesShortTvAndPromoBannersAndPreservesCachedTrailerIntoDetails() = runTest {
+    fun homeFeed_retainsShortTvExcludesPromoBannersAndPreservesCachedTrailerIntoDetails() = runTest {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 return when (request.path) {
@@ -562,11 +562,14 @@ class MovieBoxProviderTest {
         }
 
         val feed = provider.getHomeFeed().getOrThrow()
-        assertEquals(1, feed.sections.size)
+        assertTrue(feed.featuredBanners.none { it.title == "External Promo" })
+        assertEquals(2, feed.sections.size)
         assertEquals(SectionStyle.COLLECTION, feed.sections[0].style)
         assertEquals("Percy Jackson", feed.sections[0].items.first().title)
+        assertEquals("Hot Short TV", feed.sections[1].title)
+        assertEquals("The Holy Covenant Prophet", feed.sections[1].items.first().title)
         assertNull(feed.activeProviderNotice)
-        assertEquals(listOf("All", "Action", "Drama"), feed.genres)
+        assertEquals(listOf("All", "Action", "Sci-Fi & Fantasy", "Drama"), feed.genres)
 
         // /detail omits trailer, so MovieBoxProvider restores the cached trailerUrl from /home
         val details = provider.getDetails("2845168888013275776").getOrThrow()
@@ -619,7 +622,7 @@ class MovieBoxProviderTest {
             country = "South Korea"
         ).getOrThrow()
         assertTrue(paths[1].contains("sort=Hottest"))
-        assertFalse(paths[1].contains("genre=Fantasy"))
+        assertTrue(paths[1].contains("genre=Sci-Fi%20%26%20Fantasy"))
         assertTrue(paths[1].contains("country=Korea"))
     }
 
@@ -644,8 +647,10 @@ class MovieBoxProviderTest {
         assertEquals(1, requestCount)
         assertTrue(err is com.laterbox.app.movies.data.provider.MovieBoxApiException)
         assertTrue((err as com.laterbox.app.movies.data.provider.MovieBoxApiException).isAuthFailure)
-        assertTrue(err.message.orEmpty().contains("authentication", ignoreCase = true))
-        assertTrue(err.message.orEmpty().contains("App Check", ignoreCase = true))
+        val msg = err.message.orEmpty()
+        assertTrue(msg.contains("verified", ignoreCase = true))
+        assertFalse(msg.contains("App Check", ignoreCase = true))
+        assertFalse(msg.contains("Firebase", ignoreCase = true))
     }
 
     @Test
@@ -776,7 +781,9 @@ class MovieBoxProviderTest {
         assertEquals(listOf("stale.appcheck.jwt", "fresh.appcheck.jwt"), sentTokens)
         assertTrue(err is com.laterbox.app.movies.data.provider.MovieBoxApiException)
         assertTrue((err as com.laterbox.app.movies.data.provider.MovieBoxApiException).isAuthFailure)
-        assertTrue(err.message.orEmpty().contains("App Check", ignoreCase = true))
+        val msg = err.message.orEmpty()
+        assertTrue(msg.contains("verified", ignoreCase = true))
+        assertFalse(msg.contains("App Check", ignoreCase = true))
     }
 
     @Test
@@ -955,5 +962,76 @@ class MovieBoxProviderTest {
         assertEquals(155, catalogue.items.first().durationMinutes)
         assertEquals("English", catalogue.items.first().language)
         assertEquals("2024-05-10", catalogue.items.first().releaseDate)
+    }
+
+    @Test
+    fun searchSuggestions_handlesNullSubjectIdKeywordsAndDeduplicatesSafely() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                return MockResponse().setResponseCode(200).setBody(
+                    """
+                    {
+                      "suggestions": [
+                        {"subject_id": null, "title": "100% Wolf", "slug": ""},
+                        {"subject_id": null, "title": "100% wolf"},
+                        {"subject_id": "555", "title": "Dune", "slug": "dune"},
+                        {"subject_id": "555", "title": "Dune Duplicate", "slug": "dune"}
+                      ]
+                    }
+                    """.trimIndent()
+                )
+            }
+        }
+
+        val suggestions = provider.getSuggestions("100% + wolf").getOrThrow()
+        assertEquals(2, suggestions.size)
+        assertEquals("100% Wolf", suggestions[0].title)
+        assertEquals("", suggestions[0].id)
+        assertFalse(suggestions[0].hasNavigableId)
+        assertEquals("555", suggestions[1].id)
+        assertTrue(suggestions[1].hasNavigableId)
+    }
+
+    @Test
+    fun catalogue_retainsShortTvSubjectType7AndVerifiedAnimeKidsGenres() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                return MockResponse().setResponseCode(200).setBody(
+                    """
+                    {
+                      "page": 1,
+                      "per_page": 20,
+                      "total": 3,
+                      "items": [
+                        {
+                          "subject_id": "st7",
+                          "subject_type": 7,
+                          "title": "Short Drama",
+                          "genre": "Anime"
+                        },
+                        {
+                          "subject_id": "st7",
+                          "subject_type": 7,
+                          "title": "Short Drama Duplicate",
+                          "genre": "Anime"
+                        },
+                        {
+                          "subject_id": "mv_kids",
+                          "subject_type": 1,
+                          "title": "Kids Adventure",
+                          "genre": "Kids"
+                        }
+                      ]
+                    }
+                    """.trimIndent()
+                )
+            }
+        }
+
+        val page = provider.getCatalogue(kind = MediaKind.TV_SERIES, genre = "Anime").getOrThrow()
+        assertEquals(2, page.items.size)
+        assertEquals("st7", page.items[0].id)
+        assertEquals(MediaKind.TV_SERIES, page.items[0].kind)
+        assertTrue(MovieBoxProvider.VERIFIED_GENRES.containsAll(listOf("Anime", "Kids", "Sci-Fi & Fantasy", "Action & Adventure")))
     }
 }

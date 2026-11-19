@@ -25,17 +25,17 @@ class MoviesDownloadBridge(
         episodeNumber: Int? = null
     ): Result<String> = runCatching {
         require(source.isAuthorised) {
-            "Download is only enabled for authorised open-license media streams."
+            "Offline download isn't available for this source."
         }
         require(source.url.startsWith("http://") || source.url.startsWith("https://")) {
-            "Invalid download stream URL."
+            "This video link isn't valid for downloading."
         }
         val isAdaptiveManifest = source.format.equals("DASH", ignoreCase = true) ||
             source.format.equals("HLS", ignoreCase = true) ||
             source.url.contains(".mpd", ignoreCase = true) ||
             source.url.contains(".m3u8", ignoreCase = true)
         require(!isAdaptiveManifest) {
-            "Adaptive DASH/HLS streams can only be streamed online. Choose a progressive MP4 source to download."
+            "This stream can only be watched online. Choose a downloadable quality option instead."
         }
 
         val displayTitle = buildString {

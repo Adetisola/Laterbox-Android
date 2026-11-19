@@ -419,9 +419,9 @@ fun AppUpdateDialog(
                             val progressLabel = if (totalDownloadBytes > 0) {
                                 val downloadedMb = String.format(Locale.US, "%.1f", downloadedBytes / (1024f * 1024f))
                                 val totalMb = String.format(Locale.US, "%.1f", totalDownloadBytes / (1024f * 1024f))
-                                "Downloading patch... $downloadedMb MB / $totalMb MB ($downloadPercent%)"
+                                "Downloading update... $downloadedMb MB / $totalMb MB ($downloadPercent%)"
                             } else {
-                                "Downloading patch... ($downloadPercent%)"
+                                "Downloading update... ($downloadPercent%)"
                             }
 
                             Text(
@@ -441,7 +441,7 @@ fun AppUpdateDialog(
                             )
                             Spacer(modifier = Modifier.height(spacing.md))
                             Text(
-                                text = "Downloading differential update patch.",
+                                text = "Downloading a small update for your current app version.",
                                 style = typography.caption,
                                 color = colors.textTertiary
                             )
@@ -454,7 +454,7 @@ fun AppUpdateDialog(
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Text(
-                                text = if (reconstructPercent > 0) "Applying update patch... ($reconstructPercent%)" else "Applying update patch...",
+                                text = if (reconstructPercent > 0) "Preparing update... ($reconstructPercent%)" else "Preparing update...",
                                 style = typography.bodyPrimary,
                                 color = colors.textPrimary
                             )
@@ -470,7 +470,7 @@ fun AppUpdateDialog(
                             )
                             Spacer(modifier = Modifier.height(spacing.md))
                             Text(
-                                text = "Reconstructing update package locally from current installation.",
+                                text = "Getting the update package ready on your device.",
                                 style = typography.caption,
                                 color = colors.textTertiary
                             )
@@ -525,7 +525,7 @@ fun AppUpdateDialog(
                             )
                             Spacer(modifier = Modifier.height(spacing.md))
                             Text(
-                                text = "Resumable download — keeping your progress safe if connection drops.",
+                                text = "You can resume if your connection drops.",
                                 style = typography.caption,
                                 color = colors.textTertiary
                             )
@@ -544,7 +544,7 @@ fun AppUpdateDialog(
                             )
                             Spacer(modifier = Modifier.width(spacing.sm))
                             Text(
-                                text = "Verifying package integrity...",
+                                text = "Checking update...",
                                 style = typography.bodyPrimary,
                                 color = colors.textPrimary
                             )

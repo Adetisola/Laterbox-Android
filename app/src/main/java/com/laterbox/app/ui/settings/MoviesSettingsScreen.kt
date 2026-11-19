@@ -365,9 +365,9 @@ fun MoviesSettingsScreen(
                                 color = colors.textPrimary
                             )
                             val subSummary = if (activeSubtitleConfig.useSystemCaptions) {
-                                "Using Android System Captions"
+                                "Using system captions"
                             } else {
-                                "${activeSubtitleConfig.fontSizeSp.roundToInt()}sp · ${(activeSubtitleConfig.backgroundOpacity * 100f).roundToInt()}% backdrop"
+                                "Size ${activeSubtitleConfig.fontSizeSp.roundToInt()} · ${(activeSubtitleConfig.backgroundOpacity * 100f).roundToInt()}% background"
                             }
                             Text(
                                 text = subSummary,

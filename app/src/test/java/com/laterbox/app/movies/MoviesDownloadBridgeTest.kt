@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -221,7 +222,9 @@ class MoviesDownloadBridgeTest {
         )
         val res3 = bridge.enqueueAuthorisedDownload(sampleSummary, adaptiveDash)
         assertTrue(res3.isFailure)
-        assertTrue(res3.exceptionOrNull()?.message.orEmpty().contains("Adaptive"))
+        val adaptiveMsg = res3.exceptionOrNull()?.message.orEmpty()
+        assertTrue(adaptiveMsg.contains("online", ignoreCase = true))
+        assertFalse(adaptiveMsg.contains("Adaptive", ignoreCase = true))
         assertTrue(fakeMediaRepository.enqueued.isEmpty())
     }
 

@@ -786,13 +786,14 @@ class MoviesViewModelsTest {
     }
 
     @Test
-    fun catalogueViewModel_excludesFantasyAndSupportsShortcutsAndCountries() = runTest {
+    fun catalogueViewModel_retainsVerifiedGenresAndSupportsShortcutsAndCountries() = runTest {
         val repo = FakeMoviesRepository()
         val vm = MoviesCatalogueViewModel(repo)
         vm.initialize("m2_cat")
         advanceUntilIdle()
 
-        assertFalse(vm.uiState.value.availableGenres.any { it.equals("Fantasy", ignoreCase = true) })
+        assertTrue(vm.uiState.value.availableGenres.contains("Anime"))
+        assertTrue(vm.uiState.value.availableGenres.contains("Sci-Fi & Fantasy"))
 
         vm.selectShortcut(com.laterbox.app.movies.domain.model.MoviesDiscoveryShortcut.HOLLYWOOD)
         advanceUntilIdle()
@@ -1454,5 +1455,99 @@ class MoviesViewModelsTest {
         } finally {
             db.close()
         }
+    }
+
+    @Test
+    fun playerViewModel_episodeTransitionClearsStartPositionAndIgnoresStaleEpisodeCallbacks() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = UserPreferencesRepository(context)
+        val recordedSaves = mutableListOf<Triple<Int?, Int?, Long>>()
+        val seriesSummary = MovieTitleSummary(
+            id = "mb_series_ep",
+            providerId = "moviebox",
+            kind = MediaKind.TV_SERIES,
+            title = "Severance",
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+            isPlayableHint = true
+        )
+        val baseFake = FakeMoviesRepository()
+        val repo = object : MoviesRepository by baseFake {
+            override suspend fun getDetails(providerId: String, titleId: String, forceRefresh: Boolean) =
+                Result.success(
+                    MediaDetails(
+                        summary = seriesSummary,
+                        seasons = listOf(SeasonSummary(1, "Season 1", 2, availableEpisodes = listOf(1, 2)))
+                    )
+                )
+
+            override suspend fun resolvePlayback(
+                providerId: String,
+                titleId: String,
+                seasonNumber: Int?,
+                episodeNumber: Int?
+            ): Result<PlaybackResolution> {
+                val src = PlaybackSource(
+                    id = "s_${seasonNumber}_${episodeNumber}",
+                    url = "https://cdn.example/s${seasonNumber}e${episodeNumber}.mp4",
+                    format = "MP4",
+                    qualityLabel = "720p",
+                    qualityHeight = 720,
+                    providerName = "MovieBox"
+                )
+                return Result.success(
+                    PlaybackResolution.Available(
+                        title = "Severance",
+                        subtitleHeading = "S${seasonNumber}E${episodeNumber}",
+                        sources = listOf(src),
+                        startPositionMs = if (episodeNumber == 1) 1_190_000L else 0L
+                    )
+                )
+            }
+
+            override suspend fun getSavedPositionMs(
+                providerId: String,
+                titleId: String,
+                seasonNumber: Int?,
+                episodeNumber: Int?
+            ): Long = if (episodeNumber == 1) 1_190_000L else 0L
+
+            override suspend fun saveWatchProgress(
+                item: MovieTitleSummary,
+                positionMs: Long,
+                durationMs: Long,
+                seasonNumber: Int?,
+                episodeNumber: Int?,
+                episodeLabel: String?
+            ) {
+                recordedSaves.add(Triple(seasonNumber, episodeNumber, positionMs))
+            }
+        }
+
+        val vm = MoviePlayerViewModel(
+            moviesRepository = repo,
+            moviesDownloadBridge = null,
+            userPreferencesRepository = prefs
+        )
+        vm.load("moviebox", "mb_series_ep", 1, 1)
+        val e1State = vm.uiState.first { !it.isLoading }
+        assertEquals("mb_series_ep:1:1", e1State.episodeKey)
+        assertEquals(1_190_000L, e1State.startPositionMs)
+
+        // Transition to Episode 2 -> startPositionMs resets cleanly to 0L and episodeKey updates immediately
+        vm.load("moviebox", "mb_series_ep", 1, 2)
+        assertEquals(0L, vm.uiState.value.startPositionMs)
+        val e2State = vm.uiState.first { !it.isLoading && it.episodeNumber == 2 }
+        assertEquals("mb_series_ep:1:2", e2State.episodeKey)
+        assertEquals(0L, e2State.startPositionMs)
+
+        // Late onDispose callback from E1 must be ignored after transitioning to E2
+        vm.saveProgressForEpisode(1_195_000L, 1_200_000L, "mb_series_ep:1:1")
+        advanceUntilIdle()
+        assertTrue(recordedSaves.none { it.second == 1 })
+
+        // Saving E2 progress works cleanly with matching episodeKey
+        vm.saveProgressForEpisode(42_000L, 1_200_000L, "mb_series_ep:1:2")
+        advanceUntilIdle()
+        assertEquals(listOf(Triple(1, 2, 42_000L)), recordedSaves)
     }
 }

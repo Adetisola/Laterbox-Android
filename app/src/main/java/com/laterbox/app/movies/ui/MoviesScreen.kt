@@ -306,7 +306,7 @@ fun MoviesScreen(
                             uiState.watchlist.map { it.compositeId }.toSet()
                         }
                         val genresList = remember(feed.genres) {
-                            val cleaned = feed.genres.filterNot { it.equals("Fantasy", ignoreCase = true) }
+                            val cleaned = feed.genres.distinct()
                             if (cleaned.any { it.equals("All", ignoreCase = true) }) {
                                 cleaned
                             } else {

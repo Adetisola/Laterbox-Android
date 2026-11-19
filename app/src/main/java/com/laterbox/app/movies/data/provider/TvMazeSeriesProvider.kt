@@ -302,7 +302,7 @@ class TvMazeSeriesProvider(
             }
             PlaybackResolution.Unavailable(
                 title = "$title$episodeSuffix",
-                reason = "TVMaze is an authorised metadata and episode guide catalogue. It does not host or license video playback streams.",
+                reason = "Streaming isn't available directly here. Open the episode guide for broadcast details.",
                 providerName = displayName,
                 externalReferenceUrl = refUrl,
                 sourceBadge = sourceBadge

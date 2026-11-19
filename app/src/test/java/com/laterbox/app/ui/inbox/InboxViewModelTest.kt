@@ -445,12 +445,14 @@ class InboxViewModelTest {
         val id1 = linkRepository.saveLink(
             originalUrl = "https://example.com/item1",
             title = "Item 1",
-            contentType = ContentType.ARTICLE
+            contentType = ContentType.ARTICLE,
+            autoFetchMetadata = false
         )
         val id2 = linkRepository.saveLink(
             originalUrl = "https://example.com/item2",
             title = "Item 2",
-            contentType = ContentType.ARTICLE
+            contentType = ContentType.ARTICLE,
+            autoFetchMetadata = false
         )
 
         viewModel.uiState.test(timeout = kotlin.time.Duration.parse("10s")) {

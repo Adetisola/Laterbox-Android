@@ -816,10 +816,10 @@ fun LaterboxApp(
                                 }
                             )
                         ) { backStackEntry ->
-                            val rawConvId = backStackEntry.arguments?.getString("conversationId").orEmpty()
-                            val rawPrompt = backStackEntry.arguments?.getString("initialPrompt").orEmpty()
-                            val decodedConvId = java.net.URLDecoder.decode(rawConvId, "UTF-8").takeIf { it.isNotBlank() }
-                            val decodedPrompt = java.net.URLDecoder.decode(rawPrompt, "UTF-8").takeIf { it.isNotBlank() }
+                            val decodedConvId = backStackEntry.arguments?.getString("conversationId")
+                                ?.takeIf { it.isNotBlank() }
+                            val decodedPrompt = backStackEntry.arguments?.getString("initialPrompt")
+                                ?.takeIf { it.isNotBlank() }
 
                             LaunchedEffect(backStackEntry.id) {
                                 chatViewModel.openChat(
@@ -976,8 +976,7 @@ fun LaterboxApp(
                             )
                         ) { backStackEntry ->
                             val collectionId = backStackEntry.arguments?.getLong("collectionId") ?: 0L
-                            val rawName = backStackEntry.arguments?.getString("collectionName") ?: ""
-                            val collectionName = java.net.URLDecoder.decode(rawName, "UTF-8")
+                            val collectionName = backStackEntry.arguments?.getString("collectionName") ?: ""
 
                             LaunchedEffect(collectionId, collectionName) {
                                 collectionDetailViewModel.setCollection(collectionId, collectionName)
@@ -1153,26 +1152,16 @@ fun LaterboxApp(
                                 navArgument("country") { type = NavType.StringType; defaultValue = ""; nullable = true }
                             )
                         ) { backStackEntry ->
-                            val rawKind = java.net.URLDecoder.decode(
-                                backStackEntry.arguments?.getString("kind").orEmpty(),
-                                "UTF-8"
-                            ).takeIf { it.isNotBlank() }
-                            val rawGenre = java.net.URLDecoder.decode(
-                                backStackEntry.arguments?.getString("genre").orEmpty(),
-                                "UTF-8"
-                            ).takeIf { it.isNotBlank() }
-                            val rawQuery = java.net.URLDecoder.decode(
-                                backStackEntry.arguments?.getString("query").orEmpty(),
-                                "UTF-8"
-                            ).takeIf { it.isNotBlank() }
-                            val rawSort = java.net.URLDecoder.decode(
-                                backStackEntry.arguments?.getString("sort").orEmpty(),
-                                "UTF-8"
-                            ).takeIf { it.isNotBlank() }
-                            val rawCountry = java.net.URLDecoder.decode(
-                                backStackEntry.arguments?.getString("country").orEmpty(),
-                                "UTF-8"
-                            ).takeIf { it.isNotBlank() }
+                            val rawKind = backStackEntry.arguments?.getString("kind")
+                                ?.takeIf { it.isNotBlank() }
+                            val rawGenre = backStackEntry.arguments?.getString("genre")
+                                ?.takeIf { it.isNotBlank() }
+                            val rawQuery = backStackEntry.arguments?.getString("query")
+                                ?.takeIf { it.isNotBlank() }
+                            val rawSort = backStackEntry.arguments?.getString("sort")
+                                ?.takeIf { it.isNotBlank() }
+                            val rawCountry = backStackEntry.arguments?.getString("country")
+                                ?.takeIf { it.isNotBlank() }
                             val initialKind = rawKind?.let { com.laterbox.app.movies.domain.model.MediaKind.fromWire(it) }
                             val initialSort = com.laterbox.app.movies.domain.model.CatalogueSort.fromWire(rawSort)
 
@@ -1229,14 +1218,8 @@ fun LaterboxApp(
                                 navArgument("titleId") { type = NavType.StringType }
                             )
                         ) { backStackEntry ->
-                            val providerId = java.net.URLDecoder.decode(
-                                backStackEntry.arguments?.getString("providerId").orEmpty(),
-                                "UTF-8"
-                            )
-                            val titleId = java.net.URLDecoder.decode(
-                                backStackEntry.arguments?.getString("titleId").orEmpty(),
-                                "UTF-8"
-                            )
+                            val providerId = backStackEntry.arguments?.getString("providerId").orEmpty()
+                            val titleId = backStackEntry.arguments?.getString("titleId").orEmpty()
                             LaunchedEffect(providerId, titleId) {
                                 movieDetailViewModel.load(providerId, titleId)
                             }
@@ -1248,20 +1231,26 @@ fun LaterboxApp(
                                 onToggleWatchlist = movieDetailViewModel::toggleWatchlist,
                                 onPlayClick = { seasonNum, epNum ->
                                     val resolvedSummary = detailState.details?.summary
-                                    navController.navigate(
-                                        LaterboxDestination.MoviePlayer.createRoute(
-                                            providerId = resolvedSummary?.providerId ?: providerId,
-                                            titleId = resolvedSummary?.id ?: titleId,
-                                            seasonNumber = seasonNum,
-                                            episodeNumber = epNum
+                                    val targetProvider = resolvedSummary?.providerId ?: providerId
+                                    val targetId = resolvedSummary?.id ?: titleId
+                                    if (targetProvider.isNotBlank() && targetId.isNotBlank()) {
+                                        navController.navigate(
+                                            LaterboxDestination.MoviePlayer.createRoute(
+                                                providerId = targetProvider,
+                                                titleId = targetId,
+                                                seasonNumber = seasonNum,
+                                                episodeNumber = epNum
+                                            )
                                         )
-                                    )
+                                    }
                                 },
                                 onSelectSeason = movieDetailViewModel::selectSeason,
                                 onOpenRelated = { relProvider, relId ->
-                                    navController.navigate(
-                                        LaterboxDestination.MovieDetail.createRoute(relProvider, relId)
-                                    )
+                                    if (relProvider.isNotBlank() && relId.isNotBlank()) {
+                                        navController.navigate(
+                                            LaterboxDestination.MovieDetail.createRoute(relProvider, relId)
+                                        )
+                                    }
                                 },
                                 onOpenExternalUrl = { url ->
                                     BrowserLauncher.openUrl(context, url, colors)
@@ -1309,14 +1298,8 @@ fun LaterboxApp(
                                 navArgument("episode") { type = NavType.IntType; defaultValue = -1 }
                             )
                         ) { backStackEntry ->
-                            val providerId = java.net.URLDecoder.decode(
-                                backStackEntry.arguments?.getString("providerId").orEmpty(),
-                                "UTF-8"
-                            )
-                            val titleId = java.net.URLDecoder.decode(
-                                backStackEntry.arguments?.getString("titleId").orEmpty(),
-                                "UTF-8"
-                            )
+                            val providerId = backStackEntry.arguments?.getString("providerId").orEmpty()
+                            val titleId = backStackEntry.arguments?.getString("titleId").orEmpty()
                             val rawSeason = backStackEntry.arguments?.getInt("season") ?: -1
                             val rawEpisode = backStackEntry.arguments?.getInt("episode") ?: -1
                             val seasonNum = rawSeason.takeIf { it > 0 }
@@ -1335,6 +1318,7 @@ fun LaterboxApp(
                                 onSelectSource = moviePlayerViewModel::selectSource,
                                 onSelectSubtitle = moviePlayerViewModel::selectSubtitle,
                                 onSaveProgress = moviePlayerViewModel::saveProgress,
+                                onSaveProgressForEpisode = moviePlayerViewModel::saveProgressForEpisode,
                                 onOpenExternalUrl = { url ->
                                     BrowserLauncher.openUrl(context, url, colors)
                                 },

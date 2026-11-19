@@ -132,4 +132,16 @@ class PlayerGesturesAndBoostTest {
         assertEquals(200f, PlayerGesturesMath.applyVolumeDelta(180f, 50f, maxPercent = 200), 0.0001f)
         assertEquals(100f, PlayerGesturesMath.applyVolumeDelta(90f, 50f, maxPercent = 100), 0.0001f)
     }
+
+    @Test
+    fun computeInitialExcessDelta_returnsZeroWithinSlopAndPreservesSignedExcessOutsideSlop() {
+        val slop = 24f
+        assertEquals(0f, PlayerGesturesMath.computeInitialExcessDelta(0f, slop), 0.0001f)
+        assertEquals(0f, PlayerGesturesMath.computeInitialExcessDelta(24f, slop), 0.0001f)
+        assertEquals(0f, PlayerGesturesMath.computeInitialExcessDelta(-24f, slop), 0.0001f)
+
+        assertEquals(11f, PlayerGesturesMath.computeInitialExcessDelta(35f, slop), 0.0001f)
+        assertEquals(-16f, PlayerGesturesMath.computeInitialExcessDelta(-40f, slop), 0.0001f)
+        assertEquals(10f, PlayerGesturesMath.computeInitialExcessDelta(10f, -5f), 0.0001f)
+    }
 }

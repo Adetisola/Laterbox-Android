@@ -135,9 +135,12 @@ class MoviesHomeViewModel(
         viewModelScope.launch {
             moviesRepository.observeWatchlist().collect { list ->
                 rawWatchlist = list
-                val hidden = _uiState.value.hiddenMediaKeys
-                _uiState.update { it.copy(watchlist = list.filterNot { m -> m.stableMediaKey in hidden }) }
-                recomputeDiscovery()
+                _uiState.update { current ->
+                    val hidden = current.hiddenMediaKeys
+                    applyDiscovery(
+                        current.copy(watchlist = list.filterNot { m -> m.stableMediaKey in hidden })
+                    )
+                }
             }
         }
         viewModelScope.launch {
@@ -159,9 +162,12 @@ class MoviesHomeViewModel(
         viewModelScope.launch {
             moviesRepository.observeRecentlyViewed(20).collect { list ->
                 rawRecentlyViewed = list
-                val hidden = _uiState.value.hiddenMediaKeys
-                _uiState.update { it.copy(recentlyViewed = list.filterNot { m -> m.stableMediaKey in hidden }) }
-                recomputeDiscovery()
+                _uiState.update { current ->
+                    val hidden = current.hiddenMediaKeys
+                    applyDiscovery(
+                        current.copy(recentlyViewed = list.filterNot { m -> m.stableMediaKey in hidden })
+                    )
+                }
             }
         }
         viewModelScope.launch {
@@ -173,14 +179,25 @@ class MoviesHomeViewModel(
             moviesRepository.observeHiddenHistory(100).collect { hiddenList ->
                 val keys = hiddenList.map { it.stableMediaKey }.toSet()
                 _uiState.update { current ->
-                    current.copy(
-                        hiddenMediaKeys = keys,
-                        watchlist = rawWatchlist.filterNot { it.stableMediaKey in keys },
-                        recentlyViewed = rawRecentlyViewed.filterNot { it.stableMediaKey in keys }
+                    val filtered = MoviesDiscoveryEngine.filterTitles(
+                        items = rawFilteredItems,
+                        kind = current.selectedKind,
+                        genre = current.selectedGenre,
+                        language = current.selectedLanguage,
+                        country = current.selectedCountry,
+                        year = current.selectedYear,
+                        runtimeBucket = current.selectedRuntimeBucket,
+                        hiddenMediaKeys = keys
+                    )
+                    applyDiscovery(
+                        current.copy(
+                            hiddenMediaKeys = keys,
+                            watchlist = rawWatchlist.filterNot { it.stableMediaKey in keys },
+                            recentlyViewed = rawRecentlyViewed.filterNot { it.stableMediaKey in keys },
+                            filteredItems = filtered
+                        )
                     )
                 }
-                applyClientFiltersToFilteredItems()
-                recomputeDiscovery()
             }
         }
         if (collectionRepository != null) {
@@ -268,16 +285,17 @@ class MoviesHomeViewModel(
             result.fold(
                 onSuccess = { feed ->
                     _uiState.update {
-                        it.copy(
-                            isLoading = false,
-                            isRefreshing = false,
-                            feed = feed,
-                            topRatedRail = topRated.ifEmpty { it.topRatedRail },
-                            newestRail = newest.ifEmpty { it.newestRail },
-                            errorMessage = null
+                        applyDiscovery(
+                            it.copy(
+                                isLoading = false,
+                                isRefreshing = false,
+                                feed = feed,
+                                topRatedRail = topRated.distinctBy { m -> m.compositeId }.ifEmpty { it.topRatedRail },
+                                newestRail = newest.distinctBy { m -> m.compositeId }.ifEmpty { it.newestRail },
+                                errorMessage = null
+                            )
                         )
                     }
-                    recomputeDiscovery()
                 },
                 onFailure = { error ->
                     _uiState.update {
@@ -786,7 +804,7 @@ class MoviesHomeViewModel(
                     val mergedRaw = if (append) {
                         (rawFilteredItems + pageResult.items).distinctBy { it.compositeId }
                     } else {
-                        pageResult.items
+                        pageResult.items.distinctBy { it.compositeId }
                     }
                     rawFilteredItems = mergedRaw
                     val latest = _uiState.value

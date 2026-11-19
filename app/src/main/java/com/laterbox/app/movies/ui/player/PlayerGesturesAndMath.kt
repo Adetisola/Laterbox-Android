@@ -1,6 +1,7 @@
 package com.laterbox.app.movies.ui.player
 
 import android.app.Activity
+import android.view.Window
 import android.view.WindowManager
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -102,15 +103,23 @@ object PlayerGesturesMath {
 
     fun applyVolumeDelta(currentAccumulatedPercent: Float, deltaPercent: Float, maxPercent: Int): Float =
         (currentAccumulatedPercent + deltaPercent).coerceIn(0f, maxPercent.toFloat())
+
+    fun computeInitialExcessDelta(totalDelta: Float, touchSlop: Float): Float {
+        val slop = touchSlop.coerceAtLeast(0f)
+        if (abs(totalDelta) <= slop) return 0f
+        return if (totalDelta > 0f) totalDelta - slop else totalDelta + slop
+    }
 }
 
 /**
  * Saves and restores window-scoped [WindowManager.LayoutParams.screenBrightness] so player
  * brightness gestures never mutate global system brightness.
  */
-class PlayerBrightnessHelper(private val activity: Activity?) {
+class PlayerBrightnessHelper(private val window: Window?) {
+    constructor(activity: Activity?) : this(activity?.window)
+
     private val initialBrightness: Float =
-        activity?.window?.attributes?.screenBrightness ?: WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        window?.attributes?.screenBrightness ?: WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
 
     var currentNormalizedBrightness: Float =
         if (initialBrightness in 0.01f..1.0f) initialBrightness else 0.5f
@@ -119,17 +128,17 @@ class PlayerBrightnessHelper(private val activity: Activity?) {
     fun setBrightness(normalized: Float) {
         val clamped = normalized.coerceIn(0.01f, 1.0f)
         currentNormalizedBrightness = clamped
-        val window = activity?.window ?: return
-        val params = window.attributes
+        val targetWindow = window ?: return
+        val params = targetWindow.attributes
         params.screenBrightness = clamped
-        window.attributes = params
+        targetWindow.attributes = params
     }
 
     fun restoreOriginalBrightness() {
-        val window = activity?.window ?: return
-        val params = window.attributes
+        val targetWindow = window ?: return
+        val params = targetWindow.attributes
         params.screenBrightness = initialBrightness
-        window.attributes = params
+        targetWindow.attributes = params
     }
 }
 
@@ -214,18 +223,45 @@ fun Modifier.playerDragGestures(
                                 scrubAccumulatedDeltaMs = 0L
                                 activeSensitivity = baseSensitivity
                                 onHorizontalScrubStart(scrubStartPosMs)
+                                val excessDx = PlayerGesturesMath.computeInitialExcessDelta(totalDx, touchSlop)
+                                if (abs(excessDx) > 0f) {
+                                    val durationMs = durationProvider().coerceAtLeast(0L)
+                                    val incMs = PlayerGesturesMath.computeIncrementalSeekDeltaMs(
+                                        deltaXPx = excessDx,
+                                        widthPx = widthPx,
+                                        sensitivity = activeSensitivity,
+                                        durationMs = durationMs
+                                    )
+                                    scrubAccumulatedDeltaMs += incMs
+                                    val targetMs = PlayerGesturesMath.clampSeekTargetMs(
+                                        startPositionMs = scrubStartPosMs,
+                                        accumulatedDeltaMs = scrubAccumulatedDeltaMs,
+                                        durationMs = durationMs
+                                    )
+                                    scrubAccumulatedDeltaMs = targetMs - scrubStartPosMs
+                                    onHorizontalScrubUpdate(targetMs, scrubAccumulatedDeltaMs, activeSensitivity)
+                                }
                                 change.consume()
                             } else {
+                                val excessDy = PlayerGesturesMath.computeInitialExcessDelta(totalDy, touchSlop)
                                 when (verticalZone) {
                                     VerticalGestureZone.LEFT -> {
                                         if (!brightnessGestureEnabled) break
                                         mode = ActiveDragMode.VERTICAL_BRIGHTNESS
                                         change.consume()
+                                        val deltaFraction = -excessDy / (heightPx * 0.65f)
+                                        if (abs(deltaFraction) > 0f) {
+                                            onBrightnessDelta(deltaFraction)
+                                        }
                                     }
                                     VerticalGestureZone.RIGHT -> {
                                         if (!volumeGestureEnabled) break
                                         mode = ActiveDragMode.VERTICAL_VOLUME
                                         change.consume()
+                                        val deltaPercent = (-excessDy / (heightPx * 0.65f)) * 180f
+                                        if (abs(deltaPercent) > 0f) {
+                                            onVolumeDelta(deltaPercent)
+                                        }
                                     }
                                 }
                             }

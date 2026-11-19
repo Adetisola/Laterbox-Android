@@ -110,9 +110,20 @@ class MoviesCatalogueViewModel(
         }
         viewModelScope.launch {
             moviesRepository.getGenres().onSuccess { genres ->
-                val clean = genres.filterNot { it.equals("Fantasy", ignoreCase = true) }
-                if (clean.isNotEmpty()) {
-                    _uiState.update { it.copy(availableGenres = clean) }
+                val normalized = genres.mapNotNull { raw ->
+                    if (raw.equals("All", ignoreCase = true)) {
+                        "All"
+                    } else {
+                        MovieBoxProvider.normalizeVerifiedGenre(raw) ?: raw.trim().takeIf { it.isNotBlank() }
+                    }
+                }
+                val merged = (
+                    listOf("All") +
+                        normalized.filterNot { it.equals("All", ignoreCase = true) } +
+                        MovieBoxProvider.VERIFIED_GENRES
+                    ).distinct()
+                if (merged.isNotEmpty()) {
+                    _uiState.update { it.copy(availableGenres = merged) }
                 }
             }
         }
@@ -486,7 +497,7 @@ class MoviesCatalogueViewModel(
                     val mergedRaw = if (append) {
                         (rawItems + pageResult.items).distinctBy { it.compositeId }
                     } else {
-                        pageResult.items
+                        pageResult.items.distinctBy { it.compositeId }
                     }
                     rawItems = mergedRaw
                     val latest = _uiState.value

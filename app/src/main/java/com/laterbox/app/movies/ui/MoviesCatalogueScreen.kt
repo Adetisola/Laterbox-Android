@@ -585,7 +585,7 @@ fun MoviesCatalogueScreen(
                 }
 
                 items(
-                    uiState.availableGenres.filterNot { it.equals("Fantasy", ignoreCase = true) },
+                    uiState.availableGenres.distinct(),
                     key = { "genre_$it" }
                 ) { genre ->
                     val selected = uiState.selectedGenre.equals(genre, ignoreCase = true)
@@ -687,8 +687,10 @@ fun MoviesCatalogueScreen(
                         items = uiState.items,
                         key = { _, item -> "grid_${item.compositeId}" }
                     ) { index, item ->
-                        if (index >= uiState.items.lastIndex - 3 && uiState.hasMore && !uiState.isLoadingMore) {
-                            onLoadNextPage()
+                        LaunchedEffect(index, uiState.items.size, uiState.hasMore, uiState.isLoadingMore) {
+                            if (index >= uiState.items.lastIndex - 3 && uiState.hasMore && !uiState.isLoadingMore) {
+                                onLoadNextPage()
+                            }
                         }
                         val isOffline = uiState.offlineMatches.any {
                             it.matchesTitleComposite(item.providerId, item.id)

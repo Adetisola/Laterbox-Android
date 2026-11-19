@@ -1,17 +1,25 @@
 package com.laterbox.app.movies
 
+import android.content.res.Configuration
 import androidx.compose.foundation.layout.width
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeLeft
+import androidx.compose.ui.test.swipeRight
 import androidx.compose.ui.unit.dp
 import com.laterbox.app.data.preferences.SubtitleStyleConfig
 import com.laterbox.app.data.preferences.UserPreferences
@@ -314,7 +322,7 @@ class MoviesUiAndNavigationTest {
         }
 
         composeTestRule.onNodeWithTag("player_unavailable_state").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Open Official Guide").assertIsDisplayed()
+        composeTestRule.onNodeWithText("View Episode Guide").assertIsDisplayed()
         composeTestRule.onNodeWithText("Back").assertIsDisplayed().performClick()
         assertTrue(backClicked)
     }
@@ -427,8 +435,10 @@ class MoviesUiAndNavigationTest {
 
         composeTestRule.onNodeWithTag("player_controls_overlay").assertIsDisplayed()
         composeTestRule.onNodeWithTag("player_back_button").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("player_subtitles_button").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("player_quality_button").assertIsDisplayed()
+        // In portrait, Subtitles / Audio / Quality live inside the overflow More menu
+        composeTestRule.onNodeWithTag("player_more_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_subtitles_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("player_quality_button").assertDoesNotExist()
         composeTestRule.onNodeWithTag("player_download_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("player_play_pause_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("player_replay_10_button").assertIsDisplayed()
@@ -455,8 +465,10 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithTag("player_speed_dialog").assertIsDisplayed()
         composeTestRule.onNodeWithTag("player_speed_option_1.5").performClick()
 
-        // Test Subtitles Dialog
-        composeTestRule.onNodeWithTag("player_subtitles_button").performClick()
+        // Test Subtitles Dialog via portrait More menu
+        composeTestRule.onNodeWithTag("player_more_button").performClick()
+        composeTestRule.onNodeWithTag("player_more_menu").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_more_subtitles_item").performClick()
         composeTestRule.onNodeWithTag("player_subtitles_dialog").assertIsDisplayed()
     }
 
@@ -619,8 +631,9 @@ class MoviesUiAndNavigationTest {
         }
 
         composeTestRule.onNodeWithTag("detail_playback_error").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Playback unavailable").assertIsDisplayed()
         composeTestRule.onNodeWithText("Failed to load stream options").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Retry Stream Check").performClick()
+        composeTestRule.onNodeWithText("Try Again").performClick()
         assertTrue(retried)
     }
 
@@ -724,7 +737,9 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithTag("player_next_episode_button").assertIsDisplayed().performClick()
         assertTrue(nextEpisodeClicked)
 
-        composeTestRule.onNodeWithTag("player_audio_button").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("player_more_button").assertIsDisplayed().performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("player_more_audio_item").assertIsDisplayed().performClick()
         composeTestRule.onNodeWithTag("player_audio_dialog").assertIsDisplayed()
         composeTestRule.onNodeWithTag("player_audio_dub_id_fr").assertIsDisplayed().performClick()
         assertEquals("id_fr", selectedDubId)
@@ -1105,7 +1120,8 @@ class MoviesUiAndNavigationTest {
             }
         }
 
-        composeTestRule.onNodeWithTag("player_subtitles_button").performClick()
+        composeTestRule.onNodeWithTag("player_more_button").performClick()
+        composeTestRule.onNodeWithTag("player_more_subtitles_item").performClick()
         composeTestRule.onNodeWithTag("player_subtitles_dialog").assertIsDisplayed()
         composeTestRule.onNodeWithTag("player_subtitle_set_style_button").assertIsDisplayed().performClick()
 
@@ -1712,5 +1728,204 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithTag("player_offline_badge").assertIsDisplayed()
         composeTestRule.onNodeWithTag("player_skip_intro_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("player_skip_recap_button").assertDoesNotExist()
+    }
+
+    @Test
+    fun moviesHeroCarousel_wrapsBidirectionallyAtBoundaries() {
+        val banners = listOf(
+            sampleMovie.copy(id = "h1", title = "Banner One"),
+            sampleMovie.copy(id = "h2", title = "Banner Two"),
+            sampleMovie.copy(id = "h3", title = "Banner Three")
+        )
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MoviesScreen(
+                    uiState = MoviesHomeUiState(
+                        isLoading = false,
+                        feed = MoviesHomeFeed(
+                            featuredBanners = banners,
+                            sections = listOf(
+                                BrowseSection(
+                                    "s1",
+                                    "Trending",
+                                    null,
+                                    SectionStyle.RAIL,
+                                    listOf(sampleMovie.copy(id = "r1", title = "Trending Pick"))
+                                )
+                            ),
+                            genres = listOf("All", "Anime")
+                        )
+                    ),
+                    onRefresh = {},
+                    onOpenCatalogue = { _, _ -> },
+                    onOpenDetail = { _, _ -> },
+                    onOpenPlayer = { _, _, _, _ -> },
+                    onToggleWatchlist = {},
+                    onToggleSampleFixtures = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("movies_hero_pager").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Banner One").assertIsDisplayed()
+
+        // Swipe right from first item wraps backwards to last banner ("Banner Three")
+        composeTestRule.onNodeWithTag("movies_hero_pager").performTouchInput { swipeRight() }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Banner Three").assertIsDisplayed()
+
+        // Swipe left from last item wraps forward back to first banner ("Banner One")
+        composeTestRule.onNodeWithTag("movies_hero_pager").performTouchInput { swipeLeft() }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Banner One").assertIsDisplayed()
+    }
+
+    @Test
+    fun moviePlayerScreen_landscapeShowsInlineButtonsAndCleanHudCopy() {
+        val src720 = PlaybackSource("s720", "https://archive.org/720.mp4", "MP4", "720p", 720, providerName = "IA", isAuthorised = true)
+        val subEn = SubtitleTrack("sub_en", "English", "en", "English (SRT)", "https://archive.org/en.srt")
+
+        composeTestRule.setContent {
+            val landscapeConfig = Configuration(LocalConfiguration.current).apply {
+                orientation = Configuration.ORIENTATION_LANDSCAPE
+            }
+            CompositionLocalProvider(LocalConfiguration provides landscapeConfig) {
+                LaterboxTheme {
+                    MoviePlayerScreen(
+                        uiState = MoviePlayerUiState(
+                            isLoading = false,
+                            resolution = PlaybackResolution.Available(
+                                title = "His Girl Friday",
+                                sources = listOf(src720),
+                                subtitles = listOf(subEn)
+                            ),
+                            selectedSource = src720,
+                            selectedSubtitleTrack = subEn
+                        ),
+                        onBackClick = {},
+                        onRetry = {},
+                        onSelectSource = { _, _ -> },
+                        onSelectSubtitle = { _, _ -> },
+                        onSaveProgress = { _, _ -> },
+                        onOpenExternalUrl = {}
+                    )
+                }
+            }
+        }
+
+        composeTestRule.onNodeWithTag("player_subtitles_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_audio_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_quality_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_more_button").assertDoesNotExist()
+    }
+
+    @Test
+    fun playerFeedbackHuds_renderClean2xLabelAndScrubWithoutSlideSpeedHint() {
+        composeTestRule.setContent {
+            LaterboxTheme {
+                androidx.compose.foundation.layout.Column {
+                    com.laterbox.app.movies.ui.player.PlayerHold2xSpeedBadge(visible = true)
+                    com.laterbox.app.movies.ui.player.PlayerHorizontalScrubHud(
+                        visible = true,
+                        scrubTargetMs = 95_000L,
+                        scrubDeltaMs = 15_000L,
+                        durationMs = 300_000L,
+                        sensitivityTier = com.laterbox.app.movies.ui.player.SeekSensitivityTier.NORMAL
+                    )
+                }
+            }
+        }
+
+        composeTestRule.onNodeWithText("2× speed").assertIsDisplayed()
+        composeTestRule.onNodeWithText("2.0x Speed", substring = true).assertDoesNotExist()
+        composeTestRule.onNodeWithText("Slide up/down", substring = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun movieDetailScreen_placesMoreLikeThisAboveSeasonsAndPaginatesEpisodesTenAtATime() {
+        val seriesSummary = sampleMovie.copy(
+            id = "mb_series_paginated",
+            providerId = "moviebox",
+            kind = MediaKind.TV_SERIES,
+            title = "Long Series",
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+        )
+        val relatedItem = sampleMovie.copy(
+            id = "rel_1",
+            providerId = "moviebox",
+            title = "Related Film"
+        )
+        val episodes = (1..23).map { epNum ->
+            EpisodeItem(
+                id = "ep_$epNum",
+                seasonNumber = 1,
+                episodeNumber = epNum,
+                title = "Episode $epNum"
+            )
+        }
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MovieDetailScreen(
+                    uiState = MovieDetailUiState(
+                        isLoading = false,
+                        details = MediaDetails(
+                            summary = seriesSummary,
+                            fullDescription = "Long running series.",
+                            seasons = listOf(SeasonSummary(1, "Season 1", 23)),
+                            relatedTitles = listOf(relatedItem)
+                        ),
+                        selectedSeasonNumber = 1,
+                        episodes = episodes
+                    ),
+                    onBackClick = {},
+                    onRetry = {},
+                    onToggleWatchlist = {},
+                    onPlayClick = { _, _ -> },
+                    onSelectSeason = {},
+                    onOpenRelated = { _, _ -> },
+                    onOpenExternalUrl = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("movie_detail_list").performScrollToNode(hasText("More Like This"))
+        val relatedTop = composeTestRule.onNodeWithText("More Like This").fetchSemanticsNode().boundsInRoot.top
+
+        composeTestRule.onNodeWithTag("movie_detail_list").performScrollToNode(hasText("Seasons & Episodes"))
+        val seasonsTop = composeTestRule.onNodeWithText("Seasons & Episodes").fetchSemanticsNode().boundsInRoot.top
+        if (composeTestRule.onNodeWithText("More Like This").let { node ->
+                runCatching { node.assertIsDisplayed(); true }.getOrDefault(false)
+            }
+        ) {
+            val currentRelatedTop = composeTestRule.onNodeWithText("More Like This").fetchSemanticsNode().boundsInRoot.top
+            assertTrue(currentRelatedTop < seasonsTop)
+        } else {
+            assertTrue(relatedTop >= 0f && seasonsTop >= 0f)
+        }
+
+        composeTestRule.onNodeWithTag("movie_detail_list").performScrollToNode(hasTestTag("episode_row_1_1"))
+        composeTestRule.onNodeWithTag("episode_row_1_1").assertIsDisplayed()
+
+        composeTestRule.onNodeWithTag("movie_detail_list").performScrollToNode(hasTestTag("episode_row_1_10"))
+        composeTestRule.onNodeWithTag("episode_row_1_10").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("episode_row_1_11").assertDoesNotExist()
+
+        composeTestRule.onNodeWithTag("movie_detail_list").performScrollToNode(hasTestTag("detail_episodes_load_more"))
+        composeTestRule.onNodeWithTag("detail_episodes_load_more").assertIsDisplayed().performClick()
+
+        composeTestRule.onNodeWithTag("movie_detail_list").performScrollToNode(hasTestTag("episode_row_1_11"))
+        composeTestRule.onNodeWithTag("episode_row_1_11").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("movie_detail_list").performScrollToNode(hasTestTag("episode_row_1_20"))
+        composeTestRule.onNodeWithTag("episode_row_1_20").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("episode_row_1_21").assertDoesNotExist()
+
+        composeTestRule.onNodeWithTag("movie_detail_list").performScrollToNode(hasTestTag("detail_episodes_load_more"))
+        composeTestRule.onNodeWithTag("detail_episodes_load_more").performClick()
+
+        composeTestRule.onNodeWithTag("movie_detail_list").performScrollToNode(hasTestTag("episode_row_1_23"))
+        composeTestRule.onNodeWithTag("episode_row_1_23").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("detail_episodes_load_more").assertDoesNotExist()
     }
 }

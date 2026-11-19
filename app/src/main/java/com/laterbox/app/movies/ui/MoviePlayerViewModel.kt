@@ -67,6 +67,9 @@ data class MoviePlayerUiState(
     val downloadStatusMessage: String? = null,
     val errorMessage: String? = null
 ) {
+    val episodeKey: String
+        get() = "${activeTitleId}:${seasonNumber ?: 0}:${episodeNumber ?: 0}"
+
     val nextEpisodeTarget: Pair<Int, Int>?
         get() {
             val s = seasonNumber ?: return null
@@ -479,21 +482,55 @@ class MoviePlayerViewModel(
     }
 
     fun saveProgress(positionMs: Long, durationMs: Long) {
+        saveProgressInternal(
+            positionMs = positionMs,
+            durationMs = durationMs,
+            expectedEpisodeKey = null
+        )
+    }
+
+    fun saveProgressForEpisode(
+        positionMs: Long,
+        durationMs: Long,
+        expectedEpisodeKey: String
+    ) {
+        saveProgressInternal(
+            positionMs = positionMs,
+            durationMs = durationMs,
+            expectedEpisodeKey = expectedEpisodeKey
+        )
+    }
+
+    private fun saveProgressInternal(
+        positionMs: Long,
+        durationMs: Long,
+        expectedEpisodeKey: String?
+    ) {
         val state = _uiState.value
+        if (expectedEpisodeKey != null && state.episodeKey != expectedEpisodeKey) return
+        val summary = state.summary ?: return
+        val seasonNumber = state.seasonNumber
+        val episodeNumber = state.episodeNumber
+        val episodeLabel = state.episodeLabel
         val clamped = positionMs.coerceAtLeast(0L)
         if (clamped > 0L) {
-            _uiState.update { it.copy(startPositionMs = clamped) }
+            _uiState.update { current ->
+                if (expectedEpisodeKey != null && current.episodeKey != expectedEpisodeKey) {
+                    current
+                } else {
+                    current.copy(startPositionMs = clamped)
+                }
+            }
         }
-        val summary = state.summary ?: return
         if (clamped < 1_000L && durationMs <= 0L) return
         viewModelScope.launch {
             moviesRepository.saveWatchProgress(
                 item = summary,
                 positionMs = clamped,
                 durationMs = durationMs,
-                seasonNumber = state.seasonNumber,
-                episodeNumber = state.episodeNumber,
-                episodeLabel = state.episodeLabel
+                seasonNumber = seasonNumber,
+                episodeNumber = episodeNumber,
+                episodeLabel = episodeLabel
             )
         }
     }

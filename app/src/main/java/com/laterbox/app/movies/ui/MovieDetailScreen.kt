@@ -4,7 +4,12 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
+import android.graphics.Color as AndroidColor
+import android.graphics.drawable.ColorDrawable
 import android.net.Uri
+import android.os.Build
+import android.view.ViewGroup
+import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
@@ -15,6 +20,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -61,8 +67,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -73,8 +81,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -85,6 +95,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -105,6 +116,14 @@ import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.OfflineMediaMatch
 import com.laterbox.app.movies.domain.model.PlaybackResolution
 import com.laterbox.app.movies.domain.model.PlaybackSource
+import com.laterbox.app.movies.ui.player.PlayerAudioBoostController
+import com.laterbox.app.movies.ui.player.PlayerBrightnessHelper
+import com.laterbox.app.movies.ui.player.PlayerBrightnessHud
+import com.laterbox.app.movies.ui.player.PlayerGesturesMath
+import com.laterbox.app.movies.ui.player.PlayerHorizontalScrubHud
+import com.laterbox.app.movies.ui.player.PlayerVolumeBoostHud
+import com.laterbox.app.movies.ui.player.SeekSensitivityTier
+import com.laterbox.app.movies.ui.player.playerDragGestures
 import com.laterbox.app.ui.components.CustomReminderPickerDialog
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.theme.LaterboxTheme
@@ -112,6 +131,7 @@ import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
 
 @kotlin.OptIn(ExperimentalLayoutApi::class)
 @OptIn(UnstableApi::class)
@@ -571,6 +591,9 @@ fun MovieDetailScreen(
                 val details = uiState.details
                 val summary = details.summary
                 val resolution = uiState.playbackResolution
+                var visibleEpisodeCount by remember(summary.id, uiState.selectedSeasonNumber) {
+                    mutableIntStateOf(10)
+                }
 
                 LazyColumn(
                     modifier = Modifier
@@ -1085,7 +1108,7 @@ fun MovieDetailScreen(
                                                         tint = colors.accentPrimary
                                                     )
                                                     Spacer(modifier = Modifier.width(6.dp))
-                                                    Text("Open Official Guide", color = colors.textPrimary)
+                                                    Text("View Episode Guide", color = colors.textPrimary)
                                                 }
                                             }
                                         }
@@ -1105,7 +1128,7 @@ fun MovieDetailScreen(
                                             verticalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
                                             Text(
-                                                text = "Stream check unavailable",
+                                                text = "Playback unavailable",
                                                 style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
                                                 color = colors.textPrimary
                                             )
@@ -1119,7 +1142,7 @@ fun MovieDetailScreen(
                                                 border = BorderStroke(1.dp, colors.borderSubtle),
                                                 shape = RoundedCornerShape(10.dp)
                                             ) {
-                                                Text("Retry Stream Check", color = colors.textPrimary)
+                                                Text("Try Again", color = colors.textPrimary)
                                             }
                                         }
                                     }
@@ -1555,6 +1578,37 @@ fun MovieDetailScreen(
                         }
                     }
 
+                    // Related Titles Rail (above Seasons & Episodes)
+                    val displayRelated = (uiState.rankedRelatedTitles.ifEmpty { details.relatedTitles })
+                        .filter { it.stableMediaKey !in uiState.hiddenMediaKeys }
+                    if (displayRelated.isNotEmpty()) {
+                        item(key = "detail_related") {
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text(
+                                    text = "More Like This",
+                                    style = typography.titleLarge,
+                                    color = colors.textPrimary,
+                                    modifier = Modifier.padding(horizontal = 16.dp)
+                                )
+                                LazyRow(
+                                    contentPadding = PaddingValues(horizontal = 16.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    items(displayRelated, key = { "rel_${it.compositeId}" }) { rel ->
+                                        val isRelOffline = uiState.offlineMatches.any {
+                                            it.matchesTitleComposite(rel.providerId, rel.id)
+                                        }
+                                        MoviePosterCard(
+                                            item = rel,
+                                            isOfflineDownloaded = isRelOffline,
+                                            onClick = { onOpenRelated(rel.providerId, rel.id) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // TV Series Seasons & Episodes
                     if (summary.kind == MediaKind.TV_SERIES) {
                         if (details.seasons.isNotEmpty()) {
@@ -1648,7 +1702,8 @@ fun MovieDetailScreen(
                                     }
                                 }
                                 uiState.episodes.isNotEmpty() -> {
-                                    items(uiState.episodes, key = { "ep_${it.id}_${it.seasonNumber}_${it.episodeNumber}" }) { ep ->
+                                    val visibleEpisodes = uiState.episodes.take(visibleEpisodeCount)
+                                    items(visibleEpisodes, key = { "ep_${it.id}_${it.seasonNumber}_${it.episodeNumber}" }) { ep ->
                                         val isWatched = uiState.seriesProgress?.episodeStates
                                             ?.get(ep.seasonNumber to ep.episodeNumber)?.isCompleted == true
                                         val isEpDownloaded = uiState.offlineMatches.any { match ->
@@ -1662,6 +1717,26 @@ fun MovieDetailScreen(
                                             onClick = { onPlayClick(ep.seasonNumber, ep.episodeNumber) },
                                             modifier = Modifier.padding(horizontal = 16.dp)
                                         )
+                                    }
+                                    if (uiState.episodes.size > visibleEpisodeCount) {
+                                        item(key = "detail_episodes_load_more") {
+                                            OutlinedButton(
+                                                onClick = { visibleEpisodeCount += 10 },
+                                                shape = RoundedCornerShape(12.dp),
+                                                border = BorderStroke(1.dp, colors.borderSubtle),
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(horizontal = 16.dp)
+                                                    .testTag("detail_episodes_load_more")
+                                            ) {
+                                                val remaining = uiState.episodes.size - visibleEpisodeCount
+                                                Text(
+                                                    text = if (remaining > 10) "Load more (10 of $remaining remaining)" else "Load more ($remaining remaining)",
+                                                    style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
+                                                    color = colors.textPrimary
+                                                )
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1740,37 +1815,6 @@ fun MovieDetailScreen(
                                                 }
                                             }
                                         }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Related Titles Rail
-                    val displayRelated = (uiState.rankedRelatedTitles.ifEmpty { details.relatedTitles })
-                        .filter { it.stableMediaKey !in uiState.hiddenMediaKeys }
-                    if (displayRelated.isNotEmpty()) {
-                        item(key = "detail_related") {
-                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Text(
-                                    text = "More Like This",
-                                    style = typography.titleLarge,
-                                    color = colors.textPrimary,
-                                    modifier = Modifier.padding(horizontal = 16.dp)
-                                )
-                                LazyRow(
-                                    contentPadding = PaddingValues(horizontal = 16.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                ) {
-                                    items(displayRelated, key = { "rel_${it.compositeId}" }) { rel ->
-                                        val isRelOffline = uiState.offlineMatches.any {
-                                            it.matchesTitleComposite(rel.providerId, rel.id)
-                                        }
-                                        MoviePosterCard(
-                                            item = rel,
-                                            isOfflineDownloaded = isRelOffline,
-                                            onClick = { onOpenRelated(rel.providerId, rel.id) }
-                                        )
                                     }
                                 }
                             }
@@ -1989,14 +2033,104 @@ private fun InlineTrailerPlayerSurface(
     modifier: Modifier = Modifier,
     attachVideoSurface: Boolean = true
 ) {
+    val context = LocalContext.current
+    val dialogView = LocalView.current
     val typography = LaterboxTheme.typography
     val colors = LaterboxTheme.colors
     var controlsVisible by remember { mutableStateOf(true) }
     var isScrubbing by remember { mutableStateOf(false) }
     var scrubFraction by remember { mutableFloatStateOf(0f) }
 
-    LaunchedEffect(controlsVisible, isPlaying, isScrubbing) {
-        if (controlsVisible && isPlaying && !isScrubbing) {
+    val latestIsMuted by rememberUpdatedState(isMuted)
+    val latestOnSeekTo by rememberUpdatedState(onSeekTo)
+    val latestOnToggleMute by rememberUpdatedState(onToggleMute)
+    val latestCurrentPosMs by rememberUpdatedState(currentPositionMs)
+    val latestDurationMs by rememberUpdatedState(durationMs)
+
+    val targetWindow = if (isFullscreen) {
+        (dialogView.parent as? DialogWindowProvider)?.window ?: context.findDetailActivity()?.window
+    } else {
+        null
+    }
+    val brightnessHelper = remember(isFullscreen, targetWindow) {
+        if (isFullscreen) PlayerBrightnessHelper(targetWindow) else null
+    }
+    var brightnessFraction by remember(isFullscreen) {
+        mutableFloatStateOf(brightnessHelper?.currentNormalizedBrightness ?: 0.5f)
+    }
+    var showBrightnessHud by remember(isFullscreen) { mutableStateOf(false) }
+    var isBrightnessDragging by remember(isFullscreen) { mutableStateOf(false) }
+
+    val audioBoostController = remember(isFullscreen, context) {
+        if (isFullscreen) PlayerAudioBoostController(context) else null
+    }
+    var currentVolumePercent by remember(isFullscreen) {
+        mutableIntStateOf(
+            if (isFullscreen && isMuted) 0 else audioBoostController?.currentVolumePercent ?: 100
+        )
+    }
+    var volumeFloatPercent by remember(isFullscreen) {
+        mutableFloatStateOf(currentVolumePercent.toFloat())
+    }
+    var showVolumeHud by remember(isFullscreen) { mutableStateOf(false) }
+    var isVolumeDragging by remember(isFullscreen) { mutableStateOf(false) }
+    var unmutedDuringDrag by remember(isFullscreen) { mutableStateOf(false) }
+
+    var isHorizontalScrubbing by remember(isFullscreen) { mutableStateOf(false) }
+    var scrubTargetMs by remember(isFullscreen) { mutableLongStateOf(0L) }
+    var scrubDeltaMs by remember(isFullscreen) { mutableLongStateOf(0L) }
+    var scrubSensitivity by remember(isFullscreen) { mutableStateOf(SeekSensitivityTier.NORMAL) }
+
+    if (isFullscreen && brightnessHelper != null) {
+        DisposableEffect(brightnessHelper) {
+            onDispose {
+                brightnessHelper.restoreOriginalBrightness()
+            }
+        }
+    }
+
+    if (isFullscreen && audioBoostController != null) {
+        LaunchedEffect(audioBoostController, exoPlayer) {
+            audioBoostController.bindToPlayer(exoPlayer)
+            exoPlayer.volume = if (latestIsMuted) {
+                0f
+            } else {
+                PlayerAudioBoostController.computeExoPlayerVolume(currentVolumePercent)
+            }
+        }
+        LaunchedEffect(isMuted, audioBoostController, exoPlayer) {
+            exoPlayer.volume = if (isMuted) {
+                0f
+            } else {
+                PlayerAudioBoostController.computeExoPlayerVolume(currentVolumePercent)
+            }
+            if (isMuted && currentVolumePercent > 100) {
+                audioBoostController.resetBoost(exoPlayer)
+            }
+        }
+        DisposableEffect(audioBoostController) {
+            onDispose {
+                audioBoostController.release()
+                exoPlayer.volume = if (latestIsMuted) 0f else 1f
+            }
+        }
+    }
+
+    LaunchedEffect(showBrightnessHud, isBrightnessDragging) {
+        if (showBrightnessHud && !isBrightnessDragging) {
+            delay(1000L)
+            showBrightnessHud = false
+        }
+    }
+    LaunchedEffect(showVolumeHud, isVolumeDragging) {
+        if (showVolumeHud && !isVolumeDragging) {
+            delay(1000L)
+            showVolumeHud = false
+        }
+    }
+
+    LaunchedEffect(controlsVisible, isPlaying, isScrubbing, isHorizontalScrubbing) {
+        if (controlsVisible && isPlaying && !isScrubbing && !isHorizontalScrubbing) {
             delay(3500L)
             controlsVisible = false
         }
@@ -2006,11 +2140,80 @@ private fun InlineTrailerPlayerSurface(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black)
-            .clickable(
-                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                indication = null
-            ) {
-                controlsVisible = !controlsVisible
+            .playerDragGestures(
+                enabled = isFullscreen,
+                swipeToSeekEnabled = isFullscreen,
+                brightnessGestureEnabled = isFullscreen,
+                volumeGestureEnabled = isFullscreen,
+                baseSensitivity = SeekSensitivityTier.NORMAL,
+                currentPositionProvider = { exoPlayer.currentPosition.coerceAtLeast(latestCurrentPosMs) },
+                durationProvider = { exoPlayer.duration.coerceAtLeast(latestDurationMs) },
+                onHorizontalScrubStart = { startPos ->
+                    isHorizontalScrubbing = true
+                    scrubTargetMs = startPos
+                    scrubDeltaMs = 0L
+                    scrubSensitivity = SeekSensitivityTier.NORMAL
+                },
+                onHorizontalScrubUpdate = { targetMs, deltaMs, sensitivity ->
+                    scrubTargetMs = targetMs
+                    scrubDeltaMs = deltaMs
+                    scrubSensitivity = sensitivity
+                },
+                onHorizontalScrubEnd = { targetMs ->
+                    if (isHorizontalScrubbing) {
+                        latestOnSeekTo(targetMs)
+                    }
+                    isHorizontalScrubbing = false
+                    scrubDeltaMs = 0L
+                },
+                onHorizontalScrubCancel = {
+                    isHorizontalScrubbing = false
+                    scrubDeltaMs = 0L
+                },
+                onBrightnessDelta = { deltaFraction ->
+                    isBrightnessDragging = true
+                    val next = PlayerGesturesMath.applyBrightnessDelta(brightnessFraction, deltaFraction)
+                    brightnessFraction = next
+                    brightnessHelper?.setBrightness(next)
+                    showBrightnessHud = true
+                },
+                onBrightnessGestureEnd = {
+                    isBrightnessDragging = false
+                },
+                onVolumeDelta = { deltaPercent ->
+                    isVolumeDragging = true
+                    val boostSupported = audioBoostController?.isBoostSupported == true
+                    val maxPct = if (boostSupported) PlayerAudioBoostController.MAX_PERCENT else PlayerAudioBoostController.NORMAL_MAX_PERCENT
+                    val basePct = if (latestIsMuted && !unmutedDuringDrag && volumeFloatPercent <= 0f) {
+                        0f
+                    } else {
+                        volumeFloatPercent
+                    }
+                    val nextFloat = PlayerGesturesMath.applyVolumeDelta(basePct, deltaPercent, maxPct)
+                    volumeFloatPercent = nextFloat
+                    val appliedPct = audioBoostController?.applyVolumePercent(nextFloat.roundToInt(), exoPlayer)
+                        ?: nextFloat.roundToInt()
+                    currentVolumePercent = appliedPct
+                    if (appliedPct > 0 && latestIsMuted && !unmutedDuringDrag) {
+                        unmutedDuringDrag = true
+                        latestOnToggleMute()
+                    }
+                    if (latestIsMuted && !unmutedDuringDrag) {
+                        exoPlayer.volume = 0f
+                    }
+                    showVolumeHud = true
+                },
+                onVolumeGestureEnd = {
+                    isVolumeDragging = false
+                    unmutedDuringDrag = false
+                }
+            )
+            .pointerInput(isFullscreen) {
+                detectTapGestures(
+                    onTap = {
+                        controlsVisible = !controlsVisible
+                    }
+                )
             }
             .testTag(if (isFullscreen) "detail_fullscreen_trailer_player" else "detail_inline_trailer_player")
     ) {
@@ -2038,7 +2241,7 @@ private fun InlineTrailerPlayerSurface(
         }
 
         AnimatedVisibility(
-            visible = controlsVisible,
+            visible = controlsVisible && !isHorizontalScrubbing,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.fillMaxSize()
@@ -2055,7 +2258,8 @@ private fun InlineTrailerPlayerSurface(
                             )
                         )
                     )
-                    .padding(horizontal = 10.dp, vertical = 8.dp)
+                    .then(if (isFullscreen) Modifier.displayCutoutPadding() else Modifier)
+                    .padding(horizontal = if (isFullscreen) 18.dp else 10.dp, vertical = if (isFullscreen) 12.dp else 8.dp)
             ) {
                 // Top compact bar: Close + Title (fullscreen) + Mute/Sound pill
                 Row(
@@ -2230,6 +2434,35 @@ private fun InlineTrailerPlayerSurface(
                     }
                 }
             }
+        }
+
+        if (isFullscreen) {
+            PlayerBrightnessHud(
+                visible = showBrightnessHud,
+                brightnessFraction = brightnessFraction,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 28.dp)
+            )
+
+            PlayerVolumeBoostHud(
+                visible = showVolumeHud,
+                volumePercent = currentVolumePercent,
+                isBoostSupported = audioBoostController?.isBoostSupported ?: true,
+                fallbackNotice = audioBoostController?.lastFallbackReason,
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .padding(start = 28.dp)
+            )
+
+            PlayerHorizontalScrubHud(
+                visible = isHorizontalScrubbing,
+                scrubTargetMs = scrubTargetMs,
+                scrubDeltaMs = scrubDeltaMs,
+                durationMs = exoPlayer.duration.coerceAtLeast(durationMs),
+                sensitivityTier = scrubSensitivity,
+                modifier = Modifier.align(Alignment.Center)
+            )
         }
     }
 }

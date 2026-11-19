@@ -608,7 +608,7 @@ internal fun DownloadsScreenContent(
             if (isCompletelyEmpty) {
                 EmptyStateView(
                     title = "No downloads yet",
-                    subtitle = "Authorised movies, series episodes, and saved media files will show live progress and offline access here.",
+                    subtitle = "Saved movies, series episodes, and downloads will appear here with offline access and live progress.",
                     modifier = Modifier
                         .fillMaxSize()
                         .testTag("downloads_empty_state")

@@ -745,6 +745,13 @@ fun MovieCollectionPickerDialog(
     )
 }
 
+private const val HERO_VIRTUAL_MULTIPLIER = 1000
+
+internal fun virtualIndexToBannerIndex(page: Int, bannerCount: Int): Int {
+    if (bannerCount <= 0) return 0
+    return ((page % bannerCount) + bannerCount) % bannerCount
+}
+
 @Composable
 fun MoviesHeroCarousel(
     banners: List<MovieTitleSummary>,
@@ -758,7 +765,20 @@ fun MoviesHeroCarousel(
     if (banners.isEmpty()) return
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
-    val pagerState = rememberPagerState(pageCount = { banners.size })
+    val isMulti = banners.size > 1
+    val virtualPageCount = if (isMulti) banners.size * HERO_VIRTUAL_MULTIPLIER else 1
+    val startPage = remember(banners.size) {
+        if (isMulti) {
+            val mid = virtualPageCount / 2
+            mid - (mid % banners.size)
+        } else {
+            0
+        }
+    }
+    val pagerState = rememberPagerState(
+        initialPage = startPage,
+        pageCount = { virtualPageCount }
+    )
     val isDragged by pagerState.interactionSource.collectIsDraggedAsState()
     var isLifecycleResumed by remember { mutableStateOf(true) }
 
@@ -777,11 +797,20 @@ fun MoviesHeroCarousel(
         isLifecycleResumed,
         autoAdvanceIntervalMs
     ) {
-        if (banners.size <= 1 || autoAdvanceIntervalMs <= 0L) return@LaunchedEffect
+        if (!isMulti) return@LaunchedEffect
+        // Quietly re-center if the user ever swipes near either virtual boundary.
+        val settled = pagerState.settledPage
+        if (!isDragged && !pagerState.isScrollInProgress &&
+            (settled < banners.size * 10 || settled > virtualPageCount - banners.size * 10)
+        ) {
+            val mapped = virtualIndexToBannerIndex(settled, banners.size)
+            pagerState.scrollToPage(startPage + mapped)
+        }
+        if (autoAdvanceIntervalMs <= 0L) return@LaunchedEffect
         if (!isLifecycleResumed || isDragged || pagerState.isScrollInProgress) return@LaunchedEffect
         delay(autoAdvanceIntervalMs)
-        if (banners.size > 1 && isLifecycleResumed && !isDragged && !pagerState.isScrollInProgress) {
-            val nextPage = (pagerState.currentPage + 1) % banners.size
+        if (isMulti && isLifecycleResumed && !isDragged && !pagerState.isScrollInProgress) {
+            val nextPage = (pagerState.currentPage + 1).coerceAtMost(virtualPageCount - 1)
             pagerState.animateScrollToPage(
                 page = nextPage,
                 animationSpec = tween(durationMillis = 550)
@@ -794,13 +823,18 @@ fun MoviesHeroCarousel(
             state = pagerState,
             contentPadding = PaddingValues(horizontal = 16.dp),
             pageSpacing = 12.dp,
+            key = { page ->
+                val idx = virtualIndexToBannerIndex(page, banners.size)
+                "${banners[idx].compositeId}_$page"
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(16f / 9f)
                 .heightIn(min = 216.dp, max = 300.dp)
                 .testTag("movies_hero_pager")
         ) { page ->
-            val item = banners[page]
+            val bannerIdx = virtualIndexToBannerIndex(page, banners.size)
+            val item = banners[bannerIdx]
             val isSaved = item.compositeId in watchlistIds
 
             Surface(
@@ -940,7 +974,8 @@ fun MoviesHeroCarousel(
             }
         }
 
-        if (banners.size > 1) {
+        if (isMulti) {
+            val activeBannerIndex = virtualIndexToBannerIndex(pagerState.currentPage, banners.size)
             Spacer(modifier = Modifier.height(8.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -948,7 +983,7 @@ fun MoviesHeroCarousel(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 repeat(banners.size) { index ->
-                    val selected = pagerState.currentPage == index
+                    val selected = activeBannerIndex == index
                     Box(
                         modifier = Modifier
                             .padding(horizontal = 3.dp)

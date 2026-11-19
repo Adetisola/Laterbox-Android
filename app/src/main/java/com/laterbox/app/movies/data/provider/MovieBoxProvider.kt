@@ -95,7 +95,7 @@ class MovieBoxProvider(
             val operatingList = data.optJSONArray("operatingList")
                 ?: throw IOException(
                     root.optCleanString("message")
-                        ?: "MovieBox /home response did not include discovery sections."
+                        ?: "Discovery sections are not available right now."
                 )
 
             val banners = mutableListOf<MovieTitleSummary>()
@@ -177,9 +177,8 @@ class MovieBoxProvider(
                         val filters = op.optJSONArray("filters") ?: JSONArray()
                         for (j in 0 until filters.length()) {
                             filters.optJSONObject(j)?.optCleanString("title")?.let { filterTitle ->
-                                if (!filterTitle.equals("Fantasy", ignoreCase = true)) {
-                                    extractedGenres.add(filterTitle)
-                                }
+                                val normalized = normalizeVerifiedGenre(filterTitle) ?: filterTitle
+                                extractedGenres.add(normalized)
                             }
                         }
                     }
@@ -227,8 +226,10 @@ class MovieBoxProvider(
                 val arr = data.optJSONArray("genres") ?: JSONArray()
                 for (gIdx in 0 until arr.length()) {
                     arr.optString(gIdx).trim()
-                        .takeIf { it.isNotBlank() && !it.equals("Fantasy", ignoreCase = true) }
-                        ?.let { add(it) }
+                        .takeIf { it.isNotBlank() }
+                        ?.let { raw ->
+                            add(normalizeVerifiedGenre(raw) ?: raw)
+                        }
                 }
             }
 
@@ -238,7 +239,7 @@ class MovieBoxProvider(
                     apiGenres.isNotEmpty() -> apiGenres
                     extractedGenres.isNotEmpty() -> extractedGenres
                     else -> VERIFIED_GENRES
-                }.filterNot { it.equals("All", ignoreCase = true) || it.equals("Fantasy", ignoreCase = true) }
+                }.filterNot { it.equals("All", ignoreCase = true) }
                     .distinct()
                 addAll(discovered)
             }
@@ -307,13 +308,15 @@ class MovieBoxProvider(
             val parsed = buildList {
                 for (i in 0 until rawItems.length()) {
                     val obj = rawItems.optJSONObject(i) ?: continue
-                    val id = obj.optCleanString("subject_id") ?: continue
+                    val id = obj.optCleanString("subject_id")?.takeUnless { it == "0" } ?: continue
+                    val subjectType = obj.optIntOrNull("subject_type")
+                    if (subjectType != null && subjectType !in VALID_SUBJECT_TYPES) continue
                     val title = obj.optCleanString("title") ?: continue
                     val dp = obj.optCleanString("detail_path")
                     cacheMetadata(id, title, dp)
                     val cover = obj.optCleanString("cover")
                     val stillsUrl = obj.optJSONObject("stills")?.optCleanString("url")
-                    val itemKind = obj.optIntOrNull("subject_type")?.let { parseMediaKind(it, null) } ?: kind
+                    val itemKind = subjectType?.let { parseMediaKind(it, null) } ?: kind
                     val releaseDateStr = obj.optCleanString("release_date")
                     add(
                         MovieTitleSummary(
@@ -336,7 +339,7 @@ class MovieBoxProvider(
                         )
                     )
                 }
-            }
+            }.distinctBy { it.id }
 
             val hasMore = parsed.isNotEmpty() &&
                 parsed.size >= safePageSize &&
@@ -386,14 +389,16 @@ class MovieBoxProvider(
             val parsed = buildList {
                 for (i in 0 until rawResults.length()) {
                     val obj = rawResults.optJSONObject(i) ?: continue
-                    val id = obj.optCleanString("subject_id") ?: continue
+                    val id = obj.optCleanString("subject_id")?.takeUnless { it == "0" } ?: continue
+                    val subjectType = obj.optIntOrNull("subject_type")
+                    if (subjectType != null && subjectType !in VALID_SUBJECT_TYPES) continue
                     val title = obj.optCleanString("title") ?: continue
                     val dp = obj.optCleanString("detail_path")
                     cacheMetadata(id, title, dp)
                     val cover = obj.optCleanString("cover")
                     val stillsUrl = obj.optJSONObject("stills")?.optCleanString("url")
                     val itemKind = parseMediaKind(
-                        obj.optIntOrNull("subject_type"),
+                        subjectType,
                         obj.optCleanString("type")
                     )
                     val releaseDateStr = obj.optCleanString("release_date")
@@ -418,7 +423,7 @@ class MovieBoxProvider(
                         )
                     )
                 }
-            }
+            }.distinctBy { it.id }
 
             val filtered = if (kind != null) {
                 parsed.filter { it.kind == kind }
@@ -458,7 +463,9 @@ class MovieBoxProvider(
                 for (i in 0 until raw.length()) {
                     val obj = raw.optJSONObject(i) ?: continue
                     val title = obj.optCleanString("title") ?: continue
-                    val rawId = obj.optCleanString("subject_id").orEmpty()
+                    val rawId = obj.optCleanString("subject_id")
+                        ?.takeUnless { it == "0" }
+                        .orEmpty()
                     val slug = obj.optCleanString("slug")
                     if (rawId.isNotBlank() && slug != null) {
                         cacheMetadata(rawId, title, slug)
@@ -473,6 +480,12 @@ class MovieBoxProvider(
                             kind = MediaKind.MOVIE
                         )
                     )
+                }
+            }.distinctBy { suggestion ->
+                if (suggestion.hasNavigableId) {
+                    "id:${suggestion.id}"
+                } else {
+                    "kw:${suggestion.title.lowercase(Locale.US)}"
                 }
             }.take(limit)
         }
@@ -564,7 +577,7 @@ class MovieBoxProvider(
                     val relObj = relArr.optJSONObject(i) ?: continue
                     parseFlatItemSummary(relObj)?.let { add(it) }
                 }
-            }
+            }.distinctBy { it.id }
 
             val detailIntro = parseMarkerWindow(root, "intro")
             val detailRecap = parseMarkerWindow(root, "recap")
@@ -799,14 +812,16 @@ class MovieBoxProvider(
     }
 
     private fun parseFlatItemSummary(obj: JSONObject): MovieTitleSummary? {
-        val id = obj.optCleanString("subject_id") ?: return null
+        val id = obj.optCleanString("subject_id")?.takeUnless { it == "0" } ?: return null
+        val subjectType = obj.optIntOrNull("subject_type")
+        if (subjectType != null && subjectType !in VALID_SUBJECT_TYPES) return null
         val title = obj.optCleanString("title") ?: return null
         val dp = obj.optCleanString("detail_path")
         cacheMetadata(id, title, dp)
         val cover = obj.optCleanString("cover")
         val stillsUrl = obj.optJSONObject("stills")?.optCleanString("url")
         val kind = parseMediaKind(
-            obj.optIntOrNull("subject_type"),
+            subjectType,
             obj.optCleanString("type")
         )
         val releaseDateStr = obj.optCleanString("release_date") ?: obj.optCleanString("releaseDate")
@@ -1085,16 +1100,16 @@ class MovieBoxProvider(
         val raw = activeBaseUrl()
         if (raw.isBlank()) {
             throw IllegalStateException(
-                "MovieBox service URL is not configured."
+                "Catalogue service address is not configured."
             )
         }
         if (!MovieBoxEndpointConfig.isValidBaseUrl(raw, allowDebugCleartextLoopback = BuildConfig.DEBUG)) {
             throw IllegalStateException(
-                "Invalid MovieBox API URL scheme. HTTPS is required in release builds."
+                "Invalid service address. HTTPS is required in release builds."
             )
         }
         return runCatching { raw.toHttpUrl() }.getOrElse { err ->
-            throw IllegalStateException("Invalid MovieBox API URL '${raw.substringBefore("?")}': ${err.message}", err)
+            throw IllegalStateException("Invalid service address '${raw.substringBefore("?")}': ${err.message}", err)
         }
     }
 
@@ -1164,7 +1179,7 @@ class MovieBoxProvider(
                         safeLogWarn("GET $redactedPath -> HTTP ${response.code} empty body (${elapsedMs}ms)")
                         throw MovieBoxApiException(
                             httpCode = response.code,
-                            message = "MovieBox API returned an empty response for $redactedPath."
+                            message = "The catalogue service returned an empty response."
                         )
                     }
 
@@ -1201,7 +1216,7 @@ class MovieBoxProvider(
 
         throw lastError ?: MovieBoxApiException(
             httpCode = null,
-            message = "Unable to reach MovieBox API ($redactedPath)."
+            message = "Unable to reach the catalogue service. Please check your connection and retry."
         )
     }
 
@@ -1211,30 +1226,33 @@ class MovieBoxProvider(
         sentAppCheckToken: Boolean = false
     ): String = when (code) {
         401, 403 -> buildString {
-            append("MovieBox authentication failed (HTTP ").append(code).append("). ")
+            append("Access could not be verified right now. ")
             if (sentAppCheckToken) {
-                append("Firebase App Check verification failed.")
+                append("Please check your connection or update the app and try again.")
             } else {
-                append("Firebase App Check token is unavailable on this device.")
+                append("Verification is temporarily unavailable on this device.")
             }
-            if (!detail.isNullOrBlank()) {
-                append(" Detail: ").append(detail)
+            if (!detail.isNullOrBlank() &&
+                !detail.contains("App Check", ignoreCase = true) &&
+                !detail.contains("token", ignoreCase = true)
+            ) {
+                append(" ").append(detail)
             }
         }
-        404 -> detail ?: "Requested MovieBox item or endpoint was not found (HTTP 404)."
-        502, 503, 504 -> detail ?: "MovieBox upstream error (HTTP $code). Please retry shortly."
-        else -> detail ?: "MovieBox API returned HTTP $code"
+        404 -> detail ?: "This title is not currently available."
+        502, 503, 504 -> detail ?: "The catalogue service is temporarily unavailable. Please retry shortly."
+        else -> detail ?: "Could not load catalogue data right now."
     }
 
     private fun buildNetworkErrorMessage(error: IOException): String = when (error) {
         is SocketTimeoutException ->
-            "Timed out waiting for MovieBox server. Please retry."
+            "Request timed out. Please retry in a moment."
         is UnknownHostException ->
-            "Cannot reach MovieBox service. Check your internet connection and retry."
+            "Cannot reach the catalogue service. Check your internet connection and retry."
         is SSLException ->
-            "Secure TLS connection to MovieBox server failed."
+            "Secure connection to the catalogue service could not be established."
         else ->
-            "Network error reaching MovieBox server: ${error.message ?: error.javaClass.simpleName}"
+            "Connection problem while reaching the catalogue service. Please try again."
     }
 
     private fun safeLogInfo(message: String) {
@@ -1313,14 +1331,14 @@ class MovieBoxProvider(
     companion object {
         private const val TAG = "MovieBoxProvider"
         const val PROVIDER_ID = "moviebox"
-        private val VALID_SUBJECT_TYPES = setOf(1, 2)
+        private val VALID_SUBJECT_TYPES = setOf(1, 2, 7)
         private val YEAR_REGEX = Regex("^\\d{4}$")
 
         val VERIFIED_GENRES = listOf(
-            "Action", "Adventure", "Animation", "Biography", "Comedy",
+            "Anime", "Action", "Action & Adventure", "Adventure", "Animation", "Biography", "Comedy",
             "Crime", "Documentary", "Drama", "Family", "History",
-            "Horror", "Music", "Musical", "Mystery", "Romance",
-            "Sci-Fi", "Sport", "Thriller", "War", "Western"
+            "Horror", "Kids", "Music", "Musical", "Mystery", "Romance",
+            "Sci-Fi", "Sci-Fi & Fantasy", "Sport", "Thriller", "War", "Western"
         )
 
         val VERIFIED_COUNTRIES = listOf(
@@ -1329,7 +1347,9 @@ class MovieBoxProvider(
 
         val DEFAULT_GENRES = listOf("All") + VERIFIED_GENRES
 
-        private val GENRE_MAP = VERIFIED_GENRES.associateBy { it.lowercase(Locale.US) }
+        private val GENRE_MAP = VERIFIED_GENRES.associateBy { it.lowercase(Locale.US) } + mapOf(
+            "fantasy" to "Sci-Fi & Fantasy"
+        )
         private val COUNTRY_MAP = VERIFIED_COUNTRIES.associateBy { it.lowercase(Locale.US) } +
             mapOf("south korea" to "Korea")
 
