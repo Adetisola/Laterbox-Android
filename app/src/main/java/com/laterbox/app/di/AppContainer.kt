@@ -40,6 +40,7 @@ interface AppContainer {
     val transcriptExportManager: com.laterbox.app.transcript.export.TranscriptExportManager
     val moviesRepository: com.laterbox.app.movies.domain.repository.MoviesRepository
     val moviesDownloadBridge: com.laterbox.app.movies.data.download.MoviesDownloadBridge
+    val subtitleDownloadManager: com.laterbox.app.movies.data.download.SubtitleDownloadManager
     suspend fun resolveBackendBaseUrl(): String
     suspend fun getBackendAppCheckToken(forceRefresh: Boolean = false): String?
 }
@@ -83,12 +84,20 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
         )
     }
 
+    override val subtitleDownloadManager: com.laterbox.app.movies.data.download.SubtitleDownloadManager by lazy {
+        com.laterbox.app.movies.data.download.SubtitleDownloadManager(
+            context = context.applicationContext,
+            okHttpClient = moviesOkHttpClient
+        )
+    }
+
     override val mediaRepository: com.laterbox.app.media.domain.repository.MediaRepository by lazy {
         com.laterbox.app.media.data.repository.MediaRepositoryImpl(
             context = context.applicationContext,
             assetDao = database.downloadedAssetDao(),
             taskDao = database.downloadTaskDao(),
-            inspectionManager = mediaInspectionManager
+            inspectionManager = mediaInspectionManager,
+            subtitleDownloadManager = subtitleDownloadManager
         )
     }
 
@@ -270,7 +279,8 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
                 val file = com.laterbox.app.media.data.storage.MediaStorageManager(context.applicationContext)
                     .resolveFile(relPath)
                 if (file.exists() && file.length() > 0L) android.net.Uri.fromFile(file).toString() else null
-            }
+            },
+            subtitleDownloadManager = subtitleDownloadManager
         )
     }
 

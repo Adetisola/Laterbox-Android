@@ -62,7 +62,8 @@ class MoviesRepositoryImpl(
     private val nowMs: () -> Long = { System.currentTimeMillis() },
     private val mediaResolver: MediaResolver = MediaResolver(moviesDao, nowMs),
     private val downloadedAssetDao: DownloadedAssetDao? = null,
-    private val localMediaUriResolver: ((String) -> String?)? = null
+    private val localMediaUriResolver: ((String) -> String?)? = null,
+    private val subtitleDownloadManager: com.laterbox.app.movies.data.download.SubtitleDownloadManager? = null
 ) : MoviesRepository {
 
     private suspend fun isDebugSampleFixturesEnabled(): Boolean =
@@ -681,6 +682,17 @@ class MoviesRepositoryImpl(
                 )
             }
         }
+        val offlineSubtitles = if (offlineSource != null && offlineMatch != null) {
+            subtitleDownloadManager?.getOfflineSubtitleTracksForTitle(
+                providerId = resolvedProviderId,
+                titleId = resolvedTitleId,
+                seasonNumber = seasonNumber,
+                episodeNumber = episodeNumber,
+                assetId = offlineMatch.assetId
+            ).orEmpty()
+        } else {
+            emptyList()
+        }
         val savedPos = getSavedPositionMs(resolvedProviderId, resolvedTitleId, seasonNumber, episodeNumber)
 
         val result = when (resolvedProviderId) {
@@ -704,7 +716,7 @@ class MoviesRepositoryImpl(
                     title = "Offline Playback",
                     subtitleHeading = if (seasonNumber != null && episodeNumber != null) "S${seasonNumber} · E${episodeNumber}" else null,
                     sources = listOf(offlineSource),
-                    subtitles = emptyList(),
+                    subtitles = offlineSubtitles,
                     startPositionMs = savedPos,
                     providerName = "Offline Library",
                     sourceBadge = DataSourceBadge.LIVE_INTERNET_ARCHIVE
@@ -720,8 +732,15 @@ class MoviesRepositoryImpl(
                     } else {
                         resolution.sources
                     }
+                    val combinedSubtitles = if (offlineSubtitles.isNotEmpty()) {
+                        (offlineSubtitles + resolution.subtitles)
+                            .distinctBy { "${it.languageCode.lowercase()}|${it.format.lowercase()}" }
+                    } else {
+                        resolution.subtitles
+                    }
                     resolution.copy(
                         sources = combinedSources,
+                        subtitles = combinedSubtitles,
                         startPositionMs = savedPos
                     )
                 }
@@ -731,7 +750,7 @@ class MoviesRepositoryImpl(
                             title = resolution.title,
                             subtitleHeading = if (seasonNumber != null && episodeNumber != null) "S${seasonNumber} · E${episodeNumber}" else null,
                             sources = listOf(offlineSource),
-                            subtitles = emptyList(),
+                            subtitles = offlineSubtitles,
                             startPositionMs = savedPos,
                             providerName = "Offline Library",
                             sourceBadge = resolution.sourceBadge

@@ -49,7 +49,9 @@ data class DownloadsUiState(
     val isSelectionMode: Boolean = false,
     val readyToDownloadItems: List<ReadyToDownloadItem> = emptyList(),
     val selectedTaskIds: Set<String> = emptySet(),
-    val isQueueSelectionMode: Boolean = false
+    val isQueueSelectionMode: Boolean = false,
+    val subtitleSummaries: Map<String, com.laterbox.app.movies.data.download.AssetSubtitleSummary> = emptyMap(),
+    val retryingSubtitleAssetIds: Set<String> = emptySet()
 )
 
 private data class ViewSelections(
@@ -65,7 +67,8 @@ private data class ViewSelections(
 @OptIn(ExperimentalCoroutinesApi::class)
 class DownloadsViewModel(
     private val mediaRepository: MediaRepository,
-    private val inspectionDao: MediaInspectionDao? = null
+    private val inspectionDao: MediaInspectionDao? = null,
+    private val subtitleDownloadManager: com.laterbox.app.movies.data.download.SubtitleDownloadManager? = null
 ) : ViewModel() {
 
     private val _selectedTab = MutableStateFlow(DownloadsTab.LIBRARY)
@@ -75,6 +78,7 @@ class DownloadsViewModel(
     private val _isSelectionMode = MutableStateFlow(false)
     private val _selectedTaskIds = MutableStateFlow<Set<String>>(emptySet())
     private val _isQueueSelectionMode = MutableStateFlow(false)
+    private val _retryingSubtitleAssetIds = MutableStateFlow<Set<String>>(emptySet())
 
     private val _selections = combine(
         _selectedTab,
@@ -105,14 +109,32 @@ class DownloadsViewModel(
     private val _queueTasks = mediaRepository.getQueueTasks()
     private val _storageBreakdown = mediaRepository.getStorageBreakdown()
     private val _completedInspections = inspectionDao?.getCompletedInspections() ?: flowOf(emptyList())
+    private val _subtitleSummaries = subtitleDownloadManager?.summaries ?: flowOf(emptyMap())
 
     val uiState: StateFlow<DownloadsUiState> = combine(
         _selections,
         _assets,
         _queueTasks,
         _storageBreakdown,
-        _completedInspections
-    ) { selections, assets, tasks, storage, inspections ->
+        _completedInspections,
+        _subtitleSummaries,
+        _retryingSubtitleAssetIds
+    ) { args: Array<Any?> ->
+        @Suppress("UNCHECKED_CAST")
+        val selections = args[0] as ViewSelections
+        @Suppress("UNCHECKED_CAST")
+        val assets = args[1] as List<MediaAsset>
+        @Suppress("UNCHECKED_CAST")
+        val tasks = args[2] as List<DownloadTask>
+        @Suppress("UNCHECKED_CAST")
+        val storage = args[3] as Map<MediaType, Long>
+        @Suppress("UNCHECKED_CAST")
+        val inspections = args[4] as List<com.laterbox.app.media.data.db.entity.MediaInspectionEntity>
+        @Suppress("UNCHECKED_CAST")
+        val subtitleSummaries = args[5] as Map<String, com.laterbox.app.movies.data.download.AssetSubtitleSummary>
+        @Suppress("UNCHECKED_CAST")
+        val retryingSubIds = args[6] as Set<String>
+
         val downloadedLinkIds = assets.mapNotNull { it.savedLinkId }.toSet()
         val readyItems = inspections.mapNotNull { entity ->
             val result = entity.resultJson?.let { json ->
@@ -155,7 +177,9 @@ class DownloadsViewModel(
             isSelectionMode = selections.isSelectionMode,
             readyToDownloadItems = readyItems,
             selectedTaskIds = selections.selectedTaskIds,
-            isQueueSelectionMode = selections.isQueueSelectionMode
+            isQueueSelectionMode = selections.isQueueSelectionMode,
+            subtitleSummaries = subtitleSummaries,
+            retryingSubtitleAssetIds = retryingSubIds
         )
     }.stateIn(
         scope = viewModelScope,
@@ -284,6 +308,19 @@ class DownloadsViewModel(
     fun onDeleteAsset(assetId: String) {
         viewModelScope.launch {
             mediaRepository.deleteAsset(assetId)
+        }
+    }
+
+    fun onRetryAssetSubtitles(assetId: String) {
+        val manager = subtitleDownloadManager ?: return
+        if (_retryingSubtitleAssetIds.value.contains(assetId)) return
+        _retryingSubtitleAssetIds.value = _retryingSubtitleAssetIds.value + assetId
+        viewModelScope.launch {
+            try {
+                manager.retryFailedSubtitles(assetId)
+            } finally {
+                _retryingSubtitleAssetIds.value = _retryingSubtitleAssetIds.value - assetId
+            }
         }
     }
 

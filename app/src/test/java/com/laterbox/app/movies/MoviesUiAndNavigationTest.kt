@@ -2170,4 +2170,91 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithTag("detail_trailer_expand_button").performClick()
         assertTrue(exitFullscreenCalled)
     }
+
+    @Test
+    fun offlineSubtitlesUi_displaysPartialFailureBadgeRetryAndLocalPlayerTracks() {
+        var retriedAssetId: String? = null
+        var showLocalPlayer by mutableStateOf(false)
+        val testAsset = com.laterbox.app.media.domain.model.MediaAsset(
+            id = "asset_sub_ui",
+            savedLinkId = null,
+            sourcePlatform = "Laterbox",
+            originalSourceUrl = "https://cdn.example/video.mp4",
+            title = "Offline Movie",
+            mimeType = "video/mp4",
+            mediaType = com.laterbox.app.media.domain.model.MediaType.VIDEO,
+            localPath = "offline/movie.mp4",
+            exportedUri = null,
+            fileSize = 1024L,
+            durationMs = null,
+            width = null,
+            height = null,
+            qualityLabel = "1080p",
+            checksum = "chk",
+            createdAt = 1L
+        )
+        val offlineTracks = listOf(
+            SubtitleTrack(
+                id = "sub_en",
+                language = "English",
+                languageCode = "en",
+                label = "English (Offline)",
+                url = "file:///tmp/en.srt",
+                format = "srt",
+                isOfflineLocal = true
+            ),
+            SubtitleTrack(
+                id = "sub_fr",
+                language = "French",
+                languageCode = "fr",
+                label = "French (Offline)",
+                url = "file:///tmp/fr.vtt",
+                format = "vtt",
+                isOfflineLocal = true
+            )
+        )
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                if (!showLocalPlayer) {
+                    com.laterbox.app.media.ui.downloads.LibraryAssetCard(
+                        asset = testAsset,
+                        onOpen = {},
+                        onExport = {},
+                        onDelete = {},
+                        subtitleSummary = com.laterbox.app.movies.data.download.AssetSubtitleSummary(
+                            assetId = testAsset.id,
+                            totalCount = 2,
+                            completedCount = 1,
+                            failedCount = 1
+                        ),
+                        onRetrySubtitles = { retriedAssetId = testAsset.id }
+                    )
+                } else {
+                    val landscapeConfig = Configuration(LocalConfiguration.current).apply {
+                        orientation = Configuration.ORIENTATION_LANDSCAPE
+                    }
+                    CompositionLocalProvider(LocalConfiguration provides landscapeConfig) {
+                        com.laterbox.app.movies.ui.LocalVideoPlayerScreen(
+                            asset = testAsset,
+                            onBackClick = {},
+                            offlineSubtitles = offlineTracks
+                        )
+                    }
+                }
+            }
+        }
+
+        composeTestRule.onNodeWithTag("asset_subtitle_status_asset_sub_ui", useUnmergedTree = true).assertIsDisplayed()
+        composeTestRule.onNodeWithText("1/2 subtitles (1 failed)", useUnmergedTree = true).assertIsDisplayed()
+        composeTestRule.onNodeWithTag("retry_subtitles_asset_sub_ui").performClick()
+        assertEquals("asset_sub_ui", retriedAssetId)
+
+        // Open LocalVideoPlayerScreen with offline subtitle tracks -> subtitles sheet exposes offline tracks
+        composeTestRule.runOnIdle { showLocalPlayer = true }
+        composeTestRule.onNodeWithTag("movie_player_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_subtitles_button").performClick()
+        composeTestRule.onNodeWithText("English (Offline)").assertIsDisplayed()
+        composeTestRule.onNodeWithText("French (Offline)").assertIsDisplayed()
+    }
 }

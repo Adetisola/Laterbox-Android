@@ -682,4 +682,81 @@ class MoviesRepositoryTest {
         assertTrue(repo.observeIsInWatchlist("moviebox:dune_rv").first())
         assertEquals(1_200_000L, repo.getSavedPositionMs("moviebox", "dune_rv", null, null))
     }
+
+    @Test
+    fun resolvePlayback_attachesOfflineSubtitlesWithZeroNetworkCallsAndStrictEpisodeIsolation() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                return when (request.path) {
+                    "/subs/en.srt" -> MockResponse().setResponseCode(200)
+                        .setBody("1\n00:00:01,000 --> 00:00:03,000\nOffline S1E2 English\n")
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+        val mediaFile = File.createTempFile("laterbox_ep_offline", ".mp4").apply {
+            writeText("offline mp4 bytes")
+            deleteOnExit()
+        }
+        val subDir = java.nio.file.Files.createTempDirectory("repo_offline_subs").toFile().apply { deleteOnExit() }
+        val subManager = com.laterbox.app.movies.data.download.SubtitleDownloadManager(subtitlesRootDir = subDir)
+        subManager.downloadSubtitlesForAsset(
+            assetId = "off_ep_1_2",
+            sourceRef = "moviebox|series_sub|1|2|1080p",
+            providerId = "moviebox",
+            titleId = "series_sub",
+            seasonNumber = 1,
+            episodeNumber = 2,
+            subtitles = listOf(
+                com.laterbox.app.movies.domain.model.SubtitleTrack("s_en", "English", "en", "English", server.url("/subs/en.srt").toString(), "srt")
+            )
+        )
+
+        val repo = MoviesRepositoryImpl(
+            moviesDao = db.moviesDao(),
+            internetArchiveProvider = InternetArchiveMoviesProvider(OkHttpClient(), server.url("/").toString().trimEnd('/')),
+            tvMazeProvider = TvMazeSeriesProvider(OkHttpClient(), server.url("/").toString().trimEnd('/')),
+            tmdbProvider = TmdbOptionalMoviesProvider(OkHttpClient(), apiKeyProvider = { "" }, baseUrl = server.url("/").toString().trimEnd('/')),
+            useSampleFixturesOnlyProvider = { false },
+            nowMs = { fakeClockMs },
+            downloadedAssetDao = db.downloadedAssetDao(),
+            localMediaUriResolver = { relPath -> if (relPath == "offline/ep12.mp4") mediaFile.toURI().toString() else null },
+            subtitleDownloadManager = subManager
+        )
+
+        db.downloadedAssetDao().insertAsset(
+            com.laterbox.app.media.data.db.entity.DownloadedAssetEntity(
+                id = "off_ep_1_2",
+                savedLinkId = null,
+                sourcePlatform = "MovieBox",
+                originalSourceUrl = "https://cdn.example/s1e2.mp4",
+                title = "Episode 2",
+                mimeType = "video/mp4",
+                mediaType = "VIDEO",
+                contentCategory = "MOVIES",
+                localPath = "offline/ep12.mp4",
+                fileStatus = "AVAILABLE",
+                fileSize = 4096L,
+                checksum = "sum12",
+                qualityLabel = "1080p",
+                sourceRef = "moviebox|series_sub|1|2|1080p",
+                createdAt = fakeClockMs
+            )
+        )
+
+        // Force zero network availability
+        server.shutdown()
+
+        val ep2Playback = repo.resolvePlayback("moviebox", "series_sub", 1, 2).getOrThrow()
+        assertTrue(ep2Playback is PlaybackResolution.Available)
+        val avail = ep2Playback as PlaybackResolution.Available
+        assertTrue(avail.sources.first().isOfflineLocal)
+        assertEquals(1, avail.subtitles.size)
+        assertTrue(avail.subtitles.first().isOfflineLocal)
+        assertTrue(avail.subtitles.first().url.startsWith("file:"))
+
+        // Episode 1 must NOT receive Episode 2's offline video or subtitles
+        val ep1Playback = repo.resolvePlayback("moviebox", "series_sub", 1, 1)
+        assertTrue(ep1Playback.isFailure)
+    }
 }

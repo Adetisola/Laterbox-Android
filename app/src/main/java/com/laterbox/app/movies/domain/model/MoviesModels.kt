@@ -238,7 +238,9 @@ data class SubtitleTrack(
     val languageCode: String,
     val label: String,
     val url: String,
-    val format: String = "srt"
+    val format: String = "srt",
+    val headers: Map<String, String> = emptyMap(),
+    val isOfflineLocal: Boolean = false
 )
 
 sealed interface PlaybackResolution {

@@ -62,7 +62,8 @@ object AppViewModelProvider {
             val app = laterboxApplication()
             com.laterbox.app.media.ui.downloads.DownloadsViewModel(
                 mediaRepository = app.container.mediaRepository,
-                inspectionDao = app.container.database.mediaInspectionDao()
+                inspectionDao = app.container.database.mediaInspectionDao(),
+                subtitleDownloadManager = app.container.subtitleDownloadManager
             )
         }
         initializer {

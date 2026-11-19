@@ -280,7 +280,10 @@ fun LibraryAssetCard(
     modifier: Modifier = Modifier,
     isSelected: Boolean = false,
     isInSelectionMode: Boolean = false,
-    onLongClick: (() -> Unit)? = null
+    onLongClick: (() -> Unit)? = null,
+    subtitleSummary: com.laterbox.app.movies.data.download.AssetSubtitleSummary? = null,
+    isRetryingSubtitles: Boolean = false,
+    onRetrySubtitles: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val colors = LaterboxTheme.colors
@@ -382,6 +385,37 @@ fun LibraryAssetCard(
                             text = "Missing",
                             variant = LaterboxBadgeVariant.DANGER
                         )
+                    }
+                }
+                if (subtitleSummary != null && subtitleSummary.totalCount > 0) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        LaterboxBadge(
+                            text = subtitleSummary.formatBadgeText(),
+                            variant = if (subtitleSummary.hasFailures) {
+                                LaterboxBadgeVariant.WARNING
+                            } else {
+                                LaterboxBadgeVariant.SUCCESS
+                            },
+                            modifier = Modifier.testTag("asset_subtitle_status_${asset.id}")
+                        )
+                        if (subtitleSummary.hasFailures && onRetrySubtitles != null) {
+                            Surface(
+                                onClick = { if (!isRetryingSubtitles) onRetrySubtitles() },
+                                shape = LaterboxTheme.shapes.Badge,
+                                color = colors.accentContainer,
+                                modifier = Modifier.testTag("retry_subtitles_${asset.id}")
+                            ) {
+                                Text(
+                                    text = if (isRetryingSubtitles) "Retrying..." else "Retry subs",
+                                    style = typography.bodySmall,
+                                    color = colors.accentPrimary,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                )
+                            }
+                        }
                     }
                 }
             }

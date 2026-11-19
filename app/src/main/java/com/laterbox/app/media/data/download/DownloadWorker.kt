@@ -425,6 +425,49 @@ class DownloadWorker(
                         assetDao.insertAsset(assetEntity)
                         taskDao.updateStatusAndStage(taskId, DownloadState.COMPLETED.name, DownloadStage.COMPLETED.name, null)
                         taskDao.markCompleted(taskId, assetId)
+                        if (activeTask.sourceRef != null) {
+                            try {
+                                val parsed = DownloadSourceRefresher.parseSourceRef(activeTask.sourceRef)
+                                val subManager = container?.subtitleDownloadManager
+                                val moviesRepo = container?.moviesRepository
+                                if (parsed != null && subManager != null && moviesRepo != null) {
+                                    val tracks = moviesRepo.getSubtitles(
+                                        parsed.providerId,
+                                        parsed.titleId,
+                                        parsed.seasonNumber,
+                                        parsed.episodeNumber
+                                    ).getOrNull().orEmpty()
+                                    if (tracks.isNotEmpty()) {
+                                        val headersMap = linkedMapOf<String, String>()
+                                        activeTask.headersJson?.takeIf { it.isNotBlank() }?.let { rawJson ->
+                                            runCatching {
+                                                val jsonObj = org.json.JSONObject(rawJson)
+                                                val keys = jsonObj.keys()
+                                                while (keys.hasNext()) {
+                                                    val k = keys.next()
+                                                    val v = jsonObj.optString(k, "")
+                                                    if (k.isNotBlank() && v.isNotBlank()) {
+                                                        headersMap[k] = v
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        subManager.downloadSubtitlesForAsset(
+                                            assetId = assetId,
+                                            sourceRef = activeTask.sourceRef,
+                                            providerId = parsed.providerId,
+                                            titleId = parsed.titleId,
+                                            seasonNumber = parsed.seasonNumber,
+                                            episodeNumber = parsed.episodeNumber,
+                                            subtitles = tracks,
+                                            fallbackHeaders = headersMap
+                                        )
+                                    }
+                                }
+                            } catch (_: Throwable) {
+                                // Partial or total subtitle failure must never fail or corrupt the completed video asset.
+                            }
+                        }
                         try {
                             container?.activityEventRepository?.recordEvent(
                                 type = com.laterbox.app.data.repository.ActivityEventType.DOWNLOAD_COMPLETED,

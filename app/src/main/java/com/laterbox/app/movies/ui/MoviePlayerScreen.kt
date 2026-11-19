@@ -270,6 +270,7 @@ fun LocalVideoPlayerScreen(
     onBackClick: () -> Unit,
     playbackPreferences: PlayerPlaybackPreferences = PlayerPlaybackPreferences(),
     onSubtitleStyleChange: (SubtitleStyleConfig) -> Unit = {},
+    offlineSubtitles: List<SubtitleTrack>? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -296,6 +297,17 @@ fun LocalVideoPlayerScreen(
             ?: resolvedFile.name.takeIf { it.isNotBlank() }
             ?: "Saved Video"
     }
+    val resolvedSubtitles = remember(asset.id, offlineSubtitles) {
+        offlineSubtitles
+            ?: com.laterbox.app.movies.data.download.SubtitleDownloadManager(context.applicationContext)
+                .getOfflineSubtitleTracks(asset.id)
+    }
+    var selectedSubtitle by remember(asset.id, resolvedSubtitles) {
+        mutableStateOf(
+            resolvedSubtitles.firstOrNull { it.languageCode.equals("en", ignoreCase = true) }
+                ?: resolvedSubtitles.firstOrNull()
+        )
+    }
     val localSource = remember(asset.id, playbackUriString) {
         PlaybackSource(
             id = "local_${asset.id}",
@@ -307,11 +319,11 @@ fun LocalVideoPlayerScreen(
             isAuthorised = false
         )
     }
-    val localResolution = remember(asset.id, displayTitle, localSource) {
+    val localResolution = remember(asset.id, displayTitle, localSource, resolvedSubtitles) {
         PlaybackResolution.Available(
             title = displayTitle,
             sources = listOf(localSource),
-            subtitles = emptyList()
+            subtitles = resolvedSubtitles
         )
     }
     var savedPositionMs by rememberSaveable(asset.id) { mutableLongStateOf(0L) }
@@ -325,7 +337,7 @@ fun LocalVideoPlayerScreen(
         ActiveVideoPlayerContent(
             resolution = localResolution,
             selectedSource = localSource,
-            selectedSubtitle = null,
+            selectedSubtitle = selectedSubtitle,
             startPositionMs = savedPositionMs,
             activeTitleId = asset.id,
             availableDubs = emptyList(),
@@ -344,7 +356,10 @@ fun LocalVideoPlayerScreen(
             isLocalFile = true,
             onBackClick = onBackClick,
             onSelectSource = { _, _ -> },
-            onSelectSubtitle = { _, _ -> },
+            onSelectSubtitle = { track, posMs ->
+                savedPositionMs = posMs.coerceAtLeast(0L)
+                selectedSubtitle = track
+            },
             onSelectAudioDub = { _, _ -> },
             onSelectInStreamAudio = { _, _ -> },
             onNextEpisode = {},

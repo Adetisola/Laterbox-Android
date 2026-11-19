@@ -151,6 +151,7 @@ fun DownloadsScreen(
         onCancelTask = viewModel::onCancelTask,
         onRetryTask = viewModel::onRetryTask,
         onDismissTask = viewModel::onDismissTask,
+        onRetrySubtitles = viewModel::onRetryAssetSubtitles,
         modifier = modifier
     )
 
@@ -226,6 +227,7 @@ internal fun DownloadsScreenContent(
     onCancelTask: (String) -> Unit,
     onRetryTask: (String) -> Unit,
     onDismissTask: (String) -> Unit,
+    onRetrySubtitles: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -785,7 +787,10 @@ internal fun DownloadsScreenContent(
                                 onDelete = { onDeleteAsset(asset) },
                                 isSelected = isSelected,
                                 isInSelectionMode = uiState.isSelectionMode,
-                                onLongClick = { onToggleAssetSelection(asset.id) }
+                                onLongClick = { onToggleAssetSelection(asset.id) },
+                                subtitleSummary = uiState.subtitleSummaries[asset.id],
+                                isRetryingSubtitles = uiState.retryingSubtitleAssetIds.contains(asset.id),
+                                onRetrySubtitles = { onRetrySubtitles(asset.id) }
                             )
                         }
                     }

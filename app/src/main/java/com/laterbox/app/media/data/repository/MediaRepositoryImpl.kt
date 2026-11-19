@@ -36,7 +36,8 @@ class MediaRepositoryImpl(
     private val assetDao: DownloadedAssetDao,
     private val taskDao: DownloadTaskDao,
     private val storageManager: MediaStorageManager = MediaStorageManager(context),
-    private val inspectionManager: MediaInspectionManager? = null
+    private val inspectionManager: MediaInspectionManager? = null,
+    private val subtitleDownloadManager: com.laterbox.app.movies.data.download.SubtitleDownloadManager? = null
 ) : MediaRepository {
 
     override fun getAssetsForLink(linkId: Long): Flow<List<MediaAsset>> {
@@ -250,6 +251,7 @@ class MediaRepositoryImpl(
         assetDao.deleteAssetById(assetId)
         storageManager.deletePhysicalFileIfUnreferenced(asset.localPath, refCount)
         storageManager.deleteThumbnailFile(asset.thumbnailPath)
+        subtitleDownloadManager?.deleteSubtitlesForAsset(assetId)
     }
 
     override suspend fun deleteAssetsForLink(linkId: Long, deleteFiles: Boolean): Unit = withContext(Dispatchers.IO) {
@@ -260,6 +262,7 @@ class MediaRepositoryImpl(
                 assetDao.deleteAssetById(asset.id)
                 storageManager.deletePhysicalFileIfUnreferenced(asset.localPath, refCount)
                 storageManager.deleteThumbnailFile(asset.thumbnailPath)
+                subtitleDownloadManager?.deleteSubtitlesForAsset(asset.id)
             }
         }
         taskDao.deleteTasksForLink(linkId)
