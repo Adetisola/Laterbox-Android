@@ -144,8 +144,12 @@ data class SearchSuggestion(
 ) {
     val hasNavigableId: Boolean
         get() = id.isNotBlank() &&
-            !id.equals("None", ignoreCase = true) &&
-            !id.equals("null", ignoreCase = true)
+            providerId.isNotBlank() &&
+            !id.trim().equals("0", ignoreCase = true) &&
+            !id.trim().equals("None", ignoreCase = true) &&
+            !id.trim().equals("null", ignoreCase = true) &&
+            !providerId.trim().equals("None", ignoreCase = true) &&
+            !providerId.trim().equals("null", ignoreCase = true)
 }
 
 data class CastMember(

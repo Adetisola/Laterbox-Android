@@ -1430,28 +1430,28 @@ fun MovieDetailScreen(
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    items(countryPills, key = { "meta_country_$it" }) { country ->
+                                    itemsIndexed(countryPills.distinct(), key = { idx, it -> "meta_country_${idx}_$it" }) { _, country ->
                                         MetadataPillChip(
                                             label = country,
                                             modifier = Modifier.testTag("detail_country_chip_$country")
                                         )
                                     }
-                                    items(languagePills, key = { "meta_lang_$it" }) { lang ->
+                                    itemsIndexed(languagePills.distinct(), key = { idx, it -> "meta_lang_${idx}_$it" }) { _, lang ->
                                         MetadataPillChip(
                                             label = lang,
                                             modifier = Modifier.testTag("detail_language_chip_$lang")
                                         )
                                     }
-                                    items(summary.genres, key = { "meta_genre_$it" }) { genre ->
+                                    itemsIndexed(summary.genres.distinct(), key = { idx, it -> "meta_genre_${idx}_$it" }) { _, genre ->
                                         MetadataPillChip(
                                             label = genre,
                                             modifier = Modifier.testTag("detail_genre_chip_$genre")
                                         )
                                     }
-                                    items(
+                                    itemsIndexed(
                                         details.audioDubs,
-                                        key = { dub -> "meta_dub_${dub.language}_${dub.referenceId ?: dub.label}" }
-                                    ) { dub ->
+                                        key = { idx, dub -> "meta_dub_${idx}_${dub.language}_${dub.referenceId ?: dub.label}" }
+                                    ) { _, dub ->
                                         val refId = dub.referenceId
                                         val isActiveDub = refId == null || refId == summary.id
                                         val isSwitchableDub = !refId.isNullOrBlank() && refId != summary.id
@@ -1594,7 +1594,10 @@ fun MovieDetailScreen(
                                     contentPadding = PaddingValues(horizontal = 16.dp),
                                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                                 ) {
-                                    items(displayRelated, key = { "rel_${it.compositeId}" }) { rel ->
+                                    itemsIndexed(
+                                        items = displayRelated,
+                                        key = { index, rel -> "rel_${index}_${rel.compositeId}" }
+                                    ) { _, rel ->
                                         val isRelOffline = uiState.offlineMatches.any {
                                             it.matchesTitleComposite(rel.providerId, rel.id)
                                         }
@@ -1624,7 +1627,10 @@ fun MovieDetailScreen(
                                         contentPadding = PaddingValues(horizontal = 16.dp),
                                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        items(details.seasons, key = { it.seasonNumber }) { season ->
+                                        itemsIndexed(
+                                            items = details.seasons,
+                                            key = { index, s -> "season_${index}_${s.seasonNumber}" }
+                                        ) { _, season ->
                                             val selected = uiState.selectedSeasonNumber == season.seasonNumber
                                             Surface(
                                                 shape = RoundedCornerShape(12.dp),
@@ -1703,7 +1709,10 @@ fun MovieDetailScreen(
                                 }
                                 uiState.episodes.isNotEmpty() -> {
                                     val visibleEpisodes = uiState.episodes.take(visibleEpisodeCount)
-                                    items(visibleEpisodes, key = { "ep_${it.id}_${it.seasonNumber}_${it.episodeNumber}" }) { ep ->
+                                    itemsIndexed(
+                                        items = visibleEpisodes,
+                                        key = { index, ep -> "ep_${index}_${ep.id}_${ep.seasonNumber}_${ep.episodeNumber}" }
+                                    ) { _, ep ->
                                         val isWatched = uiState.seriesProgress?.episodeStates
                                             ?.get(ep.seasonNumber to ep.episodeNumber)?.isCompleted == true
                                         val isEpDownloaded = uiState.offlineMatches.any { match ->

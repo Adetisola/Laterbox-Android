@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -106,6 +107,7 @@ fun MoviesScreen(
     onRestartContinueWatching: (WatchHistoryItem) -> Unit = {},
     onRemoveContinueWatching: (WatchHistoryItem) -> Unit = {},
     onMarkContinueWatchingWatched: (WatchHistoryItem) -> Unit = {},
+    onRemoveRecentlyViewed: (MovieTitleSummary) -> Unit = {},
     onOpenCollection: (collectionId: Long, collectionName: String) -> Unit = { _, _ -> },
     onClearActionFeedback: () -> Unit = {},
     onMenuClick: (() -> Unit)? = null,
@@ -123,6 +125,7 @@ fun MoviesScreen(
     var isFilterRowVisible by remember { mutableStateOf(true) }
     var showExpandedFilters by remember { mutableStateOf(false) }
     var collectionPickerTarget by remember { mutableStateOf<MovieTitleSummary?>(null) }
+    var pendingRemoveViewed by remember { mutableStateOf<MovieTitleSummary?>(null) }
     var prevIndex by remember(uiState.isFilteredMode) { mutableIntStateOf(0) }
     var prevOffset by remember(uiState.isFilteredMode) { mutableIntStateOf(0) }
 
@@ -146,6 +149,46 @@ fun MoviesScreen(
                 collectionPickerTarget = null
             },
             onDismiss = { collectionPickerTarget = null }
+        )
+    }
+
+    pendingRemoveViewed?.let { target ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { pendingRemoveViewed = null },
+            containerColor = colors.surfaceElevated,
+            title = {
+                Text(
+                    text = "Remove from Viewed",
+                    style = typography.titleLarge,
+                    color = colors.textPrimary
+                )
+            },
+            text = {
+                Text(
+                    text = "Remove \"${target.title}\" from your Recently Viewed list? Your watch history, progress, and watchlist will not be affected.",
+                    style = typography.bodySecondary,
+                    color = colors.textSecondary
+                )
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(
+                    onClick = {
+                        onRemoveRecentlyViewed(target)
+                        pendingRemoveViewed = null
+                    },
+                    modifier = Modifier.testTag("movies_home_confirm_remove_viewed")
+                ) {
+                    Text("Remove", color = colors.statusDanger)
+                }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(
+                    onClick = { pendingRemoveViewed = null },
+                    modifier = Modifier.testTag("movies_home_cancel_remove_viewed")
+                ) {
+                    Text("Cancel", color = colors.textSecondary)
+                }
+            }
         )
     }
 
@@ -374,7 +417,7 @@ fun MoviesScreen(
                                         item(key = "filter_reset") {
                                             TextButton(
                                                 onClick = {
-                                                    focusManager.clearFocus()
+                                                    runCatching { focusManager.clearFocus(force = true) }
                                                     onResetFilters()
                                                 },
                                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
@@ -913,7 +956,10 @@ fun MoviesScreen(
                                                 contentPadding = PaddingValues(horizontal = 16.dp),
                                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                                             ) {
-                                                items(uiState.recentlyViewed, key = { "rv_${it.compositeId}" }) { item ->
+                                                itemsIndexed(
+                                                    items = uiState.recentlyViewed,
+                                                    key = { idx, it -> "rv_${idx}_${it.compositeId}" }
+                                                ) { _, item ->
                                                     val isOffline = uiState.offlineMatches.any {
                                                         it.matchesTitleComposite(item.providerId, item.id)
                                                     }
@@ -925,7 +971,9 @@ fun MoviesScreen(
                                                         onToggleWatchlist = onToggleWatchlist,
                                                         onAddToCollection = { collectionPickerTarget = it },
                                                         onMarkWatched = onMarkWatched,
-                                                        onHideTitle = onHideTitle
+                                                        onHideTitle = onHideTitle,
+                                                        onRemoveFromViewed = { pendingRemoveViewed = it },
+                                                        menuButtonTestTag = "poster_menu_recent_${item.id}"
                                                     )
                                                 }
                                             }

@@ -1154,8 +1154,25 @@ class MoviesRepositoryImpl(
 
     override suspend fun removeRecentlyViewed(providerId: String, titleId: String) {
         val cid = mediaResolver.resolveCanonicalIdForProvider(providerId, titleId)
+        val concrete = mediaResolver.resolveConcreteTarget(providerId, titleId, preferPlayable = false)
         val compositeId = "$providerId:$titleId"
-        moviesDao.deleteRecentlyViewed(cid ?: compositeId, compositeId)
+        moviesDao.deleteRecentlyViewed(
+            mediaKey = cid ?: compositeId,
+            compositeId = compositeId,
+            canonicalId = cid ?: compositeId,
+            providerId = providerId,
+            titleId = titleId
+        )
+        if (concrete.first != providerId || concrete.second != titleId) {
+            val concreteComposite = "${concrete.first}:${concrete.second}"
+            moviesDao.deleteRecentlyViewed(
+                mediaKey = cid ?: concreteComposite,
+                compositeId = concreteComposite,
+                canonicalId = cid ?: concreteComposite,
+                providerId = concrete.first,
+                titleId = concrete.second
+            )
+        }
     }
 
     override suspend fun clearRecentlyViewed() {

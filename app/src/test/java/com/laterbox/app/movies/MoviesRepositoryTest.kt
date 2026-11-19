@@ -632,4 +632,54 @@ class MoviesRepositoryTest {
         assertTrue(available.sources.first().isOfflineLocal)
         assertEquals(mediaFile.toURI().toString(), available.sources.first().url)
     }
+
+    @Test
+    fun removeRecentlyViewed_deletesCanonicalAndProviderKeysWithoutTouchingHistoryWatchlistOrProgress() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                return MockResponse().setResponseCode(404)
+            }
+        }
+        val repo = MoviesRepositoryImpl(
+            moviesDao = db.moviesDao(),
+            internetArchiveProvider = InternetArchiveMoviesProvider(OkHttpClient(), server.url("/").toString().trimEnd('/')),
+            tvMazeProvider = TvMazeSeriesProvider(OkHttpClient(), server.url("/").toString().trimEnd('/')),
+            tmdbProvider = TmdbOptionalMoviesProvider(OkHttpClient(), apiKeyProvider = { "" }, baseUrl = server.url("/").toString().trimEnd('/')),
+            useSampleFixturesOnlyProvider = { false },
+            nowMs = { fakeClockMs }
+        )
+        val item = MovieTitleSummary(
+            id = "dune_rv",
+            providerId = "moviebox",
+            title = "Dune: Part Two",
+            kind = MediaKind.MOVIE,
+            releaseYear = 2024,
+            durationMinutes = 166,
+            isPlayableHint = true,
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+        )
+
+        repo.toggleWatchlist(item)
+        repo.recordRecentlyViewed(item)
+        repo.saveWatchProgress(
+            item = item,
+            positionMs = 1_200_000L,
+            durationMs = 5_000_000L,
+            seasonNumber = null,
+            episodeNumber = null,
+            episodeLabel = null
+        )
+
+        assertEquals(1, repo.observeRecentlyViewed(10).first().size)
+        assertEquals(1, repo.observeMovieWatchHistory(10).first().size)
+        assertTrue(repo.observeIsInWatchlist("moviebox:dune_rv").first())
+        assertEquals(1_200_000L, repo.getSavedPositionMs("moviebox", "dune_rv", null, null))
+
+        repo.removeRecentlyViewed("moviebox", "dune_rv")
+
+        assertTrue(repo.observeRecentlyViewed(10).first().isEmpty())
+        assertEquals(1, repo.observeMovieWatchHistory(10).first().size)
+        assertTrue(repo.observeIsInWatchlist("moviebox:dune_rv").first())
+        assertEquals(1_200_000L, repo.getSavedPositionMs("moviebox", "dune_rv", null, null))
+    }
 }

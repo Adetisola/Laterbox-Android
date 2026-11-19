@@ -176,8 +176,22 @@ interface MoviesDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertRecentlyViewed(item: MovieRecentlyViewedEntity)
 
-    @Query("DELETE FROM movie_recently_viewed WHERE media_key = :mediaKey OR composite_id = :compositeId")
-    suspend fun deleteRecentlyViewed(mediaKey: String, compositeId: String)
+    @Query(
+        """
+        DELETE FROM movie_recently_viewed
+        WHERE media_key = :mediaKey
+           OR composite_id = :compositeId
+           OR canonical_id = :canonicalId
+           OR (provider_id = :providerId AND title_id = :titleId)
+        """
+    )
+    suspend fun deleteRecentlyViewed(
+        mediaKey: String,
+        compositeId: String,
+        canonicalId: String,
+        providerId: String,
+        titleId: String
+    ): Int
 
     @Query("DELETE FROM movie_recently_viewed")
     suspend fun clearRecentlyViewed()

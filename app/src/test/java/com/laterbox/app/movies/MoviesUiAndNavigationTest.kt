@@ -3,9 +3,14 @@ package com.laterbox.app.movies
 import android.content.res.Configuration
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasTestTag
@@ -15,12 +20,21 @@ import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeLeft
 import androidx.compose.ui.test.swipeRight
 import androidx.compose.ui.unit.dp
+import androidx.navigation.NavType
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
+import com.laterbox.app.ui.navigation.LaterboxDestination
 import com.laterbox.app.data.preferences.SubtitleStyleConfig
 import com.laterbox.app.data.preferences.UserPreferences
 import com.laterbox.app.movies.data.cache.MoviesMediaCache
@@ -1927,5 +1941,179 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithTag("movie_detail_list").performScrollToNode(hasTestTag("episode_row_1_23"))
         composeTestRule.onNodeWithTag("episode_row_1_23").assertIsDisplayed()
         composeTestRule.onNodeWithTag("detail_episodes_load_more").assertDoesNotExist()
+    }
+
+    @Test
+    fun recentlyViewedRemoval_showsConfirmationDialogInBothMoviesHomeAndViewingHistory() {
+        val recentMovie = sampleMovie.copy(id = "recent_1", title = "Recent Film")
+        var homeRemoved: MovieTitleSummary? = null
+        var historyRemoved: Pair<String, String>? = null
+        var showViewingHistory by mutableStateOf(false)
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                if (!showViewingHistory) {
+                    MoviesScreen(
+                        uiState = MoviesHomeUiState(
+                            isLoading = false,
+                            feed = MoviesHomeFeed(
+                                featuredBanners = listOf(sampleMovie),
+                                sections = listOf(BrowseSection("s1", "Featured", null, SectionStyle.RAIL, listOf(sampleMovie))),
+                                genres = listOf("All", "Comedy")
+                            ),
+                            recentlyViewed = listOf(recentMovie)
+                        ),
+                        onRefresh = {},
+                        onOpenCatalogue = { _, _ -> },
+                        onOpenDetail = { _, _ -> },
+                        onOpenPlayer = { _, _, _, _ -> },
+                        onToggleWatchlist = {},
+                        onToggleSampleFixtures = {},
+                        onRemoveRecentlyViewed = { homeRemoved = it }
+                    )
+                } else {
+                    MoviesViewingHistoryScreen(
+                        items = emptyList(),
+                        onBackClick = {},
+                        onOpenDetail = { _, _ -> },
+                        onOpenPlayer = { _, _, _, _ -> },
+                        onDeleteItem = {},
+                        onClearHistory = {},
+                        recentlyViewed = listOf(recentMovie),
+                        onRemoveRecentlyViewed = { pid, tid -> historyRemoved = pid to tid }
+                    )
+                }
+            }
+        }
+
+        // Movies Home Recently Viewed rail -> Remove from Viewed -> Cancel does not delete -> Confirm deletes
+        composeTestRule.onNodeWithTag("movies_home_list")
+            .performScrollToNode(hasTestTag("movies_home_recently_viewed_rail"))
+        composeTestRule.onNodeWithTag("poster_menu_recent_recent_1").performClick()
+        composeTestRule.onNodeWithTag("poster_remove_viewed_recent_1").performClick()
+        composeTestRule.onNodeWithText("Remove from Viewed").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("movies_home_cancel_remove_viewed").performClick()
+        assertEquals(null, homeRemoved)
+
+        composeTestRule.onNodeWithTag("poster_menu_recent_recent_1").performClick()
+        composeTestRule.onNodeWithTag("poster_remove_viewed_recent_1").performClick()
+        composeTestRule.onNodeWithTag("movies_home_confirm_remove_viewed").performClick()
+        assertEquals("recent_1", homeRemoved?.id)
+
+        // Viewing History Recently Viewed tab -> Cancel does not delete -> Confirm deletes
+        composeTestRule.runOnIdle { showViewingHistory = true }
+        composeTestRule.onNodeWithTag("viewing_history_tab_recent").performClick()
+        composeTestRule.onNodeWithTag("viewing_history_remove_recent_recent_1").performClick()
+        composeTestRule.onNodeWithText("Remove from Viewed").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("viewing_history_cancel_remove_viewed").performClick()
+        assertEquals(null, historyRemoved)
+
+        composeTestRule.onNodeWithTag("viewing_history_remove_recent_recent_1").performClick()
+        composeTestRule.onNodeWithTag("viewing_history_confirm_remove_viewed").performClick()
+        assertEquals("ia" to "recent_1", historyRemoved)
+    }
+
+    @Test
+    fun searchMultiWordEditingAndSuggestionNavigation_handlesValidInvalidAndSpecialCharDestinations() {
+        var typedQueries = mutableListOf<String>()
+        var submittedQueries = mutableListOf<String>()
+        var navigatedTarget: Pair<String, String>? = null
+        var queryState by mutableStateOf("")
+        var focusedState by mutableStateOf(false)
+
+        val suggestions = listOf(
+            SearchSuggestion(id = "123", providerId = "", title = "Missing Provider Movie"),
+            SearchSuggestion(id = "0", providerId = "moviebox", title = "Keyword Only Zero"),
+            SearchSuggestion(id = "tt/123?a=1#b", providerId = "moviebox", title = "The Dark Knight")
+        )
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                val navController = rememberNavController()
+                NavHost(
+                    navController = navController,
+                    startDestination = "catalogue"
+                ) {
+                    composable("catalogue") {
+                        MoviesCatalogueScreen(
+                            uiState = MoviesCatalogueUiState(
+                                query = queryState,
+                                isSearchFocused = focusedState,
+                                showSuggestionsDropdown = focusedState && queryState.trim().length >= 2,
+                                suggestions = suggestions,
+                                items = listOf(sampleMovie)
+                            ),
+                            onBackClick = {},
+                            onQueryChange = { q ->
+                                typedQueries.add(q)
+                                queryState = q
+                                focusedState = true
+                            },
+                            onSearchFocusChange = { focusedState = it },
+                            onSubmitSearch = { overrideQ ->
+                                submittedQueries.add((overrideQ ?: queryState).trim())
+                                focusedState = false
+                            },
+                            onClearSearch = {
+                                queryState = ""
+                                focusedState = false
+                            },
+                            onSelectKind = {},
+                            onSelectGenre = {},
+                            onSelectSort = {},
+                            onResetFilters = {},
+                            onLoadNextPage = {},
+                            onRetry = {},
+                            onClearSearchHistory = {},
+                            onOpenDetail = { pid, tid ->
+                                val cleanProvider = pid.trim()
+                                val cleanId = tid.trim()
+                                if (cleanProvider.isNotBlank() &&
+                                    cleanId.isNotBlank() &&
+                                    !cleanId.equals("0", ignoreCase = true) &&
+                                    !cleanId.equals("None", ignoreCase = true) &&
+                                    !cleanId.equals("null", ignoreCase = true)
+                                ) {
+                                    navController.navigate(
+                                        LaterboxDestination.MovieDetail.createRoute(cleanProvider, cleanId)
+                                    )
+                                }
+                            }
+                        )
+                    }
+                    composable(
+                        route = LaterboxDestination.MovieDetail.route,
+                        arguments = listOf(
+                            navArgument("providerId") { type = NavType.StringType },
+                            navArgument("titleId") { type = NavType.StringType }
+                        )
+                    ) { backStackEntry ->
+                        val pid = backStackEntry.arguments?.getString("providerId").orEmpty()
+                        val tid = backStackEntry.arguments?.getString("titleId").orEmpty()
+                        navigatedTarget = pid to tid
+                        androidx.compose.material3.Text(
+                            text = "Detail: $pid/$tid",
+                            modifier = Modifier.testTag("nav_detail_screen")
+                        )
+                    }
+                }
+            }
+        }
+
+        // Type multi-word query preserving spaces
+        composeTestRule.onNodeWithTag("catalogue_search_input").performClick()
+        composeTestRule.onNodeWithTag("catalogue_search_input").performTextInput("the dark knight ")
+        assertEquals("the dark knight ", queryState)
+
+        // Invalid suggestions (blank providerId, "0" id) do NOT crash and submit search instead
+        composeTestRule.onNodeWithTag("suggestion_item_idx_0").performClick()
+        assertEquals("Missing Provider Movie", submittedQueries.last())
+        assertEquals(null, navigatedTarget)
+
+        // Focus again and tap valid suggestion with special URI characters -> navigates cleanly to MovieDetail
+        composeTestRule.onNodeWithTag("catalogue_search_input").performClick()
+        composeTestRule.onNodeWithTag("suggestion_item_tt/123?a=1#b").performClick()
+        composeTestRule.onNodeWithTag("nav_detail_screen").assertIsDisplayed()
+        assertEquals("moviebox" to "tt/123?a=1#b", navigatedTarget)
     }
 }

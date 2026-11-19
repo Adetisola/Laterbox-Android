@@ -68,7 +68,10 @@ class MoviesCatalogueViewModel(
 
     private var fetchJob: Job? = null
     private var suggestJob: Job? = null
+    private var suggestRequestSeq: Long = 0L
+    private var pageRequestSeq: Long = 0L
     private var lastInitializedKey: String? = null
+    private var lastSubmittedOrClearedSearch: String = ""
     private var rawItems: List<MovieTitleSummary> = emptyList()
 
     init {
@@ -162,19 +165,24 @@ class MoviesCatalogueViewModel(
         loadPage(page = 1, append = false)
     }
 
+    private fun normalizeQuery(raw: String): String =
+        raw.trim().replace(MULTI_SPACE_REGEX, " ")
+
     fun onQueryChange(newQuery: String) {
-        val trimmed = newQuery.trim()
+        val wasNotBlank = _uiState.value.query.isNotBlank()
+        val normalized = normalizeQuery(newQuery)
         _uiState.update {
             it.copy(
                 query = newQuery,
                 isSearchFocused = true,
-                showSuggestionsDropdown = trimmed.length >= 2 || it.recentSearches.isNotEmpty(),
-                isLoadingSuggestions = trimmed.length >= 2,
+                showSuggestionsDropdown = normalized.length >= 2 || it.recentSearches.isNotEmpty(),
+                isLoadingSuggestions = normalized.length >= 2,
                 suggestionsError = null
             )
         }
+        val reqSeq = ++suggestRequestSeq
         suggestJob?.cancel()
-        if (trimmed.length < 2) {
+        if (normalized.length < 2) {
             _uiState.update {
                 it.copy(
                     suggestions = emptyList(),
@@ -182,15 +190,22 @@ class MoviesCatalogueViewModel(
                     suggestionsError = null
                 )
             }
-            if (newQuery.isBlank()) {
+            if (newQuery.isBlank() && (wasNotBlank || lastSubmittedOrClearedSearch.isNotEmpty())) {
+                lastSubmittedOrClearedSearch = ""
                 loadPage(page = 1, append = false)
             }
             return
         }
         suggestJob = viewModelScope.launch {
             delay(260L)
-            moviesRepository.getSuggestions(trimmed, limit = 8).fold(
+            if (reqSeq != suggestRequestSeq || normalizeQuery(_uiState.value.query) != normalized) {
+                return@launch
+            }
+            moviesRepository.getSuggestions(normalized, limit = 8).fold(
                 onSuccess = { list ->
+                    if (reqSeq != suggestRequestSeq || normalizeQuery(_uiState.value.query) != normalized) {
+                        return@fold
+                    }
                     _uiState.update {
                         it.copy(
                             suggestions = list,
@@ -200,6 +215,9 @@ class MoviesCatalogueViewModel(
                     }
                 },
                 onFailure = { err ->
+                    if (reqSeq != suggestRequestSeq || normalizeQuery(_uiState.value.query) != normalized) {
+                        return@fold
+                    }
                     _uiState.update {
                         it.copy(
                             suggestions = emptyList(),
@@ -220,7 +238,7 @@ class MoviesCatalogueViewModel(
             _uiState.update { current ->
                 current.copy(
                     isSearchFocused = true,
-                    showSuggestionsDropdown = current.query.trim().length >= 2 ||
+                    showSuggestionsDropdown = normalizeQuery(current.query).length >= 2 ||
                         current.isLoadingSuggestions ||
                         current.suggestionsError != null ||
                         current.recentSearches.isNotEmpty()
@@ -234,6 +252,7 @@ class MoviesCatalogueViewModel(
     }
 
     fun dismissSuggestions() {
+        ++suggestRequestSeq
         suggestJob?.cancel()
         _uiState.update {
             it.copy(
@@ -245,8 +264,10 @@ class MoviesCatalogueViewModel(
     }
 
     fun submitSearch(overrideQuery: String? = null) {
-        val q = (overrideQuery ?: _uiState.value.query).trim()
+        val q = normalizeQuery(overrideQuery ?: _uiState.value.query)
+        ++suggestRequestSeq
         suggestJob?.cancel()
+        lastSubmittedOrClearedSearch = q
         _uiState.update {
             it.copy(
                 query = q,
@@ -266,7 +287,9 @@ class MoviesCatalogueViewModel(
     }
 
     fun clearSearch() {
+        ++suggestRequestSeq
         suggestJob?.cancel()
+        lastSubmittedOrClearedSearch = ""
         _uiState.update {
             it.copy(
                 query = "",
@@ -466,6 +489,7 @@ class MoviesCatalogueViewModel(
     }
 
     private fun loadPage(page: Int, append: Boolean) {
+        val reqSeq = ++pageRequestSeq
         fetchJob?.cancel()
         fetchJob = viewModelScope.launch {
             _uiState.update {
@@ -476,7 +500,7 @@ class MoviesCatalogueViewModel(
                 }
             }
             val state = _uiState.value
-            val query = state.query.trim()
+            val query = normalizeQuery(state.query)
             val exactYearParam = state.selectedYear.takeIf { Regex("\\d{4}").matches(it) }
             val result = if (query.isNotBlank()) {
                 moviesRepository.search(query = query, kind = state.selectedKind, page = page, pageSize = 20)
@@ -494,6 +518,7 @@ class MoviesCatalogueViewModel(
 
             result.fold(
                 onSuccess = { pageResult ->
+                    if (reqSeq != pageRequestSeq) return@fold
                     val mergedRaw = if (append) {
                         (rawItems + pageResult.items).distinctBy { it.compositeId }
                     } else {
@@ -525,6 +550,7 @@ class MoviesCatalogueViewModel(
                     }
                 },
                 onFailure = { err ->
+                    if (reqSeq != pageRequestSeq) return@fold
                     _uiState.update {
                         it.copy(
                             isLoading = false,
@@ -536,5 +562,9 @@ class MoviesCatalogueViewModel(
                 }
             )
         }
+    }
+
+    companion object {
+        private val MULTI_SPACE_REGEX = Regex("\\s+")
     }
 }

@@ -123,6 +123,7 @@ class MoviesHomeViewModel(
     private var loadJob: Job? = null
     private var filterJob: Job? = null
     private var suggestJob: Job? = null
+    private var suggestRequestSeq: Long = 0L
     private var lastConfigKey: MoviesConfigSnapshot? = null
     private var latestNonTrailerHistory: List<WatchHistoryItem> = emptyList()
     private var rawFilteredItems: List<MovieTitleSummary> = emptyList()
@@ -311,18 +312,22 @@ class MoviesHomeViewModel(
         }
     }
 
+    private fun normalizeSearchQuery(raw: String): String =
+        raw.trim().replace(Regex("\\s+"), " ")
+
     fun onSearchQueryChange(newQuery: String) {
-        val trimmed = newQuery.trim()
+        val normalized = normalizeSearchQuery(newQuery)
         _uiState.update {
             it.copy(
                 searchQuery = newQuery,
                 isSearchFocused = true,
-                isLoadingSuggestions = trimmed.length >= 2,
+                isLoadingSuggestions = normalized.length >= 2,
                 suggestionsError = null
             )
         }
+        val reqSeq = ++suggestRequestSeq
         suggestJob?.cancel()
-        if (trimmed.length < 2) {
+        if (normalized.length < 2) {
             _uiState.update {
                 it.copy(
                     suggestions = emptyList(),
@@ -330,7 +335,7 @@ class MoviesHomeViewModel(
                     suggestionsError = null
                 )
             }
-            if (trimmed.isEmpty() && _uiState.value.activeSearchQuery.isNotEmpty()) {
+            if (normalized.isEmpty() && _uiState.value.activeSearchQuery.isNotEmpty()) {
                 _uiState.update { it.copy(activeSearchQuery = "") }
                 if (_uiState.value.isFilteredMode) {
                     loadFiltered(page = 1, append = false)
@@ -340,8 +345,14 @@ class MoviesHomeViewModel(
         }
         suggestJob = viewModelScope.launch {
             delay(260L)
-            moviesRepository.getSuggestions(trimmed, limit = 8).fold(
+            if (reqSeq != suggestRequestSeq || normalizeSearchQuery(_uiState.value.searchQuery) != normalized) {
+                return@launch
+            }
+            moviesRepository.getSuggestions(normalized, limit = 8).fold(
                 onSuccess = { list ->
+                    if (reqSeq != suggestRequestSeq || normalizeSearchQuery(_uiState.value.searchQuery) != normalized) {
+                        return@fold
+                    }
                     _uiState.update {
                         it.copy(
                             suggestions = list,
@@ -351,6 +362,9 @@ class MoviesHomeViewModel(
                     }
                 },
                 onFailure = { err ->
+                    if (reqSeq != suggestRequestSeq || normalizeSearchQuery(_uiState.value.searchQuery) != normalized) {
+                        return@fold
+                    }
                     _uiState.update {
                         it.copy(
                             suggestions = emptyList(),
@@ -366,6 +380,7 @@ class MoviesHomeViewModel(
 
     fun setSearchFocused(focused: Boolean) {
         if (!focused) {
+            ++suggestRequestSeq
             suggestJob?.cancel()
         }
         _uiState.update {
@@ -377,7 +392,8 @@ class MoviesHomeViewModel(
     }
 
     fun submitInlineSearch(overrideQuery: String? = null) {
-        val q = (overrideQuery ?: _uiState.value.searchQuery).trim()
+        val q = normalizeSearchQuery(overrideQuery ?: _uiState.value.searchQuery)
+        ++suggestRequestSeq
         suggestJob?.cancel()
         _uiState.update {
             it.copy(
@@ -645,6 +661,13 @@ class MoviesHomeViewModel(
         viewModelScope.launch {
             moviesRepository.removeFromContinueWatching(entry.providerId, entry.titleId)
             _uiState.update { it.copy(actionFeedbackMessage = "Removed ${entry.title} from Continue Watching") }
+        }
+    }
+
+    fun removeRecentlyViewed(item: MovieTitleSummary) {
+        viewModelScope.launch {
+            moviesRepository.removeRecentlyViewed(item.providerId, item.id)
+            _uiState.update { it.copy(actionFeedbackMessage = "Removed ${item.title} from Viewed") }
         }
     }
 

@@ -83,6 +83,7 @@ fun MoviesViewingHistoryScreen(
     val typography = LaterboxTheme.typography
     var selectedTab by remember { mutableStateOf(ViewingHistoryTab.ALL) }
     var showClearDialog by remember { mutableStateOf(false) }
+    var pendingRemoveViewed by remember { mutableStateOf<MovieTitleSummary?>(null) }
 
     val filteredHistoryItems = remember(items, selectedTab) {
         when (selectedTab) {
@@ -151,6 +152,46 @@ fun MoviesViewingHistoryScreen(
                             Text("Clear Trailers", color = colors.accentPrimary)
                         }
                     }
+                }
+            }
+        )
+    }
+
+    pendingRemoveViewed?.let { target ->
+        AlertDialog(
+            onDismissRequest = { pendingRemoveViewed = null },
+            containerColor = colors.surfaceElevated,
+            title = {
+                Text(
+                    text = "Remove from Viewed",
+                    style = typography.titleLarge,
+                    color = colors.textPrimary
+                )
+            },
+            text = {
+                Text(
+                    text = "Remove \"${target.title}\" from your Recently Viewed list? Your watch history, progress, and watchlist will not be affected.",
+                    style = typography.bodySecondary,
+                    color = colors.textSecondary
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onRemoveRecentlyViewed(target.providerId, target.id)
+                        pendingRemoveViewed = null
+                    },
+                    modifier = Modifier.testTag("viewing_history_confirm_remove_viewed")
+                ) {
+                    Text("Remove", color = colors.statusDanger)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { pendingRemoveViewed = null },
+                    modifier = Modifier.testTag("viewing_history_cancel_remove_viewed")
+                ) {
+                    Text("Cancel", color = colors.textSecondary)
                 }
             }
         )
@@ -271,7 +312,7 @@ fun MoviesViewingHistoryScreen(
                             RecentlyViewedRowCard(
                                 item = summary,
                                 onOpenDetail = { onOpenDetail(summary.providerId, summary.id) },
-                                onRemove = { onRemoveRecentlyViewed(summary.providerId, summary.id) }
+                                onRemove = { pendingRemoveViewed = summary }
                             )
                         }
                     }

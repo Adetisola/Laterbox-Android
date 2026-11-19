@@ -7,6 +7,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -59,8 +60,10 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -137,7 +140,7 @@ fun MoviesCatalogueScreen(
 
     val dismissSearch: () -> Unit = {
         keyboardController?.hide()
-        focusManager.clearFocus()
+        runCatching { focusManager.clearFocus(force = true) }
         onSearchFocusChange(false)
     }
 
@@ -212,8 +215,32 @@ fun MoviesCatalogueScreen(
                         modifier = Modifier.size(16.dp),
                         tint = colors.textTertiary
                     )
+                    val searchInteractionSource = remember { MutableInteractionSource() }
+                    LaunchedEffect(searchInteractionSource) {
+                        searchInteractionSource.interactions.collect { interaction ->
+                            if (interaction is PressInteraction.Release) {
+                                onSearchFocusChange(true)
+                            }
+                        }
+                    }
+                    var queryFieldValue by remember {
+                        mutableStateOf(
+                            TextFieldValue(
+                                text = uiState.query,
+                                selection = TextRange(uiState.query.length)
+                            )
+                        )
+                    }
+                    LaunchedEffect(uiState.query) {
+                        if (uiState.query != queryFieldValue.text) {
+                            queryFieldValue = TextFieldValue(
+                                text = uiState.query,
+                                selection = TextRange(uiState.query.length)
+                            )
+                        }
+                    }
                     Box(modifier = Modifier.weight(1f)) {
-                        if (uiState.query.isEmpty()) {
+                        if (queryFieldValue.text.isEmpty()) {
                             Text(
                                 text = "Search movies & series...",
                                 style = typography.bodySecondary,
@@ -223,8 +250,15 @@ fun MoviesCatalogueScreen(
                             )
                         }
                         BasicTextField(
-                            value = uiState.query,
-                            onValueChange = onQueryChange,
+                            value = queryFieldValue,
+                            onValueChange = { next ->
+                                val textChanged = next.text != queryFieldValue.text
+                                queryFieldValue = next
+                                if (textChanged || next.text != uiState.query) {
+                                    onQueryChange(next.text)
+                                }
+                            },
+                            interactionSource = searchInteractionSource,
                             singleLine = true,
                             textStyle = typography.bodySecondary.copy(color = colors.textPrimary),
                             cursorBrush = SolidColor(colors.accentPrimary),
@@ -232,7 +266,7 @@ fun MoviesCatalogueScreen(
                             keyboardActions = KeyboardActions(
                                 onSearch = {
                                     keyboardController?.hide()
-                                    focusManager.clearFocus()
+                                    runCatching { focusManager.clearFocus(force = true) }
                                     onSubmitSearch(null)
                                 }
                             ),
@@ -242,11 +276,12 @@ fun MoviesCatalogueScreen(
                                 .testTag("catalogue_search_input")
                         )
                     }
-                    if (uiState.query.isNotEmpty()) {
+                    if (queryFieldValue.text.isNotEmpty() || uiState.query.isNotEmpty()) {
                         IconButton(
                             onClick = {
+                                queryFieldValue = TextFieldValue("")
                                 keyboardController?.hide()
-                                focusManager.clearFocus()
+                                runCatching { focusManager.clearFocus(force = true) }
                                 onClearSearch()
                             },
                             modifier = Modifier
@@ -685,7 +720,7 @@ fun MoviesCatalogueScreen(
                 ) {
                     itemsIndexed(
                         items = uiState.items,
-                        key = { _, item -> "grid_${item.compositeId}" }
+                        key = { index, item -> "grid_${index}_${item.compositeId}" }
                     ) { index, item ->
                         LaunchedEffect(index, uiState.items.size, uiState.hasMore, uiState.isLoadingMore) {
                             if (index >= uiState.items.lastIndex - 3 && uiState.hasMore && !uiState.isLoadingMore) {
@@ -765,15 +800,16 @@ fun MoviesCatalogueScreen(
                     suggestionTagPrefix = "suggestion_item_",
                     onSuggestionClick = { suggestion ->
                         dismissSearch()
+                        val cleanTitle = suggestion.title.trim()
                         if (suggestion.hasNavigableId) {
-                            onOpenDetail(suggestion.providerId, suggestion.id)
-                        } else {
-                            onSubmitSearch(suggestion.title)
+                            onOpenDetail(suggestion.providerId.trim(), suggestion.id.trim())
+                        } else if (cleanTitle.isNotBlank()) {
+                            onSubmitSearch(cleanTitle)
                         }
                     },
                     onSubmitQuery = { q ->
                         keyboardController?.hide()
-                        focusManager.clearFocus()
+                        runCatching { focusManager.clearFocus(force = true) }
                         onSubmitSearch(q)
                     },
                     onClearRecent = onClearSearchHistory,

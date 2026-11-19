@@ -140,7 +140,9 @@ fun MoviePosterCard(
     onToggleWatchlist: ((MovieTitleSummary) -> Unit)? = null,
     onAddToCollection: ((MovieTitleSummary) -> Unit)? = null,
     onMarkWatched: ((MovieTitleSummary) -> Unit)? = null,
-    onHideTitle: ((MovieTitleSummary) -> Unit)? = null
+    onHideTitle: ((MovieTitleSummary) -> Unit)? = null,
+    onRemoveFromViewed: ((MovieTitleSummary) -> Unit)? = null,
+    menuButtonTestTag: String = "poster_actions_${item.id}"
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -148,7 +150,8 @@ fun MoviePosterCard(
     val hasContextualActions = onToggleWatchlist != null ||
         onAddToCollection != null ||
         onMarkWatched != null ||
-        onHideTitle != null
+        onHideTitle != null ||
+        onRemoveFromViewed != null
 
     Column(
         modifier = modifier
@@ -249,7 +252,7 @@ fun MoviePosterCard(
                                     .size(24.dp)
                                     .clip(CircleShape)
                                     .clickable { menuExpanded = true }
-                                    .testTag("poster_actions_${item.id}")
+                                    .testTag(menuButtonTestTag)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
@@ -292,6 +295,16 @@ fun MoviePosterCard(
                                         onClick = {
                                             menuExpanded = false
                                             mark(item)
+                                        }
+                                    )
+                                }
+                                onRemoveFromViewed?.let { removeViewed ->
+                                    DropdownMenuItem(
+                                        text = { Text("Remove from Viewed") },
+                                        modifier = Modifier.testTag("poster_remove_viewed_${item.id}"),
+                                        onClick = {
+                                            menuExpanded = false
+                                            removeViewed(item)
                                         }
                                     )
                                 }

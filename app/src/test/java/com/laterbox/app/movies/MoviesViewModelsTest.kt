@@ -27,11 +27,13 @@ import com.laterbox.app.movies.ui.MoviesCatalogueViewModel
 import com.laterbox.app.movies.ui.MoviesHomeViewModel
 import com.laterbox.app.util.MainDispatcherRule
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -1563,5 +1565,93 @@ class MoviesViewModelsTest {
         vm.saveProgressForEpisode(42_000L, 1_200_000L, "mb_series_ep:1:2")
         advanceUntilIdle()
         assertEquals(listOf(Triple(1, 2, 42_000L)), recordedSaves)
+    }
+
+    @Test
+    fun searchSuggestion_hasNavigableIdRejectsBlankNoneAndMissingProvider() {
+        assertTrue(SearchSuggestion("123", "moviebox", "The Dark Knight").hasNavigableId)
+        assertFalse(SearchSuggestion("", "moviebox", "The Dark Knight").hasNavigableId)
+        assertFalse(SearchSuggestion("   ", "moviebox", "The Dark Knight").hasNavigableId)
+        assertFalse(SearchSuggestion("0", "moviebox", "The Dark Knight").hasNavigableId)
+        assertFalse(SearchSuggestion("None", "moviebox", "The Dark Knight").hasNavigableId)
+        assertFalse(SearchSuggestion("null", "moviebox", "The Dark Knight").hasNavigableId)
+        assertFalse(SearchSuggestion("123", "", "The Dark Knight").hasNavigableId)
+        assertFalse(SearchSuggestion("123", "   ", "The Dark Knight").hasNavigableId)
+        assertFalse(SearchSuggestion("123", "null", "The Dark Knight").hasNavigableId)
+    }
+
+    @Test
+    fun catalogueViewModel_preservesMultiWordEditingAndDropsStaleSuggestionResponses() = runTest {
+        val suggestedQueries = mutableListOf<String>()
+        val delegate = FakeMoviesRepository()
+        val repo = object : MoviesRepository by delegate {
+            override suspend fun getSuggestions(query: String, limit: Int): Result<List<SearchSuggestion>> {
+                suggestedQueries.add(query)
+                return if (query == "the") {
+                    delay(500L)
+                    Result.success(listOf(SearchSuggestion("old_1", "moviebox", "Stale The")))
+                } else {
+                    delay(20L)
+                    Result.success(listOf(SearchSuggestion("dk_1", "moviebox", "The Dark Knight")))
+                }
+            }
+        }
+        val vm = MoviesCatalogueViewModel(repo)
+        vm.initialize("s1")
+        advanceUntilIdle()
+
+        // Preserves trailing & internal spaces in UI state while normalizing for suggestion requests
+        vm.onQueryChange("the")
+        advanceTimeBy(300L)
+        vm.onQueryChange("the  dark   knight ")
+        advanceTimeBy(400L)
+        advanceUntilIdle()
+
+        assertEquals("the  dark   knight ", vm.uiState.value.query)
+        assertEquals(listOf("The Dark Knight"), vm.uiState.value.suggestions.map { it.title })
+        assertTrue(suggestedQueries.contains("the dark knight"))
+
+        vm.submitSearch()
+        advanceUntilIdle()
+        assertEquals("the dark knight", vm.uiState.value.query)
+
+        vm.clearSearch()
+        advanceUntilIdle()
+        assertEquals("", vm.uiState.value.query)
+        assertTrue(vm.uiState.value.suggestions.isEmpty())
+    }
+
+    @Test
+    fun moviesHomeViewModel_removeRecentlyViewedRemovesItemAndEmitsFeedback() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = createIsolatedPrefs(context)
+        val removedTargets = mutableListOf<Pair<String, String>>()
+        val recentItem = MovieTitleSummary(
+            id = "rv_1",
+            providerId = "moviebox",
+            title = "Arrival",
+            kind = MediaKind.MOVIE,
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+        )
+        val recentlyViewedState = MutableStateFlow(listOf(recentItem))
+        val delegate = FakeMoviesRepository()
+        val repo = object : MoviesRepository by delegate {
+            override fun observeRecentlyViewed(limit: Int): Flow<List<MovieTitleSummary>> = recentlyViewedState
+            override suspend fun removeRecentlyViewed(providerId: String, titleId: String) {
+                removedTargets.add(providerId to titleId)
+                recentlyViewedState.value = recentlyViewedState.value.filterNot {
+                    it.providerId == providerId && it.id == titleId
+                }
+            }
+        }
+        val vm = MoviesHomeViewModel(repo, prefs)
+        vm.uiState.first { !it.isLoading }
+
+        vm.removeRecentlyViewed(recentItem)
+        advanceUntilIdle()
+
+        assertEquals(listOf("moviebox" to "rv_1"), removedTargets)
+        assertTrue(vm.uiState.value.recentlyViewed.isEmpty())
+        assertEquals("Removed Arrival from Viewed", vm.uiState.value.actionFeedbackMessage)
     }
 }

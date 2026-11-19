@@ -198,7 +198,7 @@ fun LaterboxApp(
     val keyboardController = LocalSoftwareKeyboardController.current
 
     val collapseInboxComposer: () -> Unit = {
-        focusManager.clearFocus()
+        runCatching { focusManager.clearFocus(force = true) }
         keyboardController?.hide()
         isInboxComposerExpanded = false
     }
@@ -1130,6 +1130,7 @@ fun LaterboxApp(
                                 onRestartContinueWatching = moviesHomeViewModel::restartFromBeginning,
                                 onRemoveContinueWatching = moviesHomeViewModel::removeFromContinueWatching,
                                 onMarkContinueWatchingWatched = moviesHomeViewModel::markHistoryEntryWatched,
+                                onRemoveRecentlyViewed = moviesHomeViewModel::removeRecentlyViewed,
                                 onOpenCollection = { colId, colName ->
                                     navController.navigate(
                                         LaterboxDestination.CollectionDetail.createRoute(colId, colName)
@@ -1194,9 +1195,18 @@ fun LaterboxApp(
                                 onRetry = moviesCatalogueViewModel::retry,
                                 onClearSearchHistory = moviesCatalogueViewModel::clearSearchHistory,
                                 onOpenDetail = { providerId, titleId ->
-                                    navController.navigate(
-                                        LaterboxDestination.MovieDetail.createRoute(providerId, titleId)
-                                    )
+                                    val cleanProvider = providerId.trim()
+                                    val cleanId = titleId.trim()
+                                    if (cleanProvider.isNotBlank() &&
+                                        cleanId.isNotBlank() &&
+                                        !cleanId.equals("0", ignoreCase = true) &&
+                                        !cleanId.equals("None", ignoreCase = true) &&
+                                        !cleanId.equals("null", ignoreCase = true)
+                                    ) {
+                                        navController.navigate(
+                                            LaterboxDestination.MovieDetail.createRoute(cleanProvider, cleanId)
+                                        )
+                                    }
                                 },
                                 onSelectLanguage = moviesCatalogueViewModel::selectLanguage,
                                 onSelectYear = moviesCatalogueViewModel::selectYear,
