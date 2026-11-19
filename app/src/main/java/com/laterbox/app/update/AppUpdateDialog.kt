@@ -215,6 +215,13 @@ fun AppUpdateDialog(
                         currentStep = UpdateStep.FAILED
                         return@launch
                     }
+                    if (patchError?.kind?.isBackendUnreachable == true) {
+                        // Backend and public GitHub paths were both already tried; a full APK
+                        // download would only repeat the same network failure.
+                        errorMessage = patchError?.message ?: "Couldn't reach the update server."
+                        currentStep = UpdateStep.FAILED
+                        return@launch
+                    }
                     Log.w("AppUpdateDialog", "Delta patch download failed, falling back to full APK download")
                     startFullDownload("Delta update could not be applied. Downloading complete update...")
                     return@launch

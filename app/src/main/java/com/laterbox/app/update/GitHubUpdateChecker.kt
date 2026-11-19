@@ -215,7 +215,7 @@ object GitHubUpdateChecker {
                 manifestAsset.downloadUrl
             }
             val url = URL(targetUrl)
-            conn = (url.openConnection() as HttpURLConnection).apply {
+            conn = UpdateNetworkSupport.connectionFactory(url).apply {
                 requestMethod = "GET"
                 connectTimeout = 10_000
                 readTimeout = 10_000
@@ -241,13 +241,87 @@ object GitHubUpdateChecker {
         }
     }
 
+    private const val FALLBACK_CACHE_TTL_MS = 10 * 60 * 1000L
+    private const val FALLBACK_FORCE_COOLDOWN_MS = 60 * 1000L
+
+    private data class FallbackCacheEntry(
+        val body: UpdateCheckResult,
+        val currentVersionName: String,
+        val storedAtMs: Long
+    )
+
+    @Volatile
+    private var fallbackCache: FallbackCacheEntry? = null
+
+    internal var clock: () -> Long = { System.currentTimeMillis() }
+
+    internal fun resetFallbackCache() {
+        fallbackCache = null
+    }
+
+    private fun isBackendLatestUrl(url: String): Boolean = try {
+        (java.net.URI(url).path ?: "").trimEnd('/').endsWith("/updates/laterbox/latest")
+    } catch (_: Exception) {
+        false
+    }
+
+    private fun isNetworkLevelFailure(cause: Throwable?): Boolean =
+        cause is UnknownHostException || cause is ConnectException ||
+            cause is java.net.NoRouteToHostException || cause is SocketTimeoutException
+
+    /**
+     * Checks the backend first. Only when the backend is unreachable at the network level
+     * (DNS / connect / timeout) does it consult the unauthenticated public GitHub Releases API.
+     * Auth, rate-limit, API and malformed-data failures never trigger the fallback.
+     */
     suspend fun checkForUpdate(
         currentVersionName: String,
         releasesUrl: String = buildBackendUpdateUrl(),
         deviceSupportedAbis: Array<String> = Build.SUPPORTED_ABIS ?: emptyArray(),
         context: Context? = null,
         appCheckTokenProvider: (suspend (Boolean) -> String?)? = null,
-        forceRefresh: Boolean = false
+        forceRefresh: Boolean = false,
+        publicFallbackUrl: String? = UpdateNetworkSupport.PUBLIC_RELEASES_LATEST_URL
+    ): UpdateCheckResult {
+        val primary = checkForUpdateAt(
+            currentVersionName, releasesUrl, deviceSupportedAbis, context, appCheckTokenProvider, forceRefresh
+        )
+        if (primary !is UpdateCheckResult.NetworkError ||
+            publicFallbackUrl == null ||
+            !isNetworkLevelFailure(primary.cause) ||
+            !isBackendLatestUrl(releasesUrl)
+        ) {
+            return primary
+        }
+        val host = UpdateNetworkSupport.safeHost(releasesUrl)
+        Log.w(TAG, "Backend unreachable host=$host cause=${primary.cause?.javaClass?.simpleName}; trying public GitHub release metadata")
+        val now = clock()
+        val cached = fallbackCache
+        if (cached != null && cached.currentVersionName == currentVersionName) {
+            val age = now - cached.storedAtMs
+            val ttl = if (forceRefresh) FALLBACK_FORCE_COOLDOWN_MS else FALLBACK_CACHE_TTL_MS
+            if (age in 0 until ttl) return cached.body
+        }
+        val fallback = checkForUpdateAt(
+            currentVersionName, publicFallbackUrl, deviceSupportedAbis, context, null, false
+        )
+        return when (fallback) {
+            is UpdateCheckResult.UpdateAvailable, is UpdateCheckResult.UpToDate -> {
+                fallbackCache = FallbackCacheEntry(fallback, currentVersionName, now)
+                fallback
+            }
+            is UpdateCheckResult.RateLimited -> fallback
+            else -> primary
+        }
+    }
+
+    private suspend fun checkForUpdateAt(
+        currentVersionName: String,
+        releasesUrl: String,
+        deviceSupportedAbis: Array<String>,
+        context: Context?,
+        appCheckTokenProvider: (suspend (Boolean) -> String?)?,
+        forceRefresh: Boolean
     ): UpdateCheckResult = withContext(Dispatchers.IO) {
         val effectiveUrl = withRefreshQueryIfApplicable(releasesUrl, forceRefresh)
         try {
@@ -262,7 +336,7 @@ object GitHubUpdateChecker {
                     } else {
                         null
                     }
-                    connection = (url.openConnection() as HttpURLConnection).apply {
+                    connection = UpdateNetworkSupport.connectionFactory(url).apply {
                         requestMethod = "GET"
                         connectTimeout = 12_000
                         readTimeout = 15_000
@@ -483,7 +557,7 @@ object GitHubUpdateChecker {
 
             UpdateCheckResult.UpdateAvailable(info)
         } catch (e: UnknownHostException) {
-            UpdateCheckResult.NetworkError("Could not resolve host. Please check your internet connection.", e)
+            UpdateCheckResult.NetworkError(UpdateNetworkSupport.userMessage(UpdateFailureKind.DNS), e)
         } catch (e: SocketTimeoutException) {
             UpdateCheckResult.NetworkError("Update check timed out while connecting to update server.", e)
         } catch (e: ConnectException) {
