@@ -1,6 +1,7 @@
 package com.laterbox.app.movies
 
 import android.content.Context
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.test.core.app.ApplicationProvider
 import com.laterbox.app.data.preferences.UserPreferencesRepository
 import com.laterbox.app.movies.domain.model.BrowseSection
@@ -30,6 +31,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -38,6 +40,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
@@ -49,6 +52,17 @@ class MoviesViewModelsTest {
 
     @get:Rule
     val mainDispatcherRule = MainDispatcherRule()
+
+    @get:Rule
+    val tempFolder = TemporaryFolder()
+
+    private fun TestScope.createIsolatedPrefs(context: Context): UserPreferencesRepository =
+        UserPreferencesRepository(
+            context = context,
+            dataStore = PreferenceDataStoreFactory.create(scope = backgroundScope) {
+                tempFolder.newFile("prefs_${System.nanoTime()}.preferences_pb")
+            }
+        )
 
     private class FakeMoviesRepository : MoviesRepository {
         var shouldFailHome = false
@@ -229,7 +243,7 @@ class MoviesViewModelsTest {
     @Test
     fun homeViewModel_handlesErrorRetryAndWatchlistToggle() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val prefs = UserPreferencesRepository(context)
+        val prefs = createIsolatedPrefs(context)
         val repo = FakeMoviesRepository().apply { shouldFailHome = true }
         val vm = MoviesHomeViewModel(repo, prefs)
         val failedState = vm.uiState.first { !it.isLoading }
@@ -316,7 +330,7 @@ class MoviesViewModelsTest {
     @Test
     fun homeViewModel_handlesInlineSearchSuggestionsFiltersAndTmdbPromptDismiss() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val prefs = UserPreferencesRepository(context)
+        val prefs = createIsolatedPrefs(context)
         val repo = FakeMoviesRepository()
         val vm = MoviesHomeViewModel(repo, prefs)
         vm.uiState.first { !it.isLoading }
@@ -449,7 +463,7 @@ class MoviesViewModelsTest {
     @Test
     fun homeViewModel_updatesMovieBoxConfigAndTriggersRefresh() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val prefs = UserPreferencesRepository(context)
+        val prefs = createIsolatedPrefs(context)
         val repo = FakeMoviesRepository()
         val vm = MoviesHomeViewModel(repo, prefs)
         vm.uiState.first { !it.isLoading }
@@ -753,7 +767,7 @@ class MoviesViewModelsTest {
     @Test
     fun homeViewModel_loadsTopRatedAndNewestRailsAndAppliesShortcutsAndCountries() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val prefs = UserPreferencesRepository(context)
+        val prefs = createIsolatedPrefs(context)
         val repo = FakeMoviesRepository()
         val vm = MoviesHomeViewModel(repo, prefs)
         val initial = vm.uiState.first { !it.isLoading }
@@ -952,7 +966,7 @@ class MoviesViewModelsTest {
     @Test
     fun playerViewModel_picksPreferredDefaultQualityLoadsNextEpisodePreviewAndRelatedTitles() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val prefs = UserPreferencesRepository(context)
+        val prefs = createIsolatedPrefs(context)
         prefs.setMoviesDefaultQualityHeight(1080)
 
         val baseFake = FakeMoviesRepository()
@@ -1020,7 +1034,7 @@ class MoviesViewModelsTest {
     @Test
     fun detailViewModel_controlsInlineTrailerPersistsMutePreferenceAndHandlesError() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val prefs = UserPreferencesRepository(context)
+        val prefs = createIsolatedPrefs(context)
         prefs.setMoviesTrailerMuted(false)
 
         val trailerCalls = mutableListOf<Triple<String, Long, Long>>()
@@ -1096,7 +1110,7 @@ class MoviesViewModelsTest {
             .setTransactionExecutor { it.run() }
             .build()
         try {
-            val prefs = UserPreferencesRepository(context)
+            val prefs = createIsolatedPrefs(context)
             val colRepo = com.laterbox.app.data.repository.CollectionRepository(db.collectionDao())
             val colId = colRepo.createCollection("Weekend Watch")
             val shortComedy = MovieTitleSummary(
@@ -1338,7 +1352,7 @@ class MoviesViewModelsTest {
         try {
             val colRepo = com.laterbox.app.data.repository.CollectionRepository(db.collectionDao())
             val colId = colRepo.createCollection("Top Series")
-            val prefs = UserPreferencesRepository(context)
+            val prefs = createIsolatedPrefs(context)
             val seriesSummary = MovieTitleSummary(
                 id = "mb_series",
                 providerId = "moviebox",
@@ -1460,7 +1474,7 @@ class MoviesViewModelsTest {
     @Test
     fun playerViewModel_episodeTransitionClearsStartPositionAndIgnoresStaleEpisodeCallbacks() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val prefs = UserPreferencesRepository(context)
+        val prefs = createIsolatedPrefs(context)
         val recordedSaves = mutableListOf<Triple<Int?, Int?, Long>>()
         val seriesSummary = MovieTitleSummary(
             id = "mb_series_ep",

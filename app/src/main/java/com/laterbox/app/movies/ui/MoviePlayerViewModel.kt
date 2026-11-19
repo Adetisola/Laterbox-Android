@@ -149,6 +149,15 @@ class MoviePlayerViewModel(
         activeProviderId = providerId
 
         loadJob?.cancel()
+        _uiState.update {
+            MoviePlayerUiState(
+                isLoading = true,
+                activeTitleId = titleId,
+                seasonNumber = seasonNumber,
+                episodeNumber = episodeNumber,
+                playbackPreferences = it.playbackPreferences
+            )
+        }
         loadJob = viewModelScope.launch {
             val currentPrefs = userPreferencesRepository?.userPreferencesFlow?.firstOrNull()?.let { prefs ->
                 PlayerPlaybackPreferences(
@@ -165,13 +174,7 @@ class MoviePlayerViewModel(
             } ?: _uiState.value.playbackPreferences
 
             _uiState.update {
-                MoviePlayerUiState(
-                    isLoading = true,
-                    activeTitleId = titleId,
-                    seasonNumber = seasonNumber,
-                    episodeNumber = episodeNumber,
-                    playbackPreferences = currentPrefs
-                )
+                it.copy(playbackPreferences = currentPrefs)
             }
 
             val initialDetails = moviesRepository.getDetails(providerId, titleId, forceRefresh = false).getOrNull()

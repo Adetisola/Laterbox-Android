@@ -245,7 +245,10 @@ data class UserPreferences(
 
 val Context.userDataStore: DataStore<Preferences> by preferencesDataStore(name = "user_preferences")
 
-class UserPreferencesRepository(private val context: Context) {
+class UserPreferencesRepository(
+    private val context: Context,
+    private val dataStore: DataStore<Preferences> = context.userDataStore
+) {
 
     private object PreferencesKeys {
         val THEME_MODE = stringPreferencesKey("theme_mode")
@@ -359,7 +362,7 @@ class UserPreferencesRepository(private val context: Context) {
         val SUBTITLE_EDGE_TYPE = intPreferencesKey("subtitle_edge_type")
     }
 
-    val userPreferencesFlow: Flow<UserPreferences> = context.userDataStore.data.map { preferences ->
+    val userPreferencesFlow: Flow<UserPreferences> = dataStore.data.map { preferences ->
         val themeModeStr = preferences[PreferencesKeys.THEME_MODE] ?: ThemeMode.SYSTEM.name
         val themeMode = try {
             ThemeMode.valueOf(themeModeStr)
@@ -587,25 +590,25 @@ class UserPreferencesRepository(private val context: Context) {
         get() = userPreferencesFlow
 
     suspend fun setThemeMode(mode: ThemeMode) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.THEME_MODE] = mode.name
         }
     }
 
     suspend fun setAutoMarkAsRead(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.AUTO_MARK_AS_READ] = enabled
         }
     }
 
     suspend fun setDefaultCardTapAction(action: CardTapAction) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.DEFAULT_CARD_TAP_ACTION] = action.name
         }
     }
 
     suspend fun setIncludeInBackup(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.INCLUDE_IN_BACKUP] = enabled
         }
     }
@@ -613,7 +616,7 @@ class UserPreferencesRepository(private val context: Context) {
     suspend fun setAllowSystemBackup(enabled: Boolean) = setIncludeInBackup(enabled)
 
     suspend fun setDefaultCollectionId(collectionId: Long?) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             if (collectionId != null) {
                 preferences[PreferencesKeys.DEFAULT_COLLECTION_ID] = collectionId
             } else {
@@ -623,25 +626,25 @@ class UserPreferencesRepository(private val context: Context) {
     }
 
     suspend fun setInboxViewMode(mode: InboxViewMode) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.INBOX_VIEW_MODE] = mode.name
         }
     }
 
     suspend fun setFontSizeScale(scale: FontSizeScale) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.FONT_SIZE_SCALE] = scale.name
         }
     }
 
     suspend fun setHasCompletedOnboarding(completed: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.HAS_COMPLETED_ONBOARDING] = completed
         }
     }
 
     suspend fun setUserName(name: String) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             val trimmed = name.trim().take(50)
             if (trimmed.isNotBlank()) {
                 preferences[PreferencesKeys.USER_NAME] = trimmed
@@ -652,100 +655,100 @@ class UserPreferencesRepository(private val context: Context) {
     }
 
     suspend fun setSmartRemindersEnabled(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.SMART_REMINDERS_ENABLED] = enabled
         }
     }
 
     suspend fun setMorningEveningEnabled(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.MORNING_EVENING_ENABLED] = enabled
             preferences[PreferencesKeys.SCHEDULES_MIGRATED_V2] = true
         }
     }
 
     suspend fun setMorningTime(hour: Int, minute: Int) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.MORNING_HOUR] = hour
             preferences[PreferencesKeys.MORNING_MINUTE] = minute
         }
     }
 
     suspend fun setEveningTime(hour: Int, minute: Int) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.EVENING_HOUR] = hour
             preferences[PreferencesKeys.EVENING_MINUTE] = minute
         }
     }
 
     suspend fun setWeekendRoundupEnabled(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.WEEKEND_ROUNDUP_ENABLED] = enabled
             preferences[PreferencesKeys.SCHEDULES_MIGRATED_V2] = true
         }
     }
 
     suspend fun setWeekendRoundupTime(hour: Int, minute: Int) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.WEEKEND_ROUNDUP_HOUR] = hour
             preferences[PreferencesKeys.WEEKEND_ROUNDUP_MINUTE] = minute
         }
     }
 
     suspend fun setDailyDigestEnabled(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.DAILY_DIGEST_ENABLED] = enabled
             preferences[PreferencesKeys.SCHEDULES_MIGRATED_V2] = true
         }
     }
 
     suspend fun setDailyDigestTime(hour: Int, minute: Int) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.DAILY_DIGEST_HOUR] = hour
             preferences[PreferencesKeys.DAILY_DIGEST_MINUTE] = minute
         }
     }
 
     suspend fun setDailyDigestWeekdaysOnly(weekdaysOnly: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.DAILY_DIGEST_WEEKDAYS_ONLY] = weekdaysOnly
         }
     }
 
     suspend fun setCustomScheduleEnabled(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.CUSTOM_SCHEDULE_ENABLED] = enabled
             preferences[PreferencesKeys.SCHEDULES_MIGRATED_V2] = true
         }
     }
 
     suspend fun setCustomScheduleDays(days: Set<Int>) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.CUSTOM_SCHEDULE_DAYS] = days.map { it.toString() }.toSet()
         }
     }
 
     suspend fun setCustomScheduleTime(hour: Int, minute: Int) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.CUSTOM_SCHEDULE_HOUR] = hour
             preferences[PreferencesKeys.CUSTOM_SCHEDULE_MINUTE] = minute
         }
     }
 
     suspend fun setSmartReminderPersistence(persistence: SmartReminderPersistence) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.SMART_REMINDER_PERSISTENCE] = persistence.name
         }
     }
 
     suspend fun setGeminiApiKey(apiKey: String) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.GEMINI_API_KEY] = apiKey.trim()
         }
     }
 
     suspend fun recordDeliveredSlot(slotKey: String) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             val current = preferences[PreferencesKeys.DELIVERED_SLOT_KEYS] ?: emptySet()
             // Keep at most 60 recent slot keys to prevent unbounded growth
             val updated = (current + slotKey).toList().takeLast(60).toSet()
@@ -754,19 +757,19 @@ class UserPreferencesRepository(private val context: Context) {
     }
 
     suspend fun setAccessibilityCaptureEnabled(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.ACCESSIBILITY_CAPTURE_ENABLED] = enabled
         }
     }
 
     suspend fun setClipboardSuggestionEnabled(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.CLIPBOARD_SUGGESTION_ENABLED] = enabled
         }
     }
 
     suspend fun recordHandledClipboardHash(hash: String, nowMs: Long = System.currentTimeMillis()) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             val current = preferences[PreferencesKeys.RECENT_CLIPBOARD_HISTORY] ?: emptySet()
             val retentionMs = 7L * 24 * 60 * 60 * 1000L // 7-day retention
             val cutoff = nowMs - retentionMs
@@ -786,13 +789,13 @@ class UserPreferencesRepository(private val context: Context) {
     }
 
     suspend fun setExcludedCapturePackages(packages: Set<String>) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.EXCLUDED_CAPTURE_PACKAGES] = packages
         }
     }
 
     suspend fun toggleExcludedCapturePackage(packageName: String) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             val current = preferences[PreferencesKeys.EXCLUDED_CAPTURE_PACKAGES] ?: emptySet()
             val updated = if (current.contains(packageName)) current - packageName else current + packageName
             preferences[PreferencesKeys.EXCLUDED_CAPTURE_PACKAGES] = updated
@@ -800,52 +803,52 @@ class UserPreferencesRepository(private val context: Context) {
     }
 
     suspend fun setOverlayPosition(xRatio: Float, yRatio: Float) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.OVERLAY_X_RATIO] = xRatio.coerceIn(0f, 1f)
             preferences[PreferencesKeys.OVERLAY_Y_RATIO] = yRatio.coerceIn(0f, 1f)
         }
     }
 
     suspend fun recordUpdateCheck(timestamp: Long = System.currentTimeMillis()) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.LAST_UPDATE_CHECK_TIME] = timestamp
         }
     }
 
     suspend fun dismissUpdate(version: String, timestamp: Long = System.currentTimeMillis()) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.DISMISSED_UPDATE_VERSION] = version
             preferences[PreferencesKeys.DISMISSED_UPDATE_TIMESTAMP] = timestamp
         }
     }
 
     suspend fun setMediaDownloadNetworkPolicy(policy: MediaDownloadNetworkPolicy) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.MEDIA_DOWNLOAD_NETWORK_POLICY] = policy.name
         }
     }
 
     suspend fun setAutoInspectMediaOnSave(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.AUTO_INSPECT_MEDIA_ON_SAVE] = enabled
         }
     }
 
     suspend fun setFastEngineEnabled(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.FAST_ENGINE_ENABLED] = enabled
         }
     }
 
     suspend fun recordYtDlpUpdate(version: String, timestamp: Long = System.currentTimeMillis()) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.YTDLP_VERSION] = version
             preferences[PreferencesKeys.LAST_YTDLP_UPDATE_CHECK] = timestamp
         }
     }
 
     suspend fun setCustomExportDirectory(uriString: String?, displayName: String?) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             if (uriString != null) {
                 preferences[PreferencesKeys.CUSTOM_EXPORT_DIRECTORY_URI] = uriString
             } else {
@@ -860,81 +863,81 @@ class UserPreferencesRepository(private val context: Context) {
     }
 
     suspend fun clearCustomExportDirectory() {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences.remove(PreferencesKeys.CUSTOM_EXPORT_DIRECTORY_URI)
             preferences.remove(PreferencesKeys.CUSTOM_EXPORT_DIRECTORY_NAME)
         }
     }
 
     suspend fun setAssistantEnabled(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.ASSISTANT_ENABLED] = enabled
         }
     }
 
     suspend fun setAssistantAiDisclosureAccepted(accepted: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.ASSISTANT_AI_DISCLOSURE_ACCEPTED] = accepted
         }
     }
 
     suspend fun setAudioTranscriptionConsentAccepted(accepted: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.AUDIO_TRANSCRIPTION_CONSENT_ACCEPTED] = accepted
         }
     }
 
     suspend fun setSmartNotificationsExtractionFailure(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.SMART_NOTIF_EXTRACTION_FAILURE] = enabled
         }
     }
 
     suspend fun setSmartNotificationsDownloadFailure(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.SMART_NOTIF_DOWNLOAD_FAILURE] = enabled
         }
     }
 
     suspend fun setSmartNotificationsAppHealth(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.SMART_NOTIF_APP_HEALTH] = enabled
         }
     }
 
     suspend fun setSmartNotificationsSummaries(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.SMART_NOTIF_SUMMARIES] = enabled
         }
     }
 
     suspend fun setSmartNotificationsTips(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.SMART_NOTIF_TIPS] = enabled
         }
     }
 
     suspend fun setSmartNotificationsMoviesTv(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.SMART_NOTIF_MOVIES_TV] = enabled
         }
     }
 
     suspend fun setQuietHoursEnabled(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.QUIET_HOURS_ENABLED] = enabled
         }
     }
 
     suspend fun setQuietHoursWindow(startHour: Int, endHour: Int) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.QUIET_HOURS_START_HOUR] = startHour.coerceIn(0, 23)
             preferences[PreferencesKeys.QUIET_HOURS_END_HOUR] = endHour.coerceIn(0, 23)
         }
     }
 
     suspend fun recordShownTip(tipId: String, timestamp: Long = System.currentTimeMillis()) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             val current = preferences[PreferencesKeys.SHOWN_TIP_IDS] ?: emptySet()
             preferences[PreferencesKeys.SHOWN_TIP_IDS] = current + tipId
             preferences[PreferencesKeys.LAST_TIP_NOTIFICATION_AT] = timestamp
@@ -942,31 +945,31 @@ class UserPreferencesRepository(private val context: Context) {
     }
 
     suspend fun resetShownTips() {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences.remove(PreferencesKeys.SHOWN_TIP_IDS)
         }
     }
 
     suspend fun recordAppHealthAlertPosted(timestamp: Long = System.currentTimeMillis()) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.LAST_APP_HEALTH_ALERT_AT] = timestamp
         }
     }
 
     suspend fun recordSummaryNotificationPosted(timestamp: Long = System.currentTimeMillis()) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.LAST_SUMMARY_NOTIFICATION_AT] = timestamp
         }
     }
 
     suspend fun recordMoviesNotificationPosted(timestamp: Long = System.currentTimeMillis()) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.LAST_MOVIES_NOTIFICATION_AT] = timestamp
         }
     }
 
     suspend fun recordFirstLaunchIfNeeded(timestamp: Long = System.currentTimeMillis()) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             val current = preferences[PreferencesKeys.FIRST_LAUNCH_AT] ?: 0L
             if (current <= 0L) {
                 preferences[PreferencesKeys.FIRST_LAUNCH_AT] = timestamp
@@ -975,7 +978,7 @@ class UserPreferencesRepository(private val context: Context) {
     }
 
     suspend fun recordFirstLinkSavedIfNeeded(timestamp: Long = System.currentTimeMillis()) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             val current = preferences[PreferencesKeys.FIRST_LINK_SAVED_AT] ?: 0L
             if (current <= 0L) {
                 preferences[PreferencesKeys.FIRST_LINK_SAVED_AT] = timestamp
@@ -984,28 +987,28 @@ class UserPreferencesRepository(private val context: Context) {
     }
 
     suspend fun incrementReaderOpens() {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.READER_OPENS_COUNT] =
                 (preferences[PreferencesKeys.READER_OPENS_COUNT] ?: 0) + 1
         }
     }
 
     suspend fun incrementRemindersDelivered() {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.REMINDERS_DELIVERED_COUNT] =
                 (preferences[PreferencesKeys.REMINDERS_DELIVERED_COUNT] ?: 0) + 1
         }
     }
 
     suspend fun incrementRemindersOpened() {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.REMINDERS_OPENED_COUNT] =
                 (preferences[PreferencesKeys.REMINDERS_OPENED_COUNT] ?: 0) + 1
         }
     }
 
     suspend fun recordCaptureSource(source: com.laterbox.app.capture.CaptureSource) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             when (source) {
                 com.laterbox.app.capture.CaptureSource.SHARE_SHEET,
                 com.laterbox.app.capture.CaptureSource.PROCESS_TEXT -> {
@@ -1027,7 +1030,7 @@ class UserPreferencesRepository(private val context: Context) {
     }
 
     suspend fun resetActivityCounters() {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences.remove(PreferencesKeys.REMINDERS_DELIVERED_COUNT)
             preferences.remove(PreferencesKeys.REMINDERS_OPENED_COUNT)
             preferences.remove(PreferencesKeys.READER_OPENS_COUNT)
@@ -1038,7 +1041,7 @@ class UserPreferencesRepository(private val context: Context) {
     }
 
     suspend fun setTmdbApiKey(apiKey: String) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             val trimmed = apiKey.trim()
             if (trimmed.isNotBlank()) {
                 preferences[PreferencesKeys.TMDB_API_KEY] = trimmed
@@ -1049,7 +1052,7 @@ class UserPreferencesRepository(private val context: Context) {
     }
 
     suspend fun setMoviesUseSampleFixturesOnly(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             if (com.laterbox.app.BuildConfig.DEBUG) {
                 preferences[PreferencesKeys.DEBUG_MOVIES_SAMPLE_FIXTURES] = enabled
             } else {
@@ -1063,7 +1066,7 @@ class UserPreferencesRepository(private val context: Context) {
     }
 
     suspend fun migrateLegacyMoviesPreferences() {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             val alreadyMigrated = preferences[PreferencesKeys.MOVIES_PREFS_MIGRATED_V2] ?: false
             val hasLegacyKeys = preferences.contains(PreferencesKeys.MOVIES_PROVIDER_MODE) ||
                 preferences.contains(PreferencesKeys.MOVIES_USE_SAMPLE_FIXTURES_ONLY) ||
@@ -1079,7 +1082,7 @@ class UserPreferencesRepository(private val context: Context) {
 
     suspend fun setMovieBoxApiBaseUrl(baseUrl: String) {
         val normalized = MovieBoxEndpointConfig.normalizeBaseUrl(baseUrl)
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             if (normalized.isNotBlank()) {
                 preferences[PreferencesKeys.MOVIEBOX_API_BASE_URL] = normalized
             } else {
@@ -1089,67 +1092,67 @@ class UserPreferencesRepository(private val context: Context) {
     }
 
     suspend fun setMoviesDoubleTapSeekSeconds(seconds: Int) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.MOVIES_DOUBLE_TAP_SEEK_SECONDS] = seconds.coerceIn(5, 60)
         }
     }
 
     suspend fun setMoviesSwipeToSeekEnabled(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.MOVIES_SWIPE_TO_SEEK_ENABLED] = enabled
         }
     }
 
     suspend fun setMoviesSwipeSeekSensitivity(sensitivity: Float) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.MOVIES_SWIPE_SEEK_SENSITIVITY] = sensitivity.coerceIn(0.25f, 2.0f)
         }
     }
 
     suspend fun setMoviesBrightnessGestureEnabled(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.MOVIES_BRIGHTNESS_GESTURE_ENABLED] = enabled
         }
     }
 
     suspend fun setMoviesVolumeGestureEnabled(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.MOVIES_VOLUME_GESTURE_ENABLED] = enabled
         }
     }
 
     suspend fun setMoviesAutoplayNextEpisode(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.MOVIES_AUTOPLAY_NEXT_EPISODE] = enabled
         }
     }
 
     suspend fun setMoviesAutoplayCountdownSeconds(seconds: Int) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.MOVIES_AUTOPLAY_COUNTDOWN_SECONDS] = seconds.coerceIn(3, 30)
         }
     }
 
     suspend fun setMoviesDefaultQualityHeight(height: Int) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.MOVIES_DEFAULT_QUALITY_HEIGHT] = height.coerceIn(240, 2160)
         }
     }
 
     suspend fun setMoviesTrailerMuted(muted: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.MOVIES_TRAILER_MUTED] = muted
         }
     }
 
     suspend fun setSubtitleUseSystemCaptions(enabled: Boolean) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.SUBTITLE_USE_SYSTEM_CAPTIONS] = enabled
         }
     }
 
     suspend fun setSubtitleStyleConfig(config: SubtitleStyleConfig) {
-        context.userDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PreferencesKeys.SUBTITLE_USE_SYSTEM_CAPTIONS] = config.useSystemCaptions
             preferences[PreferencesKeys.SUBTITLE_FONT_SIZE_SP] = config.fontSizeSp.coerceIn(12f, 36f)
             preferences[PreferencesKeys.SUBTITLE_TEXT_COLOR_ARGB] = config.textColorArgb
