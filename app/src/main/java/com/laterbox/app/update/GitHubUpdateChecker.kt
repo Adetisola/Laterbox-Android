@@ -189,10 +189,15 @@ object GitHubUpdateChecker {
         }
     }
 
+    private data class ManifestFetchOutcome(
+        val manifest: DeltaManifest? = null,
+        val errorDetail: String? = null
+    )
+
     private suspend fun fetchDeltaManifest(
         manifestAsset: ReleaseAsset,
         appCheckTokenProvider: (suspend (Boolean) -> String?)? = null
-    ): DeltaManifest? {
+    ): ManifestFetchOutcome {
         var conn: HttpURLConnection? = null
         return try {
             val targetUrl = if (ApkInstallerHelper.isBackendAssetResolverUrl(manifestAsset.downloadUrl)) {
@@ -200,7 +205,12 @@ object GitHubUpdateChecker {
                     resolverUrl = manifestAsset.downloadUrl,
                     appCheckTokenProvider = appCheckTokenProvider
                 )
-                resolved.downloadUrl ?: return null
+                if (resolved.downloadUrl == null) {
+                    return ManifestFetchOutcome(
+                        errorDetail = resolved.errorMessage ?: "Failed to resolve download URL for delta-manifest.json"
+                    )
+                }
+                resolved.downloadUrl
             } else {
                 manifestAsset.downloadUrl
             }
@@ -212,14 +222,20 @@ object GitHubUpdateChecker {
                 setRequestProperty("User-Agent", "Laterbox-App")
                 setRequestProperty("Accept", "application/json")
             }
-            if (conn.responseCode in 200..299) {
+            val statusCode = conn.responseCode
+            if (statusCode in 200..299) {
                 val text = conn.inputStream.bufferedReader().use { it.readText() }
-                DeltaManifest.fromJson(text)
+                val parsed = DeltaManifest.fromJson(text)
+                if (parsed != null) {
+                    ManifestFetchOutcome(manifest = parsed)
+                } else {
+                    ManifestFetchOutcome(errorDetail = "delta-manifest.json failed schema validation or JSON parsing")
+                }
             } else {
-                null
+                ManifestFetchOutcome(errorDetail = "delta-manifest.json download returned HTTP $statusCode")
             }
-        } catch (_: Exception) {
-            null
+        } catch (e: Exception) {
+            ManifestFetchOutcome(errorDetail = "Exception fetching delta-manifest.json: ${e.message ?: e::class.java.simpleName}")
         } finally {
             conn?.disconnect()
         }
@@ -396,52 +412,73 @@ object GitHubUpdateChecker {
                 return@withContext UpdateCheckResult.NoCompatibleApk(cleanVersion, deviceSupportedAbis.toList())
             }
 
-            // Inspect inline delta_manifest from backend (or fallback to manifest asset) when context is available
-            var deltaPatchInfo: DeltaPatchInfo? = null
-            if (context != null) {
-                try {
+            val deltaOutcome = resolveDeltaPatch(
+                context = context,
+                deviceSupportedAbis = deviceSupportedAbis,
+                parsedAssets = parsedAssets,
+                appCheckTokenProvider = appCheckTokenProvider,
+                manifestProvider = {
                     val inlineManifestJson = root.optJSONObject("delta_manifest")
-                    val manifest = if (inlineManifestJson != null) {
-                        DeltaManifest.fromJson(inlineManifestJson.toString())
+                    if (inlineManifestJson != null) {
+                        val parsed = DeltaManifest.fromJson(inlineManifestJson.toString())
+                        if (parsed != null) {
+                            ManifestFetchOutcome(manifest = parsed)
+                        } else {
+                            ManifestFetchOutcome(errorDetail = "Inline delta_manifest failed schema validation or JSON parsing")
+                        }
                     } else {
                         val manifestAsset = parsedAssets.firstOrNull {
                             it.name.equals(DeltaManifest.MANIFEST_FILENAME, ignoreCase = true)
                         }
-                        manifestAsset?.let { fetchDeltaManifest(it, appCheckTokenProvider) }
-                    }
-
-                    if (manifest != null) {
-                        val installedSha = InstalledApkHelper.getInstalledApkSha256(context)
-                        if (!installedSha.isNullOrBlank()) {
-                            val compatiblePatch = manifest.findCompatiblePatch(installedSha, deviceSupportedAbis)
-                            if (compatiblePatch != null) {
-                                val patchAsset = parsedAssets.firstOrNull {
-                                    it.name.equals(compatiblePatch.patchFilename, ignoreCase = true)
-                                }
-                                if (patchAsset != null && patchAsset.downloadUrl.isNotBlank()) {
-                                    deltaPatchInfo = compatiblePatch.copy(downloadUrl = patchAsset.downloadUrl)
-                                    Log.i(TAG, "Compatible delta patch selected: ${compatiblePatch.patchFilename} (${compatiblePatch.patchSize} bytes)")
-                                }
-                            }
+                        if (manifestAsset != null) {
+                            fetchDeltaManifest(manifestAsset, appCheckTokenProvider)
+                        } else {
+                            val backendError = root.optString("delta_manifest_error", "").trim().ifBlank { null }
+                            ManifestFetchOutcome(
+                                errorDetail = backendError ?: "Release does not include ${DeltaManifest.MANIFEST_FILENAME}"
+                            )
                         }
                     }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Delta patch resolution encountered an error, falling back to full APK: ${e.message}")
+                },
+                patchUrlResolver = { patch ->
+                    parsedAssets.firstOrNull { it.name.equals(patch.patchFilename, ignoreCase = true) }
+                        ?.downloadUrl
+                        ?.takeIf { it.isNotBlank() }
                 }
-            }
+            )
 
-            val apkDownloadUrl = selected.asset.downloadUrl.ifBlank { releasePageUrl }
+            logDeltaOutcome(deltaOutcome)
+
+            val deltaPatch = deltaOutcome.patch
+            val matchedTargetAsset = if (deltaPatch != null) {
+                parsedAssets.firstOrNull { it.name.equals(deltaPatch.targetApkFilename, ignoreCase = true) }
+            } else {
+                null
+            }
+            val apkDownloadUrl = matchedTargetAsset?.downloadUrl?.takeIf { it.isNotBlank() }
+                ?: selected.asset.downloadUrl.ifBlank { releasePageUrl }
+            val effectiveApkSize = matchedTargetAsset?.size?.takeIf { it > 0L }
+                ?: deltaPatch?.targetApkSize?.takeIf { it > 0L }
+                ?: selected.asset.size
+            val effectiveAbiLabel = deltaPatch?.architectureLabel?.ifBlank { selected.targetAbiLabel }
+                ?: selected.targetAbiLabel
+            val effectiveAssetName = matchedTargetAsset?.name
+                ?: deltaPatch?.targetApkFilename?.ifBlank { selected.asset.name }
+                ?: selected.asset.name
+
             val info = AppUpdateInfo(
                 versionName = cleanVersion,
                 releaseTitle = releaseTitle,
                 releaseNotes = releaseNotes,
                 downloadUrl = apkDownloadUrl,
                 releasePageUrl = releasePageUrl,
-                apkSize = selected.asset.size,
+                apkSize = effectiveApkSize,
                 isNewer = true,
-                targetAbiLabel = selected.targetAbiLabel,
-                assetName = selected.asset.name,
-                deltaPatch = deltaPatchInfo
+                targetAbiLabel = effectiveAbiLabel,
+                assetName = effectiveAssetName,
+                deltaPatch = deltaPatch,
+                deltaDiagnosticReason = deltaOutcome.reason,
+                deltaDiagnosticDetail = deltaOutcome.detail
             )
 
             UpdateCheckResult.UpdateAvailable(info)
@@ -458,7 +495,102 @@ object GitHubUpdateChecker {
         }
     }
 
-    private fun parseFromDeltaManifest(
+    private data class DeltaResolutionOutcome(
+        val patch: DeltaPatchInfo?,
+        val reason: DeltaDiagnosticReason,
+        val detail: String
+    )
+
+    private fun logDeltaOutcome(outcome: DeltaResolutionOutcome) {
+        if (outcome.patch != null && outcome.reason == DeltaDiagnosticReason.SELECTED) {
+            Log.i(TAG, "Delta [${outcome.reason.logCode}]: ${outcome.detail}")
+        } else {
+            Log.w(TAG, "Delta unavailable [${outcome.reason.logCode}]: ${outcome.detail}")
+        }
+    }
+
+    private suspend fun resolveDeltaPatch(
+        context: Context?,
+        deviceSupportedAbis: Array<String>,
+        parsedAssets: List<ReleaseAsset>,
+        appCheckTokenProvider: (suspend (Boolean) -> String?)? = null,
+        manifestProvider: suspend () -> ManifestFetchOutcome,
+        patchUrlResolver: (DeltaPatchInfo) -> String?
+    ): DeltaResolutionOutcome {
+        if (context == null) {
+            return DeltaResolutionOutcome(
+                patch = null,
+                reason = DeltaDiagnosticReason.INSTALLED_APK_CONTEXT_UNAVAILABLE,
+                detail = DeltaDiagnosticReason.INSTALLED_APK_CONTEXT_UNAVAILABLE.description
+            )
+        }
+        return try {
+            when (val inspection = InstalledApkHelper.inspectInstalledApk(context)) {
+                is InstalledApkHelper.InstalledApkInspection.ApkFileInaccessible -> {
+                    DeltaResolutionOutcome(
+                        patch = null,
+                        reason = DeltaDiagnosticReason.INSTALLED_APK_INACCESSIBLE,
+                        detail = DeltaDiagnosticReason.INSTALLED_APK_INACCESSIBLE.description
+                    )
+                }
+                is InstalledApkHelper.InstalledApkInspection.Sha256CalculationFailed -> {
+                    DeltaResolutionOutcome(
+                        patch = null,
+                        reason = DeltaDiagnosticReason.INSTALLED_APK_SHA256_FAILED,
+                        detail = inspection.errorMessage ?: DeltaDiagnosticReason.INSTALLED_APK_SHA256_FAILED.description
+                    )
+                }
+                is InstalledApkHelper.InstalledApkInspection.Ready -> {
+                    val manifestOutcome = manifestProvider()
+                    val manifest = manifestOutcome.manifest
+                    if (manifest == null) {
+                        DeltaResolutionOutcome(
+                            patch = null,
+                            reason = DeltaDiagnosticReason.INVALID_OR_UNAVAILABLE_MANIFEST,
+                            detail = manifestOutcome.errorDetail ?: DeltaDiagnosticReason.INVALID_OR_UNAVAILABLE_MANIFEST.description
+                        )
+                    } else {
+                        val match = manifest.findCompatiblePatchDetailed(
+                            installedApkSha256 = inspection.sha256,
+                            deviceSupportedAbis = deviceSupportedAbis,
+                            installedApkAbis = inspection.nativeAbis
+                        )
+                        val compatiblePatch = match.patch
+                        if (compatiblePatch == null) {
+                            DeltaResolutionOutcome(
+                                patch = null,
+                                reason = match.reason,
+                                detail = match.detail
+                            )
+                        } else {
+                            val patchUrl = patchUrlResolver(compatiblePatch)
+                            if (patchUrl.isNullOrBlank()) {
+                                DeltaResolutionOutcome(
+                                    patch = null,
+                                    reason = DeltaDiagnosticReason.PATCH_ASSET_UNAVAILABLE,
+                                    detail = "Manifest references '${compatiblePatch.patchFilename}' (base=${compatiblePatch.baseVersion}, arch=${compatiblePatch.architecture}), which is missing from release assets"
+                                )
+                            } else {
+                                DeltaResolutionOutcome(
+                                    patch = compatiblePatch.copy(downloadUrl = patchUrl),
+                                    reason = DeltaDiagnosticReason.SELECTED,
+                                    detail = "${match.detail} (${compatiblePatch.patchSize} bytes)"
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            DeltaResolutionOutcome(
+                patch = null,
+                reason = DeltaDiagnosticReason.INVALID_OR_UNAVAILABLE_MANIFEST,
+                detail = "Unexpected error resolving delta patch: ${e.message ?: e::class.java.simpleName}"
+            )
+        }
+    }
+
+    private suspend fun parseFromDeltaManifest(
         responseText: String,
         currentVersionName: String,
         deviceSupportedAbis: Array<String>,
@@ -494,41 +626,37 @@ object GitHubUpdateChecker {
         val selected = selectBestApkAsset(parsedAssets, deviceSupportedAbis)
             ?: return UpdateCheckResult.NoCompatibleApk(cleanVersion, deviceSupportedAbis.toList())
 
-        var deltaPatchInfo: DeltaPatchInfo? = null
-        if (context != null) {
-            try {
-                val installedSha = InstalledApkHelper.getInstalledApkSha256(context)
-                if (!installedSha.isNullOrBlank()) {
-                    val compatiblePatch = manifest.findCompatiblePatch(installedSha, deviceSupportedAbis)
-                    if (compatiblePatch != null && compatiblePatch.patchFilename.isNotBlank()) {
-                        deltaPatchInfo = compatiblePatch.copy(
-                            downloadUrl = "$downloadBase/${compatiblePatch.patchFilename}"
-                        )
-                        Log.i(
-                            "GitHubUpdateChecker",
-                            "Compatible delta patch selected: ${compatiblePatch.patchFilename} (${compatiblePatch.patchSize} bytes)"
-                        )
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(
-                    "GitHubUpdateChecker",
-                    "Delta patch resolution encountered an error, falling back to full APK: ${e.message}"
-                )
+        val deltaOutcome = resolveDeltaPatch(
+            context = context,
+            deviceSupportedAbis = deviceSupportedAbis,
+            parsedAssets = parsedAssets,
+            manifestProvider = { ManifestFetchOutcome(manifest = manifest) },
+            patchUrlResolver = { patch ->
+                patch.patchFilename.takeIf { it.isNotBlank() }?.let { "$downloadBase/$it" }
             }
+        )
+        logDeltaOutcome(deltaOutcome)
+
+        val deltaPatch = deltaOutcome.patch
+        val matchedTargetAsset = if (deltaPatch != null) {
+            parsedAssets.firstOrNull { it.name.equals(deltaPatch.targetApkFilename, ignoreCase = true) }
+        } else {
+            null
         }
 
         val info = AppUpdateInfo(
             versionName = cleanVersion,
             releaseTitle = "Laterbox $tag",
             releaseNotes = "",
-            downloadUrl = selected.asset.downloadUrl.ifBlank { releasePageUrl },
+            downloadUrl = matchedTargetAsset?.downloadUrl ?: selected.asset.downloadUrl.ifBlank { releasePageUrl },
             releasePageUrl = releasePageUrl,
-            apkSize = selected.asset.size,
+            apkSize = matchedTargetAsset?.size ?: deltaPatch?.targetApkSize ?: selected.asset.size,
             isNewer = true,
-            targetAbiLabel = selected.targetAbiLabel,
-            assetName = selected.asset.name,
-            deltaPatch = deltaPatchInfo
+            targetAbiLabel = deltaPatch?.architectureLabel?.ifBlank { selected.targetAbiLabel } ?: selected.targetAbiLabel,
+            assetName = matchedTargetAsset?.name ?: deltaPatch?.targetApkFilename ?: selected.asset.name,
+            deltaPatch = deltaPatch,
+            deltaDiagnosticReason = deltaOutcome.reason,
+            deltaDiagnosticDetail = deltaOutcome.detail
         )
         return UpdateCheckResult.UpdateAvailable(info)
     }

@@ -504,7 +504,7 @@ object ApkInstallerHelper {
         }
 
         val updatesDir = File(context.cacheDir, "updates").apply { mkdirs() }
-        val targetFileName = getApkFileName(targetVersionName, targetAssetName.ifBlank { deltaPatch.targetApkFilename })
+        val targetFileName = getApkFileName(targetVersionName, deltaPatch.targetApkFilename.ifBlank { targetAssetName })
         val reconstructedFile = File(updatesDir, targetFileName)
 
         com.laterbox.app.update.patch.BsPatch.applyPatch(
@@ -562,23 +562,7 @@ object ApkInstallerHelper {
             }
 
             // 3. Verify native library ABI compatibility
-            val apkAbis = mutableSetOf<String>()
-            try {
-                java.util.zip.ZipFile(apkFile).use { zip ->
-                    val entries = zip.entries()
-                    while (entries.hasMoreElements()) {
-                        val entry = entries.nextElement()
-                        if (entry.name.startsWith("lib/") && !entry.isDirectory) {
-                            val parts = entry.name.split("/")
-                            if (parts.size >= 2 && parts[1].isNotBlank()) {
-                                apkAbis.add(parts[1])
-                            }
-                        }
-                    }
-                }
-            } catch (ze: Exception) {
-                Log.w(TAG, "Could not inspect APK entries for ABI: ${ze.message}")
-            }
+            val apkAbis = InstalledApkHelper.extractApkNativeAbis(apkFile)
 
             if (apkAbis.isNotEmpty()) {
                 val deviceAbis = Build.SUPPORTED_ABIS ?: emptyArray()

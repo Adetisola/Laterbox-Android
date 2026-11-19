@@ -422,10 +422,223 @@ class GitHubUpdateCheckerTest {
             assertEquals("Laterbox-ARM64-1.0.53-to-1.0.54.patch", info.deltaPatch?.patchFilename)
             assertEquals("$baseUrl/updates/laterbox/assets/9011/download-url", info.deltaPatch?.downloadUrl)
             assertEquals(4500000L, info.effectiveDownloadSize)
+            assertEquals(DeltaDiagnosticReason.SELECTED, info.deltaDiagnosticReason)
         } finally {
             context.applicationInfo.sourceDir = prevSourceDir
             fakeInstalledApk.delete()
             server.shutdown()
         }
     }
+
+    private fun createFakeZipApk(abi: String): java.io.File {
+        val file = java.io.File.createTempFile("installed_${abi}_", ".apk")
+        java.util.zip.ZipOutputStream(file.outputStream()).use { zos ->
+            zos.putNextEntry(java.util.zip.ZipEntry("AndroidManifest.xml"))
+            zos.write(byteArrayOf(1, 2, 3, 4))
+            zos.closeEntry()
+            zos.putNextEntry(java.util.zip.ZipEntry("lib/$abi/libpython.zip.so"))
+            zos.write("so-bytes-$abi".toByteArray())
+            zos.closeEntry()
+        }
+        return file
+    }
+
+    @Test
+    fun `rolling manifest selects ARM32 patch on 64-bit device running ARM32 APK and aligns target asset`() = runBlocking {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val installedArm32Apk = createFakeZipApk("armeabi-v7a")
+        val prevSourceDir = context.applicationInfo.sourceDir
+        context.applicationInfo.sourceDir = installedArm32Apk.absolutePath
+        val secretAppCheck = "secret-appcheck-token-value"
+
+        val server = MockWebServer()
+        try {
+            val installedSha = InstalledApkHelper.computeSha256(installedArm32Apk)
+            server.enqueue(
+                MockResponse().setResponseCode(200).setBody(
+                    """
+                    {
+                      "tag_name": "v1.0.55",
+                      "name": "Laterbox v1.0.55",
+                      "body": "Rolling delta window",
+                      "assets": [
+                        {"id": 9101, "name": "Laterbox-ARM64.apk", "size": 61658218, "download_path": "/updates/laterbox/assets/9101/download-url"},
+                        {"id": 9102, "name": "Laterbox-ARM32.apk", "size": 55004494, "download_path": "/updates/laterbox/assets/9102/download-url"},
+                        {"id": 9201, "name": "Laterbox-ARM64-1.0.54-to-1.0.55.patch", "size": 4100000, "download_path": "/updates/laterbox/assets/9201/download-url"},
+                        {"id": 9202, "name": "Laterbox-ARM32-1.0.53-to-1.0.55.patch", "size": 3800000, "download_path": "/updates/laterbox/assets/9202/download-url"}
+                      ],
+                      "delta_manifest": {
+                        "schemaVersion": 1,
+                        "targetVersion": "1.0.55",
+                        "targetVersionCode": 168,
+                        "generatedAt": 1795045554000,
+                        "patches": [
+                          {
+                            "architecture": "arm64-v8a",
+                            "baseArchitecture": "arm64-v8a",
+                            "architectureLabel": "ARM64 (arm64-v8a)",
+                            "baseVersion": "1.0.54",
+                            "baseVersionCode": 167,
+                            "baseApkSha256": "${"a".repeat(64)}",
+                            "targetApkFilename": "Laterbox-ARM64.apk",
+                            "targetApkSha256": "${"b".repeat(64)}",
+                            "targetApkSize": 61658218,
+                            "patchFilename": "Laterbox-ARM64-1.0.54-to-1.0.55.patch",
+                            "patchSha256": "${"c".repeat(64)}",
+                            "patchSize": 4100000,
+                            "patchAlgorithm": "BSDIFF40"
+                          },
+                          {
+                            "architecture": "armeabi-v7a",
+                            "baseArchitecture": "armeabi-v7a",
+                            "architectureLabel": "ARM32 (armeabi-v7a)",
+                            "baseVersion": "1.0.53",
+                            "baseVersionCode": 166,
+                            "baseApkSha256": "$installedSha",
+                            "targetApkFilename": "Laterbox-ARM32.apk",
+                            "targetApkSha256": "${"e".repeat(64)}",
+                            "targetApkSize": 55004494,
+                            "patchFilename": "Laterbox-ARM32-1.0.53-to-1.0.55.patch",
+                            "patchSha256": "${"f".repeat(64)}",
+                            "patchSize": 3800000,
+                            "patchAlgorithm": "BSDIFF40"
+                          }
+                        ]
+                      }
+                    }
+                    """.trimIndent()
+                )
+            )
+            server.start()
+            val baseUrl = server.url("/").toString().trimEnd('/')
+            val result = GitHubUpdateChecker.checkForUpdate(
+                currentVersionName = "1.0.53",
+                releasesUrl = GitHubUpdateChecker.buildBackendUpdateUrl(baseUrl),
+                deviceSupportedAbis = arrayOf("arm64-v8a", "armeabi-v7a"),
+                context = context,
+                appCheckTokenProvider = { secretAppCheck }
+            )
+
+            assertTrue(result is UpdateCheckResult.UpdateAvailable)
+            val info = (result as UpdateCheckResult.UpdateAvailable).updateInfo
+            assertEquals(DeltaDiagnosticReason.SELECTED, info.deltaDiagnosticReason)
+            assertEquals("Laterbox-ARM32-1.0.53-to-1.0.55.patch", info.deltaPatch?.patchFilename)
+            assertEquals("Laterbox-ARM32.apk", info.assetName)
+            assertEquals("ARM32 (armeabi-v7a)", info.targetAbiLabel)
+            assertEquals(55004494L, info.apkSize)
+            assertEquals(3800000L, info.effectiveDownloadSize)
+            assertEquals("$baseUrl/updates/laterbox/assets/9102/download-url", info.downloadUrl)
+            assertEquals("$baseUrl/updates/laterbox/assets/9202/download-url", info.deltaPatch?.downloadUrl)
+            assertFalse((info.deltaDiagnosticDetail ?: "").contains(secretAppCheck))
+        } finally {
+            context.applicationInfo.sourceDir = prevSourceDir
+            installedArm32Apk.delete()
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun `diagnostic reasons distinguish missing context, inaccessible APK, unavailable manifest, and missing patch asset`() = runBlocking {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val installedApk = createFakeZipApk("arm64-v8a")
+        val prevSourceDir = context.applicationInfo.sourceDir
+        val server = MockWebServer()
+        try {
+            val installedSha = InstalledApkHelper.computeSha256(installedApk)
+
+            // 1. Null context -> INSTALLED_APK_CONTEXT_UNAVAILABLE
+            server.enqueue(
+                MockResponse().setResponseCode(200).setBody(
+                    """
+                    {
+                      "tag_name": "v1.0.55",
+                      "assets": [{"id": 1, "name": "Laterbox-ARM64.apk", "size": 60000000, "download_path": "/updates/laterbox/assets/1/download-url"}]
+                    }
+                    """.trimIndent()
+                )
+            )
+            // 2. Inaccessible sourceDir -> INSTALLED_APK_INACCESSIBLE
+            server.enqueue(
+                MockResponse().setResponseCode(200).setBody(
+                    """
+                    {
+                      "tag_name": "v1.0.55",
+                      "assets": [{"id": 1, "name": "Laterbox-ARM64.apk", "size": 60000000, "download_path": "/updates/laterbox/assets/1/download-url"}]
+                    }
+                    """.trimIndent()
+                )
+            )
+            // 3. Missing manifest -> INVALID_OR_UNAVAILABLE_MANIFEST
+            server.enqueue(
+                MockResponse().setResponseCode(200).setBody(
+                    """
+                    {
+                      "tag_name": "v1.0.55",
+                      "assets": [{"id": 1, "name": "Laterbox-ARM64.apk", "size": 60000000, "download_path": "/updates/laterbox/assets/1/download-url"}]
+                    }
+                    """.trimIndent()
+                )
+            )
+            // 4. Matching manifest entry but missing patch asset -> PATCH_ASSET_UNAVAILABLE
+            server.enqueue(
+                MockResponse().setResponseCode(200).setBody(
+                    """
+                    {
+                      "tag_name": "v1.0.55",
+                      "assets": [{"id": 1, "name": "Laterbox-ARM64.apk", "size": 60000000, "download_path": "/updates/laterbox/assets/1/download-url"}],
+                      "delta_manifest": {
+                        "schemaVersion": 1,
+                        "targetVersion": "1.0.55",
+                        "targetVersionCode": 168,
+                        "generatedAt": 1795045554000,
+                        "patches": [
+                          {
+                            "architecture": "arm64-v8a",
+                            "baseArchitecture": "arm64-v8a",
+                            "architectureLabel": "ARM64 (arm64-v8a)",
+                            "baseVersion": "1.0.53",
+                            "baseVersionCode": 166,
+                            "baseApkSha256": "$installedSha",
+                            "targetApkFilename": "Laterbox-ARM64.apk",
+                            "targetApkSha256": "${"b".repeat(64)}",
+                            "targetApkSize": 60000000,
+                            "patchFilename": "Laterbox-ARM64-1.0.53-to-1.0.55.patch",
+                            "patchSha256": "${"c".repeat(64)}",
+                            "patchSize": 4000000,
+                            "patchAlgorithm": "BSDIFF40"
+                          }
+                        ]
+                      }
+                    }
+                    """.trimIndent()
+                )
+            )
+
+            server.start()
+            val url = GitHubUpdateChecker.buildBackendUpdateUrl(server.url("/").toString())
+
+            val r1 = GitHubUpdateChecker.checkForUpdate("1.0.53", url, arrayOf("arm64-v8a"), context = null)
+            assertEquals(DeltaDiagnosticReason.INSTALLED_APK_CONTEXT_UNAVAILABLE, (r1 as UpdateCheckResult.UpdateAvailable).updateInfo.deltaDiagnosticReason)
+            assertNull(r1.updateInfo.deltaPatch)
+
+            context.applicationInfo.sourceDir = "/non/existent/laterbox.apk"
+            val r2 = GitHubUpdateChecker.checkForUpdate("1.0.53", url, arrayOf("arm64-v8a"), context = context)
+            assertEquals(DeltaDiagnosticReason.INSTALLED_APK_INACCESSIBLE, (r2 as UpdateCheckResult.UpdateAvailable).updateInfo.deltaDiagnosticReason)
+            assertNull(r2.updateInfo.deltaPatch)
+
+            context.applicationInfo.sourceDir = installedApk.absolutePath
+            val r3 = GitHubUpdateChecker.checkForUpdate("1.0.53", url, arrayOf("arm64-v8a"), context = context)
+            assertEquals(DeltaDiagnosticReason.INVALID_OR_UNAVAILABLE_MANIFEST, (r3 as UpdateCheckResult.UpdateAvailable).updateInfo.deltaDiagnosticReason)
+            assertNull(r3.updateInfo.deltaPatch)
+
+            val r4 = GitHubUpdateChecker.checkForUpdate("1.0.53", url, arrayOf("arm64-v8a"), context = context)
+            assertEquals(DeltaDiagnosticReason.PATCH_ASSET_UNAVAILABLE, (r4 as UpdateCheckResult.UpdateAvailable).updateInfo.deltaDiagnosticReason)
+            assertNull(r4.updateInfo.deltaPatch)
+        } finally {
+            context.applicationInfo.sourceDir = prevSourceDir
+            installedApk.delete()
+            server.shutdown()
+        }
+    }
 }
+

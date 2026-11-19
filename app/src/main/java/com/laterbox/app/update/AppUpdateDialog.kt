@@ -245,6 +245,9 @@ fun AppUpdateDialog(
                 verifyAndProceed(reconstructedApk)
             }
         } else {
+            val diagCode = updateInfo.deltaDiagnosticReason?.logCode ?: "none"
+            val diagDetail = updateInfo.deltaDiagnosticDetail ?: "No compatible delta patch"
+            Log.i("AppUpdateDialog", "Starting full APK download (delta reason=$diagCode): $diagDetail")
             startFullDownload()
         }
     }

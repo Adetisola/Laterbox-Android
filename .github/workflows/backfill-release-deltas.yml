@@ -1,0 +1,168 @@
+name: Backfill Release Delta Patches
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_tag:
+        description: 'Existing published release tag to backfill (e.g. v1.0.55)'
+        required: true
+        default: 'v1.0.55'
+      delta_rolling_window:
+        description: 'Number of previous stable releases for rolling-window delta patches'
+        required: false
+        default: '5'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.inputs.target_tag }}
+  cancel-in-progress: false
+
+jobs:
+  backfill-deltas:
+    name: Backfill Rolling-Window Delta Patches
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Delta Dependencies
+        run: |
+          pip3 install --break-system-packages bsdiff4 || pip3 install bsdiff4
+
+      - name: Download Existing Target Release & Generate Rolling Patches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_TAG: ${{ github.event.inputs.target_tag }}
+          WINDOW_RAW: ${{ github.event.inputs.delta_rolling_window }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$WINDOW_RAW" =~ ^[0-9]+$ ]]; then
+            echo "Warning: Invalid rolling window '$WINDOW_RAW'; defaulting to 5."
+            WINDOW_RAW="5"
+          fi
+
+          mkdir -p /tmp/repair/target /tmp/repair/out /tmp/repair/bases
+          gh release download "$TARGET_TAG" --dir /tmp/repair/target --clobber
+
+          python3 - <<'PY'
+          import hashlib, json, os
+          target_dir = "/tmp/repair/target"
+          digests = {}
+          for name in sorted(os.listdir(target_dir)):
+              p = os.path.join(target_dir, name)
+              if os.path.isfile(p) and (name.endswith(".apk") or name.endswith(".patch")):
+                  digests[name] = hashlib.sha256(open(p, "rb").read()).hexdigest()
+          with open("/tmp/repair/original_digests.json", "w") as f:
+              json.dump(digests, f, indent=2)
+          print("Recorded existing target asset digests:", json.dumps(digests, indent=2))
+          PY
+
+          cp /tmp/repair/target/*.patch /tmp/repair/out/ 2>/dev/null || true
+
+          AAPT2=$(find "$ANDROID_HOME/build-tools" -name "aapt2" | sort -V | tail -n 1 || true)
+          TARGET_VER="${TARGET_TAG#v}"
+          TARGET_VCODE=0
+          SAMPLE_TARGET_APK=$(find /tmp/repair/target -maxdepth 1 -name "Laterbox-*.apk" -type f | head -n 1 || true)
+          if [ -n "$SAMPLE_TARGET_APK" ] && [ -n "$AAPT2" ]; then
+            TARGET_VCODE=$("$AAPT2" dump badging "$SAMPLE_TARGET_APK" 2>/dev/null | sed -n "s/^package:.* versionCode='\([0-9]*\)'.*/\1/p" | head -n 1 || true)
+            TARGET_VCODE="${TARGET_VCODE:-0}"
+          fi
+          if [ "$TARGET_VCODE" = "0" ] && [ -f /tmp/repair/target/delta-manifest.json ]; then
+            TARGET_VCODE=$(python3 -c 'import json; print(json.load(open("/tmp/repair/target/delta-manifest.json")).get("targetVersionCode", 0))')
+          fi
+          echo "Target release: tag=$TARGET_TAG version=$TARGET_VER versionCode=$TARGET_VCODE"
+
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > /tmp/repair/releases.json || \
+            gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > /tmp/repair/releases.json
+
+          SELECTED_JSON=$(python3 tools/delta/generate_delta.py \
+            --select-bases \
+            --releases-json /tmp/repair/releases.json \
+            --current-tag "$TARGET_TAG" \
+            --target-version "$TARGET_VER" \
+            --window "$WINDOW_RAW")
+          echo "Selected rolling base releases: $SELECTED_JSON"
+
+          BASE_ARGS=()
+          while IFS=$'\t' read -r BASE_TAG BASE_VER; do
+            [ -n "$BASE_TAG" ] || continue
+            BASE_DIR="/tmp/repair/bases/${BASE_TAG}"
+            mkdir -p "$BASE_DIR"
+            echo "Downloading base release APKs for $BASE_TAG (version $BASE_VER)..."
+            gh release download "$BASE_TAG" --dir "$BASE_DIR" --pattern "Laterbox-*.apk" || true
+
+            BASE_VCODE=0
+            SAMPLE_APK=$(find "$BASE_DIR" -maxdepth 1 -name "Laterbox-*.apk" -type f | head -n 1 || true)
+            if [ -n "$SAMPLE_APK" ] && [ -n "$AAPT2" ]; then
+              BASE_VCODE=$("$AAPT2" dump badging "$SAMPLE_APK" 2>/dev/null | sed -n "s/^package:.* versionCode='\([0-9]*\)'.*/\1/p" | head -n 1 || true)
+              BASE_VCODE="${BASE_VCODE:-0}"
+            fi
+            BASE_ARGS+=(--base-release "${BASE_VER}:${BASE_VCODE}=${BASE_DIR}")
+          done < <(python3 -c 'import json, sys
+          for item in json.loads(sys.argv[1]):
+              print(item["tag_name"] + "\t" + item["version"])' "$SELECTED_JSON")
+
+          EXISTING_ARG=()
+          if [ -f /tmp/repair/target/delta-manifest.json ]; then
+            EXISTING_ARG=(--existing-manifest /tmp/repair/target/delta-manifest.json)
+          fi
+
+          python3 -u tools/delta/generate_delta.py \
+            "${EXISTING_ARG[@]}" \
+            "${BASE_ARGS[@]}" \
+            --target-dir /tmp/repair/target \
+            --output-dir /tmp/repair/out \
+            --target-version "$TARGET_VER" \
+            --target-version-code "$TARGET_VCODE" \
+            --verify-zip \
+            --threshold-ratio 0.70
+
+      - name: Validate & Upload New Patches + Manifest (Preserving Existing APKs & Patches)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_TAG: ${{ github.event.inputs.target_tag }}
+        run: |
+          set -euo pipefail
+          UPLOAD_FILES=$(python3 - <<'PY'
+          import hashlib, json, os
+          orig = json.load(open("/tmp/repair/original_digests.json"))
+          out_dir = "/tmp/repair/out"
+          manifest = json.load(open(os.path.join(out_dir, "delta-manifest.json")))
+          to_upload = [os.path.join(out_dir, "delta-manifest.json")]
+          for p in manifest["patches"]:
+              fname = p["patchFilename"]
+              fpath = os.path.join(out_dir, fname)
+              assert os.path.isfile(fpath), f"Missing generated patch {fpath}"
+              digest = hashlib.sha256(open(fpath, "rb").read()).hexdigest()
+              assert digest == p["patchSha256"], f"Digest mismatch for {fname}"
+              if fname in orig:
+                  assert digest == orig[fname], f"Refusing to alter existing patch {fname}"
+              else:
+                  to_upload.append(fpath)
+          print("\n".join(to_upload))
+          PY
+          )
+
+          mapfile -t FILES_ARRAY <<< "$UPLOAD_FILES"
+          echo "Uploading ${#FILES_ARRAY[@]} updated/new release asset(s):"
+          printf '  %s\n' "${FILES_ARRAY[@]}"
+          gh release upload "$TARGET_TAG" "${FILES_ARRAY[@]}" --clobber
+
+          gh release view "$TARGET_TAG" --json assets > /tmp/repair/after_assets.json
+          python3 - <<'PY'
+          import json
+          orig = json.load(open("/tmp/repair/original_digests.json"))
+          after = json.load(open("/tmp/repair/after_assets.json"))["assets"]
+          by_name = {a["name"]: a for a in after}
+          for name, expected_hex in orig.items():
+              assert name in by_name, f"Missing preserved asset {name}"
+              actual_digest = (by_name[name].get("digest") or "").removeprefix("sha256:")
+              assert actual_digest == expected_hex, f"Asset {name} digest changed! {actual_digest} != {expected_hex}"
+          manifest = json.load(open("/tmp/repair/out/delta-manifest.json"))
+          for p in manifest["patches"]:
+              assert p["patchFilename"] in by_name, f"Uploaded release missing patch {p['patchFilename']}"
+          print(f"Verified all {len(orig)} preserved assets and all {len(manifest['patches'])} manifest patches on GitHub Release.")
+          PY

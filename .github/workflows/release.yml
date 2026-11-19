@@ -10,6 +10,13 @@ on:
         description: 'Version tag (e.g. v1.0.0)'
         required: true
         default: 'v1.0.0'
+      delta_rolling_window:
+        description: 'Number of previous stable releases for rolling-window delta patches'
+        required: false
+        default: '5'
+
+env:
+  DELTA_ROLLING_WINDOW: 5
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -190,26 +197,60 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p /tmp/prev_release
-          CURRENT_TAG="v${{ env.VERSION_NAME }}"
-          PREV_TAG=$(gh release list --exclude-drafts --exclude-pre-releases --json tagName --jq '.[].tagName' | grep -v "^${CURRENT_TAG}$" | grep -v "^${{ env.VERSION_NAME }}$" | head -n 1 || true)
-
-          if [ -n "$PREV_TAG" ]; then
-            echo "Found previous stable release tag: $PREV_TAG"
-            gh release download "$PREV_TAG" --dir /tmp/prev_release --pattern "Laterbox-*.apk" || true
-          else
-            echo "No previous release found. Skipping delta generation."
-          fi
-
           pip3 install --break-system-packages bsdiff4 || pip3 install bsdiff4
 
+          mkdir -p /tmp/prev_releases
+          CURRENT_TAG="${{ github.event.inputs.version_tag || github.ref_name }}"
+          WINDOW_RAW="${{ github.event.inputs.delta_rolling_window || env.DELTA_ROLLING_WINDOW || '5' }}"
+          if ! [[ "$WINDOW_RAW" =~ ^[0-9]+$ ]]; then
+            echo "Warning: Invalid rolling window '$WINDOW_RAW'; defaulting to 5."
+            WINDOW_RAW="5"
+          fi
+          echo "Using delta rolling window: $WINDOW_RAW"
+
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > /tmp/releases.json || \
+            gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > /tmp/releases.json
+
+          SELECTED_JSON=$(python3 tools/delta/generate_delta.py \
+            --select-bases \
+            --releases-json /tmp/releases.json \
+            --current-tag "$CURRENT_TAG" \
+            --target-version "${{ env.VERSION_NAME }}" \
+            --window "$WINDOW_RAW")
+
+          echo "Selected rolling base releases: $SELECTED_JSON"
+
+          AAPT2=$(find "$ANDROID_HOME/build-tools" -name "aapt2" | sort -V | tail -n 1 || true)
+          BASE_ARGS=()
+
+          while IFS=$'\t' read -r BASE_TAG BASE_VER; do
+            [ -n "$BASE_TAG" ] || continue
+            BASE_DIR="/tmp/prev_releases/${BASE_TAG}"
+            mkdir -p "$BASE_DIR"
+            echo "Downloading base release APKs for $BASE_TAG (version $BASE_VER)..."
+            gh release download "$BASE_TAG" --dir "$BASE_DIR" --pattern "Laterbox-*.apk" || true
+
+            BASE_VCODE=0
+            SAMPLE_APK=$(find "$BASE_DIR" -maxdepth 1 -name "Laterbox-*.apk" -type f | head -n 1 || true)
+            if [ -n "$SAMPLE_APK" ] && [ -n "$AAPT2" ]; then
+              BASE_VCODE=$("$AAPT2" dump badging "$SAMPLE_APK" 2>/dev/null | sed -n "s/^package:.* versionCode='\([0-9]*\)'.*/\1/p" | head -n 1 || true)
+              BASE_VCODE="${BASE_VCODE:-0}"
+            fi
+            BASE_ARGS+=(--base-release "${BASE_VER}:${BASE_VCODE}=${BASE_DIR}")
+          done < <(python3 - "$SELECTED_JSON" <<'PY'
+          import json, sys
+          for item in json.loads(sys.argv[1]):
+              print(item["tag_name"] + "\t" + item["version"])
+          PY
+          )
+
           python3 tools/delta/generate_delta.py \
-            --prev-dir /tmp/prev_release \
+            "${BASE_ARGS[@]}" \
             --target-dir release_artifacts \
             --output-dir release_artifacts \
             --target-version "${{ env.VERSION_NAME }}" \
             --target-version-code "${{ env.VERSION_CODE }}" \
-            --prev-version "${PREV_TAG#v}" \
+            --verify-zip \
             --threshold-ratio 0.70
 
       - name: Upload Release Artifacts

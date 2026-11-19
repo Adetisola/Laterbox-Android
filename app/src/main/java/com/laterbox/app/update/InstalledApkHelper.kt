@@ -19,6 +19,20 @@ object InstalledApkHelper {
     private const val TAG = "InstalledApkHelper"
 
     /**
+     * Structured result of inspecting the installed APK file, SHA-256 digest, and native ABIs.
+     */
+    sealed class InstalledApkInspection {
+        data object ApkFileInaccessible : InstalledApkInspection()
+        data class Sha256CalculationFailed(val errorMessage: String?) : InstalledApkInspection()
+        data class Ready(
+            val file: File,
+            val sha256: String,
+            val nativeAbis: Set<String>,
+            val variant: String?
+        ) : InstalledApkInspection()
+    }
+
+    /**
      * Retrieves the File handle for the currently installed application APK.
      * Note: Android mounts the installed APK in read-only mode at [Context.getApplicationInfo().sourceDir].
      * The original APK is never modified or moved.
@@ -43,6 +57,89 @@ object InstalledApkHelper {
     }
 
     /**
+     * Extracts native library ABI directory names (`lib/<abi>/...`) from an APK archive.
+     * Returns an empty set if the file is not a ZIP archive or contains no native libraries.
+     */
+    fun extractApkNativeAbis(apkFile: File): Set<String> {
+        val abis = mutableSetOf<String>()
+        try {
+            java.util.zip.ZipFile(apkFile).use { zip ->
+                val entries = zip.entries()
+                while (entries.hasMoreElements()) {
+                    val entry = entries.nextElement()
+                    if (entry.name.startsWith("lib/") && !entry.isDirectory) {
+                        val parts = entry.name.split("/")
+                        if (parts.size >= 2 && parts[1].isNotBlank()) {
+                            abis.add(parts[1])
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "Could not inspect APK native ABIs for ${apkFile.name}: ${e.message}")
+        }
+        return abis
+    }
+
+    /**
+     * Infers the Laterbox APK variant (`arm64-v8a`, `armeabi-v7a`, or `universal`) from packaged native ABIs.
+     */
+    fun inferVariantFromAbis(abis: Set<String>): String? {
+        if (abis.isEmpty()) return null
+        val hasArm64 = abis.any { it.equals("arm64-v8a", ignoreCase = true) || it.equals("arm64", ignoreCase = true) }
+        val hasArm32 = abis.any { it.startsWith("armeabi", ignoreCase = true) || it.equals("arm32", ignoreCase = true) }
+        return when {
+            hasArm64 && hasArm32 -> "universal"
+            hasArm64 -> "arm64-v8a"
+            hasArm32 -> "armeabi-v7a"
+            else -> null
+        }
+    }
+
+    /**
+     * Extracts all packaged native ABIs from the currently installed APK (and split APKs if present).
+     */
+    fun getInstalledApkAbis(context: Context): Set<String> {
+        val collected = mutableSetOf<String>()
+        getInstalledApkFile(context)?.let { collected.addAll(extractApkNativeAbis(it)) }
+        val splitDirs = try {
+            context.applicationInfo?.splitSourceDirs
+        } catch (_: Exception) {
+            null
+        }
+        if (splitDirs != null) {
+            for (path in splitDirs) {
+                if (path.isNullOrBlank()) continue
+                val splitFile = File(path)
+                if (splitFile.exists() && splitFile.isFile && splitFile.canRead()) {
+                    collected.addAll(extractApkNativeAbis(splitFile))
+                }
+            }
+        }
+        return collected
+    }
+
+    /**
+     * Inspects the installed APK file, computes its SHA-256 digest, and reads its packaged native ABIs.
+     */
+    fun inspectInstalledApk(context: Context): InstalledApkInspection {
+        val file = getInstalledApkFile(context) ?: return InstalledApkInspection.ApkFileInaccessible
+        val sha = try {
+            computeSha256(file)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to compute installed APK SHA-256: ${e.message}")
+            return InstalledApkInspection.Sha256CalculationFailed(e.message)
+        }
+        val abis = getInstalledApkAbis(context)
+        return InstalledApkInspection.Ready(
+            file = file,
+            sha256 = sha,
+            nativeAbis = abis,
+            variant = inferVariantFromAbis(abis)
+        )
+    }
+
+    /**
      * Computes the SHA-256 digest of a file in 64 KB streaming chunks to avoid loading
      * entire files into memory.
      */
@@ -63,13 +160,7 @@ object InstalledApkHelper {
      * Computes the SHA-256 digest of the currently installed APK, or null if unreadable.
      */
     fun getInstalledApkSha256(context: Context): String? {
-        val file = getInstalledApkFile(context) ?: return null
-        return try {
-            computeSha256(file)
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to compute installed APK SHA-256: ${e.message}")
-            null
-        }
+        return (inspectInstalledApk(context) as? InstalledApkInspection.Ready)?.sha256
     }
 
     /**

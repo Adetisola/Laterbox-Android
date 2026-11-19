@@ -5,6 +5,38 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
+ * Diagnostic reason explaining whether a delta patch was selected or why delta resolution fell back.
+ */
+@Keep
+enum class DeltaDiagnosticReason(val logCode: String, val description: String) {
+    SELECTED("selected", "Compatible delta patch selected"),
+    INSTALLED_APK_CONTEXT_UNAVAILABLE("installed_apk_context_unavailable", "Installed APK context unavailable"),
+    INSTALLED_APK_INACCESSIBLE("installed_apk_inaccessible", "Installed APK inaccessible on device"),
+    INSTALLED_APK_SHA256_FAILED("installed_apk_sha256_failed", "Installed APK SHA-256 calculation failed"),
+    INVALID_OR_UNAVAILABLE_MANIFEST("invalid_or_unavailable_manifest", "Invalid or unavailable delta manifest"),
+    NO_MATCHING_BASE_HASH("no_matching_base_hash", "No matching base APK hash in delta manifest"),
+    NO_ARCHITECTURE_COMPATIBLE_PATCH(
+        "no_architecture_compatible_patch",
+        "No architecture-compatible delta patch for installed variant or device ABIs"
+    ),
+    PATCH_ASSET_UNAVAILABLE(
+        "patch_asset_unavailable",
+        "Manifest entry found, but corresponding patch asset is unavailable in release"
+    )
+}
+
+/**
+ * Structured outcome of matching an installed APK against a [DeltaManifest].
+ */
+@Keep
+data class DeltaMatchResult(
+    val patch: DeltaPatchInfo?,
+    val reason: DeltaDiagnosticReason,
+    val installedVariant: String? = null,
+    val detail: String = reason.description
+)
+
+/**
  * Metadata describing a differential binary patch between a base release APK and a target release APK.
  */
 @Keep
@@ -21,11 +53,22 @@ data class DeltaPatchInfo(
     val patchSha256: String,
     val patchSize: Long,
     val patchAlgorithm: String = "BSDIFF40",
-    val downloadUrl: String = ""
+    val downloadUrl: String = "",
+    val baseArchitecture: String = ""
 ) {
+    fun effectiveBaseArchitecture(): String {
+        val raw = baseArchitecture.ifBlank { architecture }
+        return normalizeArchitecture(raw)
+    }
+
+    fun normalizedArchitecture(): String = normalizeArchitecture(architecture)
+
     fun toJsonObject(): JSONObject {
         return JSONObject().apply {
             put("architecture", architecture)
+            if (baseArchitecture.isNotBlank()) {
+                put("baseArchitecture", baseArchitecture)
+            }
             put("architectureLabel", architectureLabel)
             put("baseVersion", baseVersion)
             put("baseVersionCode", baseVersionCode)
@@ -41,8 +84,19 @@ data class DeltaPatchInfo(
     }
 
     companion object {
+        fun normalizeArchitecture(raw: String): String {
+            val clean = raw.trim().lowercase()
+            return when {
+                clean == "arm64" || clean == "arm64-v8a" -> "arm64-v8a"
+                clean == "arm32" || clean == "armeabi-v7a" || clean == "armeabi" -> "armeabi-v7a"
+                clean == "universal" -> "universal"
+                else -> clean
+            }
+        }
+
         fun fromJsonObject(obj: JSONObject, downloadUrl: String = ""): DeltaPatchInfo? {
             val arch = obj.optString("architecture").trim()
+            val baseArch = obj.optString("baseArchitecture").trim()
             val baseVer = obj.optString("baseVersion").trim()
             val baseCode = obj.optLong("baseVersionCode", -1L)
             val baseSha = obj.optString("baseApkSha256").trim().lowercase()
@@ -75,7 +129,8 @@ data class DeltaPatchInfo(
                 patchSha256 = patchSha,
                 patchSize = patchSize,
                 patchAlgorithm = algorithm,
-                downloadUrl = downloadUrl
+                downloadUrl = downloadUrl,
+                baseArchitecture = baseArch
             )
         }
     }
@@ -108,47 +163,141 @@ data class DeltaManifest(
     }
 
     /**
-     * Finds a compatible patch matching the installed APK's cryptographic SHA-256 hash
-     * and target device architecture.
-     *
-     * Strict matching requirements:
-     * 1. The installed APK SHA-256 must byte-for-byte equal [installedApkSha256].
-     * 2. The patch algorithm must be supported ("BSDIFF40").
-     * 3. The patch architecture must be compatible with [deviceSupportedAbis].
+     * Finds a compatible patch matching the installed APK's cryptographic SHA-256 hash,
+     * installed APK variant (when available), and target device architecture.
      */
+    @JvmOverloads
     fun findCompatiblePatch(
         installedApkSha256: String,
-        deviceSupportedAbis: Array<String>
+        deviceSupportedAbis: Array<String>,
+        installedApkAbis: Set<String> = emptySet()
     ): DeltaPatchInfo? {
-        if (installedApkSha256.isBlank()) return null
+        return findCompatiblePatchDetailed(
+            installedApkSha256 = installedApkSha256,
+            deviceSupportedAbis = deviceSupportedAbis,
+            installedApkAbis = installedApkAbis
+        ).patch
+    }
+
+    /**
+     * Finds a compatible patch and returns structured diagnostic details explaining the outcome.
+     *
+     * Matching guarantees:
+     * 1. Exact installed APK SHA-256 match and supported algorithm (`BSDIFF40`).
+     * 2. Device ABI compatibility check (ARM64-only patches are rejected on 32-bit-only devices).
+     * 3. Installed APK variant match (`arm64-v8a`, `armeabi-v7a`, or `universal`) when native ABIs are known,
+     *    so a 64-bit-capable device running an ARM32 installation selects its matching ARM32 patch.
+     * 4. Deterministic ranking when multiple candidates match the installed APK hash.
+     */
+    @JvmOverloads
+    fun findCompatiblePatchDetailed(
+        installedApkSha256: String,
+        deviceSupportedAbis: Array<String>,
+        installedApkAbis: Set<String> = emptySet()
+    ): DeltaMatchResult {
+        val installedVariant = InstalledApkHelper.inferVariantFromAbis(installedApkAbis)
+        if (installedApkSha256.isBlank()) {
+            return DeltaMatchResult(
+                patch = null,
+                reason = DeltaDiagnosticReason.INSTALLED_APK_SHA256_FAILED,
+                installedVariant = installedVariant,
+                detail = "Installed APK SHA-256 digest is blank."
+            )
+        }
         val normalizedInstalledSha = installedApkSha256.trim().lowercase()
 
-        // Filter patches that match base APK hash and supported algorithm
+        // 1. Primary gate: exact base APK SHA-256 and supported algorithm
         val hashMatching = patches.filter { patch ->
             patch.patchAlgorithm.equals("BSDIFF40", ignoreCase = true) &&
                 patch.baseApkSha256.trim().lowercase() == normalizedInstalledSha
         }
-
-        if (hashMatching.isEmpty()) return null
+        if (hashMatching.isEmpty()) {
+            return DeltaMatchResult(
+                patch = null,
+                reason = DeltaDiagnosticReason.NO_MATCHING_BASE_HASH,
+                installedVariant = installedVariant,
+                detail = "No manifest patch matches installed APK SHA-256 (${normalizedInstalledSha.take(12)}...)."
+            )
+        }
 
         val is64BitSupported = deviceSupportedAbis.any { it.equals("arm64-v8a", ignoreCase = true) }
         val isArm32Supported = deviceSupportedAbis.any { it.startsWith("armeabi", ignoreCase = true) }
 
-        // Prefer exact ABI match
-        return when {
-            is64BitSupported -> {
-                hashMatching.firstOrNull { it.architecture.equals("arm64-v8a", ignoreCase = true) }
-                    ?: hashMatching.firstOrNull { it.architecture.equals("universal", ignoreCase = true) }
-            }
-            !is64BitSupported && isArm32Supported -> {
-                hashMatching.firstOrNull {
-                    it.architecture.equals("armeabi-v7a", ignoreCase = true) || it.architecture.equals("arm32", ignoreCase = true)
-                } ?: hashMatching.firstOrNull { it.architecture.equals("universal", ignoreCase = true) }
-            }
-            else -> {
-                hashMatching.firstOrNull { it.architecture.equals("universal", ignoreCase = true) }
+        fun isSupportedByDevice(targetArch: String): Boolean {
+            return when (DeltaPatchInfo.normalizeArchitecture(targetArch)) {
+                "arm64-v8a" -> is64BitSupported
+                "armeabi-v7a" -> isArm32Supported
+                "universal" -> is64BitSupported || isArm32Supported
+                else -> false
             }
         }
+
+        // 2. Safety gate: never select a patch targeting an architecture the device cannot install
+        val deviceCompatible = hashMatching.filter { isSupportedByDevice(it.architecture) }
+        if (deviceCompatible.isEmpty()) {
+            return DeltaMatchResult(
+                patch = null,
+                reason = DeltaDiagnosticReason.NO_ARCHITECTURE_COMPATIBLE_PATCH,
+                installedVariant = installedVariant,
+                detail = "Hash matched ${hashMatching.size} patch(es) for [${hashMatching.joinToString { it.architecture }}], none compatible with device ABIs [${deviceSupportedAbis.joinToString()}]."
+            )
+        }
+
+        // 3. Variant gate: if installed APK ABIs clearly identify a variant, enforce variant compatibility
+        val variantCandidates = if (installedVariant != null) {
+            deviceCompatible.filter { it.effectiveBaseArchitecture() == installedVariant }
+        } else {
+            deviceCompatible
+        }
+        if (variantCandidates.isEmpty()) {
+            return DeltaMatchResult(
+                patch = null,
+                reason = DeltaDiagnosticReason.NO_ARCHITECTURE_COMPATIBLE_PATCH,
+                installedVariant = installedVariant,
+                detail = "Installed APK variant is $installedVariant, but matching hash entry targets [${deviceCompatible.joinToString { it.effectiveBaseArchitecture() }}]."
+            )
+        }
+
+        // 4. Deterministic selection strategy when multiple candidates match
+        fun deviceAbiRank(arch: String): Int {
+            val norm = DeltaPatchInfo.normalizeArchitecture(arch)
+            return when {
+                installedVariant != null && norm == installedVariant -> 0
+                is64BitSupported -> when (norm) {
+                    "arm64-v8a" -> 1
+                    "armeabi-v7a" -> 2
+                    "universal" -> 3
+                    else -> 4
+                }
+                isArm32Supported -> when (norm) {
+                    "armeabi-v7a" -> 1
+                    "universal" -> 2
+                    else -> 4
+                }
+                else -> 4
+            }
+        }
+
+        val selected = variantCandidates.minWithOrNull(
+            compareBy<DeltaPatchInfo>(
+                { if (installedVariant != null && it.normalizedArchitecture() == installedVariant) 0 else 1 },
+                { deviceAbiRank(it.architecture) },
+                { it.patchSize },
+                { -it.baseVersionCode },
+                { it.patchFilename }
+            )
+        ) ?: return DeltaMatchResult(
+            patch = null,
+            reason = DeltaDiagnosticReason.NO_ARCHITECTURE_COMPATIBLE_PATCH,
+            installedVariant = installedVariant
+        )
+
+        return DeltaMatchResult(
+            patch = selected,
+            reason = DeltaDiagnosticReason.SELECTED,
+            installedVariant = installedVariant,
+            detail = "Selected ${selected.patchFilename} (base=${selected.baseVersion}, arch=${selected.architecture}, installedVariant=${installedVariant ?: "unknown"})"
+        )
     }
 
     companion object {
