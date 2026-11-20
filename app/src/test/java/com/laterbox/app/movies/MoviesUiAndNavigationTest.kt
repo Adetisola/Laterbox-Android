@@ -2258,4 +2258,140 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithText("English (Offline)").assertIsDisplayed()
         composeTestRule.onNodeWithText("French (Offline)").assertIsDisplayed()
     }
+
+    @Test
+    fun trailerInlineToFullscreenRoundTrip_preservesSingleSurfaceAndExitsCleanly() {
+        val movieWithTrailer = MovieTitleSummary(
+            id = "m_trailer_rt",
+            providerId = "moviebox",
+            kind = MediaKind.MOVIE,
+            title = "Inception",
+            releaseYear = 2010,
+            trailerUrl = "https://cdn.example/inception_trailer.mp4"
+        )
+        var isPlaying by mutableStateOf(true)
+        var isFullscreen by mutableStateOf(false)
+        var savedPosMs by mutableStateOf(0L)
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MovieDetailScreen(
+                    uiState = MovieDetailUiState(
+                        isLoading = false,
+                        details = MediaDetails(summary = movieWithTrailer, fullDescription = "Dream heist."),
+                        isTrailerPlaying = isPlaying,
+                        isTrailerFullscreen = isFullscreen,
+                        trailerPositionMs = savedPosMs,
+                        trailerMuted = false
+                    ),
+                    onBackClick = {},
+                    onRetry = {},
+                    onToggleWatchlist = {},
+                    onPlayClick = { _, _ -> },
+                    onSelectSeason = {},
+                    onOpenRelated = { _, _ -> },
+                    onOpenExternalUrl = {},
+                    onSetTrailerFullscreen = { full, pos ->
+                        savedPosMs = pos
+                        isFullscreen = full
+                    },
+                    onStopTrailer = {
+                        isFullscreen = false
+                        isPlaying = false
+                    }
+                )
+            }
+        }
+
+        // 1. Inline trailer active, fullscreen overlay absent
+        composeTestRule.onNodeWithTag("detail_inline_trailer_player").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("detail_trailer_fullscreen_dialog").assertDoesNotExist()
+
+        // 2. Enter fullscreen -> inline surface detached, fullscreen overlay displayed
+        composeTestRule.onNodeWithTag("detail_trailer_expand_button").performClick()
+        assertTrue(isFullscreen)
+        composeTestRule.onNodeWithTag("detail_trailer_fullscreen_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("detail_fullscreen_trailer_player").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("detail_inline_trailer_player").assertDoesNotExist()
+
+        // 3. Exit fullscreen -> inline surface restored
+        composeTestRule.onNodeWithTag("detail_trailer_expand_button").performClick()
+        assertFalse(isFullscreen)
+        composeTestRule.onNodeWithTag("detail_inline_trailer_player").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("detail_trailer_fullscreen_dialog").assertDoesNotExist()
+
+        // 4. Re-enter fullscreen and close
+        composeTestRule.onNodeWithTag("detail_trailer_expand_button").performClick()
+        assertTrue(isFullscreen)
+        composeTestRule.onNodeWithTag("detail_trailer_close_button").performClick()
+        assertFalse(isPlaying)
+        assertFalse(isFullscreen)
+        composeTestRule.onNodeWithTag("detail_trailer_fullscreen_dialog").assertDoesNotExist()
+    }
+
+    @Test
+    fun moviePlayerScreen_rapidOpenQualitySwitchCloseAndReopen_doesNotCrash() {
+        val source720 = PlaybackSource(
+            id = "s_720",
+            url = "https://cdn.example/movie_720.mp4",
+            format = "MP4",
+            qualityLabel = "720p",
+            qualityHeight = 720,
+            providerName = "MovieBox"
+        )
+        val source1080 = PlaybackSource(
+            id = "s_1080",
+            url = "https://cdn.example/movie_1080.mp4",
+            format = "MP4",
+            qualityLabel = "1080p",
+            qualityHeight = 1080,
+            providerName = "MovieBox"
+        )
+        var showPlayer by mutableStateOf(true)
+        var activeTitleId by mutableStateOf("t_1")
+        var activeSource by mutableStateOf(source720)
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                if (showPlayer) {
+                    MoviePlayerScreen(
+                        uiState = MoviePlayerUiState(
+                            isLoading = false,
+                            activeTitleId = activeTitleId,
+                            resolution = PlaybackResolution.Available(
+                                title = "Title $activeTitleId",
+                                sources = listOf(source720, source1080)
+                            ),
+                            selectedSource = activeSource
+                        ),
+                        onBackClick = { showPlayer = false },
+                        onRetry = {},
+                        onSelectSource = { src, _ -> activeSource = src },
+                        onSelectSubtitle = { _, _ -> },
+                        onSaveProgress = { _, _ -> },
+                        onOpenExternalUrl = {}
+                    )
+                }
+            }
+        }
+
+        composeTestRule.onNodeWithTag("movie_player_screen").assertIsDisplayed()
+        // Switch quality without recreating/crashing player
+        composeTestRule.runOnIdle { activeSource = source1080 }
+        composeTestRule.waitForIdle()
+
+        // Close and immediately reopen with a different title
+        composeTestRule.runOnIdle { showPlayer = false }
+        composeTestRule.waitForIdle()
+        composeTestRule.runOnIdle {
+            activeTitleId = "t_2"
+            activeSource = source720
+            showPlayer = true
+        }
+        composeTestRule.onNodeWithTag("movie_player_screen").assertIsDisplayed()
+
+        // Clean close
+        composeTestRule.runOnIdle { showPlayer = false }
+        composeTestRule.waitForIdle()
+    }
 }

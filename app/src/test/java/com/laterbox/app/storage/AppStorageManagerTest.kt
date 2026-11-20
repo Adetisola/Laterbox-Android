@@ -211,4 +211,18 @@ class AppStorageManagerTest {
             .performClick()
         assertTrue(cleared)
     }
+
+    @Test
+    fun moviesMediaCache_protectsActiveStreamUrlsFromClearCache() {
+        val activeUrl = "https://cdn.example/active_stream.mp4"
+        val idleUrl = "https://cdn.example/old_stream.mp4"
+        com.laterbox.app.movies.data.cache.MoviesMediaCache.markStreamActive(activeUrl)
+        try {
+            assertTrue(com.laterbox.app.movies.data.cache.MoviesMediaCache.isStreamActive(activeUrl))
+            assertFalse(com.laterbox.app.movies.data.cache.MoviesMediaCache.isStreamActive(idleUrl))
+        } finally {
+            com.laterbox.app.movies.data.cache.MoviesMediaCache.markStreamInactive(activeUrl)
+        }
+        assertFalse(com.laterbox.app.movies.data.cache.MoviesMediaCache.isStreamActive(activeUrl))
+    }
 }

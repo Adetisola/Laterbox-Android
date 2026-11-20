@@ -125,6 +125,7 @@ import com.laterbox.app.ui.components.MovieDetailScreenSkeleton
 import com.laterbox.app.ui.components.skeletonShimmer
 import com.laterbox.app.movies.domain.model.PlaybackResolution
 import com.laterbox.app.movies.domain.model.PlaybackSource
+import com.laterbox.app.movies.ui.player.LaterboxVideoSurface
 import com.laterbox.app.movies.ui.player.PlayerAudioBoostController
 import com.laterbox.app.movies.ui.player.PlayerBrightnessHelper
 import com.laterbox.app.movies.ui.player.PlayerBrightnessHud
@@ -334,8 +335,12 @@ fun MovieDetailScreen(
     }
 
     // Single shared ExoPlayer instance for the active trailer across inline and landscape fullscreen
+    val appContext = remember(context) { context.applicationContext }
     val trailerClock = remember(summaryForTrailer?.id, validTrailerUrl) {
         TrailerPlaybackClockState(initialPositionMs = uiState.trailerPositionMs)
+    }
+    var attachedTrailerView by remember(summaryForTrailer?.id, validTrailerUrl) {
+        mutableStateOf<PlayerView?>(null)
     }
 
     val trailerPlayer: ExoPlayer? = if (uiState.isTrailerPlaying && validTrailerUrl != null) {
@@ -344,11 +349,11 @@ fun MovieDetailScreen(
         }
         val player = remember(summaryForTrailer?.id, validTrailerUrl) {
             val mediaSourceFactory = MoviesMediaCache.createMediaSourceFactory(
-                context = context,
+                context = appContext,
                 headers = headers,
                 useDiskCache = true
             )
-            ExoPlayer.Builder(context)
+            ExoPlayer.Builder(appContext)
                 .setMediaSourceFactory(mediaSourceFactory)
                 .build()
         }
@@ -356,18 +361,29 @@ fun MovieDetailScreen(
         val latestOnTrailerError by rememberUpdatedState(onTrailerPlaybackError)
         val latestOnStopTrailer by rememberUpdatedState(onStopTrailer)
 
+        DisposableEffect(validTrailerUrl) {
+            MoviesMediaCache.markStreamActive(validTrailerUrl)
+            onDispose {
+                MoviesMediaCache.markStreamInactive(validTrailerUrl)
+            }
+        }
+
         LaunchedEffect(player, uiState.trailerMuted) {
             player.volume = if (uiState.trailerMuted) 0f else 1f
         }
 
         LaunchedEffect(player, validTrailerUrl) {
-            player.setMediaItem(MediaItem.fromUri(Uri.parse(validTrailerUrl)))
-            if (uiState.trailerPositionMs > 0L) {
-                player.seekTo(uiState.trailerPositionMs)
+            runCatching {
+                player.setMediaItem(MediaItem.fromUri(Uri.parse(validTrailerUrl)))
+                if (uiState.trailerPositionMs > 0L) {
+                    player.seekTo(uiState.trailerPositionMs)
+                }
+                player.volume = if (uiState.trailerMuted) 0f else 1f
+                player.prepare()
+                player.playWhenReady = true
+            }.onFailure { err ->
+                latestOnTrailerError(err.message ?: "Unable to play trailer.")
             }
-            player.volume = if (uiState.trailerMuted) 0f else 1f
-            player.prepare()
-            player.playWhenReady = true
         }
 
         DisposableEffect(player) {
@@ -389,12 +405,13 @@ fun MovieDetailScreen(
             }
             player.addListener(listener)
             onDispose {
-                latestOnRecordProgress(
-                    player.currentPosition.coerceAtLeast(0L),
-                    player.duration.coerceAtLeast(0L)
-                )
+                val pos = runCatching { player.currentPosition.coerceAtLeast(0L) }.getOrDefault(0L)
+                val dur = runCatching { player.duration.coerceAtLeast(0L) }.getOrDefault(0L)
+                latestOnRecordProgress(pos, dur)
                 player.removeListener(listener)
-                player.release()
+                attachedTrailerView?.player = null
+                attachedTrailerView = null
+                runCatching { player.release() }
             }
         }
 
@@ -425,63 +442,6 @@ fun MovieDetailScreen(
                     }
                 }
             }
-            Dialog(
-                onDismissRequest = {
-                    onSetTrailerFullscreen(false, player.currentPosition.coerceAtLeast(0L))
-                },
-                properties = DialogProperties(
-                    usePlatformDefaultWidth = false,
-                    decorFitsSystemWindows = false
-                )
-            ) {
-                val dialogWindow = (LocalView.current.parent as? DialogWindowProvider)?.window
-                SideEffect {
-                    dialogWindow?.let { win ->
-                        win.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-                        win.setBackgroundDrawable(ColorDrawable(AndroidColor.BLACK))
-                        win.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-                        WindowCompat.setDecorFitsSystemWindows(win, false)
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                            win.attributes = win.attributes.apply {
-                                layoutInDisplayCutoutMode =
-                                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-                            }
-                        }
-                        val controller = WindowCompat.getInsetsController(win, win.decorView)
-                        controller.systemBarsBehavior =
-                            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                        controller.hide(WindowInsetsCompat.Type.systemBars())
-                    }
-                }
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black)
-                        .displayCutoutPadding()
-                        .testTag("detail_trailer_fullscreen_dialog")
-                ) {
-                    InlineTrailerPlayerSurface(
-                        exoPlayer = player,
-                        title = summaryForTrailer?.title ?: "Trailer",
-                        clockState = trailerClock,
-                        isMuted = uiState.trailerMuted,
-                        isFullscreen = true,
-                        playbackPreferences = uiState.playbackPreferences,
-                        onTogglePlayPause = {
-                            if (player.isPlaying) player.pause() else player.play()
-                        },
-                        onSeekTo = { target ->
-                            player.seekTo(target)
-                            trailerClock.positionMs = target
-                        },
-                        onToggleMute = onToggleTrailerMute,
-                        onToggleFullscreen = {
-                            onSetTrailerFullscreen(false, player.currentPosition.coerceAtLeast(0L))
-                        },
-                        onClose = onStopTrailer
-                    )
-                }
-            }
         }
 
         player
@@ -493,9 +453,13 @@ fun MovieDetailScreen(
         modifier = modifier
             .fillMaxSize()
             .background(colors.backgroundPrimary)
-            .navigationBarsPadding()
             .testTag("movie_detail_screen")
     ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .navigationBarsPadding()
+        ) {
         when {
             uiState.isLoading -> {
                 Box(modifier = Modifier.fillMaxSize()) {
@@ -592,6 +556,7 @@ fun MovieDetailScreen(
                                             isFullscreen = false,
                                             playbackPreferences = uiState.playbackPreferences,
                                             attachVideoSurface = true,
+                                            onPlayerViewAttached = { attachedTrailerView = it },
                                             onTogglePlayPause = {
                                                 if (trailerPlayer.isPlaying) trailerPlayer.pause() else trailerPlayer.play()
                                             },
@@ -1889,6 +1854,47 @@ fun MovieDetailScreen(
                 }
             }
         }
+        }
+
+        if (uiState.isTrailerFullscreen && trailerPlayer != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black)
+                    .pointerInput(Unit) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                awaitPointerEvent()
+                            }
+                        }
+                    }
+                    .testTag("detail_trailer_fullscreen_dialog")
+            ) {
+                InlineTrailerPlayerSurface(
+                    exoPlayer = trailerPlayer,
+                    title = summaryForTrailer?.title ?: "Trailer",
+                    clockState = trailerClock,
+                    isMuted = uiState.trailerMuted,
+                    isFullscreen = true,
+                    playbackPreferences = uiState.playbackPreferences,
+                    attachVideoSurface = true,
+                    onPlayerViewAttached = { attachedTrailerView = it },
+                    onTogglePlayPause = {
+                        if (trailerPlayer.isPlaying) trailerPlayer.pause() else trailerPlayer.play()
+                    },
+                    onSeekTo = { target ->
+                        trailerPlayer.seekTo(target)
+                        trailerClock.positionMs = target
+                    },
+                    onToggleMute = onToggleTrailerMute,
+                    onToggleFullscreen = {
+                        onSetTrailerFullscreen(false, trailerPlayer.currentPosition.coerceAtLeast(0L))
+                    },
+                    onClose = onStopTrailer,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
     }
 }
 
@@ -2159,7 +2165,8 @@ private fun InlineTrailerPlayerSurface(
     onToggleFullscreen: () -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
-    attachVideoSurface: Boolean = true
+    attachVideoSurface: Boolean = true,
+    onPlayerViewAttached: ((PlayerView?) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val dialogView = LocalView.current
@@ -2434,27 +2441,12 @@ private fun InlineTrailerPlayerSurface(
             .testTag(if (isFullscreen) "detail_fullscreen_trailer_player" else "detail_inline_trailer_player")
     ) {
         if (attachVideoSurface) {
-            AndroidView(
-                factory = { ctx ->
-                    PlayerView(ctx).apply {
-                        useController = false
-                        controllerAutoShow = false
-                        isClickable = false
-                        isFocusable = false
-                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                        keepScreenOn = true
-                        player = exoPlayer
-                    }
-                },
-                update = { view ->
-                    if (view.player !== exoPlayer) {
-                        view.player = exoPlayer
-                    }
-                    view.keepScreenOn = clockState.isPlaying
-                },
-                onRelease = { view ->
-                    view.player = null
-                },
+            LaterboxVideoSurface(
+                player = exoPlayer,
+                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT,
+                keepScreenOn = clockState.isPlaying,
+                useTextureView = true,
+                onPlayerViewAttached = onPlayerViewAttached,
                 modifier = Modifier.fillMaxSize()
             )
         }

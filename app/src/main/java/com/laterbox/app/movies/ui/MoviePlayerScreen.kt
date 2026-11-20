@@ -115,8 +115,10 @@ import com.laterbox.app.movies.domain.model.PlaybackMarkerWindow
 import com.laterbox.app.movies.domain.model.PlaybackResolution
 import com.laterbox.app.movies.domain.model.PlaybackSource
 import com.laterbox.app.movies.domain.model.SubtitleTrack
+import android.util.Log
 import com.laterbox.app.movies.playback.LaterboxPlaybackBridge
 import com.laterbox.app.movies.playback.PlaybackSessionService
+import com.laterbox.app.movies.ui.player.LaterboxVideoSurface
 import com.laterbox.app.movies.ui.player.PlayerAudioBoostController
 import com.laterbox.app.movies.ui.player.PlayerBrightnessHelper
 import com.laterbox.app.movies.ui.player.PlayerBrightnessHud
@@ -615,25 +617,28 @@ private fun ActiveVideoPlayerContent(
             selectedSource.url.contains(".m3u8", ignoreCase = true)
     }
 
-    val exoPlayer = remember(playbackEpisodeKey, resolution.title, selectedSource.headers, isAdaptiveSource, isLocalFile) {
+    val appContext = remember(context) { context.applicationContext }
+    var attachedPlayerView by remember { mutableStateOf<PlayerView?>(null) }
+
+    val exoPlayer = remember(playbackEpisodeKey, isLocalFile) {
         val audioAttributes = PlaybackSessionService.buildConfiguredAudioAttributes()
         val seekIncrementMs = (playbackPreferences.doubleTapSeekSeconds.coerceIn(5, 30)) * 1000L
-        val builder = ExoPlayer.Builder(context)
+        ExoPlayer.Builder(appContext)
             .setAudioAttributes(audioAttributes, true)
             .setHandleAudioBecomingNoisy(true)
             .setSeekBackIncrementMs(seekIncrementMs)
             .setSeekForwardIncrementMs(seekIncrementMs)
-        if (isLocalFile) {
-            builder.build()
-        } else {
-            val mediaSourceFactory = MoviesMediaCache.createMediaSourceFactory(
-                context = context,
-                headers = selectedSource.headers,
-                useDiskCache = !isAdaptiveSource
-            )
-            builder
-                .setMediaSourceFactory(mediaSourceFactory)
-                .build()
+            .build()
+    }
+
+    DisposableEffect(selectedSource.url, isLocalFile) {
+        if (!isLocalFile) {
+            MoviesMediaCache.markStreamActive(selectedSource.url)
+        }
+        onDispose {
+            if (!isLocalFile) {
+                MoviesMediaCache.markStreamInactive(selectedSource.url)
+            }
         }
     }
 
@@ -651,10 +656,11 @@ private fun ActiveVideoPlayerContent(
             showDownloadDialog -> showDownloadDialog = false
             showSubtitleStyleDialog -> showSubtitleStyleDialog = false
             else -> {
-                val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
-                val dur = exoPlayer.duration.coerceAtLeast(0L)
+                val pos = runCatching { exoPlayer.currentPosition.coerceAtLeast(0L) }.getOrDefault(0L)
+                val dur = runCatching { exoPlayer.duration.coerceAtLeast(0L) }.getOrDefault(0L)
                 latestSaveEpisodeProgress(pos, dur, playbackEpisodeKey)
-                LaterboxPlaybackBridge.stopAndDetach(context)
+                attachedPlayerView?.player = null
+                LaterboxPlaybackBridge.stopAndDetach(appContext)
                 onBackClick()
             }
         }
@@ -708,70 +714,95 @@ private fun ActiveVideoPlayerContent(
         }
     }
 
-    LaunchedEffect(exoPlayer, playbackEpisodeKey, selectedSource.id, selectedSource.url, selectedSubtitle?.id) {
+    LaunchedEffect(exoPlayer, playbackEpisodeKey, selectedSource.id, selectedSource.url, selectedSource.headers, isAdaptiveSource, selectedSubtitle?.id) {
         val isEpisodeTransition = lastLoadedEpisodeKey != playbackEpisodeKey
         lastLoadedEpisodeKey = playbackEpisodeKey
         playerErrorText = null
         isBuffering = true
         isPlaybackEnded = false
         hasManualAudioOverride = false
-        val metadata = MediaMetadata.Builder()
-            .setTitle(resolution.title)
-            .setDisplayTitle(resolution.title)
-            .setSubtitle(resolution.subtitleHeading)
-            .setIsPlayable(true)
-            .build()
-        val itemBuilder = MediaItem.Builder()
-            .setUri(Uri.parse(selectedSource.url))
-            .setMediaMetadata(metadata)
-
-        val streamMimeType = when {
-            selectedSource.format.equals("DASH", ignoreCase = true) ||
-                selectedSource.url.contains(".mpd", ignoreCase = true) -> MimeTypes.APPLICATION_MPD
-            selectedSource.format.equals("HLS", ignoreCase = true) ||
-                selectedSource.url.contains(".m3u8", ignoreCase = true) -> MimeTypes.APPLICATION_M3U8
-            else -> null
-        }
-        if (streamMimeType != null) {
-            itemBuilder.setMimeType(streamMimeType)
-        }
-
-        if (selectedSubtitle != null) {
-            val mimeType = if (selectedSubtitle.format.equals("vtt", ignoreCase = true)) {
-                MimeTypes.TEXT_VTT
-            } else {
-                MimeTypes.APPLICATION_SUBRIP
-            }
-            val subConfig = MediaItem.SubtitleConfiguration.Builder(Uri.parse(selectedSubtitle.url))
-                .setMimeType(mimeType)
-                .setLanguage(selectedSubtitle.languageCode)
-                .setLabel(selectedSubtitle.label)
-                .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+        try {
+            val metadata = MediaMetadata.Builder()
+                .setTitle(resolution.title)
+                .setDisplayTitle(resolution.title)
+                .setSubtitle(resolution.subtitleHeading)
+                .setIsPlayable(true)
                 .build()
-            itemBuilder.setSubtitleConfigurations(listOf(subConfig))
-        }
+            val itemBuilder = MediaItem.Builder()
+                .setUri(Uri.parse(selectedSource.url))
+                .setMediaMetadata(metadata)
 
-        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon()
-            .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
-            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, selectedSubtitle == null)
-            .build()
+            val streamMimeType = when {
+                selectedSource.format.equals("DASH", ignoreCase = true) ||
+                    selectedSource.url.contains(".mpd", ignoreCase = true) -> MimeTypes.APPLICATION_MPD
+                selectedSource.format.equals("HLS", ignoreCase = true) ||
+                    selectedSource.url.contains(".m3u8", ignoreCase = true) -> MimeTypes.APPLICATION_M3U8
+                else -> null
+            }
+            if (streamMimeType != null) {
+                itemBuilder.setMimeType(streamMimeType)
+            }
 
-        exoPlayer.setMediaItem(itemBuilder.build())
-        val resumeAtMs = if (isEpisodeTransition) {
-            latestStartPositionMs.coerceAtLeast(0L)
-        } else {
-            maxOf(latestStartPositionMs, clockState.positionMs).coerceAtLeast(0L)
+            if (selectedSubtitle != null) {
+                val mimeType = if (selectedSubtitle.format.equals("vtt", ignoreCase = true)) {
+                    MimeTypes.TEXT_VTT
+                } else {
+                    MimeTypes.APPLICATION_SUBRIP
+                }
+                val subConfig = MediaItem.SubtitleConfiguration.Builder(Uri.parse(selectedSubtitle.url))
+                    .setMimeType(mimeType)
+                    .setLanguage(selectedSubtitle.languageCode)
+                    .setLabel(selectedSubtitle.label)
+                    .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                    .build()
+                itemBuilder.setSubtitleConfigurations(listOf(subConfig))
+            }
+
+            exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon()
+                .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, selectedSubtitle == null)
+                .build()
+
+            val mediaItem = itemBuilder.build()
+            if (isLocalFile) {
+                exoPlayer.setMediaItem(mediaItem)
+            } else {
+                val mediaSource = MoviesMediaCache
+                    .createMediaSourceFactory(
+                        context = appContext,
+                        headers = selectedSource.headers,
+                        useDiskCache = !isAdaptiveSource
+                    )
+                    .createMediaSource(mediaItem)
+                exoPlayer.setMediaSource(mediaSource)
+            }
+            val resumeAtMs = if (isEpisodeTransition) {
+                latestStartPositionMs.coerceAtLeast(0L)
+            } else {
+                maxOf(latestStartPositionMs, clockState.positionMs).coerceAtLeast(0L)
+            }
+            clockState.positionMs = resumeAtMs
+            if (isEpisodeTransition) {
+                clockState.durationMs = 0L
+            }
+            if (resumeAtMs > 0L) {
+                exoPlayer.seekTo(resumeAtMs)
+            }
+            exoPlayer.setPlaybackSpeed(latestSelectedSpeed)
+            exoPlayer.prepare()
+            exoPlayer.playWhenReady = true
+            LaterboxPlaybackBridge.updateMetadata(
+                title = resolution.title,
+                subtitle = resolution.subtitleHeading
+            )
+        } catch (err: kotlinx.coroutines.CancellationException) {
+            throw err
+        } catch (err: Throwable) {
+            Log.e("MoviePlayerScreen", "Failed preparing stream playback", err)
+            isBuffering = false
+            playerErrorText = err.message?.takeIf { it.isNotBlank() }
+                ?: "Unable to prepare playback stream."
         }
-        clockState.positionMs = resumeAtMs
-        if (isEpisodeTransition) {
-            clockState.durationMs = 0L
-        }
-        if (resumeAtMs > 0L) {
-            exoPlayer.seekTo(resumeAtMs)
-        }
-        exoPlayer.setPlaybackSpeed(latestSelectedSpeed)
-        exoPlayer.prepare()
-        exoPlayer.playWhenReady = true
     }
 
     LaunchedEffect(exoPlayer, playbackEpisodeKey, startPositionMs) {
@@ -827,21 +858,24 @@ private fun ActiveVideoPlayerContent(
         }
         exoPlayer.addListener(listener)
         LaterboxPlaybackBridge.attachPlayer(
-            context = context,
+            context = appContext,
             player = exoPlayer,
             title = resolution.title,
             subtitle = resolution.subtitleHeading
         )
         onDispose {
-            val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
-            val dur = exoPlayer.duration.coerceAtLeast(0L)
+            val pos = runCatching { exoPlayer.currentPosition.coerceAtLeast(0L) }.getOrDefault(0L)
+            val dur = runCatching { exoPlayer.duration.coerceAtLeast(0L) }.getOrDefault(0L)
             if (pos > 0L) {
                 clockState.positionMs = pos
             }
             latestSaveEpisodeProgress(pos, dur, snapshotEpisodeKey)
             audioBoostController.release()
             exoPlayer.removeListener(listener)
-            LaterboxPlaybackBridge.releasePlayer(context, exoPlayer)
+            // Detach PlayerView BEFORE releasing MediaSession and ExoPlayer
+            attachedPlayerView?.player = null
+            attachedPlayerView = null
+            LaterboxPlaybackBridge.releasePlayer(appContext, exoPlayer)
         }
     }
 
@@ -1153,39 +1187,13 @@ private fun ActiveVideoPlayerContent(
                 }
             }
     ) {
-        var appliedResizeMode by remember { mutableIntStateOf(-1) }
-        var appliedSubtitleStyle by remember { mutableStateOf<SubtitleStyleConfig?>(null) }
-        AndroidView(
-            factory = { ctx ->
-                PlayerView(ctx).apply {
-                    player = exoPlayer
-                    useController = false
-                    controllerAutoShow = false
-                    isClickable = false
-                    isFocusable = false
-                    keepScreenOn = true
-                    this.resizeMode = resizeMode
-                    appliedResizeMode = resizeMode
-                    SubtitleStyleHelper.applyToSubtitleView(subtitleView, localSubtitleStyle)
-                    appliedSubtitleStyle = localSubtitleStyle
-                }
-            },
-            update = { view ->
-                if (view.player !== exoPlayer) {
-                    view.player = exoPlayer
-                }
-                if (appliedResizeMode != resizeMode) {
-                    view.resizeMode = resizeMode
-                    appliedResizeMode = resizeMode
-                }
-                if (appliedSubtitleStyle != localSubtitleStyle) {
-                    SubtitleStyleHelper.applyToSubtitleView(view.subtitleView, localSubtitleStyle)
-                    appliedSubtitleStyle = localSubtitleStyle
-                }
-            },
-            onRelease = { view ->
-                view.player = null
-            },
+        LaterboxVideoSurface(
+            player = exoPlayer,
+            resizeMode = resizeMode,
+            keepScreenOn = isPlaying || isBuffering,
+            useTextureView = false,
+            subtitleStyle = localSubtitleStyle,
+            onPlayerViewAttached = { attachedPlayerView = it },
             modifier = Modifier.fillMaxSize()
         )
 

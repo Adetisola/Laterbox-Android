@@ -62,10 +62,13 @@ fun MediaPlayerScreen(
     }
 
     val context = LocalContext.current
-    val file = File(context.filesDir, "media/${asset.localPath}")
+    val appContext = remember(context) { context.applicationContext }
+    val file = File(appContext.filesDir, "media/${asset.localPath}")
+    val attachedPlayerView = remember { androidx.compose.runtime.mutableStateOf<PlayerView?>(null) }
 
     BackHandler {
-        LaterboxPlaybackBridge.stopAndDetach(context)
+        attachedPlayerView.value?.player = null
+        LaterboxPlaybackBridge.stopAndDetach(appContext)
         onDismiss()
     }
 
@@ -74,7 +77,7 @@ fun MediaPlayerScreen(
             .setUsage(C.USAGE_MEDIA)
             .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
             .build()
-        ExoPlayer.Builder(context)
+        ExoPlayer.Builder(appContext)
             .setAudioAttributes(audioAttributes, true)
             .setHandleAudioBecomingNoisy(true)
             .build()
@@ -96,13 +99,15 @@ fun MediaPlayerScreen(
 
     DisposableEffect(exoPlayer) {
         LaterboxPlaybackBridge.attachPlayer(
-            context = context,
+            context = appContext,
             player = exoPlayer,
             title = asset.title ?: "Audio Playback",
             subtitle = asset.artist
         )
         onDispose {
-            LaterboxPlaybackBridge.releasePlayer(context, exoPlayer)
+            attachedPlayerView.value?.player = null
+            attachedPlayerView.value = null
+            LaterboxPlaybackBridge.releasePlayer(appContext, exoPlayer)
         }
     }
 
@@ -116,7 +121,18 @@ fun MediaPlayerScreen(
                 PlayerView(ctx).apply {
                     player = exoPlayer
                     useController = true
+                    attachedPlayerView.value = this
                 }
+            },
+            update = { view ->
+                if (view.player !== exoPlayer) {
+                    view.player = exoPlayer
+                }
+                attachedPlayerView.value = view
+            },
+            onRelease = { view ->
+                view.player = null
+                attachedPlayerView.value = null
             },
             modifier = Modifier.fillMaxSize()
         )
@@ -131,7 +147,13 @@ fun MediaPlayerScreen(
                 )
             },
             navigationIcon = {
-                IconButton(onClick = onDismiss) {
+                IconButton(
+                    onClick = {
+                        attachedPlayerView.value?.player = null
+                        LaterboxPlaybackBridge.stopAndDetach(appContext)
+                        onDismiss()
+                    }
+                ) {
                     Icon(
                         painter = painterResource(LaterboxIcons.Close),
                         contentDescription = "Close",

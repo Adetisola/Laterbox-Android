@@ -168,7 +168,6 @@ fun LaterboxApp(
     val moviesHomeViewModel: com.laterbox.app.movies.ui.MoviesHomeViewModel = viewModel(factory = AppViewModelProvider.Factory)
     val moviesCatalogueViewModel: com.laterbox.app.movies.ui.MoviesCatalogueViewModel = viewModel(factory = AppViewModelProvider.Factory)
     val movieDetailViewModel: com.laterbox.app.movies.ui.MovieDetailViewModel = viewModel(factory = AppViewModelProvider.Factory)
-    val moviePlayerViewModel: com.laterbox.app.movies.ui.MoviePlayerViewModel = viewModel(factory = AppViewModelProvider.Factory)
 
     // Current route & shared state observation
     val navBackStackEntry by navController.currentBackStackEntryAsState()
@@ -1362,6 +1361,10 @@ fun LaterboxApp(
                                 navArgument("episode") { type = NavType.IntType; defaultValue = -1 }
                             )
                         ) { backStackEntry ->
+                            val moviePlayerViewModel: com.laterbox.app.movies.ui.MoviePlayerViewModel = viewModel(
+                                viewModelStoreOwner = backStackEntry,
+                                factory = AppViewModelProvider.Factory
+                            )
                             val providerId = backStackEntry.arguments?.getString("providerId").orEmpty()
                             val titleId = backStackEntry.arguments?.getString("titleId").orEmpty()
                             val rawSeason = backStackEntry.arguments?.getInt("season") ?: -1

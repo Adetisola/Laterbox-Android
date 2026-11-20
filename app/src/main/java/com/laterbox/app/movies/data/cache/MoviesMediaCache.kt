@@ -1,6 +1,7 @@
 package com.laterbox.app.movies.data.cache
 
 import android.content.Context
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.StandaloneDatabaseProvider
@@ -13,6 +14,7 @@ import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.Collections
 
 /**
  * Progressive Media3 stream cache for authorised open-license streams.
@@ -22,6 +24,7 @@ import java.io.File
 @OptIn(UnstableApi::class)
 object MoviesMediaCache {
 
+    private const val TAG = "MoviesMediaCache"
     private const val CACHE_DIR_NAME = "movies_media_cache"
     private const val MAX_CACHE_BYTES = 512L * 1024L * 1024L
 
@@ -30,6 +33,23 @@ object MoviesMediaCache {
 
     @Volatile
     private var isWarmingUp: Boolean = false
+
+    private val activeStreamUrls: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
+
+    fun markStreamActive(url: String?) {
+        val clean = url?.trim()?.takeIf { it.isNotBlank() } ?: return
+        activeStreamUrls.add(clean)
+    }
+
+    fun markStreamInactive(url: String?) {
+        val clean = url?.trim()?.takeIf { it.isNotBlank() } ?: return
+        activeStreamUrls.remove(clean)
+    }
+
+    fun isStreamActive(key: String): Boolean =
+        synchronized(activeStreamUrls) {
+            activeStreamUrls.any { active -> key == active || key.contains(active) || active.contains(key) }
+        }
 
     fun getCache(context: Context): SimpleCache {
         return cacheInstance ?: synchronized(this) {
@@ -40,7 +60,9 @@ object MoviesMediaCache {
     fun getCacheIfReady(): SimpleCache? = cacheInstance
 
     suspend fun warmUp(context: Context): SimpleCache? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-        runCatching { getCache(context.applicationContext) }.getOrNull()
+        runCatching { getCache(context.applicationContext) }
+            .onFailure { err -> Log.w(TAG, "Stream cache warmUp failed: ${err.message}") }
+            .getOrNull()
     }
 
     fun warmUpAsync(context: Context) {
@@ -50,7 +72,8 @@ object MoviesMediaCache {
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
             try {
                 getCache(appContext)
-            } catch (_: Throwable) {
+            } catch (err: Throwable) {
+                Log.w(TAG, "Stream cache async warmUp failed: ${err.message}")
             } finally {
                 isWarmingUp = false
             }
@@ -107,7 +130,8 @@ object MoviesMediaCache {
                 .setCache(readyCache)
                 .setUpstreamDataSourceFactory(upstreamFactory)
                 .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
-        }.getOrElse {
+        }.getOrElse { err ->
+            Log.w(TAG, "Falling back to upstream DataSourceFactory: ${err.message}")
             upstreamFactory
         }
     }
@@ -137,10 +161,12 @@ object MoviesMediaCache {
         if (ready != null) {
             runCatching {
                 ready.keys.toList().forEach { key ->
-                    runCatching { ready.removeResource(key) }
+                    if (!isStreamActive(key)) {
+                        runCatching { ready.removeResource(key) }
+                    }
                 }
             }
-        } else {
+        } else if (activeStreamUrls.isEmpty()) {
             val dir = cacheDir(context)
             if (dir.exists()) {
                 dir.listFiles()?.forEach { child ->
@@ -157,6 +183,7 @@ object MoviesMediaCache {
         if (before <= targetMaxBytes) return 0L
         val ready = getCacheIfReady() ?: return 0L
         val keysByOldest = ready.keys
+            .filterNot { isStreamActive(it) }
             .map { key ->
                 val spans = runCatching { ready.getCachedSpans(key) }.getOrDefault(emptySet())
                 val oldestTouch = spans.minOfOrNull { it.lastTouchTimestamp } ?: Long.MAX_VALUE
@@ -173,6 +200,7 @@ object MoviesMediaCache {
 
     fun releaseForTesting() {
         synchronized(this) {
+            activeStreamUrls.clear()
             runCatching { cacheInstance?.release() }
             cacheInstance = null
         }
