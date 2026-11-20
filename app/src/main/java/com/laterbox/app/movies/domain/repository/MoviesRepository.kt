@@ -4,6 +4,7 @@ import com.laterbox.app.movies.domain.model.CataloguePage
 import com.laterbox.app.movies.domain.model.CatalogueSort
 import com.laterbox.app.movies.domain.model.CollectionMediaItem
 import com.laterbox.app.movies.domain.model.EpisodeItem
+import com.laterbox.app.movies.domain.model.LibrarySearchSuggestion
 import com.laterbox.app.movies.domain.model.MediaDetails
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
@@ -44,6 +45,8 @@ interface MoviesRepository {
     ): Result<CataloguePage>
 
     suspend fun getSuggestions(query: String, limit: Int = 8): Result<List<SearchSuggestion>>
+
+    suspend fun searchLibrarySuggestions(query: String, limit: Int = 6): List<LibrarySearchSuggestion> = emptyList()
 
     suspend fun getDetails(providerId: String, titleId: String, forceRefresh: Boolean = false): Result<MediaDetails>
 

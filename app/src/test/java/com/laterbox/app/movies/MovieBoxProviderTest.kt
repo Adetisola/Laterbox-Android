@@ -1175,4 +1175,80 @@ class MovieBoxProviderTest {
         assertEquals(1, detail.seasons.size)
         assertEquals(40, detail.seasons[0].episodeCount)
     }
+
+    @Test
+    fun suggestions_keywordItemsDoNotDefaultToMovieAndSupportOptionalNavigableFields() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return if (path.startsWith("/search/suggest")) {
+                    MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "suggestions": [
+                            {"title": "ceo bride", "subject_id": null, "slug": null},
+                            {"title": "CEO Return", "subject_id": "sd99", "slug": "ceo-return", "subject_type": 7, "year": "2026", "cover": "https://cdn.example/sd99.jpg"}
+                          ]
+                        }
+                        """.trimIndent()
+                    )
+                } else {
+                    MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val suggestions = provider.getSuggestions("ceo", limit = 8).getOrThrow()
+        assertEquals(2, suggestions.size)
+
+        val keywordItem = suggestions[0]
+        assertFalse(keywordItem.hasNavigableId)
+        assertNull(keywordItem.kind)
+        assertEquals("ceo bride", keywordItem.title)
+
+        val navigableItem = suggestions[1]
+        assertTrue(navigableItem.hasNavigableId)
+        assertEquals(MediaKind.SHORT_DRAMA, navigableItem.kind)
+        assertEquals(2026, navigableItem.releaseYear)
+        assertEquals("https://cdn.example/sd99.jpg", navigableItem.posterUrl)
+    }
+
+    @Test
+    fun search_kindFilterScansMultipleUpstreamPagesToAvoidShortPages() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.contains("page=1") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "results": [
+                            {"subject_id": "sd1", "subject_type": 7, "title": "Short 1"},
+                            {"subject_id": "sd2", "subject_type": 7, "title": "Short 2"},
+                            {"subject_id": "tv1", "subject_type": 2, "title": "Series 1"}
+                          ]
+                        }
+                        """.trimIndent()
+                    )
+                    path.contains("page=2") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "results": [
+                            {"subject_id": "tv2", "subject_type": 2, "title": "Series 2"},
+                            {"subject_id": "tv3", "subject_type": 2, "title": "Series 3"},
+                            {"subject_id": "m1", "subject_type": 1, "title": "Movie 1"}
+                          ]
+                        }
+                        """.trimIndent()
+                    )
+                    else -> MockResponse().setResponseCode(200).setBody("""{"results": []}""")
+                }
+            }
+        }
+
+        val page = provider.search("alpha", kind = MediaKind.TV_SERIES, page = 1, pageSize = 3).getOrThrow()
+        assertEquals(listOf("tv1", "tv2", "tv3"), page.items.map { it.id })
+        assertTrue(page.items.all { it.kind == MediaKind.TV_SERIES })
+        assertTrue(page.hasMore)
+    }
 }

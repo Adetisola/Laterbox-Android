@@ -78,6 +78,7 @@ class MovieBoxProvider(
     private val trailerHeadersCache = ConcurrentHashMap<String, Map<String, String>>()
     private val episodeSizesCache = ConcurrentHashMap<String, ConcurrentHashMap<Int, Map<Int, Double>>>()
     private val markerWindowCache = ConcurrentHashMap<String, Pair<PlaybackMarkerWindow?, PlaybackMarkerWindow?>>()
+    private val searchUpstreamCursor = ConcurrentHashMap<String, Int>()
 
     @Volatile
     private var cachedGenres: List<String> = emptyList()
@@ -433,19 +434,30 @@ class MovieBoxProvider(
             }
             val safePage = page.coerceAtLeast(1)
             val safePageSize = pageSize.coerceIn(1, 50)
+            val cursorKey = "${clean.lowercase(Locale.US)}|${kind?.wireValue ?: "all"}|$safePageSize"
+            var upstreamPage = if (kind == null || safePage == 1) {
+                safePage
+            } else {
+                searchUpstreamCursor[cursorKey] ?: safePage
+            }
+            val maxUpstreamScans = if (kind == null) 1 else 3
+            val collected = mutableListOf<MovieTitleSummary>()
+            val seenIds = mutableSetOf<String>()
+            var upstreamHasMore = false
+            var scans = 0
 
-            val url = requireBaseHttpUrl().newBuilder()
-                .addPathSegment("search")
-                .addQueryParameter("q", clean)
-                .addQueryParameter("page", safePage.toString())
-                .addQueryParameter("per_page", safePageSize.toString())
-                .build()
+            do {
+                val url = requireBaseHttpUrl().newBuilder()
+                    .addPathSegment("search")
+                    .addQueryParameter("q", clean)
+                    .addQueryParameter("page", upstreamPage.toString())
+                    .addQueryParameter("per_page", safePageSize.toString())
+                    .build()
 
-            val body = executeGet(url)
-            val root = JSONObject(body)
-            val rawResults = root.optJSONArray("results") ?: JSONArray()
+                val body = executeGet(url)
+                val root = JSONObject(body)
+                val rawResults = root.optJSONArray("results") ?: JSONArray()
 
-            val parsed = buildList {
                 for (i in 0 until rawResults.length()) {
                     val obj = rawResults.optJSONObject(i) ?: continue
                     val id = obj.optCleanString("subject_id")?.takeUnless { it == "0" } ?: continue
@@ -460,8 +472,10 @@ class MovieBoxProvider(
                         subjectType,
                         obj.optCleanString("type")
                     )
+                    if (kind != null && itemKind != kind) continue
+                    if (!seenIds.add(id)) continue
                     val releaseDateStr = obj.optCleanString("release_date")
-                    add(
+                    collected.add(
                         MovieTitleSummary(
                             id = id,
                             providerId = PROVIDER_ID,
@@ -478,25 +492,33 @@ class MovieBoxProvider(
                             detailPath = dp,
                             sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
                             isPlayableHint = true,
+                            imdbId = obj.optCleanString("imdb_id"),
                             releaseDate = releaseDateStr,
                             subjectType = subjectType ?: inferSubjectType(itemKind)
                         )
                     )
                 }
-            }.distinctBy { it.id }
 
-            val filtered = if (kind != null) {
-                parsed.filter { it.kind == kind }
-            } else {
-                parsed
+                upstreamHasMore = rawResults.length() >= safePageSize
+                upstreamPage += 1
+                scans += 1
+            } while (kind != null && collected.size < safePageSize && upstreamHasMore && scans < maxUpstreamScans)
+
+            if (kind != null) {
+                if (upstreamHasMore) {
+                    searchUpstreamCursor[cursorKey] = upstreamPage
+                } else {
+                    searchUpstreamCursor.remove(cursorKey)
+                }
             }
 
             CataloguePage(
-                items = filtered,
+                items = collected,
                 page = safePage,
                 pageSize = safePageSize,
-                totalCount = filtered.size,
-                hasMore = rawResults.length() >= safePageSize
+                totalCount = collected.size,
+                hasMore = upstreamHasMore,
+                primaryCount = collected.size
             )
         }
     }
@@ -532,12 +554,32 @@ class MovieBoxProvider(
                     } else if (rawId.isNotBlank()) {
                         titleCache[rawId] = title
                     }
+                    val subjectType = obj.optIntOrNull("subject_type")
+                    val typeLabel = obj.optCleanString("type")
+                    val hasValidSubjectType = subjectType == null || subjectType in VALID_SUBJECT_TYPES
+                    val navigableId = if (hasValidSubjectType) rawId else ""
+                    val resolvedKind = if (
+                        navigableId.isNotBlank() &&
+                        (subjectType != null || typeLabel != null)
+                    ) {
+                        parseMediaKind(subjectType, typeLabel)
+                    } else {
+                        null
+                    }
+                    val releaseYear = parseYear(
+                        obj.optCleanString("release_date"),
+                        obj.optCleanString("year")
+                    )
+                    val posterUrl = obj.optCleanString("cover")
+                        ?: obj.optCleanString("poster")
                     add(
                         SearchSuggestion(
-                            id = rawId,
-                            providerId = PROVIDER_ID,
+                            id = navigableId,
+                            providerId = if (navigableId.isNotBlank()) PROVIDER_ID else "",
                             title = title,
-                            kind = MediaKind.MOVIE
+                            kind = resolvedKind,
+                            releaseYear = releaseYear,
+                            posterUrl = posterUrl
                         )
                     )
                 }

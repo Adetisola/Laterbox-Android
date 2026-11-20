@@ -7,6 +7,7 @@ import com.laterbox.app.domain.model.Collection
 import com.laterbox.app.movies.data.provider.MovieBoxProvider
 import com.laterbox.app.movies.domain.engine.MoviesDiscoveryEngine
 import com.laterbox.app.movies.domain.model.CatalogueSort
+import com.laterbox.app.movies.domain.model.LibrarySearchSuggestion
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.model.MoviesDiscoveryShortcut
@@ -32,12 +33,14 @@ data class MoviesCatalogueUiState(
     val availableGenres: List<String> = DEFAULT_GENRES,
     val availableCountries: List<String> = listOf("All") + MovieBoxProvider.VERIFIED_COUNTRIES,
     val items: List<MovieTitleSummary> = emptyList(),
+    val supplementaryItems: List<MovieTitleSummary> = emptyList(),
     val page: Int = 1,
     val hasMore: Boolean = false,
     val isLoading: Boolean = false,
     val isLoadingMore: Boolean = false,
     val errorMessage: String? = null,
     val suggestions: List<SearchSuggestion> = emptyList(),
+    val librarySuggestions: List<LibrarySearchSuggestion> = emptyList(),
     val isLoadingSuggestions: Boolean = false,
     val suggestionsError: String? = null,
     val recentSearches: List<String> = emptyList(),
@@ -69,13 +72,18 @@ class MoviesCatalogueViewModel(
 
     private var fetchJob: Job? = null
     private var suggestJob: Job? = null
+    private var librarySuggestJob: Job? = null
     private var suggestRequestSeq: Long = 0L
+    private var librarySuggestSeq: Long = 0L
     private var pageRequestSeq: Long = 0L
     private var lastInitializedKey: String? = null
     private var lastSubmittedOrClearedSearch: String = ""
     private var activeSuggestedNormalized: String? = null
     private var lastSuggestedNormalized: String? = null
+    private var lastLibrarySuggestedNormalized: String? = null
     private var rawItems: List<MovieTitleSummary> = emptyList()
+    private var rawPrimaryItems: List<MovieTitleSummary> = emptyList()
+    private var rawSupplementaryItems: List<MovieTitleSummary> = emptyList()
     private var rawHiddenKeys: Set<String> = emptySet()
     private var rawWatchlistIds: Set<String> = emptySet()
     private val pendingHiddenKeys = mutableSetOf<String>()
@@ -94,7 +102,7 @@ class MoviesCatalogueViewModel(
             moviesRepository.observeRecentSearches(10).collect { recent ->
                 _uiState.update { current ->
                     val shouldShow = current.isSearchFocused &&
-                        (current.query.trim().length >= 2 || recent.isNotEmpty())
+                        (current.query.trim().length >= 2 || recent.isNotEmpty() || current.librarySuggestions.isNotEmpty())
                     current.copy(
                         recentSearches = recent,
                         showSuggestionsDropdown = if (current.isSearchFocused) shouldShow else current.showSuggestionsDropdown
@@ -178,7 +186,8 @@ class MoviesCatalogueViewModel(
                 showSuggestionsDropdown = false,
                 isLoadingSuggestions = false,
                 suggestionsError = null,
-                suggestions = emptyList()
+                suggestions = emptyList(),
+                librarySuggestions = emptyList()
             )
         }
         loadPage(page = 1, append = false)
@@ -186,6 +195,36 @@ class MoviesCatalogueViewModel(
 
     private fun normalizeQuery(raw: String): String =
         raw.trim().replace(MULTI_SPACE_REGEX, " ")
+
+    private fun refreshLibrarySuggestions(normalized: String, force: Boolean = false) {
+        if (!force && normalized == lastLibrarySuggestedNormalized && librarySuggestJob?.isActive != true) {
+            return
+        }
+        val seq = ++librarySuggestSeq
+        librarySuggestJob?.cancel()
+        librarySuggestJob = viewModelScope.launch {
+            val matches = runCatching {
+                moviesRepository.searchLibrarySuggestions(normalized, limit = 6)
+            }.getOrDefault(emptyList())
+            if (seq != librarySuggestSeq || normalizeQuery(_uiState.value.query) != normalized) {
+                return@launch
+            }
+            lastLibrarySuggestedNormalized = normalized
+            _uiState.update { current ->
+                val shouldShow = current.isSearchFocused && (
+                    normalizeQuery(current.query).length >= 2 ||
+                        current.isLoadingSuggestions ||
+                        current.suggestionsError != null ||
+                        current.recentSearches.isNotEmpty() ||
+                        matches.isNotEmpty()
+                    )
+                current.copy(
+                    librarySuggestions = matches,
+                    showSuggestionsDropdown = if (current.isSearchFocused) shouldShow else current.showSuggestionsDropdown
+                )
+            }
+        }
+    }
 
     fun onQueryChange(newQuery: String) {
         val wasNotBlank = _uiState.value.query.isNotBlank()
@@ -195,11 +234,12 @@ class MoviesCatalogueViewModel(
             lastSuggestedNormalized = null
             val reqSeq = ++suggestRequestSeq
             suggestJob?.cancel()
+            refreshLibrarySuggestions(normalized)
             _uiState.update {
                 it.copy(
                     query = newQuery,
                     isSearchFocused = true,
-                    showSuggestionsDropdown = it.recentSearches.isNotEmpty(),
+                    showSuggestionsDropdown = it.recentSearches.isNotEmpty() || it.librarySuggestions.isNotEmpty(),
                     suggestions = emptyList(),
                     isLoadingSuggestions = false,
                     suggestionsError = null
@@ -211,6 +251,8 @@ class MoviesCatalogueViewModel(
             }
             return
         }
+
+        refreshLibrarySuggestions(normalized)
 
         val currentState = _uiState.value
         if (normalized == lastSuggestedNormalized && currentState.suggestionsError == null && suggestJob?.isActive != true) {
@@ -291,13 +333,16 @@ class MoviesCatalogueViewModel(
         if (!focused) {
             dismissSuggestions()
         } else {
+            val normalized = normalizeQuery(_uiState.value.query)
+            refreshLibrarySuggestions(normalized, force = true)
             _uiState.update { current ->
                 current.copy(
                     isSearchFocused = true,
-                    showSuggestionsDropdown = normalizeQuery(current.query).length >= 2 ||
+                    showSuggestionsDropdown = normalized.length >= 2 ||
                         current.isLoadingSuggestions ||
                         current.suggestionsError != null ||
-                        current.recentSearches.isNotEmpty()
+                        current.recentSearches.isNotEmpty() ||
+                        current.librarySuggestions.isNotEmpty()
                 )
             }
         }
@@ -309,8 +354,10 @@ class MoviesCatalogueViewModel(
 
     fun dismissSuggestions() {
         ++suggestRequestSeq
+        ++librarySuggestSeq
         activeSuggestedNormalized = null
         suggestJob?.cancel()
+        librarySuggestJob?.cancel()
         _uiState.update {
             it.copy(
                 isSearchFocused = false,
@@ -323,9 +370,12 @@ class MoviesCatalogueViewModel(
     fun submitSearch(overrideQuery: String? = null) {
         val q = normalizeQuery(overrideQuery ?: _uiState.value.query)
         ++suggestRequestSeq
+        ++librarySuggestSeq
         activeSuggestedNormalized = null
         lastSuggestedNormalized = null
+        lastLibrarySuggestedNormalized = null
         suggestJob?.cancel()
+        librarySuggestJob?.cancel()
         lastSubmittedOrClearedSearch = q
         _uiState.update {
             it.copy(
@@ -347,14 +397,18 @@ class MoviesCatalogueViewModel(
 
     fun clearSearch() {
         ++suggestRequestSeq
+        ++librarySuggestSeq
         activeSuggestedNormalized = null
         lastSuggestedNormalized = null
+        lastLibrarySuggestedNormalized = null
         suggestJob?.cancel()
+        librarySuggestJob?.cancel()
         lastSubmittedOrClearedSearch = ""
         _uiState.update {
             it.copy(
                 query = "",
                 suggestions = emptyList(),
+                librarySuggestions = emptyList(),
                 isSearchFocused = false,
                 isLoadingSuggestions = false,
                 suggestionsError = null,
@@ -598,8 +652,8 @@ class MoviesCatalogueViewModel(
 
     private fun applyClientFilters() {
         val state = _uiState.value
-        val filtered = MoviesDiscoveryEngine.filterTitles(
-            items = rawItems,
+        val filteredPrimary = MoviesDiscoveryEngine.filterTitles(
+            items = rawPrimaryItems,
             kind = state.selectedKind,
             genre = state.selectedGenre,
             language = state.selectedLanguage,
@@ -608,7 +662,17 @@ class MoviesCatalogueViewModel(
             runtimeBucket = state.selectedRuntimeBucket,
             hiddenMediaKeys = state.hiddenMediaKeys
         )
-        _uiState.update { it.copy(items = filtered) }
+        val filteredSupp = MoviesDiscoveryEngine.filterTitles(
+            items = rawSupplementaryItems,
+            kind = state.selectedKind,
+            genre = state.selectedGenre,
+            language = state.selectedLanguage,
+            country = state.selectedCountry,
+            year = state.selectedYear,
+            runtimeBucket = state.selectedRuntimeBucket,
+            hiddenMediaKeys = state.hiddenMediaKeys
+        )
+        _uiState.update { it.copy(items = filteredPrimary, supplementaryItems = filteredSupp) }
     }
 
     private fun matchingShortcut(
@@ -652,16 +716,50 @@ class MoviesCatalogueViewModel(
             result.fold(
                 onSuccess = { pageResult ->
                     if (reqSeq != pageRequestSeq) return@fold
-                    val mergedRaw = if (append) {
-                        (rawItems + pageResult.items).distinctBy { it.compositeId }
+                    val splitIndex = pageResult.primaryCount.coerceIn(0, pageResult.items.size)
+                    val pagePrimary = pageResult.items.take(splitIndex)
+                    val pageSupp = pageResult.items.drop(splitIndex)
+
+                    val mergedPrimary = if (append) {
+                        (rawPrimaryItems + pagePrimary).distinctBy { it.compositeId }
                     } else {
-                        pageResult.items.distinctBy { it.compositeId }
+                        pagePrimary.distinctBy { it.compositeId }
                     }
+                    val primaryKeys = buildSet {
+                        mergedPrimary.forEach { item ->
+                            add(item.compositeId)
+                            add(item.stableMediaKey)
+                            item.canonicalId?.let(::add)
+                        }
+                    }
+                    val mergedSupp = if (append) {
+                        (rawSupplementaryItems + pageSupp)
+                    } else {
+                        pageSupp
+                    }.filter { item ->
+                        item.compositeId !in primaryKeys &&
+                            item.stableMediaKey !in primaryKeys &&
+                            (item.canonicalId == null || item.canonicalId !in primaryKeys)
+                    }.distinctBy { it.compositeId }
+
+                    rawPrimaryItems = mergedPrimary
+                    rawSupplementaryItems = mergedSupp
+                    val mergedRaw = mergedPrimary + mergedSupp
                     rawItems = mergedRaw
                     val latest = _uiState.value
                     val langs = MoviesDiscoveryEngine.extractAvailableLanguages(mergedRaw)
-                    val filtered = MoviesDiscoveryEngine.filterTitles(
-                        items = mergedRaw,
+                    val filteredPrimary = MoviesDiscoveryEngine.filterTitles(
+                        items = mergedPrimary,
+                        kind = latest.selectedKind,
+                        genre = latest.selectedGenre,
+                        language = latest.selectedLanguage,
+                        country = latest.selectedCountry,
+                        year = latest.selectedYear,
+                        runtimeBucket = latest.selectedRuntimeBucket,
+                        hiddenMediaKeys = latest.hiddenMediaKeys
+                    )
+                    val filteredSupp = MoviesDiscoveryEngine.filterTitles(
+                        items = mergedSupp,
                         kind = latest.selectedKind,
                         genre = latest.selectedGenre,
                         language = latest.selectedLanguage,
@@ -672,7 +770,8 @@ class MoviesCatalogueViewModel(
                     )
                     _uiState.update { current ->
                         current.copy(
-                            items = filtered,
+                            items = filteredPrimary,
+                            supplementaryItems = filteredSupp,
                             availableLanguages = langs,
                             page = page,
                             hasMore = pageResult.hasMore,

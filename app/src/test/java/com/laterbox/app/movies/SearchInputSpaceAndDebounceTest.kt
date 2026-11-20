@@ -3,9 +3,11 @@ package com.laterbox.app.movies
 import android.content.Context
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
@@ -16,6 +18,8 @@ import androidx.test.core.app.ApplicationProvider
 import com.laterbox.app.data.preferences.UserPreferencesRepository
 import com.laterbox.app.movies.domain.model.CataloguePage
 import com.laterbox.app.movies.domain.model.CatalogueSort
+import com.laterbox.app.movies.domain.model.DataSourceBadge
+import com.laterbox.app.movies.domain.model.LibrarySearchSuggestion
 import com.laterbox.app.movies.domain.model.MediaDetails
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
@@ -357,5 +361,193 @@ class SearchInputSpaceAndDebounceTest {
         queryState.value = ""
         composeTestRule.waitForIdle()
         assertEquals("", queryState.value)
+    }
+
+    @Test
+    fun `catalogueViewModel separates primary and supplementary search items across pages and populates library suggestions`() = runTest {
+        val repo = object : StubRepo() {
+            override suspend fun searchLibrarySuggestions(query: String, limit: Int): List<LibrarySearchSuggestion> {
+                val ceo = LibrarySearchSuggestion(
+                    summary = MovieTitleSummary(
+                        id = "lib_sd_1",
+                        providerId = "moviebox",
+                        kind = MediaKind.SHORT_DRAMA,
+                        title = "CEO Destiny",
+                        releaseYear = 2026,
+                        sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+                        isPlayableHint = true
+                    ),
+                    sourceLabel = "Watchlist",
+                    isDownloaded = true
+                )
+                return if (query.isBlank() || ceo.summary.title.contains(query, ignoreCase = true)) {
+                    listOf(ceo)
+                } else {
+                    emptyList()
+                }
+            }
+
+            override suspend fun search(
+                query: String,
+                kind: MediaKind?,
+                page: Int,
+                pageSize: Int
+            ): Result<CataloguePage> {
+                return if (page == 1) {
+                    val primary = MovieTitleSummary(
+                        id = "mb_1",
+                        providerId = "moviebox",
+                        kind = MediaKind.MOVIE,
+                        title = "Primary One",
+                        sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+                        isPlayableHint = true
+                    )
+                    val supp = MovieTitleSummary(
+                        id = "tv_1",
+                        providerId = "tvmaze",
+                        kind = MediaKind.TV_SERIES,
+                        title = "Guide Series",
+                        sourceBadge = DataSourceBadge.LIVE_TVMAZE,
+                        isPlayableHint = false
+                    )
+                    Result.success(CataloguePage(items = listOf(primary, supp), page = 1, pageSize = 20, hasMore = true, primaryCount = 1))
+                } else {
+                    val primary2 = MovieTitleSummary(
+                        id = "mb_2",
+                        providerId = "moviebox",
+                        kind = MediaKind.MOVIE,
+                        title = "Primary Two",
+                        sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+                        isPlayableHint = true
+                    )
+                    val supp2 = MovieTitleSummary(
+                        id = "ia_2",
+                        providerId = "ia",
+                        kind = MediaKind.MOVIE,
+                        title = "Archive Two",
+                        sourceBadge = DataSourceBadge.LIVE_INTERNET_ARCHIVE,
+                        isPlayableHint = true
+                    )
+                    Result.success(CataloguePage(items = listOf(primary2, supp2), page = 2, pageSize = 20, hasMore = false, primaryCount = 1))
+                }
+            }
+        }
+
+        val vm = MoviesCatalogueViewModel(repo)
+        vm.onSearchFocusChange(true)
+        advanceUntilIdle()
+        assertEquals(listOf("lib_sd_1"), vm.uiState.value.librarySuggestions.map { it.summary.id })
+        assertTrue(vm.uiState.value.showSuggestionsDropdown)
+
+        vm.submitSearch("ceo")
+        advanceUntilIdle()
+        assertEquals(listOf("mb_1"), vm.uiState.value.items.map { it.id })
+        assertEquals(listOf("tv_1"), vm.uiState.value.supplementaryItems.map { it.id })
+
+        vm.loadNextPage()
+        advanceUntilIdle()
+        assertEquals(listOf("mb_1", "mb_2"), vm.uiState.value.items.map { it.id })
+        assertEquals(listOf("tv_1", "ia_2"), vm.uiState.value.supplementaryItems.map { it.id })
+    }
+
+    @Test
+    fun `catalogue screen renders three suggestion groups and additional results section with info only badge`() {
+        var openedDetail: Pair<String, String>? = null
+        var submittedQuery: String? = null
+
+        val libraryEntry = LibrarySearchSuggestion(
+            summary = MovieTitleSummary(
+                id = "lib_sd_7",
+                providerId = "moviebox",
+                kind = MediaKind.SHORT_DRAMA,
+                title = "CEO Marriage",
+                releaseYear = 2026,
+                sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+                isPlayableHint = true
+            ),
+            sourceLabel = "Watchlist",
+            isDownloaded = true
+        )
+        val keywordSuggestion = SearchSuggestion(
+            id = "",
+            providerId = "",
+            title = "ceo contract",
+            kind = null
+        )
+        val stateFlow = MutableStateFlow(
+            MoviesCatalogueUiState(
+                query = "ce",
+                recentSearches = listOf("alpha"),
+                librarySuggestions = listOf(libraryEntry),
+                suggestions = listOf(keywordSuggestion),
+                isSearchFocused = true,
+                showSuggestionsDropdown = true,
+                items = listOf(
+                    MovieTitleSummary(
+                        id = "mb_1",
+                        providerId = "moviebox",
+                        kind = MediaKind.MOVIE,
+                        title = "Primary Film",
+                        sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+                        isPlayableHint = true
+                    )
+                ),
+                supplementaryItems = listOf(
+                    MovieTitleSummary(
+                        id = "tv_9",
+                        providerId = "tvmaze",
+                        kind = MediaKind.TV_SERIES,
+                        title = "Supplementary Guide Show",
+                        sourceBadge = DataSourceBadge.LIVE_TVMAZE,
+                        isPlayableHint = false
+                    )
+                )
+            )
+        )
+
+        composeTestRule.setContent {
+            val uiState by stateFlow.collectAsState()
+            LaterboxTheme {
+                MoviesCatalogueScreen(
+                    uiState = uiState,
+                    onBackClick = {},
+                    onQueryChange = {},
+                    onSearchFocusChange = {},
+                    onSubmitSearch = { submittedQuery = it },
+                    onClearSearch = {},
+                    onSelectKind = {},
+                    onSelectGenre = {},
+                    onSelectSort = {},
+                    onLoadNextPage = {},
+                    onRetry = {},
+                    onClearSearchHistory = {},
+                    onOpenDetail = { pId, tId -> openedDetail = pId to tId }
+                )
+            }
+        }
+
+        // Verify Additional Results header & neutral Info only badge
+        composeTestRule.onNodeWithTag("catalogue_additional_results_header").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Additional Results").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Info only").assertIsDisplayed()
+
+        // Verify Your Library & Search Suggestions groups when query >= 2 chars
+        composeTestRule.onNodeWithTag("catalogue_suggestions_box_your_library").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("catalogue_suggestions_box_search_suggestions").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Search query").assertIsDisplayed()
+
+        // Tapping keyword suggestion submits query rather than opening fake movie detail
+        composeTestRule.onNodeWithTag("suggestion_item_idx_0").performClick()
+        assertEquals("ceo contract", submittedQuery)
+
+        // Tapping library suggestion opens its real detail page
+        composeTestRule.onNodeWithTag("library_suggestion_item_lib_sd_7").performClick()
+        assertEquals("moviebox" to "lib_sd_7", openedDetail)
+
+        // Empty query shows Your Searches group too
+        stateFlow.value = stateFlow.value.copy(query = "", suggestions = emptyList())
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("catalogue_suggestions_box_your_searches").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("catalogue_suggestions_box_your_library").assertIsDisplayed()
     }
 }

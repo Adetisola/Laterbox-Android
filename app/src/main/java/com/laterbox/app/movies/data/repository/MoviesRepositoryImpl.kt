@@ -26,6 +26,7 @@ import com.laterbox.app.movies.domain.model.CollectionMediaItem
 import com.laterbox.app.movies.domain.model.DataSourceBadge
 import com.laterbox.app.movies.domain.model.EpisodeItem
 import com.laterbox.app.movies.domain.model.EpisodeProgressState
+import com.laterbox.app.movies.domain.model.LibrarySearchSuggestion
 import com.laterbox.app.movies.domain.model.MediaDetails
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
@@ -43,17 +44,20 @@ import com.laterbox.app.movies.domain.model.SubtitleTrack
 import com.laterbox.app.movies.domain.model.ViewingReminderItem
 import com.laterbox.app.movies.domain.model.WatchHistoryItem
 import com.laterbox.app.movies.domain.repository.MoviesRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
 class MoviesRepositoryImpl(
@@ -510,47 +514,113 @@ class MoviesRepositoryImpl(
     ): Result<CataloguePage> = withContext(ioDispatcher) {
         val clean = query.trim()
         if (clean.isBlank()) {
-            return@withContext Result.success(CataloguePage(emptyList(), page, pageSize, 0, false))
+            return@withContext Result.success(CataloguePage(emptyList(), page, pageSize, 0, false, 0))
         }
         if (isDebugSampleFixturesEnabled()) {
             return@withContext fixtureProvider.search(clean, kind, page, pageSize)
         }
 
-        val mbResult = movieBoxProvider?.search(clean, kind, page, pageSize)
-        if (mbResult != null && mbResult.isSuccess) {
-            val pageData = mbResult.getOrThrow()
-            return@withContext Result.success(pageData.copy(items = registerSummariesCanonical(pageData.items)))
-        }
-
         val queryMovies = kind == null || kind == MediaKind.MOVIE
         val querySeries = kind == null || kind == MediaKind.TV_SERIES
-        val perProviderSize = if (kind == null) (pageSize / 2).coerceAtLeast(8) else pageSize
+        val suppPerProviderSize = if (movieBoxProvider != null) {
+            (pageSize / 2).coerceIn(6, 12)
+        } else {
+            if (kind == null) (pageSize / 2).coerceAtLeast(8) else pageSize
+        }
 
+        val mbDeferred = movieBoxProvider?.let { provider ->
+            async<Result<CataloguePage>> {
+                try {
+                    provider.search(clean, kind, page, pageSize)
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (t: Throwable) {
+                    Result.failure(t)
+                }
+            }
+        }
         val iaDeferred = if (queryMovies) {
-            async { internetArchiveProvider.search(clean, MediaKind.MOVIE, page, perProviderSize) }
+            async<Result<CataloguePage>> {
+                try {
+                    internetArchiveProvider.search(clean, MediaKind.MOVIE, page, suppPerProviderSize)
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (t: Throwable) {
+                    Result.failure(t)
+                }
+            }
         } else null
         val tvDeferred = if (querySeries) {
-            async { tvMazeProvider.search(clean, MediaKind.TV_SERIES, page, perProviderSize) }
+            async<Result<CataloguePage>> {
+                try {
+                    tvMazeProvider.search(clean, MediaKind.TV_SERIES, page, suppPerProviderSize)
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (t: Throwable) {
+                    Result.failure(t)
+                }
+            }
         } else null
 
-        val results = listOfNotNull(iaDeferred?.await(), tvDeferred?.await())
-        val pages = results.mapNotNull { it.getOrNull() }
-        if (pages.isEmpty()) {
-            val err = results.firstNotNullOfOrNull { it.exceptionOrNull() }
+        val mbResult = mbDeferred?.await()
+        val suppResults = listOfNotNull(iaDeferred?.await(), tvDeferred?.await())
+        val suppPages = suppResults.mapNotNull { it.getOrNull() }
+
+        if (mbResult != null && mbResult.isSuccess) {
+            val mbPage = mbResult.getOrThrow()
+            val mbItems = mbPage.items
+            val rawSuppItems = interleaveLists(suppPages.map { it.items })
+                .distinctBy { it.compositeId }
+
+            val combinedRegistered = registerSummariesCanonical(mbItems + rawSuppItems)
+            val registeredPrimary = combinedRegistered.take(mbItems.size)
+            val primaryKeys = buildSet {
+                registeredPrimary.forEach { item ->
+                    add(item.compositeId)
+                    add(item.stableMediaKey)
+                    item.canonicalId?.let(::add)
+                }
+            }
+            val dedupedSupplementary = combinedRegistered
+                .drop(mbItems.size)
+                .filter { item ->
+                    item.compositeId !in primaryKeys &&
+                        item.stableMediaKey !in primaryKeys &&
+                        (item.canonicalId == null || item.canonicalId !in primaryKeys)
+                }
+                .distinctBy { it.stableMediaKey }
+
+            val merged = registeredPrimary + dedupedSupplementary
+            return@withContext Result.success(
+                CataloguePage(
+                    items = merged,
+                    page = mbPage.page,
+                    pageSize = mbPage.pageSize,
+                    totalCount = (mbPage.totalCount ?: mbItems.size) + dedupedSupplementary.size,
+                    hasMore = mbPage.hasMore || suppPages.any { it.hasMore },
+                    primaryCount = registeredPrimary.size
+                )
+            )
+        }
+
+        if (suppPages.isEmpty()) {
+            val err = mbResult?.exceptionOrNull()
+                ?: suppResults.firstNotNullOfOrNull { it.exceptionOrNull() }
                 ?: IllegalStateException("Search failed")
             return@withContext Result.failure(err)
         }
 
         val items = registerSummariesCanonical(
-            interleaveLists(pages.map { it.items }).distinctBy { it.compositeId }
+            interleaveLists(suppPages.map { it.items }).distinctBy { it.compositeId }
         )
         Result.success(
             CataloguePage(
                 items = items,
                 page = page,
                 pageSize = pageSize,
-                totalCount = pages.sumOf { it.totalCount ?: it.items.size },
-                hasMore = pages.any { it.hasMore }
+                totalCount = suppPages.sumOf { it.totalCount ?: it.items.size },
+                hasMore = suppPages.any { it.hasMore },
+                primaryCount = items.size
             )
         )
     }
@@ -579,6 +649,170 @@ class MoviesRepositoryImpl(
         }
         val merged = interleaveLists(lists).distinctBy { "${it.providerId}:${it.id}" }.take(limit)
         Result.success(merged)
+    }
+
+    override suspend fun searchLibrarySuggestions(
+        query: String,
+        limit: Int
+    ): List<LibrarySearchSuggestion> = withContext(ioDispatcher) {
+        if (limit <= 0) return@withContext emptyList()
+        val clean = query.trim()
+        val normalizedQuery = clean.lowercase(Locale.US)
+
+        val hiddenEntities = moviesDao.getHiddenTitlesSnapshot(200)
+        val hiddenKeys = buildSet {
+            hiddenEntities.forEach { hidden ->
+                add(hidden.mediaKey)
+                add(hidden.compositeId)
+                add("${hidden.providerId}:${hidden.titleId}")
+                hidden.canonicalId?.let(::add)
+            }
+        }
+
+        val offlineKeys = buildSet {
+            val assets = downloadedAssetDao?.observeAvailableOfflineMovieAssets()?.firstOrNull().orEmpty()
+            assets.forEach { asset ->
+                val isReachable = localMediaUriResolver == null ||
+                    localMediaUriResolver.invoke(asset.localPath) != null
+                if (!isReachable) return@forEach
+                val parts = asset.sourceRef?.split("|") ?: return@forEach
+                val pId = parts.getOrNull(0)?.trim().orEmpty()
+                val tId = parts.getOrNull(1)?.trim().orEmpty()
+                if (pId.isNotBlank() && tId.isNotBlank()) {
+                    add("$pId:$tId")
+                }
+            }
+        }
+
+        data class Candidate(
+            val summary: MovieTitleSummary,
+            val sourceLabel: String,
+            val timestamp: Long,
+            val priority: Int
+        )
+
+        val candidates = mutableListOf<Candidate>()
+
+        moviesDao.getWatchHistorySnapshot(50)
+            .filter { !it.isTrailer && !it.isHiddenTitle }
+            .forEach { entry ->
+                val isContinueWatching = !entry.isCompleted && !entry.hiddenFromContinueWatching && entry.positionMs > 0L
+                val cached = getCachedSummary(entry.providerId, entry.titleId)
+                val summary = MovieTitleSummary(
+                    id = entry.titleId,
+                    providerId = entry.providerId,
+                    kind = MediaKind.fromWire(entry.kind),
+                    title = entry.title,
+                    releaseYear = cached?.releaseYear,
+                    rating = cached?.rating,
+                    posterUrl = entry.posterUrl ?: cached?.posterUrl,
+                    backdropUrl = entry.backdropUrl ?: cached?.backdropUrl,
+                    genres = cached?.genres.orEmpty(),
+                    sourceBadge = cached?.sourceBadge ?: when (entry.providerId) {
+                        MovieBoxProvider.PROVIDER_ID -> DataSourceBadge.LIVE_MOVIEBOX
+                        InternetArchiveMoviesProvider.PROVIDER_ID -> DataSourceBadge.LIVE_INTERNET_ARCHIVE
+                        TvMazeSeriesProvider.PROVIDER_ID -> DataSourceBadge.LIVE_TVMAZE
+                        TmdbOptionalMoviesProvider.PROVIDER_ID -> DataSourceBadge.LIVE_TMDB
+                        DevelopmentMoviesFixtureProvider.PROVIDER_ID -> DataSourceBadge.SAMPLE_FIXTURE
+                        else -> DataSourceBadge.LIVE_MOVIEBOX
+                    },
+                    isPlayableHint = true,
+                    canonicalId = entry.canonicalId
+                )
+                candidates.add(
+                    Candidate(
+                        summary = summary,
+                        sourceLabel = if (isContinueWatching) "Continue Watching" else "History",
+                        timestamp = entry.lastWatchedAt,
+                        priority = if (isContinueWatching) 4 else 2
+                    )
+                )
+            }
+
+        moviesDao.getWatchlistSnapshot().forEach { entry ->
+            candidates.add(
+                Candidate(
+                    summary = entry.toDomain(),
+                    sourceLabel = "Watchlist",
+                    timestamp = entry.addedAt,
+                    priority = 3
+                )
+            )
+        }
+
+        moviesDao.getCollectionMediaSnapshot(50).forEach { entry ->
+            candidates.add(
+                Candidate(
+                    summary = entry.toDomain().summary,
+                    sourceLabel = "Collection",
+                    timestamp = entry.addedAt,
+                    priority = 2
+                )
+            )
+        }
+
+        moviesDao.getRecentlyViewedSnapshot(30).forEach { entry ->
+            candidates.add(
+                Candidate(
+                    summary = entry.toDomain(),
+                    sourceLabel = "Recently Viewed",
+                    timestamp = entry.viewedAt,
+                    priority = 1
+                )
+            )
+        }
+
+        fun isHidden(summary: MovieTitleSummary): Boolean =
+            summary.stableMediaKey in hiddenKeys ||
+                summary.compositeId in hiddenKeys ||
+                (summary.canonicalId != null && summary.canonicalId in hiddenKeys)
+
+        val deduplicated = linkedMapOf<String, Candidate>()
+        candidates
+            .filterNot { isHidden(it.summary) }
+            .sortedWith(compareByDescending<Candidate> { it.priority }.thenByDescending { it.timestamp })
+            .forEach { candidate ->
+                val key = candidate.summary.stableMediaKey
+                val existing = deduplicated[key]
+                if (existing == null || candidate.timestamp > existing.timestamp && candidate.priority >= existing.priority) {
+                    deduplicated[key] = candidate
+                }
+            }
+
+        val matching = if (normalizedQuery.isBlank()) {
+            deduplicated.values.toList()
+        } else {
+            val queryTokens = normalizedQuery.split(Regex("\\s+")).filter { it.isNotBlank() }
+            deduplicated.values
+                .mapNotNull { candidate ->
+                    val lowerTitle = candidate.summary.title.lowercase(Locale.US)
+                    val score = when {
+                        lowerTitle.startsWith(normalizedQuery) -> 3
+                        lowerTitle.contains(normalizedQuery) -> 2
+                        queryTokens.size > 1 && queryTokens.all { lowerTitle.contains(it) } -> 1
+                        else -> 0
+                    }
+                    if (score > 0) score to candidate else null
+                }
+                .sortedWith(
+                    compareByDescending<Pair<Int, Candidate>> { it.first }
+                        .thenByDescending { it.second.priority }
+                        .thenByDescending { it.second.timestamp }
+                )
+                .map { it.second }
+        }
+
+        matching
+            .take(limit)
+            .map { candidate ->
+                val summary = candidate.summary
+                val isDownloaded = summary.compositeId in offlineKeys
+                LibrarySearchSuggestion(
+                    summary = summary,
+                    sourceLabel = candidate.sourceLabel,
+                    isDownloaded = isDownloaded
+                )
+            }
     }
 
     override suspend fun getDetails(providerId: String, titleId: String, forceRefresh: Boolean): Result<MediaDetails> = withContext(ioDispatcher) {
@@ -1677,10 +1911,18 @@ class MoviesRepositoryImpl(
     }
 
     override fun observeRecentSearches(limit: Int): Flow<List<String>> =
-        moviesDao.observeRecentSearches(limit).flowOn(ioDispatcher)
+        moviesDao.observeRecentSearches((limit * 2).coerceAtLeast(limit))
+            .map { queries ->
+                queries
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+                    .distinctBy { it.lowercase(Locale.US) }
+                    .take(limit)
+            }
+            .flowOn(ioDispatcher)
 
     override suspend fun recordSearchQuery(query: String) = withContext(ioDispatcher) {
-        val clean = query.trim()
+        val clean = query.trim().replace(Regex("\\s+"), " ")
         if (clean.length < 2) return@withContext
         moviesDao.upsertSearchQuery(
             MovieSearchHistoryEntity(query = clean, searchedAt = nowMs())

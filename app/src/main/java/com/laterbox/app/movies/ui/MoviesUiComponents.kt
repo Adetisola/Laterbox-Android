@@ -83,6 +83,7 @@ import com.laterbox.app.domain.model.Collection
 import com.laterbox.app.movies.domain.model.CastMember
 import com.laterbox.app.movies.domain.model.DataSourceBadge
 import com.laterbox.app.movies.domain.model.EpisodeItem
+import com.laterbox.app.movies.domain.model.LibrarySearchSuggestion
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.model.PersonFilmography
@@ -143,7 +144,8 @@ fun MoviePosterCard(
     onMarkWatched: ((MovieTitleSummary) -> Unit)? = null,
     onHideTitle: ((MovieTitleSummary) -> Unit)? = null,
     onRemoveFromViewed: ((MovieTitleSummary) -> Unit)? = null,
-    menuButtonTestTag: String = "poster_actions_${item.id}"
+    menuButtonTestTag: String = "poster_actions_${item.id}",
+    showSourceStatusBadge: Boolean = false
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -408,6 +410,48 @@ fun MoviePosterCard(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false)
                     )
+                }
+            }
+        }
+
+        if (showSourceStatusBadge) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(5.dp),
+                    color = colors.surfaceSecondary,
+                    border = BorderStroke(0.5.dp, colors.borderSubtle),
+                    modifier = Modifier.weight(1f, fill = false)
+                ) {
+                    Text(
+                        text = item.sourceBadge.displayLabel,
+                        style = typography.caption.copy(fontSize = 9.sp, fontWeight = FontWeight.Medium),
+                        color = colors.textSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                    )
+                }
+                if (!item.isPlayableHint) {
+                    Surface(
+                        shape = RoundedCornerShape(5.dp),
+                        color = colors.surfaceSecondary,
+                        border = BorderStroke(0.5.dp, colors.borderSubtle)
+                    ) {
+                        Text(
+                            text = "Info only",
+                            style = typography.caption.copy(fontSize = 9.sp, fontWeight = FontWeight.Medium),
+                            color = colors.textTertiary,
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                        )
+                    }
                 }
             }
         }
@@ -1912,12 +1956,21 @@ fun MoviesSearchSuggestionsDropdown(
     onSuggestionClick: (SearchSuggestion) -> Unit,
     onSubmitQuery: (String) -> Unit,
     onClearRecent: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    librarySuggestions: List<LibrarySearchSuggestion> = emptyList(),
+    onLibrarySuggestionClick: (LibrarySearchSuggestion) -> Unit = {}
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
     val trimmedQuery = query.trim()
     val hasQuery = trimmedQuery.length >= 2
+    val uniqueRecent = remember(recentSearches) {
+        recentSearches
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase(Locale.US) }
+            .take(8)
+    }
 
     Surface(
         shape = RoundedCornerShape(14.dp),
@@ -1931,89 +1984,141 @@ fun MoviesSearchSuggestionsDropdown(
     ) {
         Column(
             modifier = Modifier
-                .heightIn(max = 320.dp)
+                .heightIn(max = 360.dp)
                 .verticalScroll(rememberScrollState())
                 .padding(vertical = 6.dp)
         ) {
-            when {
-                hasQuery && isLoading && suggestions.isEmpty() -> {
+            // A. Your Searches (when query is empty/short)
+            if (!hasQuery && uniqueRecent.isNotEmpty()) {
+                Column(modifier = Modifier.testTag("${containerTag}_your_searches")) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 12.dp)
-                            .testTag("${containerTag}_loading"),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            .padding(horizontal = 14.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
-                            strokeWidth = 2.dp,
-                            color = colors.accentPrimary
-                        )
                         Text(
-                            text = "Searching suggestions...",
-                            style = typography.bodySecondary,
+                            text = "Your Searches",
+                            style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
                             color = colors.textSecondary
                         )
+                        TextButton(
+                            onClick = onClearRecent,
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                            modifier = Modifier.testTag("${containerTag}_clear_recent")
+                        ) {
+                            Text("Clear", style = typography.caption, color = colors.accentPrimary)
+                        }
                     }
-                }
-                hasQuery && !errorMessage.isNullOrBlank() && suggestions.isEmpty() -> {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 10.dp)
-                            .testTag("${containerTag}_error"),
+                    FlowRow(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Text(
-                            text = errorMessage,
-                            style = typography.metaText,
-                            color = colors.textSecondary
-                        )
-                        Text(
-                            text = "Search all titles for \"$trimmedQuery\"",
-                            style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
-                            color = colors.accentPrimary,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { onSubmitQuery(trimmedQuery) }
-                                .padding(vertical = 4.dp)
-                        )
+                        uniqueRecent.forEach { recent ->
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = colors.surfaceSecondary,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .clickable { onSubmitQuery(recent) }
+                            ) {
+                                Text(
+                                    text = recent,
+                                    style = typography.caption,
+                                    color = colors.textPrimary,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                )
+                            }
+                        }
                     }
                 }
-                suggestions.isNotEmpty() -> {
-                    suggestions.forEachIndexed { idx, suggestion ->
-                        val suggestionTagSuffix = if (suggestion.hasNavigableId) suggestion.id else "idx_$idx"
+            }
+
+            // B. Your Library (navigable local items)
+            if (librarySuggestions.isNotEmpty()) {
+                if (!hasQuery && uniqueRecent.isNotEmpty()) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 4.dp),
+                        thickness = 0.5.dp,
+                        color = colors.borderSubtle
+                    )
+                }
+                Column(modifier = Modifier.testTag("${containerTag}_your_library")) {
+                    Text(
+                        text = "Your Library",
+                        style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                        color = colors.textSecondary,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                    )
+                    librarySuggestions.forEachIndexed { idx, entry ->
+                        val summary = entry.summary
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { onSuggestionClick(suggestion) }
-                                .padding(horizontal = 14.dp, vertical = 10.dp)
-                                .testTag("$suggestionTagPrefix$suggestionTagSuffix"),
+                                .clickable { onLibrarySuggestionClick(entry) }
+                                .padding(horizontal = 14.dp, vertical = 8.dp)
+                                .testTag("library_suggestion_item_${summary.id}"),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(width = 34.dp, height = 48.dp)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(colors.surfaceSecondary),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (!summary.posterUrl.isNullOrBlank()) {
+                                    AsyncImage(
+                                        model = summary.posterUrl,
+                                        contentDescription = summary.title,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                } else {
+                                    Icon(
+                                        painter = painterResource(LaterboxIcons.Movies),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = colors.textTertiary
+                                    )
+                                }
+                            }
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = suggestion.title,
+                                    text = summary.title,
                                     style = typography.uiLabel,
                                     color = colors.textPrimary,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
-                                val subMeta = if (!suggestion.hasNavigableId) {
-                                    "Search catalogue"
-                                } else {
-                                    listOfNotNull(
-                                        suggestion.kind.label,
-                                        suggestion.releaseYear?.toString()
-                                    ).joinToString(" · ")
-                                }
+                                val metaLine = listOfNotNull(
+                                    summary.kind.label,
+                                    summary.releaseYear?.toString(),
+                                    entry.sourceLabel
+                                ).joinToString(" · ")
                                 Text(
-                                    text = subMeta,
+                                    text = metaLine,
                                     style = typography.caption,
-                                    color = colors.textSecondary
+                                    color = colors.textSecondary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
+                            }
+                            if (entry.isDownloaded) {
+                                Surface(
+                                    shape = RoundedCornerShape(5.dp),
+                                    color = Color(0xFF1B5E20).copy(alpha = 0.88f)
+                                ) {
+                                    Text(
+                                        text = "OFFLINE",
+                                        style = typography.caption.copy(fontSize = 8.sp, fontWeight = FontWeight.Bold),
+                                        color = Color.White,
+                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                    )
+                                }
                             }
                             Icon(
                                 painter = painterResource(LaterboxIcons.ArrowUpRight),
@@ -2022,84 +2127,154 @@ fun MoviesSearchSuggestionsDropdown(
                                 tint = colors.textTertiary
                             )
                         }
-                        if (idx < suggestions.lastIndex) {
+                        if (idx < librarySuggestions.lastIndex) {
                             HorizontalDivider(thickness = 0.5.dp, color = colors.borderSubtle)
                         }
                     }
                 }
-                hasQuery -> {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onSubmitQuery(trimmedQuery) }
-                            .padding(horizontal = 14.dp, vertical = 12.dp)
-                            .testTag("${containerTag}_empty"),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "No instant matches for \"$trimmedQuery\"",
-                                style = typography.bodySecondary,
-                                color = colors.textSecondary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = "Tap to run full search",
-                                style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
-                                color = colors.accentPrimary
-                            )
-                        }
-                        Icon(
-                            painter = painterResource(LaterboxIcons.Search),
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                            tint = colors.accentPrimary
-                        )
-                    }
-                }
             }
 
-            if (!hasQuery && recentSearches.isNotEmpty()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Recent searches",
-                        style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
-                        color = colors.textSecondary
+            // C. Search Suggestions (upstream keyword autocomplete)
+            if (hasQuery) {
+                if (librarySuggestions.isNotEmpty()) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 4.dp),
+                        thickness = 0.5.dp,
+                        color = colors.borderSubtle
                     )
-                    TextButton(
-                        onClick = onClearRecent,
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
-                    ) {
-                        Text("Clear", style = typography.caption, color = colors.accentPrimary)
-                    }
                 }
-                FlowRow(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    recentSearches.take(8).forEach { recent ->
-                        Surface(
-                            shape = RoundedCornerShape(16.dp),
-                            color = colors.surfaceSecondary,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(16.dp))
-                                .clickable { onSubmitQuery(recent) }
-                        ) {
-                            Text(
-                                text = recent,
-                                style = typography.caption,
-                                color = colors.textPrimary,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                            )
+                Column(modifier = Modifier.testTag("${containerTag}_search_suggestions")) {
+                    Text(
+                        text = "Search Suggestions",
+                        style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                        color = colors.textSecondary,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                    )
+                    when {
+                        isLoading && suggestions.isEmpty() -> {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 12.dp)
+                                    .testTag("${containerTag}_loading"),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = colors.accentPrimary
+                                )
+                                Text(
+                                    text = "Searching suggestions...",
+                                    style = typography.bodySecondary,
+                                    color = colors.textSecondary
+                                )
+                            }
+                        }
+                        !errorMessage.isNullOrBlank() && suggestions.isEmpty() -> {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 10.dp)
+                                    .testTag("${containerTag}_error"),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = errorMessage,
+                                    style = typography.metaText,
+                                    color = colors.textSecondary
+                                )
+                                Text(
+                                    text = "Search all titles for \"$trimmedQuery\"",
+                                    style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
+                                    color = colors.accentPrimary,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable { onSubmitQuery(trimmedQuery) }
+                                        .padding(vertical = 4.dp)
+                                )
+                            }
+                        }
+                        suggestions.isNotEmpty() -> {
+                            suggestions.forEachIndexed { idx, suggestion ->
+                                val suggestionTagSuffix = if (suggestion.hasNavigableId) suggestion.id else "idx_$idx"
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { onSuggestionClick(suggestion) }
+                                        .padding(horizontal = 14.dp, vertical = 10.dp)
+                                        .testTag("$suggestionTagPrefix$suggestionTagSuffix"),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = suggestion.title,
+                                            style = typography.uiLabel,
+                                            color = colors.textPrimary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        val subMeta = if (!suggestion.hasNavigableId) {
+                                            "Search query"
+                                        } else {
+                                            listOfNotNull(
+                                                suggestion.kind?.label,
+                                                suggestion.releaseYear?.toString()
+                                            ).ifEmpty { listOf("Title") }.joinToString(" · ")
+                                        }
+                                        Text(
+                                            text = subMeta,
+                                            style = typography.caption,
+                                            color = colors.textSecondary
+                                        )
+                                    }
+                                    Icon(
+                                        painter = painterResource(
+                                            if (suggestion.hasNavigableId) LaterboxIcons.ArrowUpRight else LaterboxIcons.Search
+                                        ),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(14.dp),
+                                        tint = colors.textTertiary
+                                    )
+                                }
+                                if (idx < suggestions.lastIndex) {
+                                    HorizontalDivider(thickness = 0.5.dp, color = colors.borderSubtle)
+                                }
+                            }
+                        }
+                        else -> {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onSubmitQuery(trimmedQuery) }
+                                    .padding(horizontal = 14.dp, vertical = 12.dp)
+                                    .testTag("${containerTag}_empty"),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "No instant matches for \"$trimmedQuery\"",
+                                        style = typography.bodySecondary,
+                                        color = colors.textSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = "Tap to run full search",
+                                        style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                        color = colors.accentPrimary
+                                    )
+                                }
+                                Icon(
+                                    painter = painterResource(LaterboxIcons.Search),
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = colors.accentPrimary
+                                )
+                            }
                         }
                     }
                 }

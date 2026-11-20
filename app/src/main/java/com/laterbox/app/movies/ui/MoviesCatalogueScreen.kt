@@ -151,6 +151,7 @@ fun MoviesCatalogueScreen(
         uiState.isLoadingSuggestions ||
         uiState.suggestionsError != null ||
         uiState.suggestions.isNotEmpty() ||
+        uiState.librarySuggestions.isNotEmpty() ||
         uiState.recentSearches.isNotEmpty()
     val isDropdownOpen = uiState.showSuggestionsDropdown && dropdownHasContent
 
@@ -639,15 +640,16 @@ fun MoviesCatalogueScreen(
 
         Spacer(modifier = Modifier.height(6.dp))
 
+        val hasNoResults = uiState.items.isEmpty() && uiState.supplementaryItems.isEmpty()
         when {
-            uiState.isLoading && uiState.items.isEmpty() -> {
+            uiState.isLoading && hasNoResults -> {
                 com.laterbox.app.ui.components.MediaCatalogueSkeletonGrid(
                     modifier = Modifier
                         .fillMaxSize()
                         .testTag("catalogue_loading_skeleton")
                 )
             }
-            uiState.errorMessage != null && uiState.items.isEmpty() -> {
+            uiState.errorMessage != null && hasNoResults -> {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -672,7 +674,7 @@ fun MoviesCatalogueScreen(
                     }
                 }
             }
-            uiState.items.isEmpty() -> {
+            hasNoResults -> {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -707,6 +709,7 @@ fun MoviesCatalogueScreen(
                 val offlineLookup = remember(uiState.offlineMatches) {
                     OfflineMediaLookup.from(uiState.offlineMatches)
                 }
+                val hasSupplementary = uiState.supplementaryItems.isNotEmpty()
                 LazyVerticalGrid(
                     columns = GridCells.Adaptive(minSize = 112.dp),
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
@@ -720,9 +723,11 @@ fun MoviesCatalogueScreen(
                         items = uiState.items,
                         key = { index, item -> "grid_${index}_${item.compositeId}" }
                     ) { index, item ->
-                        LaunchedEffect(index, uiState.items.size, uiState.hasMore, uiState.isLoadingMore) {
-                            if (index >= uiState.items.lastIndex - 3 && uiState.hasMore && !uiState.isLoadingMore) {
-                                onLoadNextPage()
+                        if (!hasSupplementary) {
+                            LaunchedEffect(index, uiState.items.size, uiState.hasMore, uiState.isLoadingMore) {
+                                if (index >= uiState.items.lastIndex - 3 && uiState.hasMore && !uiState.isLoadingMore) {
+                                    onLoadNextPage()
+                                }
                             }
                         }
                         val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
@@ -737,6 +742,65 @@ fun MoviesCatalogueScreen(
                             onMarkWatched = onMarkWatched,
                             onHideTitle = onHideTitle
                         )
+                    }
+
+                    if (hasSupplementary) {
+                        item(
+                            key = "catalogue_additional_results_header",
+                            span = { GridItemSpan(maxLineSpan) }
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 8.dp, bottom = 2.dp)
+                                    .testTag("catalogue_additional_results_header"),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                HorizontalDivider(thickness = 0.5.dp, color = colors.borderSubtle)
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "Additional Results",
+                                    style = typography.titleLarge.copy(fontSize = 16.sp),
+                                    color = colors.textPrimary
+                                )
+                                Text(
+                                    text = "From archive & guide sources",
+                                    style = typography.metaText,
+                                    color = colors.textSecondary
+                                )
+                            }
+                        }
+                        itemsIndexed(
+                            items = uiState.supplementaryItems,
+                            key = { index, item -> "supp_${index}_${item.compositeId}" }
+                        ) { index, item ->
+                            LaunchedEffect(
+                                index,
+                                uiState.supplementaryItems.size,
+                                uiState.hasMore,
+                                uiState.isLoadingMore
+                            ) {
+                                if (index >= uiState.supplementaryItems.lastIndex - 3 &&
+                                    uiState.hasMore &&
+                                    !uiState.isLoadingMore
+                                ) {
+                                    onLoadNextPage()
+                                }
+                            }
+                            val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
+                            MoviePosterCard(
+                                item = item,
+                                onClick = { onOpenDetail(item.providerId, item.id) },
+                                modifier = Modifier.fillMaxWidth(),
+                                isOfflineDownloaded = isOffline,
+                                isInWatchlist = item.compositeId in uiState.watchlistIds,
+                                onToggleWatchlist = onToggleWatchlist,
+                                onAddToCollection = { collectionPickerTarget = it },
+                                onMarkWatched = onMarkWatched,
+                                onHideTitle = onHideTitle,
+                                showSourceStatusBadge = true
+                            )
+                        }
                     }
 
                     if (uiState.isLoadingMore) {
@@ -809,6 +873,13 @@ fun MoviesCatalogueScreen(
                         onSubmitSearch(q)
                     },
                     onClearRecent = onClearSearchHistory,
+                    librarySuggestions = uiState.librarySuggestions,
+                    onLibrarySuggestionClick = { entry ->
+                        dismissSearch()
+                        keyboardController?.hide()
+                        runCatching { focusManager.clearFocus(force = true) }
+                        onOpenDetail(entry.summary.providerId.trim(), entry.summary.id.trim())
+                    },
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .padding(horizontal = 16.dp, vertical = 4.dp)

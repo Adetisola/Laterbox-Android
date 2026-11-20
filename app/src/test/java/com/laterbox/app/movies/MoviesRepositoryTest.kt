@@ -243,10 +243,12 @@ class MoviesRepositoryTest {
         assertEquals(DataSourceBadge.LIVE_MOVIEBOX, liveFeed.featuredBanners.first().sourceBadge)
         assertTrue(iaOrTvMazeHits.isEmpty())
 
-        // Search routes to MovieBox first
+        // Search routes to MovieBox primary first and appends unique supplementary matches
         val searchPage = repo.search("Feature").getOrThrow()
-        assertEquals(1, searchPage.items.size)
+        assertTrue(searchPage.items.isNotEmpty())
+        assertEquals(1, searchPage.primaryCount)
         assertEquals("moviebox", searchPage.items.first().providerId)
+        assertEquals(DataSourceBadge.LIVE_MOVIEBOX, searchPage.items.first().sourceBadge)
 
         // Break BOTH MovieBox and Open Archive after stale TTL -> returns MovieBox's own stale offline cache
         failMovieBox = true
@@ -799,5 +801,242 @@ class MoviesRepositoryTest {
         assertEquals(1, epHistory.size)
         assertEquals(MediaKind.SHORT_DRAMA, epHistory.first().kind)
         assertEquals(4, epHistory.first().episodeNumber)
+    }
+
+    private fun createRepositoryWithMovieBox(withMovieBox: Boolean): MoviesRepositoryImpl {
+        val client = OkHttpClient()
+        val base = server.url("/").toString().trimEnd('/')
+        return MoviesRepositoryImpl(
+            moviesDao = db.moviesDao(),
+            internetArchiveProvider = InternetArchiveMoviesProvider(client, base),
+            tvMazeProvider = TvMazeSeriesProvider(client, base),
+            tmdbProvider = TmdbOptionalMoviesProvider(client, apiKeyProvider = { tmdbKey }, baseUrl = base),
+            fixtureProvider = DevelopmentMoviesFixtureProvider(),
+            movieBoxProvider = if (withMovieBox) {
+                com.laterbox.app.movies.data.provider.MovieBoxProvider(client, baseUrlProvider = { base })
+            } else {
+                null
+            },
+            useSampleFixturesOnlyProvider = { useFixtures },
+            nowMs = { fakeClockMs },
+            downloadedAssetDao = db.downloadedAssetDao()
+        )
+    }
+
+    @Test
+    fun supplementarySearch_preservesMovieBoxOrderAppendsUniqueAndDeduplicatesCanonicalMatches() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/search?") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "query": "dune",
+                          "page": 1,
+                          "results": [
+                            {"subject_id": "mb_z", "subject_type": 1, "title": "Dune", "release_date": "2021-10-22", "imdb_id": "tt1160419"},
+                            {"subject_id": "mb_a", "subject_type": 2, "title": "Dune Chronicles", "release_date": "2000-12-03", "imdb_id": "tt0142032"}
+                          ]
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/advancedsearch.php") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "response": {
+                            "numFound": 2,
+                            "docs": [
+                              {"identifier": "ia_dup_dune", "title": "Dune", "year": "2021"},
+                              {"identifier": "ia_unique_1984", "title": "Dune Classic Archive", "year": "1984"}
+                            ]
+                          }
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/search/shows") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        [
+                          {
+                            "score": 1.0,
+                            "show": {
+                              "id": 901,
+                              "name": "Dune Chronicles",
+                              "premiered": "2000-12-03",
+                              "externals": {"imdb": "tt0142032"}
+                            }
+                          },
+                          {
+                            "score": 0.9,
+                            "show": {
+                              "id": 902,
+                              "name": "Dune Prophecy Guide",
+                              "premiered": "2024-11-17"
+                            }
+                          }
+                        ]
+                        """.trimIndent()
+                    )
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val repo = createRepositoryWithMovieBox(withMovieBox = true)
+        val page = repo.search("dune", kind = null, page = 1, pageSize = 20).getOrThrow()
+
+        // MovieBox exact order is preserved verbatim in primary slots
+        assertEquals(2, page.primaryCount)
+        assertEquals(listOf("mb_z", "mb_a"), page.items.take(page.primaryCount).map { it.id })
+
+        // Canonical T1 match (TVMaze 901 matching mb_a via tt0142032) is deduplicated;
+        // IA item without corroborating T1/T2 metadata is NOT falsely deduplicated by title alone.
+        val supplementary = page.items.drop(page.primaryCount)
+        assertEquals(listOf("ia_dup_dune", "ia_unique_1984", "902"), supplementary.map { it.id })
+        assertTrue(supplementary.none { it.title == "Dune Chronicles" })
+    }
+
+    @Test
+    fun supplementarySearch_independentProviderFailureStillReturnsMovieBoxResults() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/search?") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "query": "solar",
+                          "page": 1,
+                          "results": [
+                            {"subject_id": "mb_solar", "subject_type": 1, "title": "Solaris"}
+                          ]
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/advancedsearch.php") -> MockResponse().setResponseCode(503)
+                    path.startsWith("/search/shows") -> MockResponse().setResponseCode(500)
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val repo = createRepositoryWithMovieBox(withMovieBox = true)
+        val page = repo.search("solar", kind = null).getOrThrow()
+        assertEquals(1, page.primaryCount)
+        assertEquals(listOf("mb_solar"), page.items.map { it.id })
+    }
+
+    @Test
+    fun librarySuggestions_mergesSourcesExcludesHiddenPreservesShortDramaAndTagsOffline() = runTest {
+        val repo = createRepositoryWithMovieBox(withMovieBox = false)
+
+        // 1. Short Drama in Continue Watching + downloaded offline asset
+        val shortDrama = MovieTitleSummary(
+            id = "sd_ceo",
+            providerId = "moviebox",
+            kind = MediaKind.SHORT_DRAMA,
+            title = "CEO Hidden Contract",
+            releaseYear = 2026,
+            posterUrl = "https://cdn.example/ceo.jpg",
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+            isPlayableHint = true,
+            subjectType = 7
+        )
+        fakeClockMs = 2_000_000L
+        repo.saveWatchProgress(shortDrama, positionMs = 15_000L, durationMs = 120_000L, seasonNumber = 1, episodeNumber = 2)
+        db.downloadedAssetDao().insertAsset(
+            com.laterbox.app.media.data.db.entity.DownloadedAssetEntity(
+                id = "dl_ceo",
+                savedLinkId = null,
+                sourcePlatform = "MovieBox",
+                originalSourceUrl = "https://cdn.example/ceo.mp4",
+                title = "CEO Hidden Contract",
+                mimeType = "video/mp4",
+                mediaType = "VIDEO",
+                contentCategory = "EPISODE",
+                localPath = "offline/ceo.mp4",
+                fileStatus = "AVAILABLE",
+                fileSize = 2048L,
+                checksum = "sum",
+                qualityLabel = "720p",
+                sourceRef = "moviebox|sd_ceo|1|2|720p",
+                createdAt = fakeClockMs
+            )
+        )
+
+        // 2. Movie in Watchlist
+        val watchlistMovie = MovieTitleSummary(
+            id = "m_alpha",
+            providerId = "moviebox",
+            kind = MediaKind.MOVIE,
+            title = "Contract Killers",
+            releaseYear = 2022,
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+            isPlayableHint = true
+        )
+        fakeClockMs = 2_010_000L
+        repo.toggleWatchlist(watchlistMovie)
+
+        // 3. Collection item
+        val colId = db.collectionDao().insertCollection(
+            com.laterbox.app.data.local.entity.CollectionEntity(
+                name = "Sci-Fi",
+                createdAt = fakeClockMs,
+                updatedAt = fakeClockMs
+            )
+        )
+        val colItem = MovieTitleSummary(
+            id = "tv_col",
+            providerId = "moviebox",
+            kind = MediaKind.TV_SERIES,
+            title = "Solar Contract",
+            releaseYear = 2023,
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+            isPlayableHint = true
+        )
+        fakeClockMs = 2_020_000L
+        repo.addMediaToCollection(colItem, colId)
+
+        // 4. Recently viewed item that was hidden -> must be excluded
+        val hiddenItem = MovieTitleSummary(
+            id = "m_hidden",
+            providerId = "moviebox",
+            kind = MediaKind.MOVIE,
+            title = "Hidden Contract",
+            releaseYear = 2021,
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+            isPlayableHint = true
+        )
+        fakeClockMs = 2_030_000L
+        repo.recordRecentlyViewed(hiddenItem)
+        repo.setTitleHidden(hiddenItem, hidden = true)
+
+        // Query "contract": prefix ("Contract Killers") ranks before substring, Short Drama & Offline preserved, hidden excluded
+        val queryMatches = repo.searchLibrarySuggestions("contract", limit = 6)
+        assertEquals(listOf("m_alpha", "sd_ceo", "tv_col"), queryMatches.map { it.summary.id })
+        val ceoSuggestion = queryMatches.first { it.summary.id == "sd_ceo" }
+        assertEquals(MediaKind.SHORT_DRAMA, ceoSuggestion.summary.kind)
+        assertTrue(ceoSuggestion.isDownloaded)
+        assertEquals("Continue Watching", ceoSuggestion.sourceLabel)
+        assertTrue(queryMatches.none { it.summary.id == "m_hidden" })
+
+        // Empty query returns local library items ordered by priority/recency
+        val emptyMatches = repo.searchLibrarySuggestions("", limit = 6)
+        assertEquals(3, emptyMatches.size)
+        assertEquals("sd_ceo", emptyMatches.first().summary.id)
+    }
+
+    @Test
+    fun recentSearches_deduplicatesCaseInsensitivelyAndNormalizesWhitespace() = runTest {
+        val repo = createRepositoryWithMovieBox(withMovieBox = false)
+        fakeClockMs = 1_000_000L
+        repo.recordSearchQuery("  CEO   Bride  ")
+        fakeClockMs = 1_005_000L
+        repo.recordSearchQuery("ceo bride")
+        fakeClockMs = 1_010_000L
+        repo.recordSearchQuery("Dune")
+
+        val recent = repo.observeRecentSearches(10).first()
+        assertEquals(listOf("Dune", "ceo bride"), recent)
     }
 }

@@ -140,14 +140,15 @@ data class CataloguePage(
     val page: Int = 1,
     val pageSize: Int = 20,
     val totalCount: Int? = null,
-    val hasMore: Boolean = false
+    val hasMore: Boolean = false,
+    val primaryCount: Int = items.size
 )
 
 data class SearchSuggestion(
     val id: String,
     val providerId: String,
     val title: String,
-    val kind: MediaKind = MediaKind.MOVIE,
+    val kind: MediaKind? = null,
     val releaseYear: Int? = null,
     val posterUrl: String? = null
 ) {
@@ -160,6 +161,12 @@ data class SearchSuggestion(
             !providerId.trim().equals("None", ignoreCase = true) &&
             !providerId.trim().equals("null", ignoreCase = true)
 }
+
+data class LibrarySearchSuggestion(
+    val summary: MovieTitleSummary,
+    val sourceLabel: String,
+    val isDownloaded: Boolean = false
+)
 
 data class CastMember(
     val name: String,
