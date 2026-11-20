@@ -221,24 +221,50 @@ class DownloadWorker(
                     var lastPersistedEtag = activeTask.etag
                     var lastTelemetryPersistTime = 0L
 
+                    suspend fun handleTelemetry(speedBps: Long?, etaSeconds: Long?, etag: String?) {
+                        if (!etag.isNullOrBlank() && etag != lastPersistedEtag) {
+                            lastPersistedEtag = etag
+                            taskDao.updateEtag(taskId, etag)
+                        }
+                        val now = System.currentTimeMillis()
+                        val isTerminalClear = speedBps == null && etaSeconds == 0L
+                        if (isTerminalClear || (speedBps != null && now - lastTelemetryPersistTime >= 500L)) {
+                            lastTelemetryPersistTime = now
+                            taskDao.updateTelemetry(taskId, speedBps, etaSeconds)
+                        }
+                    }
+
                     suspend fun executeHttpDownload(currentTask: com.laterbox.app.media.data.db.entity.DownloadTaskEntity): DownloadResult {
+                        val readyCache = com.laterbox.app.movies.data.cache.MoviesMediaCache.getCacheIfReady()
+                            ?: com.laterbox.app.movies.data.cache.MoviesMediaCache.warmUp(appContext)
+                        if (readyCache != null && (!partFile.exists() || partFile.length() == 0L)) {
+                            val reusedResult = StreamCacheReuseDownloader(readyCache, httpDownloader.httpClient)
+                                .tryDownloadReusingCache(
+                                    url = currentTask.sourceUrl,
+                                    destinationFile = partFile,
+                                    headers = currentTask.toDomain().headers,
+                                    onTelemetry = ::handleTelemetry,
+                                    onProgress = { bytes, total, percent, stage ->
+                                        onProgressCallback(bytes, total, percent, stage)
+                                    }
+                                )
+                            if (reusedResult != null) {
+                                if (reusedResult is DownloadResult.Success && reusedResult.cacheReusedBytes > 0L) {
+                                    android.util.Log.i(
+                                        "DownloadWorker",
+                                        "StreamCacheReuse: reused=${reusedResult.cacheReusedBytes}B, fetched=${reusedResult.networkBytesFetched}B, total=${reusedResult.totalBytes}B"
+                                    )
+                                }
+                                return reusedResult
+                            }
+                        }
+
                         return httpDownloader.download(
                             url = currentTask.sourceUrl,
                             destinationFile = partFile,
                             headers = currentTask.toDomain().headers,
                             expectedETag = currentTask.etag,
-                            onTelemetry = { speedBps, etaSeconds, etag ->
-                                if (!etag.isNullOrBlank() && etag != lastPersistedEtag) {
-                                    lastPersistedEtag = etag
-                                    taskDao.updateEtag(taskId, etag)
-                                }
-                                val now = System.currentTimeMillis()
-                                val isTerminalClear = speedBps == null && etaSeconds == 0L
-                                if (isTerminalClear || (speedBps != null && now - lastTelemetryPersistTime >= 500L)) {
-                                    lastTelemetryPersistTime = now
-                                    taskDao.updateTelemetry(taskId, speedBps, etaSeconds)
-                                }
-                            },
+                            onTelemetry = ::handleTelemetry,
                             onProgress = { bytes, total, percent, stage ->
                                 onProgressCallback(bytes, total, percent, stage)
                             }

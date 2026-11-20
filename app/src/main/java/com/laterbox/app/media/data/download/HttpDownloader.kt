@@ -21,7 +21,9 @@ sealed class DownloadResult {
     data class Success(
         val downloadedBytes: Long,
         val totalBytes: Long,
-        val etag: String? = null
+        val etag: String? = null,
+        val cacheReusedBytes: Long = 0L,
+        val networkBytesFetched: Long = downloadedBytes
     ) : DownloadResult()
     data class Failure(val code: FailureCode, val message: String, val httpStatus: Int? = null) : DownloadResult()
 }
@@ -40,6 +42,7 @@ class HttpDownloader(
         .followSslRedirects(true)
         .build()
 ) {
+    internal val httpClient: OkHttpClient get() = client
 
     suspend fun download(
         url: String,
