@@ -136,7 +136,7 @@ interface MoviesDao {
     @Query(
         """
         SELECT * FROM movie_watch_history w
-        WHERE w.is_trailer = 0 AND w.kind = 'tv_series' AND w.is_hidden_title = 0
+        WHERE w.is_trailer = 0 AND w.kind IN ('tv_series', 'short_drama') AND w.is_hidden_title = 0
           AND NOT EXISTS (
               SELECT 1 FROM hidden_titles h
               WHERE h.composite_id = w.composite_id

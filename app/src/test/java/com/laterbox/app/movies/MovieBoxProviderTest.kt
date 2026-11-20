@@ -1085,7 +1085,94 @@ class MovieBoxProviderTest {
         val page = provider.getCatalogue(kind = MediaKind.TV_SERIES, genre = "Anime").getOrThrow()
         assertEquals(2, page.items.size)
         assertEquals("st7", page.items[0].id)
-        assertEquals(MediaKind.TV_SERIES, page.items[0].kind)
+        assertEquals(MediaKind.SHORT_DRAMA, page.items[0].kind)
+        assertEquals(7, page.items[0].subjectType)
+        assertEquals(MediaKind.MOVIE, page.items[1].kind)
+        assertEquals(1, page.items[1].subjectType)
         assertTrue(MovieBoxProvider.VERIFIED_GENRES.containsAll(listOf("Anime", "Kids", "Sci-Fi & Fantasy", "Action & Adventure")))
+    }
+
+    @Test
+    fun shortDrama_subjectType7ClassifiedDistinctlyAcrossHomeSearchCatalogueAndDetails() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path == "/home" -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "data": {
+                            "operatingList": [
+                              {
+                                "type": "SUBJECTS_MOVIE",
+                                "opId": "hot_short_tv",
+                                "title": "Trending Short Drama",
+                                "subjects": [
+                                  {"subjectId": "sd1", "subjectType": 7, "title": "CEO Secret Marriage", "genre": "Romance", "imdbRatingValue": "8.4", "releaseDate": "2026-01-10"},
+                                  {"subjectId": "sd2", "subjectType": 7, "title": "Billionaire Return", "genre": "Drama", "imdbRatingValue": "7.8", "releaseDate": "2025-11-01"}
+                                ]
+                              },
+                              {
+                                "type": "SUBJECTS_MOVIE",
+                                "opId": "pop_series",
+                                "title": "Popular Series",
+                                "subjects": [
+                                  {"subjectId": "tv1", "subjectType": 2, "title": "Classic Drama", "genre": "Drama"}
+                                ]
+                              }
+                            ]
+                          }
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/search") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "query": "ceo",
+                          "page": 1,
+                          "results": [
+                            {"subject_id": "m1", "subject_type": 1, "title": "CEO Movie"},
+                            {"subject_id": "tv1", "subject_type": 2, "title": "CEO Series"},
+                            {"subject_id": "sd1", "subject_type": 7, "title": "CEO Short Drama"}
+                          ]
+                        }
+                        """.trimIndent()
+                    )
+                    path == "/detail/sd1" -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "subject_id": "sd1",
+                          "subject_type": 7,
+                          "title": "CEO Secret Marriage",
+                          "seasons": [{"season": 1, "episode_count": 40}]
+                        }
+                        """.trimIndent()
+                    )
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val home = provider.getHomeFeed().getOrThrow()
+        assertEquals(2, home.sections.size)
+        assertEquals("Trending Short Drama", home.sections[0].title)
+        assertEquals(MediaKind.SHORT_DRAMA, home.sections[0].items[0].kind)
+        assertEquals(7, home.sections[0].items[0].subjectType)
+        assertEquals(MediaKind.TV_SERIES, home.sections[1].items[0].kind)
+
+        val allSearch = provider.search("ceo", kind = null).getOrThrow()
+        assertEquals(listOf(MediaKind.MOVIE, MediaKind.TV_SERIES, MediaKind.SHORT_DRAMA), allSearch.items.map { it.kind })
+
+        val shortSearch = provider.search("ceo", kind = MediaKind.SHORT_DRAMA).getOrThrow()
+        assertEquals(listOf("sd1"), shortSearch.items.map { it.id })
+        assertEquals(MediaKind.SHORT_DRAMA, shortSearch.items[0].kind)
+
+        val shortCatalogue = provider.getCatalogue(kind = MediaKind.SHORT_DRAMA, sort = CatalogueSort.TOP_RATED).getOrThrow()
+        assertEquals(listOf("sd1", "sd2"), shortCatalogue.items.map { it.id })
+
+        val detail = provider.getDetails("sd1").getOrThrow()
+        assertEquals(MediaKind.SHORT_DRAMA, detail.summary.kind)
+        assertEquals(1, detail.seasons.size)
+        assertEquals(40, detail.seasons[0].episodeCount)
     }
 }

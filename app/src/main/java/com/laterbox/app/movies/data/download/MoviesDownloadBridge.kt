@@ -85,7 +85,7 @@ class MoviesDownloadBridge(
             extractor = source.providerName
         )
 
-        val contentCategory = if (summary.kind == MediaKind.TV_SERIES || episodeNumber != null) {
+        val contentCategory = if (summary.kind.isEpisodic || episodeNumber != null) {
             CATEGORY_EPISODE
         } else {
             CATEGORY_MOVIE

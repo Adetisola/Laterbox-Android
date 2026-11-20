@@ -290,4 +290,38 @@ class MoviesDownloadBridgeTest {
         assertEquals(1_850_000_000_000L, persisted.urlExpiresAt)
         assertEquals("https://api3.aoneroom.com/", persisted.toDomain().headers["Referer"])
     }
+
+    @Test
+    fun enqueueAuthorisedDownload_classifiesShortDramaAsEpisodicAndPreservesSourceRef() = runTest {
+        val shortDrama = MovieTitleSummary(
+            id = "sd_777",
+            providerId = "moviebox",
+            kind = MediaKind.SHORT_DRAMA,
+            title = "Secret Billionaire",
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+            isPlayableHint = true,
+            subjectType = 7
+        )
+        val source = PlaybackSource(
+            id = "src_sd_720",
+            url = "https://cdn.example/sd_777_s1e3.mp4",
+            format = "MP4",
+            qualityLabel = "720p",
+            qualityHeight = 720,
+            providerName = "Streaming Catalogue",
+            isAuthorised = true
+        )
+        val result = bridge.enqueueAuthorisedDownload(
+            summary = shortDrama,
+            source = source,
+            episodeLabel = "S1 · E3",
+            seasonNumber = 1,
+            episodeNumber = 3
+        )
+        assertTrue(result.isSuccess)
+        val call = fakeMediaRepository.enqueued.single()
+        assertEquals(MoviesDownloadBridge.CATEGORY_EPISODE, call.contentCategory)
+        assertEquals("moviebox|sd_777|1|3|720p", call.sourceRef)
+        assertEquals("Secret Billionaire · S1 · E3 (720p)", call.title)
+    }
 }

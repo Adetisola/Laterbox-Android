@@ -180,7 +180,7 @@ class InternetArchiveMoviesProvider(
         country: String?,
         year: String?
     ): Result<CataloguePage> = withContext(Dispatchers.IO) {
-        if (kind == MediaKind.TV_SERIES) {
+        if (kind == MediaKind.TV_SERIES || kind == MediaKind.SHORT_DRAMA) {
             return@withContext Result.success(
                 CataloguePage(items = emptyList(), page = page, pageSize = pageSize, totalCount = 0, hasMore = false)
             )
@@ -220,7 +220,7 @@ class InternetArchiveMoviesProvider(
         page: Int,
         pageSize: Int
     ): Result<CataloguePage> = withContext(Dispatchers.IO) {
-        if (kind == MediaKind.TV_SERIES) {
+        if (kind == MediaKind.TV_SERIES || kind == MediaKind.SHORT_DRAMA) {
             return@withContext Result.success(
                 CataloguePage(items = emptyList(), page = page, pageSize = pageSize, totalCount = 0, hasMore = false)
             )

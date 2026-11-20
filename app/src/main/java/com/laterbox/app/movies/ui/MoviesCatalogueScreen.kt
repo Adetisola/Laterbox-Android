@@ -354,7 +354,8 @@ fun MoviesCatalogueScreen(
                 listOf(
                     null to "All",
                     MediaKind.MOVIE to "Movies",
-                    MediaKind.TV_SERIES to "TV Series"
+                    MediaKind.TV_SERIES to "TV Series",
+                    MediaKind.SHORT_DRAMA to "Short Dramas"
                 ).forEach { (kind, label) ->
                     val selected = uiState.selectedKind == kind
                     FilterChip(

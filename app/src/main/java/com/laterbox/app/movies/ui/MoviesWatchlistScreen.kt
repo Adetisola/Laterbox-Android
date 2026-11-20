@@ -49,7 +49,8 @@ import com.laterbox.app.ui.theme.LaterboxTheme
 private enum class WatchlistKindFilter(val label: String, val tag: String) {
     ALL("All", "watchlist_filter_all"),
     MOVIES("Movies", "watchlist_filter_movies"),
-    TV_SERIES("TV Series", "watchlist_filter_tv")
+    TV_SERIES("TV Series", "watchlist_filter_tv"),
+    SHORT_DRAMAS("Short Dramas", "watchlist_filter_short_drama")
 }
 
 @Composable
@@ -80,6 +81,7 @@ fun MoviesWatchlistScreen(
             WatchlistKindFilter.ALL -> watchlist
             WatchlistKindFilter.MOVIES -> watchlist.filter { it.kind == MediaKind.MOVIE }
             WatchlistKindFilter.TV_SERIES -> watchlist.filter { it.kind == MediaKind.TV_SERIES }
+            WatchlistKindFilter.SHORT_DRAMAS -> watchlist.filter { it.kind == MediaKind.SHORT_DRAMA }
         }
     }
 

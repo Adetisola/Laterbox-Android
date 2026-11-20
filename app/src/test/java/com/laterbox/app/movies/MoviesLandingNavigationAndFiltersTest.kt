@@ -168,6 +168,7 @@ class MoviesLandingNavigationAndFiltersTest {
         // Order check: Group 1 -> Group 2 -> Group 3 -> Group 4 (all fit across 1280dp initially)
         val movieLeft = composeTestRule.onNodeWithTag("movies_home_kind_movie").getBoundsInRoot().left
         val tvLeft = composeTestRule.onNodeWithTag("movies_home_kind_tv").getBoundsInRoot().left
+        val shortLeft = composeTestRule.onNodeWithTag("movies_home_kind_short_drama").getBoundsInRoot().left
         val popularLeft = composeTestRule.onNodeWithTag("movies_home_sort_popular").getBoundsInRoot().left
         val newestLeft = composeTestRule.onNodeWithTag("movies_home_sort_newest").getBoundsInRoot().left
         val animeLeft = composeTestRule.onNodeWithTag("movies_home_genre_anime").getBoundsInRoot().left
@@ -177,7 +178,8 @@ class MoviesLandingNavigationAndFiltersTest {
         val westernLeft = composeTestRule.onNodeWithTag("movies_home_shortcut_western").getBoundsInRoot().left
 
         assertTrue(movieLeft < tvLeft)
-        assertTrue(tvLeft < popularLeft)
+        assertTrue(tvLeft < shortLeft)
+        assertTrue(shortLeft < popularLeft)
         assertTrue(popularLeft < newestLeft)
         assertTrue(newestLeft < animeLeft)
         assertTrue(animeLeft < actionLeft && actionLeft < adventureLeft)

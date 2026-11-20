@@ -144,14 +144,15 @@ class MovieBoxProvider(
                                     cacheMetadata(id, title, dp, trailerUrl)
                                     val cover = entry.optJSONObject("cover")?.optCleanString("url") ?: bannerImage
                                     val releaseDateStr = entry.optCleanString("releaseDate") ?: entry.optCleanString("release_date")
+                                    val itemKind = parseMediaKind(
+                                        subjectType,
+                                        entry.optCleanString("type")
+                                    )
                                     banners.add(
                                         MovieTitleSummary(
                                             id = id,
                                             providerId = PROVIDER_ID,
-                                            kind = parseMediaKind(
-                                                subjectType,
-                                                entry.optCleanString("type")
-                                            ),
+                                            kind = itemKind,
                                             title = title,
                                             releaseYear = parseYear(releaseDateStr, entry.optCleanString("year")),
                                             durationMinutes = parseDurationMinutes(entry.optLongOrNull("duration")),
@@ -163,7 +164,8 @@ class MovieBoxProvider(
                                             trailerUrl = trailerUrl,
                                             sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
                                             isPlayableHint = true,
-                                            releaseDate = releaseDateStr
+                                            releaseDate = releaseDateStr,
+                                            subjectType = subjectType ?: inferSubjectType(itemKind)
                                         )
                                     )
                                 }
@@ -267,6 +269,16 @@ class MovieBoxProvider(
         country: String?,
         year: String?
     ): Result<CataloguePage> = withContext(Dispatchers.IO) {
+        if (kind == MediaKind.SHORT_DRAMA) {
+            return@withContext getShortDramaCatalogue(
+                page = page,
+                pageSize = pageSize,
+                genre = genre,
+                sort = sort,
+                country = country,
+                year = year
+            )
+        }
         runCatching {
             val safePage = page.coerceAtLeast(1)
             val safePageSize = pageSize.coerceIn(1, 50)
@@ -335,7 +347,8 @@ class MovieBoxProvider(
                             detailPath = dp,
                             sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
                             isPlayableHint = true,
-                            releaseDate = releaseDateStr
+                            releaseDate = releaseDateStr,
+                            subjectType = subjectType ?: inferSubjectType(itemKind)
                         )
                     )
                 }
@@ -353,6 +366,52 @@ class MovieBoxProvider(
                 hasMore = hasMore
             )
         }
+    }
+
+    private suspend fun getShortDramaCatalogue(
+        page: Int,
+        pageSize: Int,
+        genre: String?,
+        sort: CatalogueSort,
+        country: String?,
+        year: String?
+    ): Result<CataloguePage> = getHomeFeed().map { feed ->
+        val safePage = page.coerceAtLeast(1)
+        val safePageSize = pageSize.coerceIn(1, 50)
+        val cleanGenre = genre?.trim()?.takeIf { it.isNotBlank() && !it.equals("All", ignoreCase = true) }
+        val cleanCountry = country?.trim()?.takeIf { it.isNotBlank() && !it.equals("All", ignoreCase = true) }
+        val cleanYear = year?.trim()?.takeIf { YEAR_REGEX.matches(it) }
+
+        val shortDramas = (feed.sections.flatMap { it.items } + feed.featuredBanners)
+            .asSequence()
+            .filter { it.kind == MediaKind.SHORT_DRAMA || it.subjectType == 7 }
+            .distinctBy { it.id }
+            .filter { item ->
+                (cleanGenre == null || item.genres.any { g -> g.equals(cleanGenre, ignoreCase = true) }) &&
+                    (cleanCountry == null || item.country.equals(cleanCountry, ignoreCase = true)) &&
+                    (cleanYear == null || item.releaseYear?.toString() == cleanYear)
+            }
+            .toList()
+
+        val sorted = when (sort) {
+            CatalogueSort.POPULAR -> shortDramas
+            CatalogueSort.TOP_RATED -> shortDramas.sortedByDescending { it.rating ?: 0.0 }
+            CatalogueSort.NEWEST -> shortDramas.sortedByDescending { it.releaseDate ?: it.releaseYear?.toString().orEmpty() }
+        }
+
+        val fromIndex = (safePage - 1) * safePageSize
+        val pageItems = if (fromIndex < sorted.size) {
+            sorted.subList(fromIndex, minOf(fromIndex + safePageSize, sorted.size))
+        } else {
+            emptyList()
+        }
+        CataloguePage(
+            items = pageItems,
+            page = safePage,
+            pageSize = safePageSize,
+            totalCount = sorted.size,
+            hasMore = fromIndex + pageItems.size < sorted.size
+        )
     }
 
     override suspend fun getGenres(): Result<List<String>> {
@@ -419,7 +478,8 @@ class MovieBoxProvider(
                             detailPath = dp,
                             sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
                             isPlayableHint = true,
-                            releaseDate = releaseDateStr
+                            releaseDate = releaseDateStr,
+                            subjectType = subjectType ?: inferSubjectType(itemKind)
                         )
                     )
                 }
@@ -512,8 +572,9 @@ class MovieBoxProvider(
                 .ifEmpty { trailerHeadersCache[id].orEmpty() }
             cacheMetadata(id, title, dp, trailerUrl, trailerHeaders)
 
+            val rawSubjectType = root.optIntOrNull("subject_type")
             val kind = parseMediaKind(
-                root.optIntOrNull("subject_type"),
+                rawSubjectType,
                 root.optCleanString("type")
             )
             val cover = root.optCleanString("cover")
@@ -565,7 +626,7 @@ class MovieBoxProvider(
             }
 
             val detailSeasons = parseSeasonsArray(root.optJSONArray("seasons"))
-            val seasons = if (kind == MediaKind.TV_SERIES) {
+            val seasons = if (kind.isEpisodic) {
                 detailSeasons.ifEmpty { getSeasons(id).getOrDefault(emptyList()) }
             } else {
                 emptyList()
@@ -606,7 +667,8 @@ class MovieBoxProvider(
                 sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
                 isPlayableHint = true,
                 imdbId = root.optCleanString("imdbId") ?: root.optCleanString("imdb_id"),
-                releaseDate = releaseDateStr
+                releaseDate = releaseDateStr,
+                subjectType = rawSubjectType ?: inferSubjectType(kind)
             )
 
             MediaDetails(
@@ -841,7 +903,8 @@ class MovieBoxProvider(
             detailPath = dp,
             sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
             isPlayableHint = true,
-            releaseDate = releaseDateStr
+            releaseDate = releaseDateStr,
+            subjectType = subjectType ?: inferSubjectType(kind)
         )
     }
 
@@ -1038,10 +1101,11 @@ class MovieBoxProvider(
         val hasResource = if (obj.has("hasResource")) obj.optBoolean("hasResource", true) else true
         val releaseDateStr = obj.optCleanString("releaseDate") ?: obj.optCleanString("release_date")
 
+        val kind = parseMediaKind(subjectType, obj.optCleanString("type"))
         return MovieTitleSummary(
             id = id,
             providerId = PROVIDER_ID,
-            kind = parseMediaKind(subjectType, obj.optCleanString("type")),
+            kind = kind,
             title = title,
             releaseYear = parseYear(releaseDateStr),
             rating = obj.optRating("imdbRatingValue", "imdb_rating", "rating"),
@@ -1058,7 +1122,8 @@ class MovieBoxProvider(
             sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
             isPlayableHint = hasResource,
             imdbId = obj.optCleanString("imdbId") ?: obj.optCleanString("imdb_id"),
-            releaseDate = releaseDateStr
+            releaseDate = releaseDateStr,
+            subjectType = subjectType ?: inferSubjectType(kind)
         )
     }
 
@@ -1286,10 +1351,19 @@ class MovieBoxProvider(
 
     private fun parseMediaKind(subjectType: Int?, typeLabel: String?): MediaKind = when {
         subjectType == 1 -> MediaKind.MOVIE
-        subjectType == 2 || subjectType == 7 -> MediaKind.TV_SERIES
+        subjectType == 2 -> MediaKind.TV_SERIES
+        subjectType == 7 -> MediaKind.SHORT_DRAMA
+        typeLabel != null && (typeLabel.contains("short", ignoreCase = true) ||
+            typeLabel.contains("mini", ignoreCase = true)) -> MediaKind.SHORT_DRAMA
         typeLabel != null && (typeLabel.contains("series", ignoreCase = true) ||
             typeLabel.contains("tv", ignoreCase = true)) -> MediaKind.TV_SERIES
         else -> MediaKind.MOVIE
+    }
+
+    private fun inferSubjectType(kind: MediaKind): Int = when (kind) {
+        MediaKind.MOVIE -> 1
+        MediaKind.TV_SERIES -> 2
+        MediaKind.SHORT_DRAMA -> 7
     }
 
     private fun parseYear(releaseDate: String?, yearStr: String? = null): Int? =

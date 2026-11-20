@@ -149,7 +149,7 @@ class TmdbOptionalMoviesProvider(
         runCatching {
             val path = when (kind) {
                 MediaKind.MOVIE -> "/search/movie"
-                MediaKind.TV_SERIES -> "/search/tv"
+                MediaKind.TV_SERIES, MediaKind.SHORT_DRAMA -> "/search/tv"
                 null -> "/search/multi"
             }
             val url = "$normalizedBase$path".toHttpUrl().newBuilder()

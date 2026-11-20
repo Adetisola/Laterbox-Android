@@ -90,7 +90,7 @@ fun MoviesViewingHistoryScreen(
         when (selectedTab) {
             ViewingHistoryTab.ALL -> items
             ViewingHistoryTab.MOVIES -> items.filter { !it.isTrailer && it.kind == MediaKind.MOVIE }
-            ViewingHistoryTab.EPISODES -> items.filter { !it.isTrailer && it.kind == MediaKind.TV_SERIES }
+            ViewingHistoryTab.EPISODES -> items.filter { !it.isTrailer && it.kind.isEpisodic }
             ViewingHistoryTab.TRAILERS -> items.filter { it.isTrailer }
             ViewingHistoryTab.RECENTLY_VIEWED, ViewingHistoryTab.HIDDEN -> emptyList()
         }
@@ -508,6 +508,7 @@ private fun ViewingHistoryRowCard(
                 ) {
                     val badgeText = when {
                         item.isTrailer -> "Trailer"
+                        item.kind == MediaKind.SHORT_DRAMA -> "Short Drama"
                         item.kind == MediaKind.TV_SERIES -> "Episode"
                         else -> "Film"
                     }

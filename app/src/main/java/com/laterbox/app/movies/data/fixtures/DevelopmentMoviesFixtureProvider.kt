@@ -172,6 +172,7 @@ class DevelopmentMoviesFixtureProvider :
         val base = when (kind) {
             MediaKind.MOVIE -> movies
             MediaKind.TV_SERIES -> series
+            MediaKind.SHORT_DRAMA -> emptyList()
         }.filter { item ->
             (genre.isNullOrBlank() || genre.equals("All", ignoreCase = true) ||
                 item.genres.any { it.equals(genre, ignoreCase = true) }) &&

@@ -131,7 +131,7 @@ class TvMazeSeriesProvider(
         country: String?,
         year: String?
     ): Result<CataloguePage> = withContext(Dispatchers.IO) {
-        if (kind == MediaKind.MOVIE) {
+        if (kind == MediaKind.MOVIE || kind == MediaKind.SHORT_DRAMA) {
             return@withContext Result.success(
                 CataloguePage(items = emptyList(), page = page, pageSize = pageSize, totalCount = 0, hasMore = false)
             )
@@ -185,7 +185,7 @@ class TvMazeSeriesProvider(
         page: Int,
         pageSize: Int
     ): Result<CataloguePage> = withContext(Dispatchers.IO) {
-        if (kind == MediaKind.MOVIE) {
+        if (kind == MediaKind.MOVIE || kind == MediaKind.SHORT_DRAMA) {
             return@withContext Result.success(
                 CataloguePage(items = emptyList(), page = page, pageSize = pageSize, totalCount = 0, hasMore = false)
             )

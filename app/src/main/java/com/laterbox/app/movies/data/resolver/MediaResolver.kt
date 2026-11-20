@@ -76,14 +76,24 @@ class MediaResolver(
             if (existingLink != null) {
                 val canonical = canonicalById[existingLink.canonicalId]
                 if (canonical != null) {
+                    val upgradedKind = if (candidate.providerId == MovieBoxProvider.PROVIDER_ID &&
+                        candidate.kind == MediaKind.SHORT_DRAMA &&
+                        canonical.kind == MediaKind.TV_SERIES.wireValue
+                    ) {
+                        MediaKind.SHORT_DRAMA.wireValue
+                    } else {
+                        canonical.kind
+                    }
                     val mergedImdb = canonical.imdbId ?: MediaMatcher.normalizeImdbId(candidate.imdbId)
                     val mergedTvMaze = canonical.tvmazeId ?: MediaMatcher.normalizeTvMazeId(candidate.tvmazeId)
                     val mergedYear = canonical.releaseYear ?: candidate.releaseYear
-                    if (mergedImdb != canonical.imdbId ||
+                    if (upgradedKind != canonical.kind ||
+                        mergedImdb != canonical.imdbId ||
                         mergedTvMaze != canonical.tvmazeId ||
                         mergedYear != canonical.releaseYear
                     ) {
                         val updated = canonical.copy(
+                            kind = upgradedKind,
                             imdbId = mergedImdb,
                             tvmazeId = mergedTvMaze,
                             releaseYear = mergedYear,
@@ -214,15 +224,25 @@ class MediaResolver(
         if (existingLink != null) {
             val canonical = moviesDao.getCanonicalById(existingLink.canonicalId)
             if (canonical != null) {
+                val upgradedKind = if (candidate.providerId == MovieBoxProvider.PROVIDER_ID &&
+                    candidate.kind == MediaKind.SHORT_DRAMA &&
+                    canonical.kind == MediaKind.TV_SERIES.wireValue
+                ) {
+                    MediaKind.SHORT_DRAMA.wireValue
+                } else {
+                    canonical.kind
+                }
                 val mergedImdb = canonical.imdbId ?: MediaMatcher.normalizeImdbId(candidate.imdbId)
                 val mergedTvMaze = canonical.tvmazeId ?: MediaMatcher.normalizeTvMazeId(candidate.tvmazeId)
                 val mergedYear = canonical.releaseYear ?: candidate.releaseYear
-                if (mergedImdb != canonical.imdbId ||
+                if (upgradedKind != canonical.kind ||
+                    mergedImdb != canonical.imdbId ||
                     mergedTvMaze != canonical.tvmazeId ||
                     mergedYear != canonical.releaseYear
                 ) {
                     moviesDao.upsertCanonicalMedia(
                         canonical.copy(
+                            kind = upgradedKind,
                             imdbId = mergedImdb,
                             tvmazeId = mergedTvMaze,
                             releaseYear = mergedYear,

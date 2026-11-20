@@ -2,11 +2,19 @@ package com.laterbox.app.movies.domain.model
 
 enum class MediaKind(val wireValue: String, val label: String) {
     MOVIE("movie", "Movie"),
-    TV_SERIES("tv_series", "TV Series");
+    TV_SERIES("tv_series", "TV Series"),
+    SHORT_DRAMA("short_drama", "Short Drama");
+
+    val isEpisodic: Boolean
+        get() = this == TV_SERIES || this == SHORT_DRAMA
 
     companion object {
-        fun fromWire(value: String?): MediaKind =
-            entries.firstOrNull { it.wireValue.equals(value, ignoreCase = true) } ?: MOVIE
+        fun fromWire(value: String?): MediaKind = when (value?.trim()?.lowercase()) {
+            "movie", "movies", "film" -> MOVIE
+            "tv_series", "tv", "series" -> TV_SERIES
+            "short_drama", "short_tv", "shorttv", "short" -> SHORT_DRAMA
+            else -> entries.firstOrNull { it.wireValue.equals(value?.trim(), ignoreCase = true) } ?: MOVIE
+        }
     }
 }
 
@@ -95,7 +103,8 @@ data class MovieTitleSummary(
     val tvmazeId: String? = null,
     val canonicalId: String? = null,
     val releaseDate: String? = null,
-    val addedAtMs: Long? = null
+    val addedAtMs: Long? = null,
+    val subjectType: Int? = null
 ) {
     val compositeId: String get() = "$providerId:$id"
     val stableMediaKey: String get() = canonicalId?.takeIf { it.isNotBlank() } ?: compositeId

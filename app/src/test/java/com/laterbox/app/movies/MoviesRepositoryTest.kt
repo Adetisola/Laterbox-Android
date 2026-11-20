@@ -759,4 +759,45 @@ class MoviesRepositoryTest {
         val ep1Playback = repo.resolvePlayback("moviebox", "series_sub", 1, 1)
         assertTrue(ep1Playback.isFailure)
     }
+
+    @Test
+    fun shortDrama_persistsEpisodeProgressUpgradesLegacyCanonicalAndSupportsCatalogue() = runTest {
+        val repo = createRepository()
+        // Simulate a pre-existing legacy record where a MovieBox subjectType=7 item was stored as tv_series
+        val legacyItem = MovieTitleSummary(
+            id = "sd_legacy",
+            providerId = "moviebox",
+            kind = MediaKind.TV_SERIES,
+            title = "Billionaire CEO Bride",
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+            isPlayableHint = true
+        )
+        repo.toggleWatchlist(legacyItem)
+        val legacyCanonical = db.moviesDao().getProviderLink("moviebox", "sd_legacy")?.canonicalId
+        assertTrue(!legacyCanonical.isNullOrBlank())
+
+        // Now MovieBox returns subjectType=7 -> MediaKind.SHORT_DRAMA
+        val upgradedItem = legacyItem.copy(kind = MediaKind.SHORT_DRAMA, subjectType = 7, canonicalId = null)
+        repo.saveWatchProgress(
+            item = upgradedItem,
+            positionMs = 45_000L,
+            durationMs = 180_000L,
+            seasonNumber = 1,
+            episodeNumber = 4,
+            episodeLabel = "S1 · E4"
+        )
+
+        val canonicalEntity = db.moviesDao().getCanonicalById(legacyCanonical!!)!!
+        assertEquals(MediaKind.SHORT_DRAMA.wireValue, canonicalEntity.kind)
+
+        val cw = repo.observeContinueWatching().first()
+        assertEquals(1, cw.size)
+        assertEquals(MediaKind.SHORT_DRAMA, cw.first().kind)
+        assertEquals(legacyCanonical, cw.first().canonicalId)
+
+        val epHistory = repo.observeEpisodeWatchHistory().first()
+        assertEquals(1, epHistory.size)
+        assertEquals(MediaKind.SHORT_DRAMA, epHistory.first().kind)
+        assertEquals(4, epHistory.first().episodeNumber)
+    }
 }

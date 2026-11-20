@@ -169,7 +169,7 @@ class MovieDetailViewModel(
             launch {
                 moviesRepository.observeSeriesProgress(providerId, titleId).collect { progress ->
                     val currentDetails = _uiState.value.details
-                    val nextTarget = if (currentDetails != null && currentDetails.summary.kind == MediaKind.TV_SERIES) {
+                    val nextTarget = if (currentDetails != null && currentDetails.summary.kind.isEpisodic) {
                         val epMap = _uiState.value.selectedSeasonNumber?.let { sn ->
                             if (_uiState.value.episodes.isNotEmpty()) mapOf(sn to _uiState.value.episodes) else emptyMap()
                         } ?: emptyMap()
@@ -181,7 +181,7 @@ class MovieDetailViewModel(
                         )
                     } else null
                     val seriesCompleted = currentDetails != null &&
-                        currentDetails.summary.kind == MediaKind.TV_SERIES &&
+                        currentDetails.summary.kind.isEpisodic &&
                         currentDetails.seasons.isNotEmpty() &&
                         progress.totalWatchedEpisodes > 0 &&
                         nextTarget == null
@@ -282,7 +282,7 @@ class MovieDetailViewModel(
             if (loadRequestSeq != requestSeq) return@launch
             result.fold(
                 onSuccess = { details ->
-                    val isSeries = details.summary.kind == MediaKind.TV_SERIES
+                    val isSeries = details.summary.kind.isEpisodic
                     val defaultSeason = if (isSeries) {
                         details.seasons.firstOrNull()?.seasonNumber ?: 1
                     } else null
@@ -408,7 +408,7 @@ class MovieDetailViewModel(
         val state = _uiState.value
         val summary = state.details?.summary ?: return
         viewModelScope.launch {
-            if (summary.kind == MediaKind.TV_SERIES) {
+            if (summary.kind.isEpisodic) {
                 val target = state.nextUnwatchedTarget ?: (
                     (state.selectedSeasonNumber ?: 1) to (state.episodes.firstOrNull()?.episodeNumber ?: 1)
                 )
@@ -458,7 +458,7 @@ class MovieDetailViewModel(
         val summary = state.details?.summary ?: return
         viewModelScope.launch {
             moviesRepository.markUnwatched(summary.providerId, summary.id)
-            val nextTarget = if (summary.kind == MediaKind.TV_SERIES) {
+            val nextTarget = if (summary.kind.isEpisodic) {
                 moviesRepository.computeNextUnwatchedEpisode(summary.providerId, summary.id, state.details.seasons)
             } else null
             _uiState.update {
@@ -476,8 +476,8 @@ class MovieDetailViewModel(
         val state = _uiState.value
         val summary = state.details?.summary ?: return
         viewModelScope.launch {
-            val se = if (summary.kind == MediaKind.TV_SERIES) state.selectedSeasonNumber ?: 1 else null
-            val ep = if (summary.kind == MediaKind.TV_SERIES) state.episodes.firstOrNull()?.episodeNumber ?: 1 else null
+            val se = if (summary.kind.isEpisodic) state.selectedSeasonNumber ?: 1 else null
+            val ep = if (summary.kind.isEpisodic) state.episodes.firstOrNull()?.episodeNumber ?: 1 else null
             moviesRepository.restartFromBeginning(summary.providerId, summary.id, se, ep)
             _uiState.update {
                 it.copy(
@@ -614,7 +614,7 @@ class MovieDetailViewModel(
         val state = _uiState.value
         val summary = state.details?.summary ?: return
         val cleanNote = note?.trim()?.takeIf { it.isNotBlank() }
-        val target = if (summary.kind == MediaKind.TV_SERIES) state.nextUnwatchedTarget else null
+        val target = if (summary.kind.isEpisodic) state.nextUnwatchedTarget else null
         viewModelScope.launch {
             moviesRepository.scheduleViewingReminder(
                 item = summary,
@@ -985,8 +985,8 @@ class MovieDetailViewModel(
         val summary = state.details?.summary ?: return
         if (state.isEnqueuingDownload) return
 
-        val seasonNum = if (summary.kind == MediaKind.TV_SERIES) state.selectedSeasonNumber ?: 1 else null
-        val epNum = if (summary.kind == MediaKind.TV_SERIES) {
+        val seasonNum = if (summary.kind.isEpisodic) state.selectedSeasonNumber ?: 1 else null
+        val epNum = if (summary.kind.isEpisodic) {
             episodeNumber ?: state.episodes.firstOrNull()?.episodeNumber ?: 1
         } else null
         val episodeLabel = if (seasonNum != null && epNum != null) "S${seasonNum} · E${epNum}" else null

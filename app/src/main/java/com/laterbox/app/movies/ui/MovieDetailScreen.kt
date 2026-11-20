@@ -200,7 +200,7 @@ fun MovieDetailScreen(
     val availableRes = uiState.playbackResolution as? PlaybackResolution.Available
     val canShowDownloadSheet = uiState.details != null && (
         availableRes != null ||
-            (uiState.details.summary.kind == MediaKind.TV_SERIES && uiState.details.seasons.isNotEmpty())
+            (uiState.details.summary.kind.isEpisodic && uiState.details.seasons.isNotEmpty())
         )
     if (showDownloadDialog && canShowDownloadSheet) {
         val currentDetails = uiState.details!!
@@ -756,7 +756,7 @@ fun MovieDetailScreen(
                                                                 modifier = Modifier.testTag("detail_action_remove_cw")
                                                             )
                                                         }
-                                                        if (summary.kind == MediaKind.TV_SERIES) {
+                                                        if (summary.kind.isEpisodic) {
                                                             val isMuted = uiState.seriesPreferences?.remindersMuted == true
                                                             DropdownMenuItem(
                                                                 text = {
@@ -926,11 +926,11 @@ fun MovieDetailScreen(
                                 resolution is PlaybackResolution.Available -> {
                                     val isResume = uiState.savedPositionMs >= 5_000L
                                     val hasAuthorisedDownloads = resolution.sources.any { it.isAuthorised } ||
-                                        (summary.kind == MediaKind.TV_SERIES && details.seasons.isNotEmpty())
-                                    val playSeason = if (summary.kind == MediaKind.TV_SERIES) {
+                                        (summary.kind.isEpisodic && details.seasons.isNotEmpty())
+                                    val playSeason = if (summary.kind.isEpisodic) {
                                         uiState.nextUnwatchedTarget?.first ?: uiState.selectedSeasonNumber ?: 1
                                     } else null
-                                    val playEpisode = if (summary.kind == MediaKind.TV_SERIES) {
+                                    val playEpisode = if (summary.kind.isEpisodic) {
                                         uiState.nextUnwatchedTarget?.second ?: uiState.episodes.firstOrNull()?.episodeNumber ?: 1
                                     } else null
                                     Row(
@@ -1660,7 +1660,7 @@ fun MovieDetailScreen(
                     }
 
                     // TV Series Seasons & Episodes
-                    if (summary.kind == MediaKind.TV_SERIES) {
+                    if (summary.kind.isEpisodic) {
                         if (details.seasons.isNotEmpty()) {
                             item(key = "detail_seasons") {
                                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {

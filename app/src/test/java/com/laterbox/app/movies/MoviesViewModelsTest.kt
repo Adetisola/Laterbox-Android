@@ -133,6 +133,7 @@ class MoviesViewModelsTest {
             val pool = when (kind) {
                 MediaKind.MOVIE -> listOf(sampleMovie)
                 MediaKind.TV_SERIES -> listOf(sampleSeries)
+                MediaKind.SHORT_DRAMA -> listOf(sampleSeries.copy(id = "short_1", kind = MediaKind.SHORT_DRAMA, title = "Sample Short Drama"))
                 null -> listOf(sampleMovie, sampleSeries)
             }
             return Result.success(

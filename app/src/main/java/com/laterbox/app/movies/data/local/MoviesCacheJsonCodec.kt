@@ -291,6 +291,7 @@ object MoviesCacheJsonCodec {
         put("canonicalId", item.canonicalId ?: JSONObject.NULL)
         put("releaseDate", item.releaseDate ?: JSONObject.NULL)
         put("addedAtMs", item.addedAtMs ?: JSONObject.NULL)
+        put("subjectType", item.subjectType ?: JSONObject.NULL)
     }
 
     private fun decodeSummary(o: JSONObject): MovieTitleSummary {
@@ -304,10 +305,17 @@ object MoviesCacheJsonCodec {
                 }
             }
         }
+        val subjectType = if (o.has("subjectType") && !o.isNull("subjectType")) {
+            o.optInt("subjectType").takeIf { it > 0 }
+        } else {
+            null
+        }
+        val rawKind = MediaKind.fromWire(o.optString("kind"))
+        val resolvedKind = if (subjectType == 7) MediaKind.SHORT_DRAMA else rawKind
         return MovieTitleSummary(
             id = o.optString("id"),
             providerId = o.optString("providerId"),
-            kind = MediaKind.fromWire(o.optString("kind")),
+            kind = resolvedKind,
             title = o.optString("title"),
             releaseYear = if (o.isNull("releaseYear")) null else o.optInt("releaseYear"),
             rating = if (o.isNull("rating")) null else o.optDouble("rating"),
@@ -327,7 +335,8 @@ object MoviesCacheJsonCodec {
             tvmazeId = o.optNullableString("tvmazeId"),
             canonicalId = o.optNullableString("canonicalId"),
             releaseDate = o.optNullableString("releaseDate"),
-            addedAtMs = if (o.isNull("addedAtMs")) null else o.optLong("addedAtMs").takeIf { it > 0L }
+            addedAtMs = if (o.isNull("addedAtMs")) null else o.optLong("addedAtMs").takeIf { it > 0L },
+            subjectType = subjectType
         )
     }
 

@@ -348,7 +348,8 @@ fun MoviePosterCard(
             // Kind micro-badge (bottom-left)
             val badgeText = when (item.kind) {
                 MediaKind.TV_SERIES -> "SERIES"
-                else -> "FILM"
+                MediaKind.SHORT_DRAMA -> "SHORT"
+                MediaKind.MOVIE -> "FILM"
             }
             Text(
                 text = badgeText,
@@ -1414,7 +1415,7 @@ fun DownloadOptionsBottomSheet(
         mutableStateOf(emptySet<Int>())
     }
 
-    val isTvSeriesExperience = kind == MediaKind.TV_SERIES && seasons.isNotEmpty()
+    val isTvSeriesExperience = kind.isEpisodic && seasons.isNotEmpty()
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,

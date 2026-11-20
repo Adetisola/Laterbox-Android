@@ -446,7 +446,7 @@ fun MoviesScreen(
                                         )
                                     }
 
-                                    // Group 1: Toggleable Content Type (All Movies / TV Series)
+                                    // Group 1: Toggleable Content Type (All Movies / TV Series / Short Dramas)
                                     item(key = "kind_movie") {
                                         val isSelected = uiState.selectedKind == MediaKind.MOVIE
                                         FilterChipPill(
@@ -467,6 +467,17 @@ fun MoviesScreen(
                                                 onSelectKind(if (isSelected) null else MediaKind.TV_SERIES)
                                             },
                                             modifier = Modifier.testTag("movies_home_kind_tv")
+                                        )
+                                    }
+                                    item(key = "kind_short_drama") {
+                                        val isSelected = uiState.selectedKind == MediaKind.SHORT_DRAMA
+                                        FilterChipPill(
+                                            label = "Short Dramas",
+                                            selected = isSelected,
+                                            onClick = {
+                                                onSelectKind(if (isSelected) null else MediaKind.SHORT_DRAMA)
+                                            },
+                                            modifier = Modifier.testTag("movies_home_kind_short_drama")
                                         )
                                     }
 
@@ -916,8 +927,8 @@ fun MoviesScreen(
                                             watchlistIds = watchlistIds,
                                             onBannerClick = { item -> onOpenDetail(item.providerId, item.id) },
                                             onPlayClick = { item ->
-                                                val defaultSeason = if (item.kind == MediaKind.TV_SERIES) 1 else null
-                                                val defaultEpisode = if (item.kind == MediaKind.TV_SERIES) 1 else null
+                                                val defaultSeason = if (item.kind.isEpisodic) 1 else null
+                                                val defaultEpisode = if (item.kind.isEpisodic) 1 else null
                                                 onOpenPlayer(item.providerId, item.id, defaultSeason, defaultEpisode)
                                             },
                                             onToggleWatchlist = onToggleWatchlist

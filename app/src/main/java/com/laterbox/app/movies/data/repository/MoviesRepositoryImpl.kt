@@ -311,7 +311,7 @@ class MoviesRepositoryImpl(
     ): Result<CataloguePage> = withContext(ioDispatcher) {
         if (isDebugSampleFixturesEnabled()) {
             return@withContext when (kind) {
-                MediaKind.MOVIE, MediaKind.TV_SERIES ->
+                MediaKind.MOVIE, MediaKind.TV_SERIES, MediaKind.SHORT_DRAMA ->
                     fixtureProvider.getCatalogue(kind, page, pageSize, genre, sort, country, year)
                 null -> {
                     val m = async { fixtureProvider.getCatalogue(MediaKind.MOVIE, page, pageSize, genre, sort, country, year) }.await()
@@ -338,8 +338,34 @@ class MoviesRepositoryImpl(
 
         val mb = movieBoxProvider
         if (mb != null) {
+            if (kind == MediaKind.SHORT_DRAMA) {
+                // Prefer fresh/cached home feed Short Drama rails before forcing a fresh /home network call.
+                val mbCacheKey = buildMovieBoxHomeCacheKey(mb.activeBaseUrl())
+                val cachedEntry = moviesDao.getCacheEntry(mbCacheKey)
+                val cachedFeed = cachedEntry?.let { entry ->
+                    withContext(defaultDispatcher) {
+                        MoviesCacheJsonCodec.decodeHomeFeed(entry.payloadJson, isOfflineCached = false)
+                    }
+                }
+                val fromCachedHome = cachedFeed?.let { feed ->
+                    extractShortDramaCataloguePage(
+                        feed = feed,
+                        page = page,
+                        pageSize = pageSize,
+                        genre = effectiveGenre,
+                        sort = sort,
+                        country = effectiveCountry,
+                        year = effectiveYear
+                    )
+                }
+                if (fromCachedHome != null && fromCachedHome.items.isNotEmpty()) {
+                    return@withContext Result.success(
+                        fromCachedHome.copy(items = registerSummariesCanonical(fromCachedHome.items))
+                    )
+                }
+            }
             val mbResult = when (kind) {
-                MediaKind.MOVIE, MediaKind.TV_SERIES ->
+                MediaKind.MOVIE, MediaKind.TV_SERIES, MediaKind.SHORT_DRAMA ->
                     mb.getCatalogue(kind, page, pageSize, effectiveGenre, sort, effectiveCountry, effectiveYear)
                 null -> {
                     val halfSize = (pageSize / 2).coerceAtLeast(10)
@@ -377,6 +403,12 @@ class MoviesRepositoryImpl(
             }
         }
 
+        if (kind == MediaKind.SHORT_DRAMA) {
+            return@withContext Result.success(
+                CataloguePage(items = emptyList(), page = page, pageSize = pageSize, totalCount = 0, hasMore = false)
+            )
+        }
+
         // Secondary fallback to Internet Archive + TVMaze
         val queryMovies = kind == null || kind == MediaKind.MOVIE
         val querySeries = kind == null || kind == MediaKind.TV_SERIES
@@ -408,6 +440,48 @@ class MoviesRepositoryImpl(
                 totalCount = pages.sumOf { it.totalCount ?: it.items.size },
                 hasMore = pages.any { it.hasMore }
             )
+        )
+    }
+
+    private fun extractShortDramaCataloguePage(
+        feed: MoviesHomeFeed,
+        page: Int,
+        pageSize: Int,
+        genre: String?,
+        sort: CatalogueSort,
+        country: String?,
+        year: String?
+    ): CataloguePage {
+        val safePage = page.coerceAtLeast(1)
+        val safePageSize = pageSize.coerceIn(1, 50)
+        val cleanYear = year?.trim()?.takeIf { Regex("^\\d{4}$").matches(it) }
+        val filtered = (feed.sections.flatMap { it.items } + feed.featuredBanners)
+            .asSequence()
+            .filter { it.kind == MediaKind.SHORT_DRAMA || it.subjectType == 7 }
+            .distinctBy { it.compositeId }
+            .filter { item ->
+                (genre == null || item.genres.any { g -> g.equals(genre, ignoreCase = true) }) &&
+                    (country == null || item.country.equals(country, ignoreCase = true)) &&
+                    (cleanYear == null || item.releaseYear?.toString() == cleanYear)
+            }
+            .toList()
+        val sorted = when (sort) {
+            CatalogueSort.POPULAR -> filtered
+            CatalogueSort.TOP_RATED -> filtered.sortedByDescending { it.rating ?: 0.0 }
+            CatalogueSort.NEWEST -> filtered.sortedByDescending { it.releaseDate ?: it.releaseYear?.toString().orEmpty() }
+        }
+        val fromIndex = (safePage - 1) * safePageSize
+        val pageItems = if (fromIndex < sorted.size) {
+            sorted.subList(fromIndex, minOf(fromIndex + safePageSize, sorted.size))
+        } else {
+            emptyList()
+        }
+        return CataloguePage(
+            items = pageItems,
+            page = safePage,
+            pageSize = safePageSize,
+            totalCount = sorted.size,
+            hasMore = fromIndex + pageItems.size < sorted.size
         )
     }
 
