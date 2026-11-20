@@ -180,13 +180,15 @@ fun rememberDecodedBlurHash(
     height: Int = 30
 ): ImageBitmap? {
     val cleanHash = blurHash?.trim()?.takeIf { it.length >= 6 } ?: return null
-    val initial = BlurHashDecoder.getCached(cleanHash, width, height)
-    val state by produceState<ImageBitmap?>(initialValue = initial, key1 = cleanHash, key2 = width, key3 = height) {
-        if (value == null) {
-            value = withContext(Dispatchers.Default) {
+    val state = androidx.compose.runtime.remember(cleanHash, width, height) {
+        androidx.compose.runtime.mutableStateOf(BlurHashDecoder.getCached(cleanHash, width, height))
+    }
+    androidx.compose.runtime.LaunchedEffect(cleanHash, width, height) {
+        if (state.value == null) {
+            state.value = withContext(Dispatchers.Default) {
                 BlurHashDecoder.decode(cleanHash, width = width, height = height)
             }
         }
     }
-    return state
+    return state.value
 }

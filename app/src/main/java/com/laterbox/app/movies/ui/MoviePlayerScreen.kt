@@ -426,50 +426,50 @@ fun LocalVideoPlayerScreen(
                     }
                     val progressDao = appContainer?.database?.downloadPlaybackProgressDao()
                     val moviesRepo = appContainer?.moviesRepository
-                        playerScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                            progressDao?.upsert(
-                                com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressEntity(
-                                    progressKey = progressKey,
-                                    assetId = asset.id,
-                                    sourceRef = asset.sourceRef,
+                    playerScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                        progressDao?.upsert(
+                            com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressEntity(
+                                progressKey = progressKey,
+                                assetId = asset.id,
+                                sourceRef = asset.sourceRef,
+                                positionMs = cleanPos,
+                                durationMs = cleanDur,
+                                updatedAt = System.currentTimeMillis()
+                            )
+                        )
+                        if (movieRefParts != null && moviesRepo != null && cleanPos > 0L) {
+                            val summary = moviesRepo.getCachedSummary(movieRefParts.providerId, movieRefParts.titleId)
+                                ?: MovieTitleSummary(
+                                    id = movieRefParts.titleId,
+                                    providerId = movieRefParts.providerId,
+                                    kind = if (movieRefParts.seasonNumber != null || movieRefParts.episodeNumber != null) {
+                                        MediaKind.TV_SERIES
+                                    } else {
+                                        MediaKind.MOVIE
+                                    },
+                                    title = displayTitle,
+                                    posterUrl = asset.artworkUrl,
+                                    sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+                                    isPlayableHint = true
+                                )
+                            runCatching {
+                                moviesRepo.saveWatchProgress(
+                                    item = summary,
                                     positionMs = cleanPos,
                                     durationMs = cleanDur,
-                                    updatedAt = System.currentTimeMillis()
+                                    seasonNumber = movieRefParts.seasonNumber,
+                                    episodeNumber = movieRefParts.episodeNumber,
+                                    episodeLabel = if (movieRefParts.seasonNumber != null && movieRefParts.episodeNumber != null) {
+                                        "S${movieRefParts.seasonNumber} · E${movieRefParts.episodeNumber}"
+                                    } else {
+                                        null
+                                    }
                                 )
-                            )
-                            if (movieRefParts != null && moviesRepo != null && cleanPos > 0L) {
-                                val summary = moviesRepo.getCachedSummary(movieRefParts.providerId, movieRefParts.titleId)
-                                    ?: MovieTitleSummary(
-                                        id = movieRefParts.titleId,
-                                        providerId = movieRefParts.providerId,
-                                        kind = if (movieRefParts.seasonNumber != null || movieRefParts.episodeNumber != null) {
-                                            MediaKind.TV_SERIES
-                                        } else {
-                                            MediaKind.MOVIE
-                                        },
-                                        title = displayTitle,
-                                        posterUrl = asset.artworkUrl,
-                                        sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
-                                        isPlayableHint = true
-                                    )
-                                runCatching {
-                                    moviesRepo.saveWatchProgress(
-                                        item = summary,
-                                        positionMs = cleanPos,
-                                        durationMs = cleanDur,
-                                        seasonNumber = movieRefParts.seasonNumber,
-                                        episodeNumber = movieRefParts.episodeNumber,
-                                        episodeLabel = if (movieRefParts.seasonNumber != null && movieRefParts.episodeNumber != null) {
-                                            "S${movieRefParts.seasonNumber} · E${movieRefParts.episodeNumber}"
-                                        } else {
-                                            null
-                                        }
-                                    )
-                                }
                             }
                         }
                     }
-                },
+                }
+            },
                 onOpenExternalUrl = {},
                 onDownloadSource = {},
                 onDismissDownloadStatus = {},

@@ -44,6 +44,7 @@ private data class ProgressEvent(
     val stage: DownloadStage?
 )
 
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class DownloadWorker(
     private val appContext: Context,
     workerParams: WorkerParameters
