@@ -163,7 +163,7 @@ class MovieDetailProgressiveAndSkeletonTest {
             override suspend fun getEpisodes(providerId: String, seriesId: String, seasonNumber: Int): Result<List<EpisodeItem>> {
                 episodesStartedBeforeDetails = !detailsGate.isCompleted
                 return Result.success(
-                    listOf(EpisodeItem("ep1", seriesId, seasonNumber, 1, "Pilot"))
+                    listOf(EpisodeItem("ep1", seasonNumber, 1, "Pilot"))
                 )
             }
 
@@ -177,8 +177,17 @@ class MovieDetailProgressiveAndSkeletonTest {
                 return Result.success(
                     PlaybackResolution.Available(
                         title = "Cached Series",
-                        sources = listOf(PlaybackSource("720p", 720, "https://cdn.example/s1e1.mp4", "MP4", true)),
-                        providerId = providerId
+                        sources = listOf(
+                            PlaybackSource(
+                                id = "s720",
+                                url = "https://cdn.example/s1e1.mp4",
+                                format = "MP4",
+                                qualityLabel = "720p",
+                                qualityHeight = 720,
+                                providerName = providerId
+                            )
+                        ),
+                        providerName = providerId
                     )
                 )
             }
