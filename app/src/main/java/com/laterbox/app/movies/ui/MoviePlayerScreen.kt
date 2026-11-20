@@ -65,6 +65,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -106,6 +107,8 @@ import coil.compose.AsyncImage
 import com.laterbox.app.data.preferences.SubtitleStyleConfig
 import com.laterbox.app.movies.data.cache.MoviesMediaCache
 import com.laterbox.app.movies.domain.model.AudioDubInfo
+import com.laterbox.app.movies.domain.model.DataSourceBadge
+import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.model.PlaybackMarkerWindow
 import com.laterbox.app.movies.domain.model.PlaybackResolution
@@ -128,6 +131,7 @@ import com.laterbox.app.movies.ui.player.playerDragGestures
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.theme.LaterboxTheme
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -329,7 +333,51 @@ fun LocalVideoPlayerScreen(
             subtitles = resolvedSubtitles
         )
     }
+    val appContainer = remember(context) {
+        (context.applicationContext as? com.laterbox.app.LaterboxApplication)?.container
+    }
     var savedPositionMs by rememberSaveable(asset.id) { mutableLongStateOf(0L) }
+    var hasLoadedSavedProgress by remember(asset.id) { mutableStateOf(appContainer == null) }
+    val movieRefParts = remember(asset.sourceRef) {
+        com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressKey.parseMediaParts(asset.sourceRef)
+    }
+    val progressKey = remember(asset.id, asset.sourceRef) {
+        com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressKey.forAsset(asset)
+    }
+    val playerScope = rememberCoroutineScope()
+
+    LaunchedEffect(asset.id, progressKey) {
+        if (appContainer == null) return@LaunchedEffect
+        val progressDao = appContainer.database.downloadPlaybackProgressDao()
+        val moviesRepo = appContainer.moviesRepository
+        val loadedPos = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val dlEntry = progressDao.getByKey(progressKey)
+            val dlValidPos = if (dlEntry != null &&
+                !(dlEntry.durationMs > 0L && dlEntry.positionMs.toFloat() / dlEntry.durationMs.toFloat() >= 0.96f)
+            ) {
+                dlEntry.positionMs
+            } else {
+                0L
+            }
+            val moviePos = if (movieRefParts != null) {
+                runCatching {
+                    moviesRepo.getSavedPositionMs(
+                        providerId = movieRefParts.providerId,
+                        titleId = movieRefParts.titleId,
+                        seasonNumber = movieRefParts.seasonNumber,
+                        episodeNumber = movieRefParts.episodeNumber
+                    )
+                }.getOrDefault(0L)
+            } else {
+                0L
+            }
+            maxOf(dlValidPos, moviePos)
+        }
+        if (savedPositionMs == 0L && loadedPos > 0L) {
+            savedPositionMs = loadedPos
+        }
+        hasLoadedSavedProgress = true
+    }
 
     Box(
         modifier = modifier
@@ -342,7 +390,7 @@ fun LocalVideoPlayerScreen(
             selectedSource = localSource,
             selectedSubtitle = selectedSubtitle,
             startPositionMs = savedPositionMs,
-            activeTitleId = asset.id,
+            activeTitleId = movieRefParts?.titleId ?: asset.id,
             availableDubs = emptyList(),
             nextEpisodeTarget = null,
             nextEpisodePreview = null,
@@ -352,8 +400,8 @@ fun LocalVideoPlayerScreen(
             isPlayingOffline = true,
             introWindow = null,
             recapWindow = null,
-            seasonNumber = null,
-            episodeNumber = null,
+            seasonNumber = movieRefParts?.seasonNumber,
+            episodeNumber = movieRefParts?.episodeNumber,
             isEnqueuingDownload = false,
             downloadStatusMessage = null,
             isLocalFile = true,
@@ -366,16 +414,64 @@ fun LocalVideoPlayerScreen(
             onSelectAudioDub = { _, _ -> },
             onSelectInStreamAudio = { _, _ -> },
             onNextEpisode = {},
-            onSaveProgressForEpisode = { pos, _, _ ->
-                if (pos > 0L) {
-                    savedPositionMs = pos
-                }
-            },
-            onOpenExternalUrl = {},
-            onDownloadSource = {},
-            onDismissDownloadStatus = {},
-            onSubtitleStyleChange = onSubtitleStyleChange,
-            onOpenRelatedTitle = { _, _ -> }
+            onSaveProgressForEpisode = { pos, dur, _ ->
+                if (hasLoadedSavedProgress && (pos > 0L || dur > 0L)) {
+                    val cleanPos = pos.coerceAtLeast(0L)
+                    val cleanDur = dur.coerceAtLeast(0L)
+                    if (cleanPos > 0L) {
+                        savedPositionMs = cleanPos
+                    }
+                    val progressDao = appContainer?.database?.downloadPlaybackProgressDao()
+                    val moviesRepo = appContainer?.moviesRepository
+                        playerScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                            progressDao?.upsert(
+                                com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressEntity(
+                                    progressKey = progressKey,
+                                    assetId = asset.id,
+                                    sourceRef = asset.sourceRef,
+                                    positionMs = cleanPos,
+                                    durationMs = cleanDur,
+                                    updatedAt = System.currentTimeMillis()
+                                )
+                            )
+                            if (movieRefParts != null && moviesRepo != null && cleanPos > 0L) {
+                                val summary = moviesRepo.getCachedSummary(movieRefParts.providerId, movieRefParts.titleId)
+                                    ?: MovieTitleSummary(
+                                        id = movieRefParts.titleId,
+                                        providerId = movieRefParts.providerId,
+                                        kind = if (movieRefParts.seasonNumber != null || movieRefParts.episodeNumber != null) {
+                                            MediaKind.TV_SERIES
+                                        } else {
+                                            MediaKind.MOVIE
+                                        },
+                                        title = displayTitle,
+                                        posterUrl = asset.artworkUrl,
+                                        sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+                                        isPlayableHint = true
+                                    )
+                                runCatching {
+                                    moviesRepo.saveWatchProgress(
+                                        item = summary,
+                                        positionMs = cleanPos,
+                                        durationMs = cleanDur,
+                                        seasonNumber = movieRefParts.seasonNumber,
+                                        episodeNumber = movieRefParts.episodeNumber,
+                                        episodeLabel = if (movieRefParts.seasonNumber != null && movieRefParts.episodeNumber != null) {
+                                            "S${movieRefParts.seasonNumber} · E${movieRefParts.episodeNumber}"
+                                        } else {
+                                            null
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                },
+                onOpenExternalUrl = {},
+                onDownloadSource = {},
+                onDismissDownloadStatus = {},
+                onSubtitleStyleChange = onSubtitleStyleChange,
+                onOpenRelatedTitle = { _, _ -> }
         )
     }
 }
@@ -640,6 +736,13 @@ private fun ActiveVideoPlayerContent(
         exoPlayer.setPlaybackSpeed(latestSelectedSpeed)
         exoPlayer.prepare()
         exoPlayer.playWhenReady = true
+    }
+
+    LaunchedEffect(exoPlayer, playbackEpisodeKey, startPositionMs) {
+        if (startPositionMs > 0L && exoPlayer.currentPosition < 2_000L && clockState.positionMs < startPositionMs) {
+            exoPlayer.seekTo(startPositionMs)
+            clockState.positionMs = startPositionMs
+        }
     }
 
     DisposableEffect(exoPlayer, audioBoostController, playbackEpisodeKey) {

@@ -1579,8 +1579,8 @@ class MoviesUiAndNavigationTest {
             }
         }
 
-        // Offline badge & overflow actions on poster card
-        composeTestRule.onNodeWithTag("poster_offline_badge_${sampleMovie.id}", useUnmergedTree = true).assertIsDisplayed()
+        // Offline badge is intentionally not overlaid on poster grid cards (kept on Continue Watching, Detail, and Episodes)
+        composeTestRule.onNodeWithTag("poster_offline_badge_${sampleMovie.id}", useUnmergedTree = true).assertDoesNotExist()
         composeTestRule.onNodeWithTag("poster_actions_${sampleMovie.id}").performClick()
         composeTestRule.onNodeWithText("Mark Watched").performClick()
         assertEquals(sampleMovie.id, markedWatchedItem?.id)

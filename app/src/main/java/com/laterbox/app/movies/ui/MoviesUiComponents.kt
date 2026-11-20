@@ -237,8 +237,8 @@ fun MoviePosterCard(
                 }
             }
 
-            // Offline badge & contextual menu (top-right)
-            if (isOfflineDownloaded || hasContextualActions) {
+            // Contextual menu (top-right)
+            if (hasContextualActions) {
                 Row(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
@@ -246,20 +246,6 @@ fun MoviePosterCard(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (isOfflineDownloaded) {
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = Color(0xFF1B5E20).copy(alpha = 0.88f),
-                            modifier = Modifier.testTag("poster_offline_badge_${item.id}")
-                        ) {
-                            Text(
-                                text = "OFFLINE",
-                                style = typography.caption.copy(fontSize = 8.sp, fontWeight = FontWeight.Bold),
-                                color = Color.White,
-                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
-                            )
-                        }
-                    }
                     if (hasContextualActions) {
                         Box {
                             Surface(

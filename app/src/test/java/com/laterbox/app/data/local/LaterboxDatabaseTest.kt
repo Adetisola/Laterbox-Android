@@ -2018,4 +2018,48 @@ class LaterboxDatabaseTest {
             context.deleteDatabase(dbName)
         }
     }
+
+    @Test
+    fun migration17To18_createsDownloadPlaybackProgressTable() {
+        val instrumentation = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+        val helper = androidx.room.testing.MigrationTestHelper(
+            instrumentation,
+            LaterboxDatabase::class.java
+        )
+        val dbName = "migration_17_18_test.db"
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        context.deleteDatabase(dbName)
+
+        helper.createDatabase(dbName, 17).use { v17Db ->
+            v17Db.execSQL(
+                "INSERT INTO `movie_watch_history` (`history_key`, `composite_id`, `provider_id`, `title_id`, `kind`, `title`, `poster_url`, `position_ms`, `duration_ms`, `last_watched_at`, `is_trailer`, `is_hidden_title`) " +
+                    "VALUES ('moviebox:77:0:0', 'moviebox:77', 'moviebox', '77', 'movie', 'Existing Film', NULL, 50000, 120000, 4000, 0, 0)"
+            )
+        }
+
+        val migratedDb = helper.runMigrationsAndValidate(
+            dbName,
+            18,
+            true,
+            LaterboxDatabase.MIGRATION_17_18
+        )
+        try {
+            migratedDb.execSQL(
+                "INSERT INTO `download_playback_progress` (`progress_key`, `asset_id`, `source_ref`, `position_ms`, `duration_ms`, `updated_at`) " +
+                    "VALUES ('media:moviebox|77|0|0', 'asset_77', 'moviebox|77|0|0|720p', 45000, 120000, 9000)"
+            )
+            migratedDb.query("SELECT `position_ms`, `duration_ms` FROM `download_playback_progress` WHERE `progress_key` = 'media:moviebox|77|0|0'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals(45000L, c.getLong(0))
+                assertEquals(120000L, c.getLong(1))
+            }
+            migratedDb.query("SELECT `position_ms` FROM `movie_watch_history` WHERE `history_key` = 'moviebox:77:0:0'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals(50000L, c.getLong(0))
+            }
+        } finally {
+            migratedDb.close()
+            context.deleteDatabase(dbName)
+        }
+    }
 }

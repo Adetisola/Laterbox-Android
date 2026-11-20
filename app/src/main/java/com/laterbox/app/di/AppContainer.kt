@@ -281,7 +281,8 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
                     .resolveFile(relPath)
                 if (file.exists() && file.length() > 0L) android.net.Uri.fromFile(file).toString() else null
             },
-            subtitleDownloadManager = subtitleDownloadManager
+            subtitleDownloadManager = subtitleDownloadManager,
+            downloadPlaybackProgressDao = database.downloadPlaybackProgressDao()
         )
     }
 

@@ -63,7 +63,8 @@ object AppViewModelProvider {
             com.laterbox.app.media.ui.downloads.DownloadsViewModel(
                 mediaRepository = app.container.mediaRepository,
                 inspectionDao = app.container.database.mediaInspectionDao(),
-                subtitleDownloadManager = app.container.subtitleDownloadManager
+                subtitleDownloadManager = app.container.subtitleDownloadManager,
+                progressDao = app.container.database.downloadPlaybackProgressDao()
             )
         }
         initializer {

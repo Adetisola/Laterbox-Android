@@ -22,6 +22,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressEntity
 import com.laterbox.app.ui.components.EmptyStateView
 import com.laterbox.app.ui.components.LaterboxFilterChip
 import androidx.compose.material3.MaterialTheme
@@ -82,7 +84,8 @@ fun LibraryTab(
     onSelectAllAssets: () -> Unit = {},
     onClearSelection: () -> Unit = {},
     onDeleteSelectedAssets: () -> Unit = {},
-    onExportSelectedAssets: () -> Unit = {}
+    onExportSelectedAssets: () -> Unit = {},
+    playbackProgressByAssetId: Map<String, com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressEntity> = emptyMap()
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -262,7 +265,8 @@ fun LibraryTab(
                             onDelete = { onDeleteAsset(asset) },
                             isSelected = isSelected,
                             isInSelectionMode = isSelectionMode,
-                            onLongClick = { onToggleAssetSelection(asset.id) }
+                            onLongClick = { onToggleAssetSelection(asset.id) },
+                            playbackProgress = playbackProgressByAssetId[asset.id]
                         )
                     }
                 }
@@ -283,7 +287,8 @@ fun LibraryAssetCard(
     onLongClick: (() -> Unit)? = null,
     subtitleSummary: com.laterbox.app.movies.data.download.AssetSubtitleSummary? = null,
     isRetryingSubtitles: Boolean = false,
-    onRetrySubtitles: (() -> Unit)? = null
+    onRetrySubtitles: (() -> Unit)? = null,
+    playbackProgress: DownloadPlaybackProgressEntity? = null
 ) {
     val context = LocalContext.current
     val colors = LaterboxTheme.colors
@@ -384,6 +389,43 @@ fun LibraryAssetCard(
                         LaterboxBadge(
                             text = "Missing",
                             variant = LaterboxBadgeVariant.DANGER
+                        )
+                    }
+                }
+                if (asset.mediaType == MediaType.VIDEO &&
+                    playbackProgress != null &&
+                    playbackProgress.durationMs > 0L &&
+                    playbackProgress.positionMs > 0L
+                ) {
+                    val fraction = (playbackProgress.positionMs.toFloat() / playbackProgress.durationMs.toFloat())
+                        .coerceIn(0f, 1f)
+                    val label = if (fraction >= 0.95f) {
+                        "Watched"
+                    } else {
+                        "${formatPlaybackDuration(playbackProgress.positionMs)} / ${formatPlaybackDuration(playbackProgress.durationMs)}"
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(3.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("asset_playback_progress_${asset.id}")
+                    ) {
+                        Text(
+                            text = label,
+                            style = typography.metaText,
+                            color = colors.accentPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        LinearProgressIndicator(
+                            progress = { fraction },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(3.dp)
+                                .clip(LaterboxTheme.shapes.Badge),
+                            color = colors.accentPrimary,
+                            trackColor = colors.surfaceSecondary
                         )
                     }
                 }
@@ -583,6 +625,18 @@ fun ReadyToDownloadCard(
                 )
             }
         }
+    }
+}
+
+private fun formatPlaybackDuration(ms: Long): String {
+    val totalSeconds = (ms / 1000L).coerceAtLeast(0L)
+    val hours = totalSeconds / 3600L
+    val minutes = (totalSeconds % 3600L) / 60L
+    val seconds = totalSeconds % 60L
+    return if (hours > 0L) {
+        String.format(java.util.Locale.US, "%d:%02d:%02d", hours, minutes, seconds)
+    } else {
+        String.format(java.util.Locale.US, "%02d:%02d", minutes, seconds)
     }
 }
 

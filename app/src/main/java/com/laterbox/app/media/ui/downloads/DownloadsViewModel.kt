@@ -51,7 +51,8 @@ data class DownloadsUiState(
     val selectedTaskIds: Set<String> = emptySet(),
     val isQueueSelectionMode: Boolean = false,
     val subtitleSummaries: Map<String, com.laterbox.app.movies.data.download.AssetSubtitleSummary> = emptyMap(),
-    val retryingSubtitleAssetIds: Set<String> = emptySet()
+    val retryingSubtitleAssetIds: Set<String> = emptySet(),
+    val playbackProgressByAssetId: Map<String, com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressEntity> = emptyMap()
 )
 
 private data class ViewSelections(
@@ -68,7 +69,8 @@ private data class ViewSelections(
 class DownloadsViewModel(
     private val mediaRepository: MediaRepository,
     private val inspectionDao: MediaInspectionDao? = null,
-    private val subtitleDownloadManager: com.laterbox.app.movies.data.download.SubtitleDownloadManager? = null
+    private val subtitleDownloadManager: com.laterbox.app.movies.data.download.SubtitleDownloadManager? = null,
+    private val progressDao: com.laterbox.app.media.data.db.dao.DownloadPlaybackProgressDao? = null
 ) : ViewModel() {
 
     private val _selectedTab = MutableStateFlow(DownloadsTab.LIBRARY)
@@ -110,6 +112,7 @@ class DownloadsViewModel(
     private val _storageBreakdown = mediaRepository.getStorageBreakdown()
     private val _completedInspections = inspectionDao?.getCompletedInspections() ?: flowOf(emptyList())
     private val _subtitleSummaries = subtitleDownloadManager?.summaries ?: flowOf(emptyMap())
+    private val _progressEntries = progressDao?.observeAll() ?: flowOf(emptyList())
 
     val uiState: StateFlow<DownloadsUiState> = combine(
         _selections,
@@ -118,7 +121,8 @@ class DownloadsViewModel(
         _storageBreakdown,
         _completedInspections,
         _subtitleSummaries,
-        _retryingSubtitleAssetIds
+        _retryingSubtitleAssetIds,
+        _progressEntries
     ) { args: Array<Any?> ->
         @Suppress("UNCHECKED_CAST")
         val selections = args[0] as ViewSelections
@@ -134,6 +138,15 @@ class DownloadsViewModel(
         val subtitleSummaries = args[5] as Map<String, com.laterbox.app.movies.data.download.AssetSubtitleSummary>
         @Suppress("UNCHECKED_CAST")
         val retryingSubIds = args[6] as Set<String>
+        @Suppress("UNCHECKED_CAST")
+        val progressEntries = args[7] as List<com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressEntity>
+
+        val progressByKey = progressEntries.associateBy { it.progressKey }
+        val progressByAssetId = assets.mapNotNull { asset ->
+            val key = com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressKey.forAsset(asset)
+            val entry = progressByKey[key] ?: progressEntries.firstOrNull { it.assetId == asset.id }
+            entry?.let { asset.id to it }
+        }.toMap()
 
         val downloadedLinkIds = assets.mapNotNull { it.savedLinkId }.toSet()
         val readyItems = inspections.mapNotNull { entity ->
@@ -179,7 +192,8 @@ class DownloadsViewModel(
             selectedTaskIds = selections.selectedTaskIds,
             isQueueSelectionMode = selections.isQueueSelectionMode,
             subtitleSummaries = subtitleSummaries,
-            retryingSubtitleAssetIds = retryingSubIds
+            retryingSubtitleAssetIds = retryingSubIds,
+            playbackProgressByAssetId = progressByAssetId
         )
     }.stateIn(
         scope = viewModelScope,

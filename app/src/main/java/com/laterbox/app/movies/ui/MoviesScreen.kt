@@ -950,7 +950,16 @@ fun MoviesScreen(
                                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                                             ) {
                                                 items(uiState.continueWatching, key = { it.compositeId + (it.episodeLabel ?: "") }) { entry ->
-                                                    val isOffline = offlineLookup.hasTitle(entry.providerId, entry.titleId)
+                                                    val isOffline = if (entry.seasonNumber != null && entry.episodeNumber != null) {
+                                                        offlineLookup.hasEpisode(
+                                                            entry.providerId,
+                                                            entry.titleId,
+                                                            entry.seasonNumber,
+                                                            entry.episodeNumber
+                                                        )
+                                                    } else {
+                                                        offlineLookup.hasTitle(entry.providerId, entry.titleId)
+                                                    }
                                                     ContinueWatchingCard(
                                                         item = entry,
                                                         onClick = {

@@ -1039,4 +1039,168 @@ class MoviesRepositoryTest {
         val recent = repo.observeRecentSearches(10).first()
         assertEquals(listOf("Dune", "ceo bride"), recent)
     }
+
+    @Test
+    fun resolvePlayback_returnsVerifiedLocalFileImmediatelyWithoutNetworkAndPrefersHighestQuality() = runTest {
+        val file720 = File.createTempFile("lb_720", ".mp4").apply {
+            writeText("720p bytes")
+            deleteOnExit()
+        }
+        val file1080 = File.createTempFile("lb_1080", ".mp4").apply {
+            writeText("1080p bytes")
+            deleteOnExit()
+        }
+        server.shutdown()
+
+        val repo = MoviesRepositoryImpl(
+            moviesDao = db.moviesDao(),
+            internetArchiveProvider = InternetArchiveMoviesProvider(OkHttpClient(), "http://127.0.0.1:1"),
+            tvMazeProvider = TvMazeSeriesProvider(OkHttpClient(), "http://127.0.0.1:1"),
+            tmdbProvider = TmdbOptionalMoviesProvider(OkHttpClient(), apiKeyProvider = { "" }, baseUrl = "http://127.0.0.1:1"),
+            useSampleFixturesOnlyProvider = { false },
+            nowMs = { fakeClockMs },
+            downloadedAssetDao = db.downloadedAssetDao(),
+            downloadPlaybackProgressDao = db.downloadPlaybackProgressDao(),
+            localMediaUriResolver = { relPath ->
+                val target = when (relPath) {
+                    "offline/arrival_720.mp4" -> file720
+                    "offline/arrival_1080.mp4" -> file1080
+                    else -> null
+                }
+                target?.takeIf { it.exists() && it.length() > 0L }?.toURI()?.toString()
+            }
+        )
+
+        db.downloadedAssetDao().insertAsset(
+            com.laterbox.app.media.data.db.entity.DownloadedAssetEntity(
+                id = "off_720",
+                savedLinkId = null,
+                sourcePlatform = "MovieBox",
+                originalSourceUrl = "https://cdn.example/arrival_720.mp4",
+                title = "Arrival 720p",
+                mimeType = "video/mp4",
+                mediaType = "VIDEO",
+                contentCategory = "MOVIE",
+                localPath = "offline/arrival_720.mp4",
+                checksum = "sum720",
+                qualityLabel = "720p",
+                sourceRef = "moviebox|arrival_99|0|0|720p",
+                fileStatus = "AVAILABLE",
+                fileSize = 100L,
+                createdAt = 1_000L
+            )
+        )
+        db.downloadedAssetDao().insertAsset(
+            com.laterbox.app.media.data.db.entity.DownloadedAssetEntity(
+                id = "off_1080",
+                savedLinkId = null,
+                sourcePlatform = "MovieBox",
+                originalSourceUrl = "https://cdn.example/arrival_1080.mp4",
+                title = "Arrival 1080p",
+                mimeType = "video/mp4",
+                mediaType = "VIDEO",
+                contentCategory = "MOVIE",
+                localPath = "offline/arrival_1080.mp4",
+                checksum = "sum1080",
+                qualityLabel = "1080p",
+                sourceRef = "moviebox|arrival_99|0|0|1080p",
+                fileStatus = "AVAILABLE",
+                fileSize = 200L,
+                createdAt = 2_000L
+            )
+        )
+
+        val res = repo.resolvePlayback("moviebox", "arrival_99").getOrThrow() as PlaybackResolution.Available
+        assertEquals(file1080.toURI().toString(), res.sources.first().url)
+        assertTrue(res.sources.first().isOfflineLocal)
+        assertEquals(listOf("1080p (Offline)", "720p (Offline)"), res.sources.map { it.qualityLabel })
+
+        // Verify stale file cleanup on disk removes offline availability per verified file
+        assertEquals(2, repo.observeOfflineAvailability().first().size)
+        assertTrue(file1080.delete())
+        assertEquals(1, repo.observeOfflineAvailability().first().size)
+        assertTrue(file720.delete())
+        assertTrue(repo.observeOfflineAvailability().first().isEmpty())
+    }
+
+    @Test
+    fun downloadPlaybackProgress_sharesMovieProgressAcrossQualities_isolatesGenericAssets_andSyncsWithWatchHistory() = runTest {
+        val progressDao = db.downloadPlaybackProgressDao()
+        val repo = MoviesRepositoryImpl(
+            moviesDao = db.moviesDao(),
+            internetArchiveProvider = InternetArchiveMoviesProvider(OkHttpClient(), server.url("/").toString().trimEnd('/')),
+            tvMazeProvider = TvMazeSeriesProvider(OkHttpClient(), server.url("/").toString().trimEnd('/')),
+            tmdbProvider = TmdbOptionalMoviesProvider(OkHttpClient(), apiKeyProvider = { "" }, baseUrl = server.url("/").toString().trimEnd('/')),
+            useSampleFixturesOnlyProvider = { false },
+            nowMs = { fakeClockMs },
+            downloadedAssetDao = db.downloadedAssetDao(),
+            downloadPlaybackProgressDao = progressDao,
+            localMediaUriResolver = { null }
+        )
+
+        val movie = MovieTitleSummary(
+            id = "dune_2",
+            providerId = "moviebox",
+            kind = MediaKind.MOVIE,
+            title = "Dune Part Two",
+            releaseYear = 2024,
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+            isPlayableHint = true
+        )
+
+        // Saving watch progress updates download_playback_progress with canonical quality-free key
+        fakeClockMs = 5_000_000L
+        repo.saveWatchProgress(movie, positionMs = 310_000L, durationMs = 720_000L)
+        val canonicalKey = com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressKey.forMediaItem(
+            providerId = "moviebox",
+            titleId = "dune_2",
+            seasonNumber = null,
+            episodeNumber = null
+        )
+        assertEquals("media:moviebox|dune_2|0|0", canonicalKey)
+        assertEquals(310_000L, progressDao.getByKey(canonicalKey)?.positionMs)
+
+        // Multi-quality assets for same movie resolve to the exact same canonical key
+        val asset720Key = com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressKey.fromSourceRef("moviebox|dune_2|0|0|720p")
+        val asset1080Key = com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressKey.fromSourceRef("moviebox|dune_2|0|0|1080p")
+        assertEquals(canonicalKey, asset720Key)
+        assertEquals(canonicalKey, asset1080Key)
+
+        // Generic assets without Movie/TV sourceRef stay isolated per asset id
+        val generic1 = com.laterbox.app.media.domain.model.MediaAsset(
+            id = "gen_1",
+            savedLinkId = 1L,
+            sourcePlatform = "youtube",
+            originalSourceUrl = "https://example.com/1",
+            title = "Clip 1",
+            mimeType = "video/mp4",
+            mediaType = com.laterbox.app.media.domain.model.MediaType.VIDEO,
+            localPath = "video/1.mp4",
+            exportedUri = null,
+            fileSize = 100L,
+            durationMs = null,
+            width = null,
+            height = null,
+            qualityLabel = "720p",
+            checksum = "chk1",
+            createdAt = 1L,
+            sourceRef = null
+        )
+        val generic2 = generic1.copy(id = "gen_2", localPath = "video/2.mp4")
+        assertEquals("asset:gen_1", com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressKey.forAsset(generic1))
+        assertEquals("asset:gen_2", com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressKey.forAsset(generic2))
+
+        // Fresher local download playback progress surfaces via getSavedPositionMs
+        progressDao.upsert(
+            com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressEntity(
+                progressKey = canonicalKey,
+                assetId = "off_dune_1080",
+                sourceRef = "moviebox|dune_2|0|0|1080p",
+                positionMs = 420_000L,
+                durationMs = 720_000L,
+                updatedAt = 5_100_000L
+            )
+        )
+        assertEquals(420_000L, repo.getSavedPositionMs("moviebox", "dune_2"))
+    }
 }

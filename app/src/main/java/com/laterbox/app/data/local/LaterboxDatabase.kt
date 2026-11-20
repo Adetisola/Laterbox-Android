@@ -18,9 +18,11 @@ import com.laterbox.app.data.local.entity.ChatMessageEntity
 import com.laterbox.app.data.local.entity.CollectionEntity
 import com.laterbox.app.data.local.entity.NotificationHistoryEntity
 import com.laterbox.app.data.local.entity.SavedLinkEntity
+import com.laterbox.app.media.data.db.dao.DownloadPlaybackProgressDao
 import com.laterbox.app.media.data.db.dao.DownloadedAssetDao
 import com.laterbox.app.media.data.db.dao.DownloadTaskDao
 import com.laterbox.app.media.data.db.dao.MediaInspectionDao
+import com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressEntity
 import com.laterbox.app.media.data.db.entity.DownloadedAssetEntity
 import com.laterbox.app.media.data.db.entity.DownloadTaskEntity
 import com.laterbox.app.media.data.db.entity.MediaInspectionEntity
@@ -60,9 +62,10 @@ import com.laterbox.app.movies.data.local.entity.MovieWatchlistEntity
         MovieSeriesPreferencesEntity::class,
         MediaCollectionCrossRef::class,
         MovieViewingReminderEntity::class,
-        HiddenTitleEntity::class
+        HiddenTitleEntity::class,
+        DownloadPlaybackProgressEntity::class
     ],
-    version = 17,
+    version = 18,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -77,6 +80,7 @@ abstract class LaterboxDatabase : RoomDatabase() {
     abstract fun chatDao(): ChatDao
     abstract fun activityEventDao(): ActivityEventDao
     abstract fun moviesDao(): MoviesDao
+    abstract fun downloadPlaybackProgressDao(): DownloadPlaybackProgressDao
 
     companion object {
         private const val DATABASE_NAME = "laterbox.db"
@@ -974,6 +978,26 @@ abstract class LaterboxDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `download_playback_progress` (
+                        `progress_key` TEXT NOT NULL,
+                        `asset_id` TEXT NOT NULL,
+                        `source_ref` TEXT,
+                        `position_ms` INTEGER NOT NULL,
+                        `duration_ms` INTEGER NOT NULL,
+                        `updated_at` INTEGER NOT NULL,
+                        PRIMARY KEY(`progress_key`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_download_playback_progress_asset_id` ON `download_playback_progress` (`asset_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_download_playback_progress_updated_at` ON `download_playback_progress` (`updated_at`)")
+            }
+        }
+
         @Volatile
         private var INSTANCE: LaterboxDatabase? = null
 
@@ -1000,7 +1024,8 @@ abstract class LaterboxDatabase : RoomDatabase() {
                         MIGRATION_13_14,
                         MIGRATION_14_15,
                         MIGRATION_15_16,
-                        MIGRATION_16_17
+                        MIGRATION_16_17,
+                        MIGRATION_17_18
                     )
                     .build()
                     .also { INSTANCE = it }

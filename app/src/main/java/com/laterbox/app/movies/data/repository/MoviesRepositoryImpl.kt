@@ -74,6 +74,7 @@ class MoviesRepositoryImpl(
     private val downloadedAssetDao: DownloadedAssetDao? = null,
     private val localMediaUriResolver: ((String) -> String?)? = null,
     private val subtitleDownloadManager: com.laterbox.app.movies.data.download.SubtitleDownloadManager? = null,
+    private val downloadPlaybackProgressDao: com.laterbox.app.media.data.db.dao.DownloadPlaybackProgressDao? = null,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val defaultDispatcher: CoroutineDispatcher = Dispatchers.Default
 ) : MoviesRepository {
@@ -1049,29 +1050,10 @@ class MoviesRepositoryImpl(
             titleId = titleId,
             preferPlayable = true
         )
-        val offlineMatchDef = async { findOfflineEpisodeAsset(resolvedProviderId, resolvedTitleId, seasonNumber, episodeNumber) }
-        val savedPosDef = async { getSavedPositionMs(resolvedProviderId, resolvedTitleId, seasonNumber, episodeNumber) }
-        val networkResDef = async {
-            when (resolvedProviderId) {
-                MovieBoxProvider.PROVIDER_ID ->
-                    movieBoxProvider?.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
-                        ?: Result.failure(IllegalStateException("Streaming service is not configured."))
-                InternetArchiveMoviesProvider.PROVIDER_ID ->
-                    internetArchiveProvider.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
-                TvMazeSeriesProvider.PROVIDER_ID ->
-                    tvMazeProvider.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
-                TmdbOptionalMoviesProvider.PROVIDER_ID ->
-                    tmdbProvider.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
-                DevelopmentMoviesFixtureProvider.PROVIDER_ID ->
-                    fixtureProvider.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
-                else -> Result.failure(IllegalArgumentException("Unknown provider '$resolvedProviderId'"))
-            }
-        }
-
-        val offlineMatch = offlineMatchDef.await()
-        val offlineSource = offlineMatch?.let { match ->
+        val offlineMatches = findOfflineEpisodeAssets(resolvedProviderId, resolvedTitleId, seasonNumber, episodeNumber)
+        val offlineSourcesWithMatch = offlineMatches.mapNotNull { match ->
             localMediaUriResolver?.invoke(match.localPath)?.let { fileUri ->
-                PlaybackSource(
+                match to PlaybackSource(
                     id = "offline_${match.assetId}",
                     url = fileUri,
                     format = "MP4",
@@ -1083,69 +1065,68 @@ class MoviesRepositoryImpl(
                 )
             }
         }
-        val offlineSubtitles = if (offlineSource != null && offlineMatch != null) {
-            subtitleDownloadManager?.getOfflineSubtitleTracksForTitle(
-                providerId = resolvedProviderId,
-                titleId = resolvedTitleId,
-                seasonNumber = seasonNumber,
-                episodeNumber = episodeNumber,
-                assetId = offlineMatch.assetId
-            ).orEmpty()
-        } else {
-            emptyList()
-        }
-        val savedPos = savedPosDef.await()
-        val result = networkResDef.await()
+        val savedPos = getSavedPositionMs(resolvedProviderId, resolvedTitleId, seasonNumber, episodeNumber)
 
-        if (result.isFailure && offlineSource != null) {
+        if (offlineSourcesWithMatch.isNotEmpty()) {
+            val primaryMatch = offlineSourcesWithMatch.first().first
+            val offlineSources = offlineSourcesWithMatch.map { it.second }
+            val offlineSubtitles = offlineSourcesWithMatch
+                .flatMap { (match, _) ->
+                    subtitleDownloadManager?.getOfflineSubtitleTracksForTitle(
+                        providerId = resolvedProviderId,
+                        titleId = resolvedTitleId,
+                        seasonNumber = seasonNumber,
+                        episodeNumber = episodeNumber,
+                        assetId = match.assetId
+                    ).orEmpty()
+                }
+                .distinctBy { "${it.languageCode.lowercase()}|${it.format.lowercase()}" }
+
+            val cachedTitle = getCachedSummary(resolvedProviderId, resolvedTitleId)?.title
+                ?: getCachedSummary(providerId, titleId)?.title
+                ?: "Offline Playback"
+            val heading = if (seasonNumber != null && episodeNumber != null) {
+                "S${seasonNumber} · E${episodeNumber}"
+            } else {
+                null
+            }
             return@withContext Result.success(
                 PlaybackResolution.Available(
-                    title = "Offline Playback",
-                    subtitleHeading = if (seasonNumber != null && episodeNumber != null) "S${seasonNumber} · E${episodeNumber}" else null,
-                    sources = listOf(offlineSource),
+                    title = cachedTitle,
+                    subtitleHeading = heading,
+                    sources = offlineSources,
                     subtitles = offlineSubtitles,
                     startPositionMs = savedPos,
                     providerName = "Offline Library",
-                    sourceBadge = DataSourceBadge.LIVE_INTERNET_ARCHIVE
+                    sourceBadge = when (resolvedProviderId) {
+                        MovieBoxProvider.PROVIDER_ID -> DataSourceBadge.LIVE_MOVIEBOX
+                        InternetArchiveMoviesProvider.PROVIDER_ID -> DataSourceBadge.LIVE_INTERNET_ARCHIVE
+                        TvMazeSeriesProvider.PROVIDER_ID -> DataSourceBadge.LIVE_TVMAZE
+                        else -> DataSourceBadge.LIVE_INTERNET_ARCHIVE
+                    }
                 )
             )
         }
 
-        result.map { resolution ->
+        val networkResult = when (resolvedProviderId) {
+            MovieBoxProvider.PROVIDER_ID ->
+                movieBoxProvider?.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
+                    ?: Result.failure(IllegalStateException("Streaming service is not configured."))
+            InternetArchiveMoviesProvider.PROVIDER_ID ->
+                internetArchiveProvider.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
+            TvMazeSeriesProvider.PROVIDER_ID ->
+                tvMazeProvider.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
+            TmdbOptionalMoviesProvider.PROVIDER_ID ->
+                tmdbProvider.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
+            DevelopmentMoviesFixtureProvider.PROVIDER_ID ->
+                fixtureProvider.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
+            else -> Result.failure(IllegalArgumentException("Unknown provider '$resolvedProviderId'"))
+        }
+
+        networkResult.map { resolution ->
             when (resolution) {
-                is PlaybackResolution.Available -> {
-                    val combinedSources = if (offlineSource != null) {
-                        listOf(offlineSource) + resolution.sources
-                    } else {
-                        resolution.sources
-                    }
-                    val combinedSubtitles = if (offlineSubtitles.isNotEmpty()) {
-                        (offlineSubtitles + resolution.subtitles)
-                            .distinctBy { "${it.languageCode.lowercase()}|${it.format.lowercase()}" }
-                    } else {
-                        resolution.subtitles
-                    }
-                    resolution.copy(
-                        sources = combinedSources,
-                        subtitles = combinedSubtitles,
-                        startPositionMs = savedPos
-                    )
-                }
-                is PlaybackResolution.Unavailable -> {
-                    if (offlineSource != null) {
-                        PlaybackResolution.Available(
-                            title = resolution.title,
-                            subtitleHeading = if (seasonNumber != null && episodeNumber != null) "S${seasonNumber} · E${episodeNumber}" else null,
-                            sources = listOf(offlineSource),
-                            subtitles = offlineSubtitles,
-                            startPositionMs = savedPos,
-                            providerName = "Offline Library",
-                            sourceBadge = resolution.sourceBadge
-                        )
-                    } else {
-                        resolution
-                    }
-                }
+                is PlaybackResolution.Available -> resolution.copy(startPositionMs = savedPos)
+                is PlaybackResolution.Unavailable -> resolution
             }
         }
     }
@@ -1263,6 +1244,27 @@ class MoviesRepositoryImpl(
                 isHiddenTitle = existing?.isHiddenTitle ?: false
             )
         )
+
+        val dlProgressDao = downloadPlaybackProgressDao
+        if (dlProgressDao != null) {
+            val progressKey = com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressKey.forMediaItem(
+                providerId = resolved.providerId,
+                titleId = resolved.id,
+                seasonNumber = seasonNumber,
+                episodeNumber = episodeNumber
+            )
+            val matchingAsset = findOfflineEpisodeAsset(resolved.providerId, resolved.id, seasonNumber, episodeNumber)
+            dlProgressDao.upsert(
+                com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressEntity(
+                    progressKey = progressKey,
+                    assetId = matchingAsset?.assetId ?: resolved.compositeId,
+                    sourceRef = matchingAsset?.sourceRef,
+                    positionMs = cleanPos,
+                    durationMs = cleanDur,
+                    updatedAt = now
+                )
+            )
+        }
     }
 
     override suspend fun getSavedPositionMs(
@@ -1273,17 +1275,44 @@ class MoviesRepositoryImpl(
     ): Long = withContext(ioDispatcher) {
         val (resolvedProviderId, resolvedTitleId) = mediaResolver.resolveConcreteTarget(providerId, titleId, preferPlayable = false)
         val key = buildHistoryKey(resolvedProviderId, resolvedTitleId, seasonNumber, episodeNumber)
-        val entry = moviesDao.getWatchHistoryByKey(key) ?: run {
+        val historyEntry = moviesDao.getWatchHistoryByKey(key) ?: run {
             val cid = mediaResolver.resolveCanonicalIdForProvider(providerId, titleId)
             if (cid != null) {
                 moviesDao.getWatchHistoryByCanonical(cid, seasonNumber ?: 0, episodeNumber ?: 0)
             } else null
-        } ?: return@withContext 0L
+        }
+        val dlEntry = downloadPlaybackProgressDao?.let { dao ->
+            val dlKey = com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressKey.forMediaItem(
+                providerId = resolvedProviderId,
+                titleId = resolvedTitleId,
+                seasonNumber = seasonNumber,
+                episodeNumber = episodeNumber
+            )
+            dao.getByKey(dlKey) ?: if (resolvedProviderId != providerId || resolvedTitleId != titleId) {
+                dao.getByKey(
+                    com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressKey.forMediaItem(
+                        providerId = providerId,
+                        titleId = titleId,
+                        seasonNumber = seasonNumber,
+                        episodeNumber = episodeNumber
+                    )
+                )
+            } else null
+        }
+
+        val bestPair = when {
+            dlEntry != null && (historyEntry == null || dlEntry.updatedAt > historyEntry.lastWatchedAt) ->
+                dlEntry.positionMs to dlEntry.durationMs
+            historyEntry != null ->
+                historyEntry.positionMs to historyEntry.durationMs
+            else -> return@withContext 0L
+        }
+        val (pos, dur) = bestPair
         // Start from beginning if user reached >= 96% completion
-        if (entry.durationMs > 0L && entry.positionMs.toFloat() / entry.durationMs.toFloat() >= 0.96f) {
+        if (dur > 0L && pos.toFloat() / dur.toFloat() >= 0.96f) {
             return@withContext 0L
         }
-        entry.positionMs
+        pos
     }
 
     override fun observeViewingHistory(limit: Int): Flow<List<WatchHistoryItem>> =
@@ -1806,6 +1835,9 @@ class MoviesRepositoryImpl(
         val dao = downloadedAssetDao ?: return flowOf(emptyList())
         return dao.observeAvailableOfflineMovieAssets().map { assets ->
             assets.mapNotNull { asset ->
+                val isReachable = localMediaUriResolver == null ||
+                    localMediaUriResolver.invoke(asset.localPath) != null
+                if (!isReachable) return@mapNotNull null
                 val ref = asset.sourceRef?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
                 val parts = ref.split("|")
                 val se = parts.getOrNull(2)?.toIntOrNull()?.takeIf { it > 0 }
@@ -1820,16 +1852,16 @@ class MoviesRepositoryImpl(
                     episodeNumber = ep
                 )
             }
-        }.flowOn(defaultDispatcher)
+        }.flowOn(ioDispatcher)
     }
 
-    override suspend fun findOfflineEpisodeAsset(
+    private suspend fun findOfflineEpisodeAssets(
         providerId: String,
         titleId: String,
         seasonNumber: Int?,
         episodeNumber: Int?
-    ): OfflineMediaMatch? = withContext(ioDispatcher) {
-        val dao = downloadedAssetDao ?: return@withContext null
+    ): List<OfflineMediaMatch> = withContext(ioDispatcher) {
+        val dao = downloadedAssetDao ?: return@withContext emptyList()
         val se = seasonNumber ?: 0
         val ep = episodeNumber ?: 0
         val linked = mediaResolver.getLinksForTitle(providerId, titleId)
@@ -1838,27 +1870,46 @@ class MoviesRepositoryImpl(
             linked.forEach { link -> add(link.providerId to link.providerTitleId) }
         }.distinct()
 
+        val allVerified = mutableListOf<Pair<com.laterbox.app.media.data.db.entity.DownloadedAssetEntity, OfflineMediaMatch>>()
         for ((pId, tId) in candidatePairs) {
             val prefix = "${pId.trim()}|${tId.trim()}|$se|$ep|"
             val matches = dao.findAvailableBySourceRefPrefix(prefix)
-            val best = matches.firstOrNull { asset ->
-                localMediaUriResolver == null || localMediaUriResolver.invoke(asset.localPath) != null
-            }
-            if (best != null) {
-                val ref = best.sourceRef.orEmpty()
-                return@withContext OfflineMediaMatch(
-                    assetId = best.id,
-                    sourceRef = ref,
-                    localPath = best.localPath,
-                    qualityLabel = best.qualityLabel,
-                    fileSizeBytes = best.fileSize,
-                    seasonNumber = se.takeIf { it > 0 },
-                    episodeNumber = ep.takeIf { it > 0 }
+            matches.forEach { asset ->
+                val isReachable = localMediaUriResolver == null ||
+                    localMediaUriResolver.invoke(asset.localPath) != null
+                if (!isReachable) return@forEach
+                val ref = asset.sourceRef.orEmpty()
+                val parts = ref.split("|")
+                val quality = asset.qualityLabel ?: parts.getOrNull(4)?.takeIf { it.isNotBlank() }
+                allVerified.add(
+                    asset to OfflineMediaMatch(
+                        assetId = asset.id,
+                        sourceRef = ref,
+                        localPath = asset.localPath,
+                        qualityLabel = quality,
+                        fileSizeBytes = asset.fileSize,
+                        seasonNumber = se.takeIf { it > 0 },
+                        episodeNumber = ep.takeIf { it > 0 }
+                    )
                 )
             }
         }
-        null
+        allVerified
+            .distinctBy { it.first.id }
+            .sortedWith(
+                compareByDescending<Pair<com.laterbox.app.media.data.db.entity.DownloadedAssetEntity, OfflineMediaMatch>> {
+                    parseHeightFromQuality(it.second.qualityLabel)
+                }.thenByDescending { it.first.createdAt }
+            )
+            .map { it.second }
     }
+
+    override suspend fun findOfflineEpisodeAsset(
+        providerId: String,
+        titleId: String,
+        seasonNumber: Int?,
+        episodeNumber: Int?
+    ): OfflineMediaMatch? = findOfflineEpisodeAssets(providerId, titleId, seasonNumber, episodeNumber).firstOrNull()
 
     override fun observeActiveViewingReminders(): Flow<List<ViewingReminderItem>> =
         moviesDao.observeActiveViewingReminders()

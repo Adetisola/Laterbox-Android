@@ -217,4 +217,51 @@ class DownloadsScreenTest {
         composeTestRule.onNodeWithText("10.0 MB / 25.0 MB", substring = true).assertIsDisplayed()
         composeTestRule.onNodeWithText("2.0 MB/s", substring = true).assertDoesNotExist()
     }
+
+    @Test
+    fun libraryAssetCard_displaysPlaybackProgressForDownloadedVideos() {
+        val videoAsset = com.laterbox.app.media.domain.model.MediaAsset(
+            id = "video_prog_1",
+            savedLinkId = 1L,
+            sourcePlatform = "MovieBox",
+            originalSourceUrl = "https://cdn.example/video.mp4",
+            title = "Arrival",
+            mimeType = "video/mp4",
+            mediaType = com.laterbox.app.media.domain.model.MediaType.VIDEO,
+            localPath = "video/arrival.mp4",
+            exportedUri = null,
+            fileSize = 15_000_000L,
+            durationMs = 600_000L,
+            width = 1920,
+            height = 1080,
+            qualityLabel = "1080p",
+            checksum = "chk_arrival",
+            createdAt = 1_000L,
+            versionTag = "1080p",
+            sourceRef = "moviebox|arrival|0|0|1080p"
+        )
+        val progress = com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressEntity(
+            progressKey = "media:moviebox|arrival|0|0",
+            assetId = "video_prog_1",
+            sourceRef = "moviebox|arrival|0|0|1080p",
+            positionMs = 125_000L,
+            durationMs = 600_000L,
+            updatedAt = 5_000L
+        )
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                LibraryAssetCard(
+                    asset = videoAsset,
+                    onOpen = {},
+                    onExport = {},
+                    onDelete = {},
+                    playbackProgress = progress
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("asset_playback_progress_video_prog_1", useUnmergedTree = true).assertIsDisplayed()
+        composeTestRule.onNodeWithText("02:05 / 10:00", useUnmergedTree = true).assertIsDisplayed()
+    }
 }

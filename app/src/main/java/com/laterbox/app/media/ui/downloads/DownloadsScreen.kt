@@ -793,7 +793,8 @@ internal fun DownloadsScreenContent(
                                 onLongClick = { onToggleAssetSelection(asset.id) },
                                 subtitleSummary = uiState.subtitleSummaries[asset.id],
                                 isRetryingSubtitles = uiState.retryingSubtitleAssetIds.contains(asset.id),
-                                onRetrySubtitles = { onRetrySubtitles(asset.id) }
+                                onRetrySubtitles = { onRetrySubtitles(asset.id) },
+                                playbackProgress = uiState.playbackProgressByAssetId[asset.id]
                             )
                         }
                     }
