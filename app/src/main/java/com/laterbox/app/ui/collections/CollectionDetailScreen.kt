@@ -106,19 +106,13 @@ fun CollectionDetailScreen(
             }
 
             when {
-                uiState.isLoading -> {
-                    Box(
+                uiState.isLoading && uiState.links.isEmpty() && uiState.mediaItems.isEmpty() -> {
+                    com.laterbox.app.ui.components.CollectionDetailSkeletonList(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .weight(1f),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        CircularProgressIndicator(
-                            color = colors.accentPrimary,
-                            strokeWidth = 2.dp,
-                            modifier = Modifier.size(28.dp)
-                        )
-                    }
+                            .weight(1f)
+                            .testTag("collection_detail_skeleton")
+                    )
                 }
 
                 uiState.links.isEmpty() && uiState.mediaItems.isEmpty() -> {

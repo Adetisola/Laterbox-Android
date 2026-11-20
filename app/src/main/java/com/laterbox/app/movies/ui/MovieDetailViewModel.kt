@@ -33,6 +33,7 @@ import kotlinx.coroutines.launch
 
 data class MovieDetailUiState(
     val isLoading: Boolean = true,
+    val isRefreshingDetails: Boolean = false,
     val details: MediaDetails? = null,
     val selectedSeasonNumber: Int? = null,
     val episodes: List<EpisodeItem> = emptyList(),
@@ -78,7 +79,8 @@ class MovieDetailViewModel(
     private val moviesDownloadBridge: MoviesDownloadBridge? = null,
     private val userPreferencesRepository: UserPreferencesRepository? = null,
     private val collectionRepository: CollectionRepository? = null,
-    private val reminderScheduler: ReminderScheduler? = null
+    private val reminderScheduler: ReminderScheduler? = null,
+    private val computeDispatcher: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.Main.immediate
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MovieDetailUiState())
@@ -92,6 +94,7 @@ class MovieDetailViewModel(
     private var playbackJob: Job? = null
     private var personJob: Job? = null
     private var currentKey: Pair<String, String>? = null
+    private var loadRequestSeq: Long = 0L
 
     init {
         userPreferencesRepository?.let { repo ->
@@ -227,79 +230,170 @@ class MovieDetailViewModel(
         episodesJob?.cancel()
         episodeSizesJob?.cancel()
         personJob?.cancel()
+        val requestSeq = ++loadRequestSeq
+        val cachedSummary = moviesRepository.getCachedSummary(providerId, titleId)
         loadJob = viewModelScope.launch {
             val prev = _uiState.value
-            _uiState.update {
-                MovieDetailUiState(
-                    isLoading = true,
-                    isInWatchlist = prev.isInWatchlist,
-                    trailerMuted = prev.trailerMuted,
-                    subtitleStyle = prev.subtitleStyle,
-                    playbackPreferences = prev.playbackPreferences,
-                    collections = prev.collections,
-                    offlineMatches = prev.offlineMatches,
-                    hiddenMediaKeys = prev.hiddenMediaKeys
-                )
+            val cachedIsSeries = cachedSummary?.kind == MediaKind.TV_SERIES
+            val prefillSeason = if (cachedIsSeries) 1 else null
+            val prefillEp = if (cachedIsSeries) 1 else null
+            var startedEpisodesSeason: Int? = null
+            var startedPlaybackTarget: Pair<Int?, Int?>? = null
+
+            if (cachedSummary != null) {
+                _uiState.update {
+                    MovieDetailUiState(
+                        isLoading = false,
+                        isRefreshingDetails = true,
+                        details = MediaDetails(summary = cachedSummary),
+                        selectedSeasonNumber = prefillSeason,
+                        isInWatchlist = prev.isInWatchlist,
+                        trailerMuted = prev.trailerMuted,
+                        subtitleStyle = prev.subtitleStyle,
+                        playbackPreferences = prev.playbackPreferences,
+                        collections = prev.collections,
+                        offlineMatches = prev.offlineMatches,
+                        hiddenMediaKeys = prev.hiddenMediaKeys
+                    )
+                }
+                if (cachedIsSeries && prefillSeason != null) {
+                    startedEpisodesSeason = prefillSeason
+                    loadEpisodes(cachedSummary.providerId, cachedSummary.id, prefillSeason)
+                }
+                startedPlaybackTarget = prefillSeason to prefillEp
+                checkPlayback(cachedSummary.providerId, cachedSummary.id, prefillSeason, prefillEp)
+            } else {
+                _uiState.update {
+                    MovieDetailUiState(
+                        isLoading = true,
+                        isRefreshingDetails = true,
+                        isInWatchlist = prev.isInWatchlist,
+                        trailerMuted = prev.trailerMuted,
+                        subtitleStyle = prev.subtitleStyle,
+                        playbackPreferences = prev.playbackPreferences,
+                        collections = prev.collections,
+                        offlineMatches = prev.offlineMatches,
+                        hiddenMediaKeys = prev.hiddenMediaKeys
+                    )
+                }
             }
+
             val result = moviesRepository.getDetails(providerId, titleId, forceRefresh)
+            if (loadRequestSeq != requestSeq) return@launch
             result.fold(
                 onSuccess = { details ->
-                    moviesRepository.recordRecentlyViewed(details.summary)
                     val isSeries = details.summary.kind == MediaKind.TV_SERIES
-                    val nextUnwatched = if (isSeries) {
-                        moviesRepository.computeNextUnwatchedEpisode(
-                            providerId = details.summary.providerId,
-                            titleId = details.summary.id,
-                            seasons = details.seasons
-                        )
+                    val defaultSeason = if (isSeries) {
+                        details.seasons.firstOrNull()?.seasonNumber ?: 1
                     } else null
-                    val initialSeason = if (isSeries) {
-                        nextUnwatched?.first ?: details.seasons.firstOrNull()?.seasonNumber ?: 1
-                    } else null
-                    val initialEp = if (isSeries) {
-                        nextUnwatched?.second ?: 1
-                    } else null
-                    val savedPos = moviesRepository.getSavedPositionMs(
-                        details.summary.providerId,
-                        details.summary.id,
-                        initialSeason,
-                        initialEp
-                    )
-                    val links = if (BuildConfig.DEBUG) {
-                        moviesRepository.getProviderLinks(details.summary.providerId, details.summary.id)
-                    } else {
-                        emptyList()
-                    }
-                    val rankedRelated = MoviesDiscoveryEngine.rankMoreLikeThis(
-                        anchor = details.summary,
-                        relatedTitles = details.relatedTitles,
-                        candidatePool = emptyList(),
-                        hiddenMediaKeys = _uiState.value.hiddenMediaKeys
-                    )
-                    _uiState.update {
-                        it.copy(
+
+                    _uiState.update { current ->
+                        current.copy(
                             isLoading = false,
+                            isRefreshingDetails = false,
                             details = details,
-                            selectedSeasonNumber = initialSeason,
-                            nextUnwatchedTarget = nextUnwatched,
-                            savedPositionMs = savedPos,
-                            providerLinks = links,
-                            rankedRelatedTitles = rankedRelated,
+                            selectedSeasonNumber = current.selectedSeasonNumber ?: defaultSeason,
                             errorMessage = null
                         )
                     }
-                    if (isSeries && initialSeason != null) {
-                        loadEpisodes(details.summary.providerId, details.summary.id, initialSeason)
+
+                    // Priority 4: Rank related titles off Main
+                    launch {
+                        val rankedRelated = kotlinx.coroutines.withContext(computeDispatcher) {
+                            MoviesDiscoveryEngine.rankMoreLikeThis(
+                                anchor = details.summary,
+                                relatedTitles = details.relatedTitles,
+                                candidatePool = emptyList(),
+                                hiddenMediaKeys = _uiState.value.hiddenMediaKeys
+                            )
+                        }
+                        if (loadRequestSeq == requestSeq) {
+                            _uiState.update { it.copy(rankedRelatedTitles = rankedRelated) }
+                        }
                     }
-                    checkPlayback(details.summary.providerId, details.summary.id, initialSeason, initialEp)
+
+                    // Priority 3: Supporting persistence/links concurrently
+                    launch {
+                        runCatching { moviesRepository.recordRecentlyViewed(details.summary) }
+                    }
+                    if (BuildConfig.DEBUG) {
+                        launch {
+                            val links = runCatching {
+                                moviesRepository.getProviderLinks(details.summary.providerId, details.summary.id)
+                            }.getOrDefault(emptyList())
+                            if (loadRequestSeq == requestSeq) {
+                                _uiState.update { it.copy(providerLinks = links) }
+                            }
+                        }
+                    }
+
+                    // Priority 2: Seasons/episodes & playback resolution (+ resume target)
+                    launch {
+                        val nextUnwatched = if (isSeries) {
+                            runCatching {
+                                moviesRepository.computeNextUnwatchedEpisode(
+                                    providerId = details.summary.providerId,
+                                    titleId = details.summary.id,
+                                    seasons = details.seasons
+                                )
+                            }.getOrNull()
+                        } else null
+
+                        if (loadRequestSeq != requestSeq) return@launch
+                        val targetSeason = if (isSeries) {
+                            nextUnwatched?.first ?: defaultSeason
+                        } else null
+                        val targetEp = if (isSeries) {
+                            nextUnwatched?.second ?: 1
+                        } else null
+
+                        _uiState.update { current ->
+                            current.copy(
+                                selectedSeasonNumber = targetSeason,
+                                nextUnwatchedTarget = nextUnwatched
+                            )
+                        }
+
+                        if (isSeries && targetSeason != null && startedEpisodesSeason != targetSeason) {
+                            startedEpisodesSeason = targetSeason
+                            loadEpisodes(details.summary.providerId, details.summary.id, targetSeason)
+                        }
+                        val desiredPlaybackTarget = targetSeason to targetEp
+                        if (startedPlaybackTarget != desiredPlaybackTarget) {
+                            startedPlaybackTarget = desiredPlaybackTarget
+                            checkPlayback(details.summary.providerId, details.summary.id, targetSeason, targetEp)
+                        }
+
+                        val savedPos = runCatching {
+                            moviesRepository.getSavedPositionMs(
+                                details.summary.providerId,
+                                details.summary.id,
+                                targetSeason,
+                                targetEp
+                            )
+                        }.getOrDefault(0L)
+                        if (loadRequestSeq == requestSeq) {
+                            _uiState.update { it.copy(savedPositionMs = savedPos) }
+                        }
+                    }
                 },
                 onFailure = { error ->
-                    _uiState.update {
-                        it.copy(
-                            isLoading = false,
-                            errorMessage = error.message?.takeIf { m -> m.isNotBlank() }
-                                ?: "Unable to load title details."
-                        )
+                    val errText = error.message?.takeIf { m -> m.isNotBlank() }
+                        ?: "Unable to load title details."
+                    _uiState.update { current ->
+                        if (current.details != null) {
+                            current.copy(
+                                isLoading = false,
+                                isRefreshingDetails = false,
+                                actionErrorMessage = errText
+                            )
+                        } else {
+                            current.copy(
+                                isLoading = false,
+                                isRefreshingDetails = false,
+                                errorMessage = errText
+                            )
+                        }
                     }
                 }
             )

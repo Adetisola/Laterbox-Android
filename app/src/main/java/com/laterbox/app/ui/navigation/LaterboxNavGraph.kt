@@ -1509,6 +1509,7 @@ fun LaterboxApp(
                             }
                             com.laterbox.app.movies.ui.MoviesViewingHistoryScreen(
                                 items = historyState.historyItems,
+                                isLoading = historyState.isLoading,
                                 onBackClick = { navController.popBackStack() },
                                 onOpenDetail = { histProviderId, histTitleId ->
                                     navController.navigate(

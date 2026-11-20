@@ -128,7 +128,8 @@ object AppViewModelProvider {
                 moviesDownloadBridge = app.container.moviesDownloadBridge,
                 userPreferencesRepository = app.container.userPreferencesRepository,
                 collectionRepository = app.container.collectionRepository,
-                reminderScheduler = app.container.reminderScheduler
+                reminderScheduler = app.container.reminderScheduler,
+                computeDispatcher = kotlinx.coroutines.Dispatchers.Default
             )
         }
         initializer {

@@ -660,14 +660,11 @@ fun MoviesScreen(
                                 when {
                                     uiState.isLoadingFiltered && uiState.filteredItems.isEmpty() -> {
                                         item(key = "filtered_loading") {
-                                            Box(
+                                            com.laterbox.app.ui.components.MediaCatalogueSkeletonGrid(
                                                 modifier = Modifier
                                                     .fillMaxWidth()
-                                                    .padding(40.dp),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                CircularProgressIndicator(color = colors.accentPrimary)
-                                            }
+                                                    .testTag("movies_filtered_loading_skeleton")
+                                            )
                                         }
                                     }
                                     uiState.filteredError != null && uiState.filteredItems.isEmpty() -> {

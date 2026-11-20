@@ -68,9 +68,15 @@ fun LaterboxTheme(
         }
     }
 
+    val shimmerController = androidx.compose.runtime.remember {
+        com.laterbox.app.ui.components.SkeletonShimmerController()
+    }
+    shimmerController.Attach()
+
     CompositionLocalProvider(
         LocalLaterboxColors provides colors,
-        LocalLaterboxTypography provides typography
+        LocalLaterboxTypography provides typography,
+        com.laterbox.app.ui.components.LocalSkeletonShimmerController provides shimmerController
     ) {
         MaterialTheme(
             colorScheme = materialColors,

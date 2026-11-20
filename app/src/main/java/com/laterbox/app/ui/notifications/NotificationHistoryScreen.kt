@@ -31,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -116,17 +117,12 @@ fun NotificationHistoryScreen(
 
         // Content
         when {
-            uiState.isLoading -> {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    CircularProgressIndicator(
-                        color = colors.accentPrimary,
-                        strokeWidth = 2.dp,
-                        modifier = Modifier.size(32.dp)
-                    )
-                }
+            uiState.isLoading && uiState.groupedItems.isEmpty() -> {
+                com.laterbox.app.ui.components.NotificationHistorySkeletonList(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .testTag("notification_history_skeleton")
+                )
             }
 
             uiState.groupedItems.isEmpty() -> {

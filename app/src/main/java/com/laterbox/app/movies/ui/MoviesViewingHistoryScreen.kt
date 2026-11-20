@@ -77,6 +77,7 @@ fun MoviesViewingHistoryScreen(
     onUnhideTitle: (providerId: String, titleId: String) -> Unit = { _, _ -> },
     onRemoveRecentlyViewed: (providerId: String, titleId: String) -> Unit = { _, _ -> },
     onClearRecentlyViewed: () -> Unit = {},
+    isLoading: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -293,7 +294,13 @@ fun MoviesViewingHistoryScreen(
             }
         }
 
-        when (selectedTab) {
+        if (isLoading && items.isEmpty() && recentlyViewed.isEmpty() && hiddenTitles.isEmpty()) {
+            com.laterbox.app.ui.components.ViewingHistorySkeletonList(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag("viewing_history_skeleton")
+            )
+        } else when (selectedTab) {
             ViewingHistoryTab.RECENTLY_VIEWED -> {
                 if (recentlyViewed.isEmpty()) {
                     ViewingHistoryEmptyState(

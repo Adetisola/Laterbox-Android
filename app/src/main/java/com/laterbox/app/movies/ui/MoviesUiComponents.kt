@@ -63,6 +63,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
+import com.laterbox.app.ui.components.skeletonShimmer
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -1014,7 +1015,6 @@ fun MoviesHeroCarousel(
 
 @Composable
 fun MoviesHomeSkeleton(modifier: Modifier = Modifier) {
-    val colors = LaterboxTheme.colors
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -1027,16 +1027,37 @@ fun MoviesHomeSkeleton(modifier: Modifier = Modifier) {
                 .fillMaxWidth()
                 .aspectRatio(16f / 9f)
                 .heightIn(min = 216.dp, max = 300.dp)
-                .clip(RoundedCornerShape(20.dp))
-                .background(colors.surfaceSecondary)
+                .skeletonShimmer(shape = RoundedCornerShape(20.dp))
         )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(86.dp)
+                    .height(30.dp)
+                    .skeletonShimmer(shape = RoundedCornerShape(16.dp))
+            )
+            Box(
+                modifier = Modifier
+                    .width(78.dp)
+                    .height(30.dp)
+                    .skeletonShimmer(shape = RoundedCornerShape(16.dp))
+            )
+            Box(
+                modifier = Modifier
+                    .width(72.dp)
+                    .height(30.dp)
+                    .skeletonShimmer(shape = RoundedCornerShape(16.dp))
+            )
+        }
         repeat(2) {
             Box(
                 modifier = Modifier
                     .width(180.dp)
                     .height(20.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(colors.surfaceSecondary)
+                    .skeletonShimmer(shape = RoundedCornerShape(6.dp))
             )
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 repeat(3) {
@@ -1044,8 +1065,7 @@ fun MoviesHomeSkeleton(modifier: Modifier = Modifier) {
                         modifier = Modifier
                             .width(132.dp)
                             .aspectRatio(2f / 3f)
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(colors.surfaceSecondary)
+                            .skeletonShimmer(shape = RoundedCornerShape(14.dp))
                     )
                 }
             }

@@ -648,9 +648,11 @@ fun MoviesCatalogueScreen(
 
         when {
             uiState.isLoading && uiState.items.isEmpty() -> {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = colors.accentPrimary)
-                }
+                com.laterbox.app.ui.components.MediaCatalogueSkeletonGrid(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .testTag("catalogue_loading_skeleton")
+                )
             }
             uiState.errorMessage != null && uiState.items.isEmpty() -> {
                 Box(

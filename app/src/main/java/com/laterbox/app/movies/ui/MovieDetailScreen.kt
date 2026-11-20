@@ -118,6 +118,11 @@ import com.laterbox.app.movies.domain.model.CastMember
 import com.laterbox.app.movies.domain.model.EpisodeItem
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.OfflineMediaMatch
+import com.laterbox.app.ui.components.EpisodeListSkeleton
+import com.laterbox.app.ui.components.MovieDetailCastRailSkeleton
+import com.laterbox.app.ui.components.MovieDetailPosterRailSkeleton
+import com.laterbox.app.ui.components.MovieDetailScreenSkeleton
+import com.laterbox.app.ui.components.skeletonShimmer
 import com.laterbox.app.movies.domain.model.PlaybackResolution
 import com.laterbox.app.movies.domain.model.PlaybackSource
 import com.laterbox.app.movies.ui.player.PlayerAudioBoostController
@@ -493,83 +498,25 @@ fun MovieDetailScreen(
     ) {
         when {
             uiState.isLoading -> {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .testTag("detail_loading_skeleton"),
-                    verticalArrangement = Arrangement.spacedBy(18.dp)
-                ) {
-                    Box(
+                Box(modifier = Modifier.fillMaxSize()) {
+                    MovieDetailScreenSkeleton()
+                    Surface(
+                        shape = CircleShape,
+                        color = Color.Black.copy(alpha = 0.50f),
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .aspectRatio(16f / 9f)
-                            .heightIn(min = 252.dp, max = 320.dp)
-                            .background(colors.surfaceSecondary)
+                            .padding(horizontal = 12.dp, vertical = 10.dp)
+                            .align(Alignment.TopStart)
                     ) {
-                        Surface(
-                            shape = CircleShape,
-                            color = Color.Black.copy(alpha = 0.50f),
-                            modifier = Modifier
-                                .padding(horizontal = 12.dp, vertical = 10.dp)
-                                .align(Alignment.TopStart)
+                        IconButton(
+                            onClick = onBackClick,
+                            modifier = Modifier.testTag("detail_back_button")
                         ) {
-                            IconButton(
-                                onClick = onBackClick,
-                                modifier = Modifier.testTag("detail_back_button")
-                            ) {
-                                Icon(
-                                    painter = painterResource(LaterboxIcons.ArrowLeft),
-                                    contentDescription = "Back",
-                                    tint = Color.White
-                                )
-                            }
-                        }
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp)
-                                .align(Alignment.BottomStart),
-                            horizontalArrangement = Arrangement.spacedBy(14.dp),
-                            verticalAlignment = Alignment.Bottom
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .width(104.dp)
-                                    .aspectRatio(2f / 3f)
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(colors.surfacePrimary)
-                                    .border(1.dp, colors.borderSubtle, RoundedCornerShape(12.dp))
+                            Icon(
+                                painter = painterResource(LaterboxIcons.ArrowLeft),
+                                contentDescription = "Back",
+                                tint = Color.White
                             )
-                            Column(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .padding(bottom = 8.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .width(96.dp)
-                                        .height(18.dp)
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .background(colors.surfacePrimary)
-                                )
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth(0.8f)
-                                        .height(24.dp)
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .background(colors.surfacePrimary)
-                                )
-                            }
                         }
-                    }
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 24.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        CircularProgressIndicator(color = colors.accentPrimary)
                     }
                 }
             }
@@ -1367,11 +1314,33 @@ fun MovieDetailScreen(
                                 .padding(horizontal = 16.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Text(
-                                text = details.fullDescription.ifBlank { "No description available." },
-                                style = typography.bodyPrimary,
-                                color = colors.textPrimary
-                            )
+                            if (details.fullDescription.isBlank() && uiState.isRefreshingDetails) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("detail_synopsis_skeleton"),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(13.dp)
+                                            .skeletonShimmer(shape = RoundedCornerShape(5.dp))
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth(0.78f)
+                                            .height(13.dp)
+                                            .skeletonShimmer(shape = RoundedCornerShape(5.dp))
+                                    )
+                                }
+                            } else {
+                                Text(
+                                    text = details.fullDescription.ifBlank { "No description available." },
+                                    style = typography.bodyPrimary,
+                                    color = colors.textPrimary
+                                )
+                            }
 
                             if (details.directorOrCreator != null || details.networkOrStudio != null || details.availableSubtitles.isNotEmpty()) {
                                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -1425,13 +1394,16 @@ fun MovieDetailScreen(
                                 }
                             }
 
-                            // Unified horizontal pill row: Country, Language, Genres, and Audio Languages/Dubs
+                            // 2-Row Responsive Metadata Pills:
+                            // Row 1: Descriptive Metadata (Country, Non-Dub Language, Genres)
+                            // Row 2: Audio Availability (Original Audio + Switchable Dubs)
                             val countryPills = remember(summary.country) {
                                 summary.country
                                     ?.split(",")
                                     ?.map { it.trim() }
                                     ?.filter { it.isNotBlank() }
                                     .orEmpty()
+                                    .distinct()
                             }
                             val dubLabelsLower = remember(details.audioDubs) {
                                 details.audioDubs.map { it.label.lowercase(Locale.US) }.toSet()
@@ -1442,84 +1414,125 @@ fun MovieDetailScreen(
                                     ?.map { it.trim() }
                                     ?.filter { it.isNotBlank() && it.lowercase(Locale.US) !in dubLabelsLower }
                                     .orEmpty()
+                                    .distinct()
                             }
-                            val hasMetadataPills = countryPills.isNotEmpty() ||
+                            val genrePills = remember(summary.genres) {
+                                summary.genres.filter { it.isNotBlank() }.distinct()
+                            }
+                            val hasDescriptivePills = countryPills.isNotEmpty() ||
                                 languagePills.isNotEmpty() ||
-                                summary.genres.isNotEmpty() ||
-                                details.audioDubs.isNotEmpty()
+                                genrePills.isNotEmpty()
+                            val hasAudioRow = details.audioDubs.isNotEmpty() || uiState.isRefreshingDetails
 
-                            if (hasMetadataPills) {
-                                LazyRow(
+                            if (hasDescriptivePills || hasAudioRow) {
+                                Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .testTag("detail_metadata_pills_row"),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    itemsIndexed(countryPills.distinct(), key = { idx, it -> "meta_country_${idx}_$it" }) { _, country ->
-                                        MetadataPillChip(
-                                            label = country,
-                                            modifier = Modifier.testTag("detail_country_chip_$country")
-                                        )
-                                    }
-                                    itemsIndexed(languagePills.distinct(), key = { idx, it -> "meta_lang_${idx}_$it" }) { _, lang ->
-                                        MetadataPillChip(
-                                            label = lang,
-                                            modifier = Modifier.testTag("detail_language_chip_$lang")
-                                        )
-                                    }
-                                    itemsIndexed(summary.genres.distinct(), key = { idx, it -> "meta_genre_${idx}_$it" }) { _, genre ->
-                                        MetadataPillChip(
-                                            label = genre,
-                                            modifier = Modifier.testTag("detail_genre_chip_$genre")
-                                        )
-                                    }
-                                    itemsIndexed(
-                                        details.audioDubs,
-                                        key = { idx, dub -> "meta_dub_${idx}_${dub.language}_${dub.referenceId ?: dub.label}" }
-                                    ) { _, dub ->
-                                        val refId = dub.referenceId
-                                        val isActiveDub = refId == null || refId == summary.id
-                                        val isSwitchableDub = !refId.isNullOrBlank() && refId != summary.id
-                                        Surface(
-                                            shape = RoundedCornerShape(20.dp),
-                                            color = if (isActiveDub && details.audioDubs.size > 1) {
-                                                colors.accentContainer
-                                            } else {
-                                                colors.surfacePrimary
-                                            },
-                                            border = BorderStroke(
-                                                0.75.dp,
-                                                if (isActiveDub && details.audioDubs.size > 1) {
-                                                    colors.accentPrimary
-                                                } else {
-                                                    colors.borderSubtle
-                                                }
-                                            ),
+                                    if (hasDescriptivePills) {
+                                        FlowRow(
                                             modifier = Modifier
-                                                .clip(RoundedCornerShape(20.dp))
-                                                .clickable(enabled = isSwitchableDub) {
-                                                    if (!refId.isNullOrBlank()) {
-                                                        onOpenRelated(summary.providerId, refId)
-                                                    }
-                                                }
-                                                .testTag("detail_dub_chip_${refId ?: dub.language}")
+                                                .fillMaxWidth()
+                                                .testTag("detail_metadata_descriptive_row"),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
-                                            Text(
-                                                text = dub.label,
-                                                style = typography.caption.copy(
-                                                    fontWeight = if (isActiveDub && details.audioDubs.size > 1) {
-                                                        FontWeight.SemiBold
+                                            countryPills.forEach { country ->
+                                                MetadataPillChip(
+                                                    label = country,
+                                                    modifier = Modifier.testTag("detail_country_chip_$country")
+                                                )
+                                            }
+                                            languagePills.forEach { lang ->
+                                                MetadataPillChip(
+                                                    label = lang,
+                                                    modifier = Modifier.testTag("detail_language_chip_$lang")
+                                                )
+                                            }
+                                            genrePills.forEach { genre ->
+                                                MetadataPillChip(
+                                                    label = genre,
+                                                    modifier = Modifier.testTag("detail_genre_chip_$genre")
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    if (details.audioDubs.isNotEmpty()) {
+                                        FlowRow(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .testTag("detail_metadata_audio_row"),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            details.audioDubs.forEach { dub ->
+                                                val refId = dub.referenceId
+                                                val isActiveDub = refId == null || refId == summary.id
+                                                val isSwitchableDub = !refId.isNullOrBlank() && refId != summary.id
+                                                Surface(
+                                                    shape = RoundedCornerShape(20.dp),
+                                                    color = if (isActiveDub && details.audioDubs.size > 1) {
+                                                        colors.accentContainer
                                                     } else {
-                                                        FontWeight.Normal
-                                                    }
-                                                ),
-                                                color = if (isActiveDub && details.audioDubs.size > 1) {
-                                                    colors.accentPrimary
-                                                } else {
-                                                    colors.textSecondary
-                                                },
-                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                                        colors.surfacePrimary
+                                                    },
+                                                    border = BorderStroke(
+                                                        0.75.dp,
+                                                        if (isActiveDub && details.audioDubs.size > 1) {
+                                                            colors.accentPrimary
+                                                        } else {
+                                                            colors.borderSubtle
+                                                        }
+                                                    ),
+                                                    modifier = Modifier
+                                                        .clip(RoundedCornerShape(20.dp))
+                                                        .clickable(enabled = isSwitchableDub) {
+                                                            if (!refId.isNullOrBlank()) {
+                                                                onOpenRelated(summary.providerId, refId)
+                                                            }
+                                                        }
+                                                        .testTag("detail_dub_chip_${refId ?: dub.language}")
+                                                ) {
+                                                    Text(
+                                                        text = dub.label,
+                                                        style = typography.caption.copy(
+                                                            fontWeight = if (isActiveDub && details.audioDubs.size > 1) {
+                                                                FontWeight.SemiBold
+                                                            } else {
+                                                                FontWeight.Normal
+                                                            }
+                                                        ),
+                                                        color = if (isActiveDub && details.audioDubs.size > 1) {
+                                                            colors.accentPrimary
+                                                        } else {
+                                                            colors.textSecondary
+                                                        },
+                                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    } else if (uiState.isRefreshingDetails) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .testTag("detail_metadata_audio_skeleton"),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .width(98.dp)
+                                                    .height(26.dp)
+                                                    .skeletonShimmer(shape = RoundedCornerShape(20.dp))
+                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .width(88.dp)
+                                                    .height(26.dp)
+                                                    .skeletonShimmer(shape = RoundedCornerShape(20.dp))
                                             )
                                         }
                                     }
@@ -1602,6 +1615,10 @@ fun MovieDetailScreen(
                                 }
                             }
                         }
+                    } else if (uiState.isRefreshingDetails) {
+                        item(key = "detail_cast_skeleton") {
+                            MovieDetailCastRailSkeleton()
+                        }
                     }
 
                     // Related Titles Rail (above Seasons & Episodes)
@@ -1633,6 +1650,12 @@ fun MovieDetailScreen(
                                     }
                                 }
                             }
+                        }
+                    } else if (uiState.isRefreshingDetails) {
+                        item(key = "detail_related_skeleton") {
+                            MovieDetailPosterRailSkeleton(
+                                modifier = Modifier.testTag("detail_related_skeleton")
+                            )
                         }
                     }
 
@@ -1685,17 +1708,7 @@ fun MovieDetailScreen(
                             when {
                                 uiState.isLoadingEpisodes -> {
                                     item(key = "episodes_loading") {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(16.dp),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            CircularProgressIndicator(
-                                                modifier = Modifier.size(24.dp),
-                                                color = colors.accentPrimary
-                                            )
-                                        }
+                                        EpisodeListSkeleton()
                                     }
                                 }
                                 uiState.episodesError != null -> {
@@ -1770,6 +1783,28 @@ fun MovieDetailScreen(
                                         }
                                     }
                                 }
+                            }
+                        } else if (uiState.episodes.isNotEmpty()) {
+                            val visibleEpisodes = uiState.episodes.take(visibleEpisodeCount)
+                            itemsIndexed(
+                                items = visibleEpisodes,
+                                key = { index, ep -> "ep_pre_${index}_${ep.id}_${ep.seasonNumber}_${ep.episodeNumber}" }
+                            ) { _, ep ->
+                                val isWatched = uiState.seriesProgress?.episodeStates
+                                    ?.get(ep.seasonNumber to ep.episodeNumber)?.isCompleted == true
+                                val isEpDownloaded = offlineLookup.hasEpisode(summary.providerId, summary.id, ep.seasonNumber, ep.episodeNumber)
+                                EpisodeRowCard(
+                                    episode = ep,
+                                    isWatched = isWatched,
+                                    isDownloaded = isEpDownloaded,
+                                    onToggleWatched = { onToggleEpisodeWatched(ep) },
+                                    onClick = { onPlayClick(ep.seasonNumber, ep.episodeNumber) },
+                                    modifier = Modifier.padding(horizontal = 16.dp)
+                                )
+                            }
+                        } else if (uiState.isRefreshingDetails || uiState.isLoadingEpisodes) {
+                            item(key = "episodes_loading_initial") {
+                                EpisodeListSkeleton()
                             }
                         } else {
                             item(key = "episodes_unavailable") {
