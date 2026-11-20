@@ -326,3 +326,108 @@ fun Modifier.playerDragGestures(
         }
     }
 }
+
+enum class PlayerTapZone {
+    LEFT,
+    CENTER,
+    RIGHT
+}
+
+sealed interface PlayerTapOutcome {
+    data class SetControlsVisible(val visible: Boolean) : PlayerTapOutcome
+    data class SeekDelta(
+        val direction: Int,
+        val accumulatedSeconds: Int,
+        val stepSeconds: Int,
+        val keepControlsVisible: Boolean
+    ) : PlayerTapOutcome
+}
+
+/**
+ * Pure tap state machine for video player surface taps:
+ * - Zero-delay (0ms) immediate controls reveal when controls are hidden
+ * - Zero-delay (0ms) immediate controls toggle when controls are visible
+ * - Non-blocking quick consecutive left/right taps that trigger and accumulate +/- seek
+ */
+class PlayerTapGestureTracker(
+    private val doubleTapWindowMs: Long = 300L,
+    private val accumulationWindowMs: Long = 700L
+) {
+    private var lastTapUptimeMs: Long = Long.MIN_VALUE
+    private var lastTapZone: PlayerTapZone? = null
+    private var accumulatingDirection: Int = 0
+    private var accumulatedSeconds: Int = 0
+
+    fun reset() {
+        lastTapUptimeMs = Long.MIN_VALUE
+        lastTapZone = null
+        accumulatingDirection = 0
+        accumulatedSeconds = 0
+    }
+
+    fun onTap(
+        touchX: Float,
+        widthPx: Float,
+        controlsVisible: Boolean,
+        isLocked: Boolean,
+        stepSeconds: Int,
+        uptimeMs: Long
+    ): PlayerTapOutcome {
+        val safeWidth = widthPx.coerceAtLeast(1f)
+        val zone = when {
+            touchX < safeWidth * 0.35f -> PlayerTapZone.LEFT
+            touchX > safeWidth * 0.65f -> PlayerTapZone.RIGHT
+            else -> PlayerTapZone.CENTER
+        }
+
+        if (isLocked) {
+            reset()
+            return PlayerTapOutcome.SetControlsVisible(!controlsVisible)
+        }
+
+        val withinAccumulation = accumulatingDirection != 0 &&
+            (uptimeMs - lastTapUptimeMs) in 0L..accumulationWindowMs
+        if (withinAccumulation) {
+            val tapDir = when (zone) {
+                PlayerTapZone.LEFT -> -1
+                PlayerTapZone.RIGHT -> 1
+                PlayerTapZone.CENTER -> 0
+            }
+            if (tapDir == accumulatingDirection) {
+                accumulatedSeconds += stepSeconds
+                lastTapUptimeMs = uptimeMs
+                lastTapZone = zone
+                return PlayerTapOutcome.SeekDelta(
+                    direction = tapDir,
+                    accumulatedSeconds = accumulatedSeconds,
+                    stepSeconds = stepSeconds,
+                    keepControlsVisible = false
+                )
+            }
+        }
+
+        val isQuickConsecutiveSideTap = zone != PlayerTapZone.CENTER &&
+            lastTapZone == zone &&
+            (uptimeMs - lastTapUptimeMs) in 0L..doubleTapWindowMs
+        if (isQuickConsecutiveSideTap) {
+            val dir = if (zone == PlayerTapZone.LEFT) -1 else 1
+            accumulatingDirection = dir
+            accumulatedSeconds = stepSeconds
+            lastTapUptimeMs = uptimeMs
+            lastTapZone = zone
+            return PlayerTapOutcome.SeekDelta(
+                direction = dir,
+                accumulatedSeconds = accumulatedSeconds,
+                stepSeconds = stepSeconds,
+                keepControlsVisible = false
+            )
+        }
+
+        accumulatingDirection = 0
+        accumulatedSeconds = 0
+        lastTapUptimeMs = uptimeMs
+        lastTapZone = zone
+        return PlayerTapOutcome.SetControlsVisible(!controlsVisible)
+    }
+}
+

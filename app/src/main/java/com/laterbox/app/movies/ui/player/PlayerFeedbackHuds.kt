@@ -113,16 +113,21 @@ fun PlayerVolumeBoostHud(
         modifier = modifier
     ) {
         val isBoosted = PlayerAudioBoostController.isBoostActive(volumePercent)
-        val pulseTransition = rememberInfiniteTransition(label = "boostPulse")
-        val pulseScale by pulseTransition.animateFloat(
-            initialValue = 1f,
-            targetValue = if (isBoosted) 1.06f else 1f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 650),
-                repeatMode = RepeatMode.Reverse
-            ),
-            label = "boostScale"
-        )
+        val pulseScale = if (isBoosted) {
+            val pulseTransition = rememberInfiniteTransition(label = "boostPulse")
+            val animatedScale by pulseTransition.animateFloat(
+                initialValue = 1f,
+                targetValue = 1.06f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(durationMillis = 650),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "boostScale"
+            )
+            animatedScale
+        } else {
+            1f
+        }
 
         Surface(
             shape = RoundedCornerShape(16.dp),

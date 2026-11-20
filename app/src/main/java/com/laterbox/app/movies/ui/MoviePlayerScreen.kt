@@ -16,7 +16,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -58,6 +57,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -117,6 +118,8 @@ import com.laterbox.app.movies.ui.player.PlayerGesturesMath
 import com.laterbox.app.movies.ui.player.PlayerHold2xSpeedBadge
 import com.laterbox.app.movies.ui.player.PlayerHorizontalScrubHud
 import com.laterbox.app.movies.ui.player.PlayerSeekFeedbackBadge
+import com.laterbox.app.movies.ui.player.PlayerTapGestureTracker
+import com.laterbox.app.movies.ui.player.PlayerTapOutcome
 import com.laterbox.app.movies.ui.player.PlayerVolumeBoostHud
 import com.laterbox.app.movies.ui.player.SeekSensitivityTier
 import com.laterbox.app.movies.ui.player.SubtitleStyleDialog
@@ -443,10 +446,11 @@ private fun ActiveVideoPlayerContent(
 
     var isPlaying by remember { mutableStateOf(true) }
     var isBuffering by remember { mutableStateOf(true) }
-    var currentPositionMs by rememberSaveable(playbackEpisodeKey) { mutableLongStateOf(startPositionMs.coerceAtLeast(0L)) }
-    var durationMs by remember(playbackEpisodeKey) { mutableLongStateOf(0L) }
+    val clockState = remember(playbackEpisodeKey) {
+        PlayerClockState(initialPositionMs = startPositionMs.coerceAtLeast(0L))
+    }
+    val tapTracker = remember(playbackEpisodeKey) { PlayerTapGestureTracker() }
     var isSeeking by remember { mutableStateOf(false) }
-    var seekSliderPosMs by remember { mutableFloatStateOf(0f) }
     var seekFeedbackText by remember { mutableStateOf<String?>(null) }
 
     var inStreamAudioTracks by remember { mutableStateOf<List<PlayerAudioTrackOption>>(emptyList()) }
@@ -466,6 +470,7 @@ private fun ActiveVideoPlayerContent(
     val latestSaveEpisodeProgress by rememberUpdatedState(onSaveProgressForEpisode)
     val latestSelectedSpeed by rememberUpdatedState(selectedSpeed)
     val latestIsLocked by rememberUpdatedState(isLocked)
+    val latestShowControls by rememberUpdatedState(showControls)
     val latestStartPositionMs by rememberUpdatedState(startPositionMs)
     val latestOnNextEpisode by rememberUpdatedState(onNextEpisode)
 
@@ -623,11 +628,11 @@ private fun ActiveVideoPlayerContent(
         val resumeAtMs = if (isEpisodeTransition) {
             latestStartPositionMs.coerceAtLeast(0L)
         } else {
-            maxOf(latestStartPositionMs, currentPositionMs).coerceAtLeast(0L)
+            maxOf(latestStartPositionMs, clockState.positionMs).coerceAtLeast(0L)
         }
-        currentPositionMs = resumeAtMs
+        clockState.positionMs = resumeAtMs
         if (isEpisodeTransition) {
-            durationMs = 0L
+            clockState.durationMs = 0L
         }
         if (resumeAtMs > 0L) {
             exoPlayer.seekTo(resumeAtMs)
@@ -686,7 +691,7 @@ private fun ActiveVideoPlayerContent(
             val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
             val dur = exoPlayer.duration.coerceAtLeast(0L)
             if (pos > 0L) {
-                currentPositionMs = pos
+                clockState.positionMs = pos
             }
             latestSaveEpisodeProgress(pos, dur, snapshotEpisodeKey)
             audioBoostController.release()
@@ -711,18 +716,20 @@ private fun ActiveVideoPlayerContent(
         }
     }
 
-    // Periodic progress tracker & playback position updater
-    LaunchedEffect(exoPlayer, playbackEpisodeKey) {
+    // Periodic progress tracker & playback position updater (writes only to isolated clockState)
+    LaunchedEffect(exoPlayer, playbackEpisodeKey, clockState) {
         val snapshotEpisodeKey = playbackEpisodeKey
         var tick = 0
         while (true) {
             val cur = exoPlayer.currentPosition.coerceAtLeast(0L)
             val dur = exoPlayer.duration.coerceAtLeast(0L)
-            isPlaying = exoPlayer.isPlaying || (exoPlayer.playWhenReady && exoPlayer.playbackState == Player.STATE_BUFFERING)
-            isPlaybackEnded = exoPlayer.playbackState == Player.STATE_ENDED
-            durationMs = dur
+            val stateNow = exoPlayer.playbackState
+            isBuffering = stateNow == Player.STATE_BUFFERING
+            isPlaying = exoPlayer.isPlaying
+            isPlaybackEnded = stateNow == Player.STATE_ENDED
+            clockState.durationMs = dur
             if (!isSeeking && !isHorizontalScrubbing) {
-                currentPositionMs = cur
+                clockState.positionMs = cur
             }
             tick++
             if (tick % 12 == 0 && exoPlayer.isPlaying) {
@@ -732,10 +739,11 @@ private fun ActiveVideoPlayerContent(
         }
     }
 
-    // Auto-hide controls after 3.5s during active playback
+    // Auto-hide controls after 3.5s during active non-buffering playback
     LaunchedEffect(
         showControls,
         isPlaying,
+        isBuffering,
         isLocked,
         showQualityDialog,
         showSubtitleDialog,
@@ -748,7 +756,7 @@ private fun ActiveVideoPlayerContent(
         isHorizontalScrubbing,
         playerErrorText
     ) {
-        if (showControls && isPlaying && !isLocked && playerErrorText == null &&
+        if (showControls && isPlaying && !isBuffering && !isLocked && playerErrorText == null &&
             !showQualityDialog && !showSubtitleDialog && !showSubtitleStyleDialog && !showAudioDialog &&
             !showSpeedDialog && !showDownloadDialog && !showMoreMenu && !isSeeking && !isHorizontalScrubbing
         ) {
@@ -781,7 +789,11 @@ private fun ActiveVideoPlayerContent(
 
     val effectivePlaybackEnded = isPlaybackEnded || simulatePlaybackEndedForTest
     val hasNextEpisode = !isLocalFile && (nextEpisodePreview != null || nextEpisodeTarget != null)
-    val nearEndWindow = durationMs > 25_000L && (durationMs - currentPositionMs) in 1L..10_000L
+    val nearEndWindow by remember(clockState) {
+        derivedStateOf {
+            clockState.durationMs > 25_000L && (clockState.durationMs - clockState.positionMs) in 1L..10_000L
+        }
+    }
     val showNextEpisodeCard = hasNextEpisode && !nextEpisodeCancelled && (nearEndWindow || effectivePlaybackEnded) && playerErrorText == null
     val showMovieEndCard = !isLocalFile && !hasNextEpisode && effectivePlaybackEnded && !endCardDismissed && playerErrorText == null
 
@@ -840,7 +852,7 @@ private fun ActiveVideoPlayerContent(
                 },
                 onHorizontalScrubEnd = { finalTargetMs ->
                     exoPlayer.seekTo(finalTargetMs)
-                    currentPositionMs = finalTargetMs
+                    clockState.positionMs = finalTargetMs
                     isHorizontalScrubbing = false
                     latestSaveEpisodeProgress(
                         finalTargetMs,
@@ -879,9 +891,9 @@ private fun ActiveVideoPlayerContent(
                 }
             )
             .pointerInput(playbackEpisodeKey, exoPlayer) {
-                // Tap-and-Hold 2x Speed gesture using a true timeout so stationary holds trigger after 320ms
+                // Tap-and-Hold 2x Speed gesture respecting child control consumption on Main pass
                 awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val down = awaitFirstDown(requireUnconsumed = true)
                     ignoreNextTap = false
                     val downPos = down.position
                     val slop = viewConfiguration.touchSlop
@@ -893,20 +905,23 @@ private fun ActiveVideoPlayerContent(
                         while (!releasedOrMovedOut && !activatedHold) {
                             val remaining = (deadline - System.currentTimeMillis()).coerceAtLeast(1L)
                             val event = withTimeoutOrNull(remaining) {
-                                awaitPointerEvent(PointerEventPass.Initial)
+                                awaitPointerEvent(PointerEventPass.Main)
                             }
                             if (event == null) {
-                                if (!latestIsLocked) {
+                                if (!latestIsLocked && !isSeeking && !isBrightnessDragging && !isVolumeDragging && !isHorizontalScrubbing) {
                                     activatedHold = true
                                     isHolding2x = true
                                     ignoreNextTap = true
+                                    tapTracker.reset()
                                     exoPlayer.setPlaybackSpeed(2.0f)
                                 } else {
                                     break
                                 }
                             } else {
                                 val change = event.changes.firstOrNull { it.id == down.id }
-                                if (change == null || !change.pressed ||
+                                if (change == null ||
+                                    !change.pressed ||
+                                    change.isConsumed ||
                                     abs(change.position.x - downPos.x) > slop ||
                                     abs(change.position.y - downPos.y) > slop
                                 ) {
@@ -916,7 +931,7 @@ private fun ActiveVideoPlayerContent(
                         }
 
                         while (activatedHold) {
-                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val event = awaitPointerEvent(PointerEventPass.Main)
                             val change = event.changes.firstOrNull { it.id == down.id }
                             if (change == null || !change.pressed) {
                                 break
@@ -931,57 +946,100 @@ private fun ActiveVideoPlayerContent(
                 }
             }
             .pointerInput(playbackEpisodeKey, exoPlayer, seekJumpMs, seekJumpSeconds) {
-                detectTapGestures(
-                    onTap = {
-                        if (ignoreNextTap) {
-                            ignoreNextTap = false
-                        } else {
-                            showControls = !showControls
+                // Zero-delay single-tap controls toggle + non-blocking consecutive left/right seek accumulation
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = true)
+                    val downPos = down.position
+                    val slop = viewConfiguration.touchSlop
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Main)
+                        if (event.changes.count { it.pressed } > 1) {
+                            break
                         }
-                    },
-                    onDoubleTap = { offset ->
-                        ignoreNextTap = false
-                        if (latestIsLocked) {
-                            showControls = true
-                            return@detectTapGestures
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (change.isConsumed ||
+                            abs(change.position.x - downPos.x) > slop ||
+                            abs(change.position.y - downPos.y) > slop
+                        ) {
+                            break
                         }
-                        val widthPx = size.width.toFloat().coerceAtLeast(1f)
-                        if (offset.x < widthPx / 2f) {
-                            val target = (exoPlayer.currentPosition - seekJumpMs).coerceAtLeast(0L)
-                            exoPlayer.seekTo(target)
-                            currentPositionMs = target
-                            seekFeedbackText = "-${seekJumpSeconds}s"
-                        } else {
-                            val dur = exoPlayer.duration.coerceAtLeast(0L)
-                            val target = if (dur > 0L) {
-                                (exoPlayer.currentPosition + seekJumpMs).coerceAtMost(dur)
+                        if (!change.pressed) {
+                            if (ignoreNextTap) {
+                                ignoreNextTap = false
                             } else {
-                                exoPlayer.currentPosition + seekJumpMs
+                                when (
+                                    val outcome = tapTracker.onTap(
+                                        touchX = change.position.x,
+                                        widthPx = size.width.toFloat(),
+                                        controlsVisible = latestShowControls,
+                                        isLocked = latestIsLocked,
+                                        stepSeconds = seekJumpSeconds,
+                                        uptimeMs = change.uptimeMillis
+                                    )
+                                ) {
+                                    is PlayerTapOutcome.SetControlsVisible -> {
+                                        showControls = outcome.visible
+                                    }
+                                    is PlayerTapOutcome.SeekDelta -> {
+                                        val cur = exoPlayer.currentPosition.coerceAtLeast(0L)
+                                        val dur = exoPlayer.duration.coerceAtLeast(0L)
+                                        val stepMs = outcome.stepSeconds * 1000L
+                                        val target = if (outcome.direction < 0) {
+                                            (cur - stepMs).coerceAtLeast(0L)
+                                        } else if (dur > 0L) {
+                                            (cur + stepMs).coerceAtMost(dur)
+                                        } else {
+                                            cur + stepMs
+                                        }
+                                        exoPlayer.seekTo(target)
+                                        clockState.positionMs = target
+                                        seekFeedbackText = if (outcome.direction < 0) {
+                                            "-${outcome.accumulatedSeconds}s"
+                                        } else {
+                                            "+${outcome.accumulatedSeconds}s"
+                                        }
+                                        showControls = outcome.keepControlsVisible
+                                    }
+                                }
                             }
-                            exoPlayer.seekTo(target)
-                            currentPositionMs = target
-                            seekFeedbackText = "+${seekJumpSeconds}s"
+                            break
                         }
                     }
-                )
+                }
             }
     ) {
+        var appliedResizeMode by remember { mutableIntStateOf(-1) }
+        var appliedSubtitleStyle by remember { mutableStateOf<SubtitleStyleConfig?>(null) }
         AndroidView(
             factory = { ctx ->
                 PlayerView(ctx).apply {
                     player = exoPlayer
                     useController = false
+                    controllerAutoShow = false
+                    isClickable = false
+                    isFocusable = false
                     keepScreenOn = true
                     this.resizeMode = resizeMode
+                    appliedResizeMode = resizeMode
                     SubtitleStyleHelper.applyToSubtitleView(subtitleView, localSubtitleStyle)
+                    appliedSubtitleStyle = localSubtitleStyle
                 }
             },
             update = { view ->
                 if (view.player !== exoPlayer) {
                     view.player = exoPlayer
                 }
-                view.resizeMode = resizeMode
-                SubtitleStyleHelper.applyToSubtitleView(view.subtitleView, localSubtitleStyle)
+                if (appliedResizeMode != resizeMode) {
+                    view.resizeMode = resizeMode
+                    appliedResizeMode = resizeMode
+                }
+                if (appliedSubtitleStyle != localSubtitleStyle) {
+                    SubtitleStyleHelper.applyToSubtitleView(view.subtitleView, localSubtitleStyle)
+                    appliedSubtitleStyle = localSubtitleStyle
+                }
+            },
+            onRelease = { view ->
+                view.player = null
             },
             modifier = Modifier.fillMaxSize()
         )
@@ -1018,6 +1076,7 @@ private fun ActiveVideoPlayerContent(
                             .align(Alignment.BottomCenter)
                             .padding(bottom = 32.dp)
                             .clip(RoundedCornerShape(24.dp))
+                            .isolatePlayerControlTouch()
                             .clickable { isLocked = false }
                             .testTag("player_unlock_button")
                     ) {
@@ -1046,7 +1105,8 @@ private fun ActiveVideoPlayerContent(
                             .fillMaxWidth()
                             .statusBarsPadding()
                             .padding(horizontal = 8.dp, vertical = 8.dp)
-                            .align(Alignment.TopCenter),
+                            .align(Alignment.TopCenter)
+                            .isolatePlayerControlTouch(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(
@@ -1292,13 +1352,15 @@ private fun ActiveVideoPlayerContent(
                         Surface(
                             shape = CircleShape,
                             color = Color.Black.copy(alpha = 0.45f),
-                            modifier = Modifier.size(52.dp)
+                            modifier = Modifier
+                                .size(52.dp)
+                                .isolatePlayerControlTouch()
                         ) {
                             IconButton(
                                 onClick = {
                                     val target = (exoPlayer.currentPosition - seekJumpMs).coerceAtLeast(0L)
                                     exoPlayer.seekTo(target)
-                                    currentPositionMs = target
+                                    clockState.positionMs = target
                                     seekFeedbackText = "-${seekJumpSeconds}s"
                                 },
                                 modifier = Modifier
@@ -1317,7 +1379,9 @@ private fun ActiveVideoPlayerContent(
                         Surface(
                             shape = CircleShape,
                             color = colors.accentPrimary,
-                            modifier = Modifier.size(66.dp)
+                            modifier = Modifier
+                                .size(66.dp)
+                                .isolatePlayerControlTouch()
                         ) {
                             IconButton(
                                 onClick = {
@@ -1353,7 +1417,9 @@ private fun ActiveVideoPlayerContent(
                         Surface(
                             shape = CircleShape,
                             color = Color.Black.copy(alpha = 0.45f),
-                            modifier = Modifier.size(52.dp)
+                            modifier = Modifier
+                                .size(52.dp)
+                                .isolatePlayerControlTouch()
                         ) {
                             IconButton(
                                 onClick = {
@@ -1364,7 +1430,7 @@ private fun ActiveVideoPlayerContent(
                                         exoPlayer.currentPosition + seekJumpMs
                                     }
                                     exoPlayer.seekTo(target)
-                                    currentPositionMs = target
+                                    clockState.positionMs = target
                                     seekFeedbackText = "+${seekJumpSeconds}s"
                                 },
                                 modifier = Modifier
@@ -1386,60 +1452,21 @@ private fun ActiveVideoPlayerContent(
                         modifier = Modifier
                             .fillMaxWidth()
                             .align(Alignment.BottomCenter)
+                            .isolatePlayerControlTouch()
                             .padding(horizontal = 16.dp, vertical = 12.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        val effectiveDuration = durationMs.coerceAtLeast(1L)
-                        val displayPosition = when {
-                            isHorizontalScrubbing -> scrubTargetMs
-                            isSeeking -> seekSliderPosMs.toLong()
-                            else -> currentPositionMs
-                        }
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Text(
-                                text = formatPlaybackClock(displayPosition),
-                                style = typography.caption.copy(fontWeight = FontWeight.Medium),
-                                color = Color.White
-                            )
-                            Slider(
-                                value = if (durationMs > 0L) {
-                                    displayPosition.toFloat().coerceIn(0f, effectiveDuration.toFloat())
-                                } else {
-                                    0f
-                                },
-                                valueRange = 0f..effectiveDuration.toFloat(),
-                                enabled = durationMs > 0L,
-                                onValueChange = { value ->
-                                    isSeeking = true
-                                    seekSliderPosMs = value
-                                },
-                                onValueChangeFinished = {
-                                    val target = seekSliderPosMs.toLong().coerceIn(0L, effectiveDuration)
-                                    exoPlayer.seekTo(target)
-                                    currentPositionMs = target
-                                    isSeeking = false
-                                    latestSaveEpisodeProgress(target, durationMs, playbackEpisodeKey)
-                                },
-                                colors = SliderDefaults.colors(
-                                    thumbColor = colors.accentPrimary,
-                                    activeTrackColor = colors.accentPrimary,
-                                    inactiveTrackColor = Color.White.copy(alpha = 0.28f)
-                                ),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .testTag("player_seek_slider")
-                            )
-                            Text(
-                                text = formatPlaybackClock(durationMs),
-                                style = typography.caption.copy(fontWeight = FontWeight.Medium),
-                                color = Color.White.copy(alpha = 0.8f)
-                            )
-                        }
+                        PlayerTimelineBar(
+                            clockState = clockState,
+                            exoPlayer = exoPlayer,
+                            isHorizontalScrubbing = isHorizontalScrubbing,
+                            scrubTargetMs = scrubTargetMs,
+                            isSeeking = isSeeking,
+                            onSeekingChange = { seeking -> isSeeking = seeking },
+                            onSaveProgress = { posMs, durMs ->
+                                latestSaveEpisodeProgress(posMs, durMs, playbackEpisodeKey)
+                            }
+                        )
 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1629,29 +1656,32 @@ private fun ActiveVideoPlayerContent(
         )
 
         // Horizontal Scrubbing HUD with Dynamic Sensitivity
-        PlayerHorizontalScrubHud(
+        PlayerScrubHudSlot(
             visible = isHorizontalScrubbing && playerErrorText == null,
             scrubTargetMs = scrubTargetMs,
             scrubDeltaMs = scrubDeltaMs,
-            durationMs = durationMs,
+            clockState = clockState,
             sensitivityTier = scrubSensitivityTier,
             modifier = Modifier.align(Alignment.Center)
         )
 
-        // Buffering Indicator (rendered above controls scrim so it stays crisp)
+        // Buffering Indicator (positioned above Play/Pause when controls are open so neither collides)
         if (isBuffering && playerErrorText == null && !isHorizontalScrubbing) {
+            val offsetForControls = showControls && !isLocked
             Surface(
                 shape = CircleShape,
-                color = Color.Black.copy(alpha = 0.56f),
+                color = Color.Black.copy(alpha = 0.60f),
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .size(56.dp)
+                    .padding(bottom = if (offsetForControls) 120.dp else 0.dp)
+                    .size(if (offsetForControls) 42.dp else 56.dp)
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(
                         color = colors.accentPrimary,
+                        strokeWidth = if (offsetForControls) 2.5.dp else 3.5.dp,
                         modifier = Modifier
-                            .size(36.dp)
+                            .size(if (offsetForControls) 24.dp else 36.dp)
                             .testTag("player_buffering_indicator")
                     )
                 }
@@ -1676,14 +1706,28 @@ private fun ActiveVideoPlayerContent(
                 .padding(bottom = if (showControls && !isLocked) 120.dp else 0.dp)
         )
 
-        // Metadata-gated Skip Intro / Skip Recap floating pills (never shown if windows are null)
-        val activeSkipWindow = when {
-            isLocked || playerErrorText != null || isHorizontalScrubbing || showNextEpisodeCard || showMovieEndCard -> null
-            introWindow != null && currentPositionMs >= introWindow.startMs && currentPositionMs < introWindow.endMs ->
-                Triple(introWindow, "Skip Intro", "player_skip_intro_button")
-            recapWindow != null && currentPositionMs >= recapWindow.startMs && currentPositionMs < recapWindow.endMs ->
-                Triple(recapWindow, "Skip Recap", "player_skip_recap_button")
-            else -> null
+        // Metadata-gated Skip Intro / Skip Recap floating pills (derivedStateOf avoids 400ms recompositions)
+        val activeSkipWindow by remember(
+            introWindow,
+            recapWindow,
+            isLocked,
+            playerErrorText,
+            isHorizontalScrubbing,
+            showNextEpisodeCard,
+            showMovieEndCard,
+            clockState
+        ) {
+            derivedStateOf {
+                val pos = clockState.positionMs
+                when {
+                    isLocked || playerErrorText != null || isHorizontalScrubbing || showNextEpisodeCard || showMovieEndCard -> null
+                    introWindow != null && pos >= introWindow.startMs && pos < introWindow.endMs ->
+                        Triple(introWindow, "Skip Intro", "player_skip_intro_button")
+                    recapWindow != null && pos >= recapWindow.startMs && pos < recapWindow.endMs ->
+                        Triple(recapWindow, "Skip Recap", "player_skip_recap_button")
+                    else -> null
+                }
+            }
         }
         AnimatedVisibility(
             visible = activeSkipWindow != null,
@@ -1704,7 +1748,7 @@ private fun ActiveVideoPlayerContent(
                         .clickable {
                             val target = window.endMs.coerceAtLeast(0L)
                             exoPlayer.seekTo(target)
-                            currentPositionMs = target
+                            clockState.positionMs = target
                             latestSaveEpisodeProgress(
                                 target,
                                 exoPlayer.duration.coerceAtLeast(0L),
@@ -1915,7 +1959,7 @@ private fun ActiveVideoPlayerContent(
                                     isPlaybackEnded = false
                                     endCardDismissed = false
                                     exoPlayer.seekTo(0L)
-                                    currentPositionMs = 0L
+                                    clockState.positionMs = 0L
                                     exoPlayer.play()
                                     isPlaying = true
                                 },
@@ -2447,3 +2491,115 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     is ContextWrapper -> baseContext.findActivity()
     else -> null
 }
+
+@Stable
+internal class PlayerClockState(initialPositionMs: Long = 0L) {
+    var positionMs by mutableLongStateOf(initialPositionMs.coerceAtLeast(0L))
+    var durationMs by mutableLongStateOf(0L)
+}
+
+internal fun Modifier.isolatePlayerControlTouch(): Modifier = this.pointerInput(Unit) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        down.consume()
+        while (true) {
+            val event = awaitPointerEvent(PointerEventPass.Main)
+            event.changes.forEach { it.consume() }
+            if (event.changes.none { it.pressed }) {
+                break
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlayerTimelineBar(
+    clockState: PlayerClockState,
+    exoPlayer: ExoPlayer,
+    isHorizontalScrubbing: Boolean,
+    scrubTargetMs: Long,
+    isSeeking: Boolean,
+    onSeekingChange: (Boolean) -> Unit,
+    onSaveProgress: (posMs: Long, durMs: Long) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val colors = LaterboxTheme.colors
+    val typography = LaterboxTheme.typography
+    var seekSliderPosMs by remember { mutableFloatStateOf(0f) }
+
+    val durationMs = clockState.durationMs
+    val effectiveDuration = durationMs.coerceAtLeast(1L)
+    val displayPosition = when {
+        isHorizontalScrubbing -> scrubTargetMs
+        isSeeking -> seekSliderPosMs.toLong()
+        else -> clockState.positionMs
+    }
+
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text(
+            text = formatPlaybackClock(displayPosition),
+            style = typography.caption.copy(fontWeight = FontWeight.Medium),
+            color = Color.White,
+            modifier = Modifier.testTag("player_clock_position")
+        )
+        Slider(
+            value = if (durationMs > 0L) {
+                displayPosition.toFloat().coerceIn(0f, effectiveDuration.toFloat())
+            } else {
+                0f
+            },
+            valueRange = 0f..effectiveDuration.toFloat(),
+            enabled = durationMs > 0L,
+            onValueChange = { value ->
+                onSeekingChange(true)
+                seekSliderPosMs = value
+            },
+            onValueChangeFinished = {
+                val target = seekSliderPosMs.toLong().coerceIn(0L, effectiveDuration)
+                exoPlayer.seekTo(target)
+                clockState.positionMs = target
+                onSeekingChange(false)
+                onSaveProgress(target, durationMs)
+            },
+            colors = SliderDefaults.colors(
+                thumbColor = colors.accentPrimary,
+                activeTrackColor = colors.accentPrimary,
+                inactiveTrackColor = Color.White.copy(alpha = 0.28f)
+            ),
+            modifier = Modifier
+                .weight(1f)
+                .testTag("player_seek_slider")
+        )
+        Text(
+            text = formatPlaybackClock(durationMs),
+            style = typography.caption.copy(fontWeight = FontWeight.Medium),
+            color = Color.White.copy(alpha = 0.8f),
+            modifier = Modifier.testTag("player_clock_duration")
+        )
+    }
+}
+
+@Composable
+private fun PlayerScrubHudSlot(
+    visible: Boolean,
+    scrubTargetMs: Long,
+    scrubDeltaMs: Long,
+    clockState: PlayerClockState,
+    sensitivityTier: SeekSensitivityTier,
+    modifier: Modifier = Modifier
+) {
+    val dur = if (visible) clockState.durationMs else 0L
+    PlayerHorizontalScrubHud(
+        visible = visible,
+        scrubTargetMs = scrubTargetMs,
+        scrubDeltaMs = scrubDeltaMs,
+        durationMs = dur,
+        sensitivityTier = sensitivityTier,
+        modifier = modifier
+    )
+}
+
