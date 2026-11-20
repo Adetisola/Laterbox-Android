@@ -1141,9 +1141,45 @@ fun LaterboxApp(
                                         LaterboxDestination.CollectionDetail.createRoute(colId, colName)
                                     )
                                 },
+                                onOpenWatchlist = {
+                                    navController.navigate(LaterboxDestination.MoviesWatchlist.route)
+                                },
                                 onClearActionFeedback = moviesHomeViewModel::clearActionFeedback,
                                 onMenuClick = openMenuHandler,
                                 bottomPaddingDp = if (showHandsetBottomBar) 96 else 24
+                            )
+                        }
+
+                        // Dedicated Watchlist Grid Screen
+                        composable(LaterboxDestination.MoviesWatchlist.route) {
+                            val watchlistUiState by moviesHomeViewModel.uiState.collectAsState()
+                            LaunchedEffect(watchlistUiState.actionErrorMessage) {
+                                val err = watchlistUiState.actionErrorMessage ?: return@LaunchedEffect
+                                snackbarHostState.showSnackbar(err, duration = SnackbarDuration.Short)
+                                moviesHomeViewModel.clearActionError()
+                            }
+                            com.laterbox.app.movies.ui.MoviesWatchlistScreen(
+                                watchlist = watchlistUiState.watchlist,
+                                offlineMatches = watchlistUiState.offlineMatches,
+                                collections = watchlistUiState.collections,
+                                isLoading = watchlistUiState.isLoading,
+                                onBackClick = { navController.popBackStack() },
+                                onExploreClick = {
+                                    navController.navigate(LaterboxDestination.Movies.route) {
+                                        popUpTo(LaterboxDestination.Movies.route) { inclusive = true }
+                                        launchSingleTop = true
+                                    }
+                                },
+                                onOpenDetail = { providerId, titleId ->
+                                    navController.navigate(
+                                        LaterboxDestination.MovieDetail.createRoute(providerId, titleId)
+                                    )
+                                },
+                                onToggleWatchlist = moviesHomeViewModel::toggleWatchlist,
+                                onMarkWatched = moviesHomeViewModel::markWatched,
+                                onHideTitle = moviesHomeViewModel::hideTitle,
+                                onAddToCollection = moviesHomeViewModel::addToCollection,
+                                onCreateAndAddToCollection = moviesHomeViewModel::createAndAddToCollection
                             )
                         }
 
@@ -1155,7 +1191,8 @@ fun LaterboxApp(
                                 navArgument("genre") { type = NavType.StringType; defaultValue = ""; nullable = true },
                                 navArgument("query") { type = NavType.StringType; defaultValue = ""; nullable = true },
                                 navArgument("sort") { type = NavType.StringType; defaultValue = ""; nullable = true },
-                                navArgument("country") { type = NavType.StringType; defaultValue = ""; nullable = true }
+                                navArgument("country") { type = NavType.StringType; defaultValue = ""; nullable = true },
+                                navArgument("focusSearch") { type = NavType.BoolType; defaultValue = false }
                             )
                         ) { backStackEntry ->
                             val rawKind = backStackEntry.arguments?.getString("kind")
@@ -1168,6 +1205,7 @@ fun LaterboxApp(
                                 ?.takeIf { it.isNotBlank() }
                             val rawCountry = backStackEntry.arguments?.getString("country")
                                 ?.takeIf { it.isNotBlank() }
+                            val focusSearch = backStackEntry.arguments?.getBoolean("focusSearch") == true
                             val initialKind = rawKind?.let { com.laterbox.app.movies.domain.model.MediaKind.fromWire(it) }
                             val initialSort = com.laterbox.app.movies.domain.model.CatalogueSort.fromWire(rawSort)
 
@@ -1226,7 +1264,8 @@ fun LaterboxApp(
                                 onHideTitle = moviesCatalogueViewModel::hideTitle,
                                 onAddToCollection = moviesCatalogueViewModel::addToCollection,
                                 onCreateAndAddToCollection = moviesCatalogueViewModel::createAndAddToCollection,
-                                onClearActionFeedback = moviesCatalogueViewModel::clearActionFeedback
+                                onClearActionFeedback = moviesCatalogueViewModel::clearActionFeedback,
+                                autoFocusSearch = focusSearch
                             )
                         }
 
@@ -1751,7 +1790,16 @@ fun LaterboxApp(
                     onNavigateSettings = { navigateTopLevel(LaterboxDestination.Settings.route) },
                     onNewChatClick = handleNewChat,
                     onConversationClick = handleOpenConversation,
-                    onDeleteConversation = { convId -> chatViewModel.deleteConversation(convId) }
+                    onDeleteConversation = { convId -> chatViewModel.deleteConversation(convId) },
+                    currentRoute = currentRoute,
+                    onNavigateMoviesSubRoute = { subRoute ->
+                        haptics.tick()
+                        closeDrawerIfNarrow()
+                        navController.navigate(subRoute) {
+                            popUpTo(LaterboxDestination.Inbox.route)
+                            launchSingleTop = false
+                        }
+                    }
                 )
                 Box(modifier = Modifier.weight(1f)) {
                     mainContent()
@@ -1781,7 +1829,16 @@ fun LaterboxApp(
                         onNavigateSettings = { navigateTopLevel(LaterboxDestination.Settings.route) },
                         onNewChatClick = handleNewChat,
                         onConversationClick = handleOpenConversation,
-                        onDeleteConversation = { convId -> chatViewModel.deleteConversation(convId) }
+                        onDeleteConversation = { convId -> chatViewModel.deleteConversation(convId) },
+                        currentRoute = currentRoute,
+                        onNavigateMoviesSubRoute = { subRoute ->
+                            haptics.tick()
+                            closeDrawerIfNarrow()
+                            navController.navigate(subRoute) {
+                                popUpTo(LaterboxDestination.Inbox.route)
+                                launchSingleTop = false
+                            }
+                        }
                     )
                 }
             ) {

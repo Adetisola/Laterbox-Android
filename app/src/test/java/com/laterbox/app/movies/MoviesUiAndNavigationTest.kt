@@ -870,6 +870,8 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithText("Powered by", substring = true).assertDoesNotExist()
         composeTestRule.onNodeWithTag("movies_home_genre_fantasy").assertDoesNotExist()
 
+        composeTestRule.onNodeWithTag("movies_home_filters_row").performScrollToNode(hasTestTag("movies_home_regions_expand_toggle"))
+        composeTestRule.onNodeWithTag("movies_home_regions_expand_toggle").performClick()
         composeTestRule.onNodeWithTag("movies_home_filters_row").performScrollToNode(hasTestTag("movies_home_shortcut_k_drama"))
         composeTestRule.onNodeWithTag("movies_home_shortcut_k_drama").assertIsDisplayed().performClick()
         assertEquals(com.laterbox.app.movies.domain.model.MoviesDiscoveryShortcut.K_DRAMA, clickedShortcut)
@@ -1524,9 +1526,8 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithTag("movies_home_list").performScrollToNode(hasTestTag("movies_home_recently_viewed_rail"))
         composeTestRule.onNodeWithTag("movies_home_recently_viewed_rail").assertIsDisplayed()
 
-        composeTestRule.onNodeWithTag("movies_home_list").performScrollToNode(hasTestTag("movies_home_collections_rail"))
-        composeTestRule.onNodeWithTag("movies_home_collection_7").performClick()
-        assertEquals(7L, openedCollectionId)
+        composeTestRule.onNodeWithTag("movies_home_collections_rail").assertDoesNotExist()
+        assertEquals(null, openedCollectionId)
 
         composeTestRule.onNodeWithTag("movies_home_list").performScrollToNode(hasTestTag("movies_home_byw_rail_0"))
         composeTestRule.onNodeWithTag("movies_home_byw_rail_0").assertIsDisplayed()

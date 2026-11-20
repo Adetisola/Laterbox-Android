@@ -54,6 +54,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalFocusManager
@@ -106,6 +108,7 @@ fun MoviesCatalogueScreen(
     onAddToCollection: (MovieTitleSummary, Long) -> Unit = { _, _ -> },
     onCreateAndAddToCollection: (MovieTitleSummary, String) -> Unit = { _, _ -> },
     onClearActionFeedback: () -> Unit = {},
+    autoFocusSearch: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -215,6 +218,14 @@ fun MoviesCatalogueScreen(
                         modifier = Modifier.size(16.dp),
                         tint = colors.textTertiary
                     )
+                    val searchFocusRequester = remember { FocusRequester() }
+                    LaunchedEffect(autoFocusSearch) {
+                        if (autoFocusSearch) {
+                            delay(60L)
+                            runCatching { searchFocusRequester.requestFocus() }
+                            onSearchFocusChange(true)
+                        }
+                    }
                     val searchInteractionSource = remember { MutableInteractionSource() }
                     LaunchedEffect(searchInteractionSource) {
                         searchInteractionSource.interactions.collect { interaction ->
@@ -253,6 +264,7 @@ fun MoviesCatalogueScreen(
                             ),
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .focusRequester(searchFocusRequester)
                                 .onFocusChanged { onSearchFocusChange(it.isFocused) }
                                 .testTag("catalogue_search_input")
                         )

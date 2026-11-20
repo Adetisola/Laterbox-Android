@@ -25,6 +25,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -42,11 +43,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalFocusManager
@@ -70,6 +73,7 @@ import kotlinx.coroutines.delay
 import kotlin.math.abs
 
 private val YEAR_FILTER_OPTIONS = listOf("All", "2025", "2024", "2020s", "2010s", "2000s", "Classic")
+private val PRIORITY_GENRE_ORDER = listOf("Anime", "Action", "Adventure", "Biography")
 
 @Composable
 fun MoviesScreen(
@@ -109,6 +113,7 @@ fun MoviesScreen(
     onMarkContinueWatchingWatched: (WatchHistoryItem) -> Unit = {},
     onRemoveRecentlyViewed: (MovieTitleSummary) -> Unit = {},
     onOpenCollection: (collectionId: Long, collectionName: String) -> Unit = { _, _ -> },
+    onOpenWatchlist: () -> Unit = {},
     onClearActionFeedback: () -> Unit = {},
     onMenuClick: (() -> Unit)? = null,
     bottomPaddingDp: Int = 96,
@@ -124,6 +129,8 @@ fun MoviesScreen(
 
     var isFilterRowVisible by remember { mutableStateOf(true) }
     var showExpandedFilters by remember { mutableStateOf(false) }
+    var isGenresExpanded by rememberSaveable { mutableStateOf(false) }
+    var isRegionsExpanded by rememberSaveable { mutableStateOf(false) }
     var collectionPickerTarget by remember { mutableStateOf<MovieTitleSummary?>(null) }
     var pendingRemoveViewed by remember { mutableStateOf<MovieTitleSummary?>(null) }
     var prevIndex by remember(uiState.isFilteredMode) { mutableIntStateOf(0) }
@@ -352,13 +359,36 @@ fun MoviesScreen(
                         val offlineLookup = remember(uiState.offlineMatches) {
                             OfflineMediaLookup.from(uiState.offlineMatches)
                         }
-                        val genresList = remember(feed.genres) {
-                            val cleaned = feed.genres.distinct()
-                            if (cleaned.any { it.equals("All", ignoreCase = true) }) {
-                                cleaned
-                            } else {
-                                listOf("All") + cleaned
+                        val orderedGenres = remember(feed.genres) {
+                            val raw = feed.genres
+                                .map { it.trim() }
+                                .filter {
+                                    it.isNotBlank() &&
+                                        !it.equals("All", ignoreCase = true) &&
+                                        !it.equals("Western", ignoreCase = true)
+                                }
+                                .distinctBy { it.lowercase() }
+                            val priority = PRIORITY_GENRE_ORDER.mapNotNull { target ->
+                                raw.firstOrNull { it.equals(target, ignoreCase = true) }
                             }
+                            val remaining = raw.filter { candidate ->
+                                PRIORITY_GENRE_ORDER.none { it.equals(candidate, ignoreCase = true) }
+                            }
+                            priority + remaining
+                        }
+                        val regionFilterItems = remember(uiState.availableCountries) {
+                            val shortcuts = MoviesDiscoveryShortcut.entries.map { shortcut ->
+                                RegionFilterItem.Shortcut(shortcut)
+                            }
+                            val countries = uiState.availableCountries
+                                .map { it.trim() }
+                                .filter { it.isNotBlank() && !it.equals("All", ignoreCase = true) }
+                                .distinctBy { it.lowercase() }
+                                .filter { country ->
+                                    MoviesDiscoveryShortcut.entries.none { it.label.equals(country, ignoreCase = true) }
+                                }
+                                .map { country -> RegionFilterItem.Country(country) }
+                            shortcuts + countries
                         }
 
                         // Single consolidated horizontal filter row that collapses on scroll down and reveals on scroll up
@@ -416,51 +446,35 @@ fun MoviesScreen(
                                         )
                                     }
 
-                                    // Kind chips (All / Movies / TV Series)
-                                    item(key = "kind_all") {
-                                        FilterChipPill(
-                                            label = "All",
-                                            selected = uiState.selectedKind == null,
-                                            onClick = { onSelectKind(null) },
-                                            modifier = Modifier.testTag("movies_home_kind_all")
-                                        )
-                                    }
+                                    // Group 1: Toggleable Content Type (All Movies / TV Series)
                                     item(key = "kind_movie") {
+                                        val isSelected = uiState.selectedKind == MediaKind.MOVIE
                                         FilterChipPill(
-                                            label = "Movies",
-                                            selected = uiState.selectedKind == MediaKind.MOVIE,
-                                            onClick = { onSelectKind(MediaKind.MOVIE) },
+                                            label = "All Movies",
+                                            selected = isSelected,
+                                            onClick = {
+                                                onSelectKind(if (isSelected) null else MediaKind.MOVIE)
+                                            },
                                             modifier = Modifier.testTag("movies_home_kind_movie")
                                         )
                                     }
                                     item(key = "kind_tv") {
+                                        val isSelected = uiState.selectedKind == MediaKind.TV_SERIES
                                         FilterChipPill(
                                             label = "TV Series",
-                                            selected = uiState.selectedKind == MediaKind.TV_SERIES,
-                                            onClick = { onSelectKind(MediaKind.TV_SERIES) },
+                                            selected = isSelected,
+                                            onClick = {
+                                                onSelectKind(if (isSelected) null else MediaKind.TV_SERIES)
+                                            },
                                             modifier = Modifier.testTag("movies_home_kind_tv")
                                         )
                                     }
 
-                                    item(key = "kind_shortcut_divider") {
+                                    item(key = "kind_sort_divider") {
                                         FilterRowVerticalDivider()
                                     }
 
-                                    // Discovery shortcuts (Hollywood, Bollywood, Western, K-Drama)
-                                    items(MoviesDiscoveryShortcut.entries, key = { "shortcut_${it.id}" }) { shortcut ->
-                                        FilterChipPill(
-                                            label = shortcut.label,
-                                            selected = uiState.activeShortcut == shortcut,
-                                            onClick = { onSelectShortcut(shortcut) },
-                                            modifier = Modifier.testTag("movies_home_shortcut_${shortcut.id}")
-                                        )
-                                    }
-
-                                    item(key = "shortcut_sort_divider") {
-                                        FilterRowVerticalDivider()
-                                    }
-
-                                    // Sort chips (Popular, Top Rated, Newest)
+                                    // Group 2: Popularity / Recency Sort (Popular, Top Rated, Newest)
                                     items(CatalogueSort.entries, key = { "sort_${it.wireValue}" }) { sort ->
                                         FilterChipPill(
                                             label = sort.label,
@@ -470,33 +484,67 @@ fun MoviesScreen(
                                         )
                                     }
 
-                                    // Country chips
-                                    if (uiState.availableCountries.isNotEmpty()) {
-                                        item(key = "sort_country_divider") {
+                                    // Group 3: Actual Genres (max 3 visible initially + minimal arrow expand/collapse)
+                                    if (orderedGenres.isNotEmpty()) {
+                                        item(key = "sort_genre_divider") {
                                             FilterRowVerticalDivider()
                                         }
-                                        items(uiState.availableCountries, key = { "country_$it" }) { country ->
-                                            FilterChipPill(
-                                                label = if (country == "All") "All Regions" else country,
-                                                selected = uiState.selectedCountry == country,
-                                                onClick = { onSelectCountry(country) },
-                                                modifier = Modifier.testTag("movies_home_country_${country.lowercase().replace(' ', '_')}")
-                                            )
-                                        }
-                                    }
-
-                                    // Genre chips
-                                    if (genresList.size > 1) {
-                                        item(key = "country_genre_divider") {
-                                            FilterRowVerticalDivider()
-                                        }
-                                        items(genresList, key = { "genre_$it" }) { genre ->
+                                        val visibleGenres = if (isGenresExpanded) orderedGenres else orderedGenres.take(3)
+                                        items(visibleGenres, key = { "genre_$it" }) { genre ->
                                             FilterChipPill(
                                                 label = genre,
                                                 selected = uiState.selectedGenre == genre,
                                                 onClick = { onSelectGenre(genre) },
                                                 modifier = Modifier.testTag("movies_home_genre_${genre.lowercase().replace(' ', '_')}")
                                             )
+                                        }
+                                        if (orderedGenres.size > 3) {
+                                            item(key = "genres_expand_toggle") {
+                                                FilterExpandArrowChip(
+                                                    expanded = isGenresExpanded,
+                                                    onClick = { isGenresExpanded = !isGenresExpanded },
+                                                    contentDescription = if (isGenresExpanded) "Collapse genres" else "Expand genres",
+                                                    modifier = Modifier.testTag("movies_home_genres_expand_toggle")
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    // Group 4: Regional / Industry (Hollywood, Bollywood, Western, K-Drama + countries; max 3 visible + expand arrow)
+                                    if (regionFilterItems.isNotEmpty()) {
+                                        item(key = "genre_region_divider") {
+                                            FilterRowVerticalDivider()
+                                        }
+                                        val visibleRegions = if (isRegionsExpanded) regionFilterItems else regionFilterItems.take(3)
+                                        items(visibleRegions, key = { it.key }) { regionItem ->
+                                            when (regionItem) {
+                                                is RegionFilterItem.Shortcut -> {
+                                                    FilterChipPill(
+                                                        label = regionItem.shortcut.label,
+                                                        selected = uiState.activeShortcut == regionItem.shortcut,
+                                                        onClick = { onSelectShortcut(regionItem.shortcut) },
+                                                        modifier = Modifier.testTag("movies_home_shortcut_${regionItem.shortcut.id}")
+                                                    )
+                                                }
+                                                is RegionFilterItem.Country -> {
+                                                    FilterChipPill(
+                                                        label = regionItem.country,
+                                                        selected = uiState.selectedCountry == regionItem.country,
+                                                        onClick = { onSelectCountry(regionItem.country) },
+                                                        modifier = Modifier.testTag("movies_home_country_${regionItem.country.lowercase().replace(' ', '_')}")
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        if (regionFilterItems.size > 3) {
+                                            item(key = "regions_expand_toggle") {
+                                                FilterExpandArrowChip(
+                                                    expanded = isRegionsExpanded,
+                                                    onClick = { isRegionsExpanded = !isRegionsExpanded },
+                                                    contentDescription = if (isRegionsExpanded) "Collapse regions" else "Expand regions",
+                                                    modifier = Modifier.testTag("movies_home_regions_expand_toggle")
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -914,6 +962,40 @@ fun MoviesScreen(
                                     }
                                 }
 
+                                // Your Watchlist Rail
+                                if (uiState.watchlist.isNotEmpty()) {
+                                    item(key = "watchlist_rail") {
+                                        Column(
+                                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                                            modifier = Modifier.testTag("movies_home_watchlist_rail")
+                                        ) {
+                                            SectionHeaderRow(
+                                                title = "Your Watchlist",
+                                                subtitle = "${uiState.watchlist.size} saved titles",
+                                                onSeeAll = onOpenWatchlist
+                                            )
+                                            LazyRow(
+                                                contentPadding = PaddingValues(horizontal = 16.dp),
+                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                            ) {
+                                                items(uiState.watchlist, key = { "wl_${it.compositeId}" }) { item ->
+                                                    val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
+                                                    MoviePosterCard(
+                                                        item = item,
+                                                        onClick = { onOpenDetail(item.providerId, item.id) },
+                                                        isOfflineDownloaded = isOffline,
+                                                        isInWatchlist = true,
+                                                        onToggleWatchlist = onToggleWatchlist,
+                                                        onAddToCollection = { collectionPickerTarget = it },
+                                                        onMarkWatched = onMarkWatched,
+                                                        onHideTitle = onHideTitle
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
                                 // Recently Viewed Rail
                                 if (uiState.recentlyViewed.isNotEmpty()) {
                                     item(key = "recently_viewed_rail") {
@@ -947,58 +1029,6 @@ fun MoviesScreen(
                                                         onRemoveFromViewed = { pendingRemoveViewed = it },
                                                         menuButtonTestTag = "poster_menu_recent_${item.id}"
                                                     )
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // Your Collections Quick Strip
-                                if (uiState.collectionsWithCounts.isNotEmpty()) {
-                                    item(key = "collections_strip") {
-                                        Column(
-                                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                                            modifier = Modifier.testTag("movies_home_collections_rail")
-                                        ) {
-                                            SectionHeaderRow(
-                                                title = "Your Collections",
-                                                subtitle = "Mixed shelves of saved links, films & series",
-                                                onSeeAll = null
-                                            )
-                                            LazyRow(
-                                                contentPadding = PaddingValues(horizontal = 16.dp),
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                            ) {
-                                                items(uiState.collectionsWithCounts, key = { "col_${it.collection.id}" }) { colWithCount ->
-                                                    Surface(
-                                                        shape = RoundedCornerShape(14.dp),
-                                                        color = colors.surfacePrimary,
-                                                        border = BorderStroke(0.75.dp, colors.borderSubtle),
-                                                        modifier = Modifier
-                                                            .clip(RoundedCornerShape(14.dp))
-                                                            .clickable {
-                                                                onOpenCollection(colWithCount.collection.id, colWithCount.collection.name)
-                                                            }
-                                                            .testTag("movies_home_collection_${colWithCount.collection.id}")
-                                                    ) {
-                                                        Row(
-                                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
-                                                            verticalAlignment = Alignment.CenterVertically,
-                                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                                        ) {
-                                                            Icon(
-                                                                painter = painterResource(LaterboxIcons.Folder),
-                                                                contentDescription = null,
-                                                                tint = colors.accentPrimary,
-                                                                modifier = Modifier.size(16.dp)
-                                                            )
-                                                            Text(
-                                                                text = colWithCount.collection.name,
-                                                                style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
-                                                                color = colors.textPrimary
-                                                            )
-                                                        }
-                                                    }
                                                 }
                                             }
                                         }
@@ -1274,37 +1304,6 @@ fun MoviesScreen(
                                     }
                                 }
 
-                                // Watchlist Rail
-                                if (uiState.watchlist.isNotEmpty()) {
-                                    item(key = "watchlist_rail") {
-                                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                            SectionHeaderRow(
-                                                title = "Your Watchlist",
-                                                subtitle = "${uiState.watchlist.size} saved titles",
-                                                onSeeAll = null
-                                            )
-                                            LazyRow(
-                                                contentPadding = PaddingValues(horizontal = 16.dp),
-                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                            ) {
-                                                items(uiState.watchlist, key = { "wl_${it.compositeId}" }) { item ->
-                                                    val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
-                                                    MoviePosterCard(
-                                                        item = item,
-                                                        onClick = { onOpenDetail(item.providerId, item.id) },
-                                                        isOfflineDownloaded = isOffline,
-                                                        isInWatchlist = true,
-                                                        onToggleWatchlist = onToggleWatchlist,
-                                                        onAddToCollection = { collectionPickerTarget = it },
-                                                        onMarkWatched = onMarkWatched,
-                                                        onHideTitle = onHideTitle
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
                                 // Discovery Feed Rails
                                 items(visibleSections, key = { (section, _) -> section.id }) { (section, sectionItems) ->
                                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1461,3 +1460,46 @@ private fun SectionHeaderRow(
         }
     }
 }
+
+private sealed interface RegionFilterItem {
+    val key: String
+
+    data class Shortcut(val shortcut: MoviesDiscoveryShortcut) : RegionFilterItem {
+        override val key: String = "region_shortcut_${shortcut.id}"
+    }
+
+    data class Country(val country: String) : RegionFilterItem {
+        override val key: String = "region_country_${country.lowercase()}"
+    }
+}
+
+@Composable
+private fun FilterExpandArrowChip(
+    expanded: Boolean,
+    onClick: () -> Unit,
+    contentDescription: String,
+    modifier: Modifier = Modifier
+) {
+    val colors = LaterboxTheme.colors
+    Surface(
+        modifier = modifier
+            .size(28.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onClick),
+        shape = CircleShape,
+        color = colors.surfacePrimary,
+        border = BorderStroke(0.75.dp, colors.borderSubtle)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                painter = painterResource(LaterboxIcons.ChevronRight),
+                contentDescription = contentDescription,
+                tint = colors.textSecondary,
+                modifier = Modifier
+                    .size(14.dp)
+                    .rotate(if (expanded) 180f else 0f)
+            )
+        }
+    }
+}
+

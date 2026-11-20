@@ -1,6 +1,11 @@
 package com.laterbox.app.ui.components
 
 import androidx.annotation.DrawableRes
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -27,13 +32,16 @@ import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
@@ -42,6 +50,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.laterbox.app.data.local.entity.ChatConversationEntity
+import com.laterbox.app.movies.domain.model.CatalogueSort
+import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.ui.navigation.LaterboxDestination
 import com.laterbox.app.ui.theme.LaterboxTheme
 
@@ -73,6 +83,8 @@ fun LaterboxModalDrawerSheet(
     onNewChatClick: () -> Unit,
     onConversationClick: (ChatConversationEntity) -> Unit,
     onDeleteConversation: (String) -> Unit,
+    currentRoute: String? = null,
+    onNavigateMoviesSubRoute: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -96,7 +108,9 @@ fun LaterboxModalDrawerSheet(
             onNavigateSettings = onNavigateSettings,
             onNewChatClick = onNewChatClick,
             onConversationClick = onConversationClick,
-            onDeleteConversation = onDeleteConversation
+            onDeleteConversation = onDeleteConversation,
+            currentRoute = currentRoute,
+            onNavigateMoviesSubRoute = onNavigateMoviesSubRoute
         )
     }
 }
@@ -118,6 +132,8 @@ fun LaterboxPersistentSidePanel(
     onNewChatClick: () -> Unit,
     onConversationClick: (ChatConversationEntity) -> Unit,
     onDeleteConversation: (String) -> Unit,
+    currentRoute: String? = null,
+    onNavigateMoviesSubRoute: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -145,6 +161,8 @@ fun LaterboxPersistentSidePanel(
                 onNewChatClick = onNewChatClick,
                 onConversationClick = onConversationClick,
                 onDeleteConversation = onDeleteConversation,
+                currentRoute = currentRoute,
+                onNavigateMoviesSubRoute = onNavigateMoviesSubRoute,
                 modifier = Modifier.weight(1f)
             )
             Box(
@@ -174,6 +192,8 @@ fun LaterboxDrawerContent(
     onNewChatClick: () -> Unit,
     onConversationClick: (ChatConversationEntity) -> Unit,
     onDeleteConversation: (String) -> Unit,
+    currentRoute: String? = null,
+    onNavigateMoviesSubRoute: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -181,6 +201,15 @@ fun LaterboxDrawerContent(
     val spacing = LaterboxTheme.spacing
 
     var conversationPendingDelete by remember { mutableStateOf<ChatConversationEntity?>(null) }
+
+    val isOnMoviesRoute = currentSection == DrawerPrimarySection.MOVIES ||
+        currentRoute?.startsWith("movies") == true
+    var isMoviesExpanded by rememberSaveable { mutableStateOf(isOnMoviesRoute) }
+    LaunchedEffect(isOnMoviesRoute) {
+        if (isOnMoviesRoute) {
+            isMoviesExpanded = true
+        }
+    }
 
     conversationPendingDelete?.let { conv ->
         LaterboxConfirmDialog(
@@ -267,11 +296,13 @@ fun LaterboxDrawerContent(
                     selected = currentSection == DrawerPrimarySection.COLLECTIONS,
                     onClick = onNavigateCollections
                 )
-                DrawerNavItem(
-                    label = "Movies & TV",
-                    iconRes = LaterboxIcons.Movies,
-                    selected = currentSection == DrawerPrimarySection.MOVIES,
-                    onClick = onNavigateMovies
+                MoviesAccordionNavSection(
+                    selected = isOnMoviesRoute,
+                    expanded = isMoviesExpanded,
+                    currentRoute = currentRoute,
+                    onToggleExpanded = { isMoviesExpanded = !isMoviesExpanded },
+                    onNavigateLanding = onNavigateMovies,
+                    onNavigateSubRoute = onNavigateMoviesSubRoute
                 )
                 DrawerNavItem(
                     label = "Downloads",
@@ -424,6 +455,230 @@ private fun DrawerNavItem(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun MoviesAccordionNavSection(
+    selected: Boolean,
+    expanded: Boolean,
+    currentRoute: String?,
+    onToggleExpanded: () -> Unit,
+    onNavigateLanding: () -> Unit,
+    onNavigateSubRoute: (String) -> Unit
+) {
+    val colors = LaterboxTheme.colors
+    val typography = LaterboxTheme.typography
+    val spacing = LaterboxTheme.spacing
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(if (selected) colors.accentContainer else colors.backgroundPrimary),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable(role = Role.Tab, onClick = onNavigateLanding)
+                    .padding(start = spacing.sm, end = spacing.xs, top = 10.dp, bottom = 10.dp)
+                    .testTag("drawer_movies_row"),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    painter = painterResource(id = LaterboxIcons.Movies),
+                    contentDescription = null,
+                    modifier = Modifier.size(19.dp),
+                    tint = if (selected) colors.accentPrimary else colors.textSecondary
+                )
+                Spacer(modifier = Modifier.width(spacing.md))
+                Text(
+                    text = "Movies & TV",
+                    style = typography.uiMedium.copy(
+                        fontSize = 14.sp,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                    ),
+                    color = if (selected) colors.accentPrimary else colors.textPrimary,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .clickable(
+                        role = Role.Button,
+                        onClickLabel = if (expanded) "Collapse Movies & TV menu" else "Expand Movies & TV menu",
+                        onClick = onToggleExpanded
+                    )
+                    .testTag("drawer_movies_chevron"),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    painter = painterResource(id = LaterboxIcons.ChevronRight),
+                    contentDescription = if (expanded) "Collapse" else "Expand",
+                    modifier = Modifier
+                        .size(16.dp)
+                        .rotate(if (expanded) 90f else 0f),
+                    tint = if (selected) colors.accentPrimary else colors.textSecondary
+                )
+            }
+        }
+
+        AnimatedVisibility(
+            visible = expanded,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut()
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 18.dp, top = 4.dp, bottom = 4.dp)
+                    .testTag("drawer_movies_submenu"),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                DrawerSubGroupLabel("Library")
+                DrawerSubNavItem(
+                    label = "Search",
+                    iconRes = LaterboxIcons.Search,
+                    selected = currentRoute?.contains("focusSearch=true") == true,
+                    testTag = "drawer_movies_sub_search",
+                    onClick = {
+                        onNavigateSubRoute(LaterboxDestination.MoviesCatalogue.createRoute(focusSearch = true))
+                    }
+                )
+                DrawerSubNavItem(
+                    label = "Watch History",
+                    iconRes = LaterboxIcons.Clock,
+                    selected = currentRoute == LaterboxDestination.MoviesViewingHistory.route,
+                    testTag = "drawer_movies_sub_history",
+                    onClick = {
+                        onNavigateSubRoute(LaterboxDestination.MoviesViewingHistory.route)
+                    }
+                )
+                DrawerSubNavItem(
+                    label = "Watchlist",
+                    iconRes = LaterboxIcons.Bookmark,
+                    selected = currentRoute == LaterboxDestination.MoviesWatchlist.route,
+                    testTag = "drawer_movies_sub_watchlist",
+                    onClick = {
+                        onNavigateSubRoute(LaterboxDestination.MoviesWatchlist.route)
+                    }
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+                DrawerSubGroupLabel("Discovery")
+                DrawerSubNavItem(
+                    label = "Popular Movies",
+                    iconRes = LaterboxIcons.Movies,
+                    selected = currentRoute?.contains("kind=movie") == true &&
+                        (currentRoute.contains("sort=popular") || !currentRoute.contains("sort=")),
+                    testTag = "drawer_movies_sub_popular_movies",
+                    onClick = {
+                        onNavigateSubRoute(
+                            LaterboxDestination.MoviesCatalogue.createRoute(
+                                kind = MediaKind.MOVIE.wireValue,
+                                sort = CatalogueSort.POPULAR.wireValue
+                            )
+                        )
+                    }
+                )
+                DrawerSubNavItem(
+                    label = "Popular Series",
+                    iconRes = LaterboxIcons.Play,
+                    selected = currentRoute?.contains("kind=tv") == true,
+                    testTag = "drawer_movies_sub_popular_series",
+                    onClick = {
+                        onNavigateSubRoute(
+                            LaterboxDestination.MoviesCatalogue.createRoute(
+                                kind = MediaKind.TV_SERIES.wireValue,
+                                sort = CatalogueSort.POPULAR.wireValue
+                            )
+                        )
+                    }
+                )
+                DrawerSubNavItem(
+                    label = "Newest",
+                    iconRes = LaterboxIcons.Sparkles,
+                    selected = currentRoute?.contains("sort=newest") == true,
+                    testTag = "drawer_movies_sub_newest",
+                    onClick = {
+                        onNavigateSubRoute(
+                            LaterboxDestination.MoviesCatalogue.createRoute(
+                                sort = CatalogueSort.NEWEST.wireValue
+                            )
+                        )
+                    }
+                )
+                DrawerSubNavItem(
+                    label = "Top Rated",
+                    iconRes = LaterboxIcons.Sparkles,
+                    selected = currentRoute?.contains("sort=top_rated") == true,
+                    testTag = "drawer_movies_sub_top_rated",
+                    onClick = {
+                        onNavigateSubRoute(
+                            LaterboxDestination.MoviesCatalogue.createRoute(
+                                sort = CatalogueSort.TOP_RATED.wireValue
+                            )
+                        )
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DrawerSubGroupLabel(text: String) {
+    val colors = LaterboxTheme.colors
+    val typography = LaterboxTheme.typography
+    Text(
+        text = text.uppercase(),
+        style = typography.caption.copy(fontSize = 10.sp, fontWeight = FontWeight.SemiBold),
+        color = colors.textTertiary,
+        modifier = Modifier.padding(start = 10.dp, top = 4.dp, bottom = 2.dp)
+    )
+}
+
+@Composable
+private fun DrawerSubNavItem(
+    label: String,
+    @DrawableRes iconRes: Int,
+    selected: Boolean,
+    testTag: String,
+    onClick: () -> Unit
+) {
+    val colors = LaterboxTheme.colors
+    val typography = LaterboxTheme.typography
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (selected) colors.accentContainer.copy(alpha = 0.7f) else colors.backgroundPrimary)
+            .clickable(role = Role.Tab, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+            .testTag(testTag),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Icon(
+            painter = painterResource(id = iconRes),
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+            tint = if (selected) colors.accentPrimary else colors.textSecondary
+        )
+        Text(
+            text = label,
+            style = typography.uiMedium.copy(
+                fontSize = 13.sp,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+            ),
+            color = if (selected) colors.accentPrimary else colors.textPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 

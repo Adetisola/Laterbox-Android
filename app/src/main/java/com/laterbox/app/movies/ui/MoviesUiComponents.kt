@@ -807,7 +807,6 @@ fun MoviesHeroCarousel(
         banners.size,
         pagerState.settledPage,
         isDragged,
-        pagerState.isScrollInProgress,
         isLifecycleResumed,
         autoAdvanceIntervalMs
     ) {
@@ -821,7 +820,7 @@ fun MoviesHeroCarousel(
             pagerState.scrollToPage(startPage + mapped)
         }
         if (autoAdvanceIntervalMs <= 0L) return@LaunchedEffect
-        if (!isLifecycleResumed || isDragged || pagerState.isScrollInProgress) return@LaunchedEffect
+        if (!isLifecycleResumed || isDragged) return@LaunchedEffect
         delay(autoAdvanceIntervalMs)
         if (isMulti && isLifecycleResumed && !isDragged && !pagerState.isScrollInProgress) {
             val nextPage = (pagerState.currentPage + 1).coerceAtMost(virtualPageCount - 1)
@@ -984,29 +983,6 @@ fun MoviesHeroCarousel(
                             }
                         }
                     }
-                }
-            }
-        }
-
-        if (isMulti) {
-            val activeBannerIndex = virtualIndexToBannerIndex(pagerState.currentPage, banners.size)
-            Spacer(modifier = Modifier.height(8.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                repeat(banners.size) { index ->
-                    val selected = activeBannerIndex == index
-                    Box(
-                        modifier = Modifier
-                            .padding(horizontal = 3.dp)
-                            .size(width = if (selected) 16.dp else 6.dp, height = 6.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (selected) colors.accentPrimary else colors.borderSubtle
-                            )
-                    )
                 }
             }
         }

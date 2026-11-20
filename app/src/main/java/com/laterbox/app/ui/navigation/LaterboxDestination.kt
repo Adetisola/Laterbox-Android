@@ -37,20 +37,23 @@ sealed class LaterboxDestination(val route: String) {
 
     object Movies : LaterboxDestination("movies")
 
-    object MoviesCatalogue : LaterboxDestination("movies/catalogue?kind={kind}&genre={genre}&query={query}&sort={sort}&country={country}") {
+    object MoviesWatchlist : LaterboxDestination("movies/watchlist")
+
+    object MoviesCatalogue : LaterboxDestination("movies/catalogue?kind={kind}&genre={genre}&query={query}&sort={sort}&country={country}&focusSearch={focusSearch}") {
         fun createRoute(
             kind: String? = null,
             genre: String? = null,
             query: String? = null,
             sort: String? = null,
-            country: String? = null
+            country: String? = null,
+            focusSearch: Boolean = false
         ): String {
             val encodedKind = Uri.encode(kind.orEmpty())
             val encodedGenre = Uri.encode(genre.orEmpty())
             val encodedQuery = Uri.encode(query.orEmpty())
             val encodedSort = Uri.encode(sort.orEmpty())
             val encodedCountry = Uri.encode(country.orEmpty())
-            return "movies/catalogue?kind=$encodedKind&genre=$encodedGenre&query=$encodedQuery&sort=$encodedSort&country=$encodedCountry"
+            return "movies/catalogue?kind=$encodedKind&genre=$encodedGenre&query=$encodedQuery&sort=$encodedSort&country=$encodedCountry&focusSearch=$focusSearch"
         }
     }
 
