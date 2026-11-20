@@ -1251,4 +1251,94 @@ class MovieBoxProviderTest {
         assertTrue(page.items.all { it.kind == MediaKind.TV_SERIES })
         assertTrue(page.hasMore)
     }
+
+    @Test
+    fun discovery_parsesBlurHashAndAppointmentComingSoonSection() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path == "/home" -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "data": {
+                            "operatingList": [
+                              {
+                                "type": "APPOINTMENT_LIST",
+                                "opId": "coming_soon",
+                                "title": "Coming Soon",
+                                "subjects": [
+                                  {
+                                    "subjectId": "cs1",
+                                    "subjectType": 1,
+                                    "title": "A Talent for Murder",
+                                    "cover": {
+                                      "url": "https://cdn.example/cs1.jpg",
+                                      "blurHash": "ePIFua-;Rht7M|M{M{oIaeWC.TMxe-t7aykDRkV?t6WBMxM{M{RiV["
+                                    }
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        }
+                        """.trimIndent()
+                    )
+                    path == "/detail/cs1" -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "subject_id": "cs1",
+                          "subject_type": 1,
+                          "title": "A Talent for Murder",
+                          "cover": "https://cdn.example/cs1.jpg",
+                          "cover_blur_hash": "ePIFua-;Rht7M|M{M{oIaeWC.TMxe-t7aykDRkV?t6WBMxM{M{RiV["
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/movies") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "page": 1,
+                          "per_page": 20,
+                          "total": 1,
+                          "items": [
+                            {
+                              "subject_id": "an1",
+                              "subject_type": 1,
+                              "title": "Igor",
+                              "genre": "Animation, Comedy",
+                              "cover": "https://cdn.example/igor.jpg",
+                              "cover_blur_hash": "eRBp-UkFM{t7MdRzfiNGWAa#DgjXnhR-x]M}adxaogoyt6V[o~t6RQ"
+                            }
+                          ]
+                        }
+                        """.trimIndent()
+                    )
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val home = provider.getHomeFeed().getOrThrow()
+        assertEquals(1, home.sections.size)
+        assertEquals("Coming Soon", home.sections[0].title)
+        assertEquals(SectionStyle.COLLECTION, home.sections[0].style)
+        assertEquals(
+            "ePIFua-;Rht7M|M{M{oIaeWC.TMxe-t7aykDRkV?t6WBMxM{M{RiV[",
+            home.sections[0].items[0].posterBlurHash
+        )
+
+        val detail = provider.getDetails("cs1").getOrThrow()
+        assertEquals(
+            "ePIFua-;Rht7M|M{M{oIaeWC.TMxe-t7aykDRkV?t6WBMxM{M{RiV[",
+            detail.summary.posterBlurHash
+        )
+
+        val anim = provider.getCatalogue(kind = MediaKind.MOVIE, genre = "Animation").getOrThrow()
+        assertEquals(1, anim.items.size)
+        assertEquals(
+            "eRBp-UkFM{t7MdRzfiNGWAa#DgjXnhR-x]M}adxaogoyt6V[o~t6RQ",
+            anim.items[0].posterBlurHash
+        )
+    }
 }

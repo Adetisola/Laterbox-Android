@@ -292,6 +292,8 @@ object MoviesCacheJsonCodec {
         put("releaseDate", item.releaseDate ?: JSONObject.NULL)
         put("addedAtMs", item.addedAtMs ?: JSONObject.NULL)
         put("subjectType", item.subjectType ?: JSONObject.NULL)
+        put("posterBlurHash", item.posterBlurHash ?: JSONObject.NULL)
+        put("backdropBlurHash", item.backdropBlurHash ?: JSONObject.NULL)
     }
 
     private fun decodeSummary(o: JSONObject): MovieTitleSummary {
@@ -336,7 +338,9 @@ object MoviesCacheJsonCodec {
             canonicalId = o.optNullableString("canonicalId"),
             releaseDate = o.optNullableString("releaseDate"),
             addedAtMs = if (o.isNull("addedAtMs")) null else o.optLong("addedAtMs").takeIf { it > 0L },
-            subjectType = subjectType
+            subjectType = subjectType,
+            posterBlurHash = o.optNullableString("posterBlurHash"),
+            backdropBlurHash = o.optNullableString("backdropBlurHash")
         )
     }
 

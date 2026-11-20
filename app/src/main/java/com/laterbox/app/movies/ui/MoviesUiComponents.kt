@@ -2,6 +2,7 @@ package com.laterbox.app.movies.ui
 
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -171,6 +172,19 @@ fun MoviePosterCard(
                 .background(colors.surfaceSecondary)
                 .border(0.75.dp, colors.borderSubtle, RoundedCornerShape(14.dp))
         ) {
+            val posterBlurBitmap = rememberDecodedBlurHash(
+                blurHash = item.posterBlurHash,
+                width = 20,
+                height = 30
+            )
+            if (posterBlurBitmap != null) {
+                Image(
+                    bitmap = posterBlurBitmap,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
             if (!item.posterUrl.isNullOrBlank()) {
                 AsyncImage(
                     model = item.posterUrl,
@@ -178,7 +192,7 @@ fun MoviePosterCard(
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
                 )
-            } else {
+            } else if (posterBlurBitmap == null) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
@@ -464,13 +478,27 @@ fun BackdropArtworkBox(
     posterUrl: String?,
     contentDescription: String?,
     modifier: Modifier = Modifier,
-    blurPosterFallback: Boolean = false
+    blurPosterFallback: Boolean = false,
+    blurHash: String? = null
 ) {
     val colors = LaterboxTheme.colors
+    val blurBitmap = rememberDecodedBlurHash(
+        blurHash = blurHash,
+        width = 32,
+        height = 18
+    )
     Box(
         modifier = modifier.background(colors.surfaceSecondary),
         contentAlignment = Alignment.Center
     ) {
+        if (blurBitmap != null) {
+            Image(
+                bitmap = blurBitmap,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
         when {
             !backdropUrl.isNullOrBlank() -> {
                 AsyncImage(
@@ -511,7 +539,7 @@ fun BackdropArtworkBox(
                     )
                 }
             }
-            else -> {
+            blurBitmap == null -> {
                 Icon(
                     painter = painterResource(LaterboxIcons.Movies),
                     contentDescription = null,
@@ -908,6 +936,7 @@ fun MoviesHeroCarousel(
                         backdropUrl = item.backdropUrl,
                         posterUrl = item.posterUrl,
                         contentDescription = item.title,
+                        blurHash = item.backdropBlurHash ?: item.posterBlurHash,
                         modifier = Modifier.fillMaxSize()
                     )
 

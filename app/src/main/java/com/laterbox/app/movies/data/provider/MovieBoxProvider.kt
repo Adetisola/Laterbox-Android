@@ -132,6 +132,7 @@ class MovieBoxProvider(
                                 parseSubjectObject(
                                     obj = sub,
                                     backdropOverride = bannerImage,
+                                    backdropBlurHashOverride = entry.optJSONObject("image")?.optCleanString("blurHash"),
                                     trailerOverride = trailerUrl
                                 )?.let { banners.add(it) }
                             } else {
@@ -143,7 +144,10 @@ class MovieBoxProvider(
                                 if (id != null && title != null) {
                                     val dp = entry.optCleanString("detailPath")
                                     cacheMetadata(id, title, dp, trailerUrl)
-                                    val cover = entry.optJSONObject("cover")?.optCleanString("url") ?: bannerImage
+                                    val coverObj = entry.optJSONObject("cover")
+                                    val cover = coverObj?.optCleanString("url") ?: entry.optCleanString("cover") ?: bannerImage
+                                    val coverBlurHash = coverObj?.optCleanString("blurHash") ?: entry.optCleanString("cover_blur_hash")
+                                    val bannerBlurHash = entry.optJSONObject("image")?.optCleanString("blurHash")
                                     val releaseDateStr = entry.optCleanString("releaseDate") ?: entry.optCleanString("release_date")
                                     val itemKind = parseMediaKind(
                                         subjectType,
@@ -166,7 +170,9 @@ class MovieBoxProvider(
                                             sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
                                             isPlayableHint = true,
                                             releaseDate = releaseDateStr,
-                                            subjectType = subjectType ?: inferSubjectType(itemKind)
+                                            subjectType = subjectType ?: inferSubjectType(itemKind),
+                                            posterBlurHash = coverBlurHash,
+                                            backdropBlurHash = bannerBlurHash
                                         )
                                     )
                                 }
@@ -327,8 +333,12 @@ class MovieBoxProvider(
                     val title = obj.optCleanString("title") ?: continue
                     val dp = obj.optCleanString("detail_path")
                     cacheMetadata(id, title, dp)
-                    val cover = obj.optCleanString("cover")
-                    val stillsUrl = obj.optJSONObject("stills")?.optCleanString("url")
+                    val cover = obj.optJSONObject("cover")?.optCleanString("url") ?: obj.optCleanString("cover")
+                    val coverBlurHash = obj.optJSONObject("cover")?.optCleanString("blurHash")
+                        ?: obj.optCleanString("cover_blur_hash")
+                    val stillsObj = obj.optJSONObject("stills")
+                    val stillsUrl = stillsObj?.optCleanString("url")
+                    val stillsBlurHash = stillsObj?.optCleanString("blurHash") ?: obj.optCleanString("stills_blur_hash")
                     val itemKind = subjectType?.let { parseMediaKind(it, null) } ?: kind
                     val releaseDateStr = obj.optCleanString("release_date")
                     add(
@@ -349,7 +359,9 @@ class MovieBoxProvider(
                             sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
                             isPlayableHint = true,
                             releaseDate = releaseDateStr,
-                            subjectType = subjectType ?: inferSubjectType(itemKind)
+                            subjectType = subjectType ?: inferSubjectType(itemKind),
+                            posterBlurHash = coverBlurHash,
+                            backdropBlurHash = stillsBlurHash
                         )
                     )
                 }
@@ -466,8 +478,12 @@ class MovieBoxProvider(
                     val title = obj.optCleanString("title") ?: continue
                     val dp = obj.optCleanString("detail_path")
                     cacheMetadata(id, title, dp)
-                    val cover = obj.optCleanString("cover")
-                    val stillsUrl = obj.optJSONObject("stills")?.optCleanString("url")
+                    val cover = obj.optJSONObject("cover")?.optCleanString("url") ?: obj.optCleanString("cover")
+                    val coverBlurHash = obj.optJSONObject("cover")?.optCleanString("blurHash")
+                        ?: obj.optCleanString("cover_blur_hash")
+                    val stillsObj = obj.optJSONObject("stills")
+                    val stillsUrl = stillsObj?.optCleanString("url")
+                    val stillsBlurHash = stillsObj?.optCleanString("blurHash") ?: obj.optCleanString("stills_blur_hash")
                     val itemKind = parseMediaKind(
                         subjectType,
                         obj.optCleanString("type")
@@ -494,7 +510,9 @@ class MovieBoxProvider(
                             isPlayableHint = true,
                             imdbId = obj.optCleanString("imdb_id"),
                             releaseDate = releaseDateStr,
-                            subjectType = subjectType ?: inferSubjectType(itemKind)
+                            subjectType = subjectType ?: inferSubjectType(itemKind),
+                            posterBlurHash = coverBlurHash,
+                            backdropBlurHash = stillsBlurHash
                         )
                     )
                 }
@@ -619,8 +637,12 @@ class MovieBoxProvider(
                 rawSubjectType,
                 root.optCleanString("type")
             )
-            val cover = root.optCleanString("cover")
-            val stillsUrl = root.optJSONObject("stills")?.optCleanString("url")
+            val cover = root.optJSONObject("cover")?.optCleanString("url") ?: root.optCleanString("cover")
+            val coverBlurHash = root.optCleanString("cover_blur_hash")
+                ?: root.optJSONObject("cover")?.optCleanString("blurHash")
+            val stillsObj = root.optJSONObject("stills")
+            val stillsUrl = stillsObj?.optCleanString("url")
+            val stillsBlurHash = stillsObj?.optCleanString("blurHash") ?: root.optCleanString("stills_blur_hash")
             val description = root.optCleanString("description").orEmpty()
 
             val dubs = buildList {
@@ -710,7 +732,9 @@ class MovieBoxProvider(
                 isPlayableHint = true,
                 imdbId = root.optCleanString("imdbId") ?: root.optCleanString("imdb_id"),
                 releaseDate = releaseDateStr,
-                subjectType = rawSubjectType ?: inferSubjectType(kind)
+                subjectType = rawSubjectType ?: inferSubjectType(kind),
+                posterBlurHash = coverBlurHash,
+                backdropBlurHash = stillsBlurHash
             )
 
             MediaDetails(
@@ -922,8 +946,12 @@ class MovieBoxProvider(
         val title = obj.optCleanString("title") ?: return null
         val dp = obj.optCleanString("detail_path")
         cacheMetadata(id, title, dp)
-        val cover = obj.optCleanString("cover")
-        val stillsUrl = obj.optJSONObject("stills")?.optCleanString("url")
+        val cover = obj.optJSONObject("cover")?.optCleanString("url") ?: obj.optCleanString("cover")
+        val coverBlurHash = obj.optJSONObject("cover")?.optCleanString("blurHash")
+            ?: obj.optCleanString("cover_blur_hash")
+        val stillsObj = obj.optJSONObject("stills")
+        val stillsUrl = stillsObj?.optCleanString("url")
+        val stillsBlurHash = stillsObj?.optCleanString("blurHash") ?: obj.optCleanString("stills_blur_hash")
         val kind = parseMediaKind(
             subjectType,
             obj.optCleanString("type")
@@ -946,7 +974,9 @@ class MovieBoxProvider(
             sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
             isPlayableHint = true,
             releaseDate = releaseDateStr,
-            subjectType = subjectType ?: inferSubjectType(kind)
+            subjectType = subjectType ?: inferSubjectType(kind),
+            posterBlurHash = coverBlurHash,
+            backdropBlurHash = stillsBlurHash
         )
     }
 
@@ -1121,6 +1151,7 @@ class MovieBoxProvider(
     private fun parseSubjectObject(
         obj: JSONObject,
         backdropOverride: String? = null,
+        backdropBlurHashOverride: String? = null,
         trailerOverride: String? = null
     ): MovieTitleSummary? {
         val id = (obj.optCleanString("subjectId") ?: obj.optCleanString("subject_id"))
@@ -1130,10 +1161,17 @@ class MovieBoxProvider(
         val title = obj.optCleanString("title") ?: return null
         val dp = obj.optCleanString("detailPath") ?: obj.optCleanString("detail_path")
 
-        val coverUrl = obj.optJSONObject("cover")?.optCleanString("url")
+        val coverObj = obj.optJSONObject("cover")
+        val coverUrl = coverObj?.optCleanString("url")
             ?: obj.optCleanString("cover")
             ?: obj.optJSONObject("image")?.optCleanString("url")
-        val stillsUrl = obj.optJSONObject("stills")?.optCleanString("url")
+        val coverBlurHash = coverObj?.optCleanString("blurHash")
+            ?: obj.optCleanString("cover_blur_hash")
+            ?: obj.optCleanString("blurHash")
+        val stillsObj = obj.optJSONObject("stills")
+        val stillsUrl = stillsObj?.optCleanString("url")
+        val stillsBlurHash = stillsObj?.optCleanString("blurHash")
+            ?: obj.optCleanString("stills_blur_hash")
         val trailerObj = obj.optJSONObject("trailer")
         val trailerUrl = trailerOverride
             ?: trailerObj?.optCleanString("url")
@@ -1165,7 +1203,9 @@ class MovieBoxProvider(
             isPlayableHint = hasResource,
             imdbId = obj.optCleanString("imdbId") ?: obj.optCleanString("imdb_id"),
             releaseDate = releaseDateStr,
-            subjectType = subjectType ?: inferSubjectType(kind)
+            subjectType = subjectType ?: inferSubjectType(kind),
+            posterBlurHash = coverBlurHash,
+            backdropBlurHash = backdropBlurHashOverride ?: stillsBlurHash
         )
     }
 

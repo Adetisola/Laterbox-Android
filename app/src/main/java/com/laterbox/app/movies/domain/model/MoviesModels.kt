@@ -104,7 +104,9 @@ data class MovieTitleSummary(
     val canonicalId: String? = null,
     val releaseDate: String? = null,
     val addedAtMs: Long? = null,
-    val subjectType: Int? = null
+    val subjectType: Int? = null,
+    val posterBlurHash: String? = null,
+    val backdropBlurHash: String? = null
 ) {
     val compositeId: String get() = "$providerId:$id"
     val stableMediaKey: String get() = canonicalId?.takeIf { it.isNotBlank() } ?: compositeId
