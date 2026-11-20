@@ -127,6 +127,9 @@ class MoviesHomeViewModel(
     private var suggestJob: Job? = null
     private var discoveryJob: Job? = null
     private var suggestRequestSeq: Long = 0L
+    private var filterRequestSeq: Long = 0L
+    private var activeSuggestedNormalized: String? = null
+    private var lastSuggestedNormalized: String? = null
     private var lastConfigKey: MoviesConfigSnapshot? = null
     private var latestNonTrailerHistory: List<WatchHistoryItem> = emptyList()
     private var rawFilteredItems: List<MovieTitleSummary> = emptyList()
@@ -407,23 +410,19 @@ class MoviesHomeViewModel(
     }
 
     private fun normalizeSearchQuery(raw: String): String =
-        raw.trim().replace(Regex("\\s+"), " ")
+        raw.trim().replace(HOME_MULTI_SPACE_REGEX, " ")
 
     fun onSearchQueryChange(newQuery: String) {
         val normalized = normalizeSearchQuery(newQuery)
-        _uiState.update {
-            it.copy(
-                searchQuery = newQuery,
-                isSearchFocused = true,
-                isLoadingSuggestions = normalized.length >= 2,
-                suggestionsError = null
-            )
-        }
-        val reqSeq = ++suggestRequestSeq
-        suggestJob?.cancel()
         if (normalized.length < 2) {
+            activeSuggestedNormalized = null
+            lastSuggestedNormalized = null
+            val reqSeq = ++suggestRequestSeq
+            suggestJob?.cancel()
             _uiState.update {
                 it.copy(
+                    searchQuery = newQuery,
+                    isSearchFocused = true,
                     suggestions = emptyList(),
                     isLoadingSuggestions = false,
                     suggestionsError = null
@@ -437,6 +436,40 @@ class MoviesHomeViewModel(
             }
             return
         }
+
+        val currentState = _uiState.value
+        if (normalized == lastSuggestedNormalized && currentState.suggestionsError == null && suggestJob?.isActive != true) {
+            _uiState.update {
+                it.copy(
+                    searchQuery = newQuery,
+                    isSearchFocused = true,
+                    isLoadingSuggestions = false
+                )
+            }
+            return
+        }
+        if (normalized == activeSuggestedNormalized && suggestJob?.isActive == true) {
+            _uiState.update {
+                it.copy(
+                    searchQuery = newQuery,
+                    isSearchFocused = true,
+                    isLoadingSuggestions = true
+                )
+            }
+            return
+        }
+
+        _uiState.update {
+            it.copy(
+                searchQuery = newQuery,
+                isSearchFocused = true,
+                isLoadingSuggestions = true,
+                suggestionsError = null
+            )
+        }
+        val reqSeq = ++suggestRequestSeq
+        activeSuggestedNormalized = normalized
+        suggestJob?.cancel()
         suggestJob = viewModelScope.launch {
             delay(260L)
             if (reqSeq != suggestRequestSeq || normalizeSearchQuery(_uiState.value.searchQuery) != normalized) {
@@ -447,6 +480,8 @@ class MoviesHomeViewModel(
                     if (reqSeq != suggestRequestSeq || normalizeSearchQuery(_uiState.value.searchQuery) != normalized) {
                         return@fold
                     }
+                    activeSuggestedNormalized = null
+                    lastSuggestedNormalized = normalized
                     _uiState.update {
                         it.copy(
                             suggestions = list,
@@ -459,6 +494,8 @@ class MoviesHomeViewModel(
                     if (reqSeq != suggestRequestSeq || normalizeSearchQuery(_uiState.value.searchQuery) != normalized) {
                         return@fold
                     }
+                    activeSuggestedNormalized = null
+                    lastSuggestedNormalized = null
                     _uiState.update {
                         it.copy(
                             suggestions = emptyList(),
@@ -475,6 +512,7 @@ class MoviesHomeViewModel(
     fun setSearchFocused(focused: Boolean) {
         if (!focused) {
             ++suggestRequestSeq
+            activeSuggestedNormalized = null
             suggestJob?.cancel()
         }
         _uiState.update {
@@ -488,6 +526,8 @@ class MoviesHomeViewModel(
     fun submitInlineSearch(overrideQuery: String? = null) {
         val q = normalizeSearchQuery(overrideQuery ?: _uiState.value.searchQuery)
         ++suggestRequestSeq
+        activeSuggestedNormalized = null
+        lastSuggestedNormalized = null
         suggestJob?.cancel()
         _uiState.update {
             it.copy(
@@ -510,6 +550,9 @@ class MoviesHomeViewModel(
     }
 
     fun clearInlineSearch() {
+        ++suggestRequestSeq
+        activeSuggestedNormalized = null
+        lastSuggestedNormalized = null
         suggestJob?.cancel()
         _uiState.update {
             it.copy(
@@ -1047,6 +1090,7 @@ class MoviesHomeViewModel(
     }
 
     private fun loadFiltered(page: Int, append: Boolean) {
+        val reqSeq = ++filterRequestSeq
         filterJob?.cancel()
         filterJob = viewModelScope.launch {
             _uiState.update {
@@ -1058,7 +1102,7 @@ class MoviesHomeViewModel(
             }
             val state = _uiState.value
             val query = state.activeSearchQuery.trim()
-            val exactYearParam = state.selectedYear.takeIf { Regex("\\d{4}").matches(it) }
+            val exactYearParam = state.selectedYear.takeIf { YEAR_REGEX.matches(it) }
             val result = if (query.isNotBlank()) {
                 moviesRepository.search(query = query, kind = state.selectedKind, page = page, pageSize = 20)
             } else {
@@ -1075,6 +1119,7 @@ class MoviesHomeViewModel(
 
             result.fold(
                 onSuccess = { pageResult ->
+                    if (reqSeq != filterRequestSeq) return@fold
                     val mergedRaw = if (append) {
                         (rawFilteredItems + pageResult.items).distinctBy { it.compositeId }
                     } else {
@@ -1104,6 +1149,7 @@ class MoviesHomeViewModel(
                     }
                 },
                 onFailure = { error ->
+                    if (reqSeq != filterRequestSeq) return@fold
                     _uiState.update {
                         it.copy(
                             isLoadingFiltered = false,
@@ -1183,5 +1229,10 @@ class MoviesHomeViewModel(
         viewModelScope.launch {
             userPreferencesRepository.setMoviesUseSampleFixturesOnly(enabled)
         }
+    }
+
+    companion object {
+        private val HOME_MULTI_SPACE_REGEX = Regex("\\s+")
+        private val YEAR_REGEX = Regex("\\d{4}")
     }
 }

@@ -223,24 +223,9 @@ fun MoviesCatalogueScreen(
                             }
                         }
                     }
-                    var queryFieldValue by remember {
-                        mutableStateOf(
-                            TextFieldValue(
-                                text = uiState.query,
-                                selection = TextRange(uiState.query.length)
-                            )
-                        )
-                    }
-                    LaunchedEffect(uiState.query) {
-                        if (uiState.query != queryFieldValue.text) {
-                            queryFieldValue = TextFieldValue(
-                                text = uiState.query,
-                                selection = TextRange(uiState.query.length)
-                            )
-                        }
-                    }
+                    val searchController = com.laterbox.app.ui.components.rememberSyncedTextFieldController(uiState.query)
                     Box(modifier = Modifier.weight(1f)) {
-                        if (queryFieldValue.text.isEmpty()) {
+                        if (searchController.value.text.isEmpty()) {
                             Text(
                                 text = "Search movies & series...",
                                 style = typography.bodySecondary,
@@ -250,13 +235,9 @@ fun MoviesCatalogueScreen(
                             )
                         }
                         BasicTextField(
-                            value = queryFieldValue,
+                            value = searchController.value,
                             onValueChange = { next ->
-                                val textChanged = next.text != queryFieldValue.text
-                                queryFieldValue = next
-                                if (textChanged || next.text != uiState.query) {
-                                    onQueryChange(next.text)
-                                }
+                                searchController.onLocalValueChange(next, onQueryChange)
                             },
                             interactionSource = searchInteractionSource,
                             singleLine = true,
@@ -276,13 +257,12 @@ fun MoviesCatalogueScreen(
                                 .testTag("catalogue_search_input")
                         )
                     }
-                    if (queryFieldValue.text.isNotEmpty() || uiState.query.isNotEmpty()) {
+                    if (searchController.value.text.isNotEmpty() || uiState.query.isNotEmpty()) {
                         IconButton(
                             onClick = {
-                                queryFieldValue = TextFieldValue("")
+                                searchController.clearLocal(onClearSearch)
                                 keyboardController?.hide()
                                 runCatching { focusManager.clearFocus(force = true) }
-                                onClearSearch()
                             },
                             modifier = Modifier
                                 .size(28.dp)

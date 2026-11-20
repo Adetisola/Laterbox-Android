@@ -462,8 +462,9 @@ internal fun DownloadsScreenContent(
                             )
                             Spacer(modifier = Modifier.width(spacing.sm))
 
+                            val downloadsSearchController = com.laterbox.app.ui.components.rememberSyncedTextFieldController(uiState.searchQuery)
                             Box(modifier = Modifier.weight(1f)) {
-                                if (uiState.searchQuery.isEmpty()) {
+                                if (downloadsSearchController.value.text.isEmpty()) {
                                     Text(
                                         text = "Search title, format, platform...",
                                         style = typography.bodySecondary,
@@ -471,8 +472,10 @@ internal fun DownloadsScreenContent(
                                     )
                                 }
                                 BasicTextField(
-                                    value = uiState.searchQuery,
-                                    onValueChange = onSearchQueryChange,
+                                    value = downloadsSearchController.value,
+                                    onValueChange = { next ->
+                                        downloadsSearchController.onLocalValueChange(next, onSearchQueryChange)
+                                    },
                                     singleLine = true,
                                     textStyle = typography.bodyPrimary.copy(color = colors.textPrimary),
                                     cursorBrush = SolidColor(colors.accentPrimary),
@@ -482,7 +485,7 @@ internal fun DownloadsScreenContent(
                                 )
                             }
 
-                            if (uiState.searchQuery.isNotEmpty()) {
+                            if (downloadsSearchController.value.text.isNotEmpty() || uiState.searchQuery.isNotEmpty()) {
                                 Box(
                                     modifier = Modifier
                                         .size(36.dp)
@@ -490,7 +493,7 @@ internal fun DownloadsScreenContent(
                                         .clickable(
                                             role = Role.Button,
                                             onClickLabel = "Clear search",
-                                            onClick = { onSearchQueryChange("") }
+                                            onClick = { downloadsSearchController.clearLocal { onSearchQueryChange("") } }
                                         ),
                                     contentAlignment = Alignment.Center
                                 ) {

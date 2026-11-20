@@ -407,8 +407,9 @@ fun InboxScreen(
                                     )
                                     Spacer(modifier = Modifier.width(spacing.sm))
 
+                                    val inboxSearchController = com.laterbox.app.ui.components.rememberSyncedTextFieldController(uiState.searchQuery)
                                     Box(modifier = Modifier.weight(1f)) {
-                                        if (uiState.searchQuery.isEmpty()) {
+                                        if (inboxSearchController.value.text.isEmpty()) {
                                             Text(
                                                 text = "Search links, titles, notes...",
                                                 style = typography.bodySecondary,
@@ -416,8 +417,10 @@ fun InboxScreen(
                                             )
                                         }
                                         BasicTextField(
-                                            value = uiState.searchQuery,
-                                            onValueChange = onSearchQueryChange,
+                                            value = inboxSearchController.value,
+                                            onValueChange = { next ->
+                                                inboxSearchController.onLocalValueChange(next, onSearchQueryChange)
+                                            },
                                             singleLine = true,
                                             textStyle = typography.bodyPrimary.copy(color = colors.textPrimary),
                                             cursorBrush = SolidColor(colors.accentPrimary),
@@ -427,7 +430,7 @@ fun InboxScreen(
                                         )
                                     }
 
-                                    if (uiState.searchQuery.isNotEmpty()) {
+                                    if (inboxSearchController.value.text.isNotEmpty() || uiState.searchQuery.isNotEmpty()) {
                                         Box(
                                             modifier = Modifier
                                                 .size(36.dp)
@@ -435,7 +438,7 @@ fun InboxScreen(
                                                 .clickable(
                                                     role = Role.Button,
                                                     onClickLabel = "Clear search",
-                                                    onClick = onClearSearch
+                                                    onClick = { inboxSearchController.clearLocal(onClearSearch) }
                                                 ),
                                             contentAlignment = Alignment.Center
                                         ) {

@@ -73,6 +73,8 @@ class MoviesCatalogueViewModel(
     private var pageRequestSeq: Long = 0L
     private var lastInitializedKey: String? = null
     private var lastSubmittedOrClearedSearch: String = ""
+    private var activeSuggestedNormalized: String? = null
+    private var lastSuggestedNormalized: String? = null
     private var rawItems: List<MovieTitleSummary> = emptyList()
     private var rawHiddenKeys: Set<String> = emptySet()
     private var rawWatchlistIds: Set<String> = emptySet()
@@ -188,20 +190,16 @@ class MoviesCatalogueViewModel(
     fun onQueryChange(newQuery: String) {
         val wasNotBlank = _uiState.value.query.isNotBlank()
         val normalized = normalizeQuery(newQuery)
-        _uiState.update {
-            it.copy(
-                query = newQuery,
-                isSearchFocused = true,
-                showSuggestionsDropdown = normalized.length >= 2 || it.recentSearches.isNotEmpty(),
-                isLoadingSuggestions = normalized.length >= 2,
-                suggestionsError = null
-            )
-        }
-        val reqSeq = ++suggestRequestSeq
-        suggestJob?.cancel()
         if (normalized.length < 2) {
+            activeSuggestedNormalized = null
+            lastSuggestedNormalized = null
+            val reqSeq = ++suggestRequestSeq
+            suggestJob?.cancel()
             _uiState.update {
                 it.copy(
+                    query = newQuery,
+                    isSearchFocused = true,
+                    showSuggestionsDropdown = it.recentSearches.isNotEmpty(),
                     suggestions = emptyList(),
                     isLoadingSuggestions = false,
                     suggestionsError = null
@@ -213,6 +211,43 @@ class MoviesCatalogueViewModel(
             }
             return
         }
+
+        val currentState = _uiState.value
+        if (normalized == lastSuggestedNormalized && currentState.suggestionsError == null && suggestJob?.isActive != true) {
+            _uiState.update {
+                it.copy(
+                    query = newQuery,
+                    isSearchFocused = true,
+                    showSuggestionsDropdown = true,
+                    isLoadingSuggestions = false
+                )
+            }
+            return
+        }
+        if (normalized == activeSuggestedNormalized && suggestJob?.isActive == true) {
+            _uiState.update {
+                it.copy(
+                    query = newQuery,
+                    isSearchFocused = true,
+                    showSuggestionsDropdown = true,
+                    isLoadingSuggestions = true
+                )
+            }
+            return
+        }
+
+        _uiState.update {
+            it.copy(
+                query = newQuery,
+                isSearchFocused = true,
+                showSuggestionsDropdown = true,
+                isLoadingSuggestions = true,
+                suggestionsError = null
+            )
+        }
+        val reqSeq = ++suggestRequestSeq
+        activeSuggestedNormalized = normalized
+        suggestJob?.cancel()
         suggestJob = viewModelScope.launch {
             delay(260L)
             if (reqSeq != suggestRequestSeq || normalizeQuery(_uiState.value.query) != normalized) {
@@ -223,6 +258,8 @@ class MoviesCatalogueViewModel(
                     if (reqSeq != suggestRequestSeq || normalizeQuery(_uiState.value.query) != normalized) {
                         return@fold
                     }
+                    activeSuggestedNormalized = null
+                    lastSuggestedNormalized = normalized
                     _uiState.update {
                         it.copy(
                             suggestions = list,
@@ -235,6 +272,8 @@ class MoviesCatalogueViewModel(
                     if (reqSeq != suggestRequestSeq || normalizeQuery(_uiState.value.query) != normalized) {
                         return@fold
                     }
+                    activeSuggestedNormalized = null
+                    lastSuggestedNormalized = null
                     _uiState.update {
                         it.copy(
                             suggestions = emptyList(),
@@ -270,6 +309,7 @@ class MoviesCatalogueViewModel(
 
     fun dismissSuggestions() {
         ++suggestRequestSeq
+        activeSuggestedNormalized = null
         suggestJob?.cancel()
         _uiState.update {
             it.copy(
@@ -283,6 +323,8 @@ class MoviesCatalogueViewModel(
     fun submitSearch(overrideQuery: String? = null) {
         val q = normalizeQuery(overrideQuery ?: _uiState.value.query)
         ++suggestRequestSeq
+        activeSuggestedNormalized = null
+        lastSuggestedNormalized = null
         suggestJob?.cancel()
         lastSubmittedOrClearedSearch = q
         _uiState.update {
@@ -305,6 +347,8 @@ class MoviesCatalogueViewModel(
 
     fun clearSearch() {
         ++suggestRequestSeq
+        activeSuggestedNormalized = null
+        lastSuggestedNormalized = null
         suggestJob?.cancel()
         lastSubmittedOrClearedSearch = ""
         _uiState.update {
