@@ -11,6 +11,7 @@ import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import kotlinx.coroutines.launch
 import java.io.File
 
 /**
@@ -27,9 +28,32 @@ object MoviesMediaCache {
     @Volatile
     private var cacheInstance: SimpleCache? = null
 
+    @Volatile
+    private var isWarmingUp: Boolean = false
+
     fun getCache(context: Context): SimpleCache {
         return cacheInstance ?: synchronized(this) {
             cacheInstance ?: buildCache(context.applicationContext).also { cacheInstance = it }
+        }
+    }
+
+    fun getCacheIfReady(): SimpleCache? = cacheInstance
+
+    suspend fun warmUp(context: Context): SimpleCache? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        runCatching { getCache(context.applicationContext) }.getOrNull()
+    }
+
+    fun warmUpAsync(context: Context) {
+        if (cacheInstance != null || isWarmingUp) return
+        isWarmingUp = true
+        val appContext = context.applicationContext
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            try {
+                getCache(appContext)
+            } catch (_: Throwable) {
+            } finally {
+                isWarmingUp = false
+            }
         }
     }
 
@@ -70,9 +94,17 @@ object MoviesMediaCache {
             return upstreamFactory
         }
 
+        // Only attach SimpleCache synchronously if already warmed in memory; otherwise warm on IO
+        // without blocking the Main thread with SQLite/directory scans inside Compose remember {}.
+        val readyCache = getCacheIfReady()
+        if (readyCache == null) {
+            warmUpAsync(context)
+            return upstreamFactory
+        }
+
         return runCatching {
             CacheDataSource.Factory()
-                .setCache(getCache(context))
+                .setCache(readyCache)
                 .setUpstreamDataSourceFactory(upstreamFactory)
                 .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
         }.getOrElse {

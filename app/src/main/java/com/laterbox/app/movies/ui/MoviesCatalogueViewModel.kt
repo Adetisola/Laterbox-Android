@@ -51,7 +51,8 @@ data class MoviesCatalogueUiState(
     val hiddenMediaKeys: Set<String> = emptySet(),
     val watchlistIds: Set<String> = emptySet(),
     val collections: List<Collection> = emptyList(),
-    val actionFeedbackMessage: String? = null
+    val actionFeedbackMessage: String? = null,
+    val actionErrorMessage: String? = null
 ) {
     companion object {
         val DEFAULT_GENRES = MovieBoxProvider.DEFAULT_GENRES
@@ -73,6 +74,18 @@ class MoviesCatalogueViewModel(
     private var lastInitializedKey: String? = null
     private var lastSubmittedOrClearedSearch: String = ""
     private var rawItems: List<MovieTitleSummary> = emptyList()
+    private var rawHiddenKeys: Set<String> = emptySet()
+    private var rawWatchlistIds: Set<String> = emptySet()
+    private val pendingHiddenKeys = mutableSetOf<String>()
+    private val pendingWatchlistAdded = mutableSetOf<String>()
+    private val pendingWatchlistRemoved = mutableSetOf<String>()
+    private val inFlightMutationKeys = mutableSetOf<String>()
+
+    private fun effectiveHiddenKeys(): Set<String> =
+        if (pendingHiddenKeys.isEmpty()) rawHiddenKeys else rawHiddenKeys + pendingHiddenKeys
+
+    private fun effectiveWatchlistIds(): Set<String> =
+        (rawWatchlistIds - pendingWatchlistRemoved) + pendingWatchlistAdded
 
     init {
         viewModelScope.launch {
@@ -94,13 +107,17 @@ class MoviesCatalogueViewModel(
         }
         viewModelScope.launch {
             moviesRepository.observeWatchlist().collect { list ->
-                _uiState.update { it.copy(watchlistIds = list.map { m -> m.compositeId }.toSet()) }
+                rawWatchlistIds = list.mapTo(LinkedHashSet()) { m -> m.compositeId }
+                _uiState.update { it.copy(watchlistIds = effectiveWatchlistIds()) }
             }
         }
         viewModelScope.launch {
             moviesRepository.observeHiddenHistory(100).collect { hiddenList ->
-                val keys = hiddenList.map { it.stableMediaKey }.toSet()
-                _uiState.update { it.copy(hiddenMediaKeys = keys) }
+                rawHiddenKeys = hiddenList.flatMapTo(LinkedHashSet()) {
+                    listOfNotNull(it.stableMediaKey, it.compositeId.takeIf { c -> c.isNotBlank() })
+                }
+                pendingHiddenKeys.removeAll(rawHiddenKeys)
+                _uiState.update { it.copy(hiddenMediaKeys = effectiveHiddenKeys()) }
                 applyClientFilters()
             }
         }
@@ -383,8 +400,50 @@ class MoviesCatalogueViewModel(
     }
 
     fun toggleWatchlist(item: MovieTitleSummary) {
+        val opKey = "wl:${item.compositeId}"
+        if (!inFlightMutationKeys.add(opKey)) return
+        val currentlyInWatchlist = item.compositeId in effectiveWatchlistIds()
+        if (currentlyInWatchlist) {
+            pendingWatchlistAdded.remove(item.compositeId)
+            pendingWatchlistRemoved.add(item.compositeId)
+        } else {
+            pendingWatchlistRemoved.remove(item.compositeId)
+            pendingWatchlistAdded.add(item.compositeId)
+        }
+        _uiState.update {
+            it.copy(
+                watchlistIds = effectiveWatchlistIds(),
+                actionFeedbackMessage = if (currentlyInWatchlist) {
+                    "Removed ${item.title} from Watchlist"
+                } else {
+                    "Added ${item.title} to Watchlist"
+                },
+                actionErrorMessage = null
+            )
+        }
         viewModelScope.launch {
-            moviesRepository.toggleWatchlist(item)
+            try {
+                val res = runCatching { moviesRepository.toggleWatchlist(item) }
+                if (res.isFailure) {
+                    if (currentlyInWatchlist) {
+                        pendingWatchlistRemoved.remove(item.compositeId)
+                    } else {
+                        pendingWatchlistAdded.remove(item.compositeId)
+                    }
+                    _uiState.update {
+                        it.copy(
+                            watchlistIds = effectiveWatchlistIds(),
+                            actionFeedbackMessage = null,
+                            actionErrorMessage = "Couldn't update Watchlist for ${item.title}."
+                        )
+                    }
+                } else {
+                    pendingWatchlistAdded.remove(item.compositeId)
+                    pendingWatchlistRemoved.remove(item.compositeId)
+                }
+            } finally {
+                inFlightMutationKeys.remove(opKey)
+            }
         }
     }
 
@@ -396,9 +455,35 @@ class MoviesCatalogueViewModel(
     }
 
     fun hideTitle(item: MovieTitleSummary) {
+        val opKey = "hide:${item.compositeId}"
+        if (!inFlightMutationKeys.add(opKey)) return
+        val keys = listOf(item.stableMediaKey, item.compositeId)
+        pendingHiddenKeys.addAll(keys)
+        _uiState.update {
+            it.copy(
+                hiddenMediaKeys = effectiveHiddenKeys(),
+                actionFeedbackMessage = "Hidden ${item.title}",
+                actionErrorMessage = null
+            )
+        }
+        applyClientFilters()
         viewModelScope.launch {
-            moviesRepository.setTitleHidden(item.providerId, item.id, true)
-            _uiState.update { it.copy(actionFeedbackMessage = "Hidden ${item.title}") }
+            try {
+                val res = runCatching { moviesRepository.setTitleHidden(item, true) }
+                if (res.isFailure) {
+                    pendingHiddenKeys.removeAll(keys.toSet())
+                    _uiState.update {
+                        it.copy(
+                            hiddenMediaKeys = effectiveHiddenKeys(),
+                            actionFeedbackMessage = null,
+                            actionErrorMessage = "Couldn't hide ${item.title}. Please try again."
+                        )
+                    }
+                    applyClientFilters()
+                }
+            } finally {
+                inFlightMutationKeys.remove(opKey)
+            }
         }
     }
 
@@ -422,6 +507,10 @@ class MoviesCatalogueViewModel(
 
     fun clearActionFeedback() {
         _uiState.update { it.copy(actionFeedbackMessage = null) }
+    }
+
+    fun clearActionError() {
+        _uiState.update { it.copy(actionErrorMessage = null) }
     }
 
     fun resetFilters() {

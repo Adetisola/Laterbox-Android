@@ -1948,4 +1948,74 @@ class LaterboxDatabaseTest {
         collectionDao.deleteCollection(colId)
         assertTrue(db.moviesDao().observeMediaInCollection(colId).first().isEmpty())
     }
+
+    @Test
+    fun migration16To17_createsHiddenTitlesMigratesLegacyHiddenRowsAndAddsIndices() {
+        val instrumentation = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+        val helper = androidx.room.testing.MigrationTestHelper(
+            instrumentation,
+            LaterboxDatabase::class.java
+        )
+        val dbName = "migration_16_17_test.db"
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        context.deleteDatabase(dbName)
+
+        helper.createDatabase(dbName, 16).use { v16Db ->
+            v16Db.execSQL(
+                "INSERT INTO `movie_watch_history` (`history_key`, `composite_id`, `provider_id`, `title_id`, `kind`, `title`, `poster_url`, `position_ms`, `duration_ms`, `last_watched_at`, `is_trailer`, `is_hidden_title`) " +
+                    "VALUES ('moviebox:77:0:0', 'moviebox:77', 'moviebox', '77', 'movie', 'Legacy Hidden Film', 'https://cdn.example/h.jpg', 50000, 120000, 4000, 0, 1)"
+            )
+            v16Db.execSQL(
+                "INSERT INTO `movie_watch_history` (`history_key`, `composite_id`, `provider_id`, `title_id`, `kind`, `title`, `poster_url`, `position_ms`, `duration_ms`, `last_watched_at`, `is_trailer`, `is_hidden_title`) " +
+                    "VALUES ('moviebox:88:0:0', 'moviebox:88', 'moviebox', '88', 'movie', 'Visible Film', NULL, 20000, 120000, 5000, 0, 0)"
+            )
+            v16Db.execSQL(
+                "INSERT INTO `movie_recently_viewed` (`media_key`, `composite_id`, `provider_id`, `title_id`, `kind`, `title`, `genres_csv`, `source_badge`, `is_playable_hint`, `viewed_at`) " +
+                    "VALUES ('moviebox:88', 'moviebox:88', 'moviebox', '88', 'movie', 'Visible Film', 'Drama', 'LIVE_MOVIEBOX', 1, 6000)"
+            )
+        }
+
+        val migratedDb = helper.runMigrationsAndValidate(
+            dbName,
+            17,
+            true,
+            LaterboxDatabase.MIGRATION_16_17
+        )
+        try {
+            // Migrated hidden title row exists in hidden_titles
+            migratedDb.query("SELECT `composite_id`, `title`, `kind` FROM `hidden_titles` WHERE `provider_id` = 'moviebox' AND `title_id` = '77'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("moviebox:77", c.getString(0))
+                assertEquals("Legacy Hidden Film", c.getString(1))
+                assertEquals("movie", c.getString(2))
+            }
+
+            // Watch history row is preserved with is_hidden_title cleared cleanly
+            migratedDb.query("SELECT `position_ms`, `is_hidden_title` FROM `movie_watch_history` WHERE `history_key` = 'moviebox:77:0:0'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals(50000L, c.getLong(0))
+                assertEquals(0, c.getInt(1))
+            }
+
+            // Verify newly added indices exist
+            val expectedIndices = setOf(
+                "index_hidden_titles_provider_id_title_id_kind",
+                "index_movie_watch_history_hidden_from_continue_watching",
+                "index_canonical_media_kind_norm_title",
+                "index_movie_recently_viewed_composite_id",
+                "index_movie_recently_viewed_provider_id_title_id",
+                "index_downloaded_asset_fileStatus_contentCategory"
+            )
+            val foundIndices = mutableSetOf<String>()
+            migratedDb.query("SELECT `name` FROM `sqlite_master` WHERE `type` = 'index'").use { c ->
+                while (c.moveToNext()) {
+                    foundIndices.add(c.getString(0))
+                }
+            }
+            assertTrue("Missing indices: ${expectedIndices - foundIndices}", foundIndices.containsAll(expectedIndices))
+        } finally {
+            migratedDb.close()
+            context.deleteDatabase(dbName)
+        }
+    }
 }

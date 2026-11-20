@@ -81,7 +81,8 @@ data class MoviesHomeUiState(
     val selectedLanguage: String = "All",
     val selectedYear: String = "All",
     val selectedRuntimeBucket: RuntimeBucket = RuntimeBucket.ALL,
-    val actionFeedbackMessage: String? = null
+    val actionFeedbackMessage: String? = null,
+    val actionErrorMessage: String? = null
 ) {
     val collections: List<Collection>
         get() = collectionsWithCounts.map { it.collection }
@@ -114,7 +115,8 @@ private data class MoviesConfigSnapshot(
 class MoviesHomeViewModel(
     private val moviesRepository: MoviesRepository,
     private val userPreferencesRepository: UserPreferencesRepository,
-    private val collectionRepository: CollectionRepository? = null
+    private val collectionRepository: CollectionRepository? = null,
+    private val computeDispatcher: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.Main.immediate
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MoviesHomeUiState())
@@ -123,30 +125,98 @@ class MoviesHomeViewModel(
     private var loadJob: Job? = null
     private var filterJob: Job? = null
     private var suggestJob: Job? = null
+    private var discoveryJob: Job? = null
     private var suggestRequestSeq: Long = 0L
     private var lastConfigKey: MoviesConfigSnapshot? = null
     private var latestNonTrailerHistory: List<WatchHistoryItem> = emptyList()
     private var rawFilteredItems: List<MovieTitleSummary> = emptyList()
     private var rawWatchlist: List<MovieTitleSummary> = emptyList()
+    private var rawContinueWatching: List<WatchHistoryItem> = emptyList()
     private var rawRecentlyViewed: List<MovieTitleSummary> = emptyList()
+    private var rawHiddenKeys: Set<String> = emptySet()
+    private val pendingRemovedContinueWatchingKeys = mutableMapOf<String, Long>()
+    private val pendingRemovedRecentlyViewedKeys = mutableMapOf<String, Long>()
+    private val pendingHiddenMediaKeys = mutableSetOf<String>()
+    private val pendingWatchlistAdded = linkedMapOf<String, MovieTitleSummary>()
+    private val pendingWatchlistRemovedKeys = mutableSetOf<String>()
+    private val inFlightMutationKeys = mutableSetOf<String>()
     private var surpriseSeed: Long = 101L
     private var surprisePreferredKind: MediaKind? = null
+
+    private fun effectiveHiddenKeys(): Set<String> =
+        if (pendingHiddenMediaKeys.isEmpty()) rawHiddenKeys else rawHiddenKeys + pendingHiddenMediaKeys
+
+    private fun effectiveWatchlist(): List<MovieTitleSummary> {
+        val hidden = effectiveHiddenKeys()
+        val base = rawWatchlist.filterNot {
+            it.stableMediaKey in pendingWatchlistRemovedKeys ||
+                it.compositeId in pendingWatchlistRemovedKeys ||
+                it.stableMediaKey in hidden ||
+                it.compositeId in hidden
+        }
+        if (pendingWatchlistAdded.isEmpty()) return base
+        val existingIds = base.mapTo(HashSet()) { it.compositeId }
+        val prepended = pendingWatchlistAdded.values.filter {
+            it.compositeId !in existingIds &&
+                it.stableMediaKey !in hidden &&
+                it.compositeId !in hidden
+        }
+        return prepended + base
+    }
+
+    private fun effectiveRecentlyViewed(): List<MovieTitleSummary> {
+        val hidden = effectiveHiddenKeys()
+        return rawRecentlyViewed.filterNot {
+            it.stableMediaKey in pendingRemovedRecentlyViewedKeys ||
+                it.compositeId in pendingRemovedRecentlyViewedKeys ||
+                it.stableMediaKey in hidden ||
+                it.compositeId in hidden
+        }
+    }
+
+    private fun effectiveContinueWatching(): List<WatchHistoryItem> {
+        val hidden = effectiveHiddenKeys()
+        return rawContinueWatching.filterNot { entry ->
+            val removedAt = pendingRemovedContinueWatchingKeys[entry.stableMediaKey]
+                ?: pendingRemovedContinueWatchingKeys[entry.compositeId]
+            val isPendingRemoval = removedAt != null && entry.lastWatchedAt <= removedAt
+            isPendingRemoval ||
+                entry.stableMediaKey in hidden ||
+                entry.compositeId in hidden
+        }
+    }
 
     init {
         viewModelScope.launch {
             moviesRepository.observeWatchlist().collect { list ->
                 rawWatchlist = list
                 _uiState.update { current ->
-                    val hidden = current.hiddenMediaKeys
-                    applyDiscovery(
-                        current.copy(watchlist = list.filterNot { m -> m.stableMediaKey in hidden })
-                    )
+                    current.copy(watchlist = effectiveWatchlist())
                 }
+                scheduleDiscoveryRecompute()
             }
         }
         viewModelScope.launch {
             moviesRepository.observeContinueWatching(12).collect { history ->
-                _uiState.update { it.copy(continueWatching = history) }
+                rawContinueWatching = history
+                if (pendingRemovedContinueWatchingKeys.isNotEmpty()) {
+                    val byKey = HashMap<String, WatchHistoryItem>(history.size * 2)
+                    history.forEach { item ->
+                        byKey[item.stableMediaKey] = item
+                        byKey[item.compositeId] = item
+                    }
+                    val iterator = pendingRemovedContinueWatchingKeys.entries.iterator()
+                    while (iterator.hasNext()) {
+                        val (key, removedAt) = iterator.next()
+                        val match = byKey[key]
+                        if (match != null && match.lastWatchedAt > removedAt) {
+                            iterator.remove()
+                        } else if (match == null && !inFlightMutationKeys.contains("cw:$key")) {
+                            iterator.remove()
+                        }
+                    }
+                }
+                _uiState.update { it.copy(continueWatching = effectiveContinueWatching()) }
             }
         }
         viewModelScope.launch {
@@ -157,18 +227,26 @@ class MoviesHomeViewModel(
                 (movies + episodes).sortedByDescending { it.lastWatchedAt }
             }.collect { combined ->
                 latestNonTrailerHistory = combined
-                recomputeDiscovery()
+                scheduleDiscoveryRecompute()
             }
         }
         viewModelScope.launch {
             moviesRepository.observeRecentlyViewed(20).collect { list ->
                 rawRecentlyViewed = list
-                _uiState.update { current ->
-                    val hidden = current.hiddenMediaKeys
-                    applyDiscovery(
-                        current.copy(recentlyViewed = list.filterNot { m -> m.stableMediaKey in hidden })
-                    )
+                if (pendingRemovedRecentlyViewedKeys.isNotEmpty()) {
+                    val presentKeys = list.flatMapTo(HashSet()) { listOf(it.stableMediaKey, it.compositeId) }
+                    val iterator = pendingRemovedRecentlyViewedKeys.keys.iterator()
+                    while (iterator.hasNext()) {
+                        val key = iterator.next()
+                        if (key !in presentKeys && !inFlightMutationKeys.contains("rv:$key")) {
+                            iterator.remove()
+                        }
+                    }
                 }
+                _uiState.update { current ->
+                    current.copy(recentlyViewed = effectiveRecentlyViewed())
+                }
+                scheduleDiscoveryRecompute()
             }
         }
         viewModelScope.launch {
@@ -178,7 +256,14 @@ class MoviesHomeViewModel(
         }
         viewModelScope.launch {
             moviesRepository.observeHiddenHistory(100).collect { hiddenList ->
-                val keys = hiddenList.map { it.stableMediaKey }.toSet()
+                val keys = hiddenList.flatMapTo(LinkedHashSet()) {
+                    listOfNotNull(it.stableMediaKey, it.compositeId.takeIf { c -> c.isNotBlank() })
+                }
+                rawHiddenKeys = keys
+                if (pendingHiddenMediaKeys.isNotEmpty()) {
+                    pendingHiddenMediaKeys.removeAll(keys)
+                }
+                val effectiveHidden = effectiveHiddenKeys()
                 _uiState.update { current ->
                     val filtered = MoviesDiscoveryEngine.filterTitles(
                         items = rawFilteredItems,
@@ -188,17 +273,17 @@ class MoviesHomeViewModel(
                         country = current.selectedCountry,
                         year = current.selectedYear,
                         runtimeBucket = current.selectedRuntimeBucket,
-                        hiddenMediaKeys = keys
+                        hiddenMediaKeys = effectiveHidden
                     )
-                    applyDiscovery(
-                        current.copy(
-                            hiddenMediaKeys = keys,
-                            watchlist = rawWatchlist.filterNot { it.stableMediaKey in keys },
-                            recentlyViewed = rawRecentlyViewed.filterNot { it.stableMediaKey in keys },
-                            filteredItems = filtered
-                        )
+                    current.copy(
+                        hiddenMediaKeys = effectiveHidden,
+                        watchlist = effectiveWatchlist(),
+                        recentlyViewed = effectiveRecentlyViewed(),
+                        continueWatching = effectiveContinueWatching(),
+                        filteredItems = filtered
                     )
                 }
+                scheduleDiscoveryRecompute()
             }
         }
         if (collectionRepository != null) {
@@ -263,38 +348,35 @@ class MoviesHomeViewModel(
                     errorMessage = null
                 )
             }
-            val (result, topRated, newest) = coroutineScope {
-                val homeDeferred = async { moviesRepository.getHomeFeed(forceRefresh = forceRefresh) }
-                val topRatedDeferred = async {
-                    moviesRepository.getCatalogue(
-                        kind = null,
-                        page = 1,
-                        pageSize = 12,
-                        sort = CatalogueSort.TOP_RATED
-                    ).getOrNull()?.items.orEmpty()
-                }
-                val newestDeferred = async {
-                    moviesRepository.getCatalogue(
-                        kind = null,
-                        page = 1,
-                        pageSize = 12,
-                        sort = CatalogueSort.NEWEST
-                    ).getOrNull()?.items.orEmpty()
-                }
-                Triple(homeDeferred.await(), topRatedDeferred.await(), newestDeferred.await())
+            // Priority 1: render main home feed as soon as it resolves (cache or live),
+            // while Top Rated & Newest discovery rails load concurrently without blocking first render.
+            val topRatedDeferred = async {
+                moviesRepository.getCatalogue(
+                    kind = null,
+                    page = 1,
+                    pageSize = 12,
+                    sort = CatalogueSort.TOP_RATED
+                ).getOrNull()?.items.orEmpty().distinctBy { m -> m.compositeId }
             }
+            val newestDeferred = async {
+                moviesRepository.getCatalogue(
+                    kind = null,
+                    page = 1,
+                    pageSize = 12,
+                    sort = CatalogueSort.NEWEST
+                ).getOrNull()?.items.orEmpty().distinctBy { m -> m.compositeId }
+            }
+
+            val result = moviesRepository.getHomeFeed(forceRefresh = forceRefresh)
             result.fold(
                 onSuccess = { feed ->
+                    val immediateDiscovery = computeDiscoverySnapshot(_uiState.value.copy(feed = feed))
                     _uiState.update {
-                        applyDiscovery(
-                            it.copy(
-                                isLoading = false,
-                                isRefreshing = false,
-                                feed = feed,
-                                topRatedRail = topRated.distinctBy { m -> m.compositeId }.ifEmpty { it.topRatedRail },
-                                newestRail = newest.distinctBy { m -> m.compositeId }.ifEmpty { it.newestRail },
-                                errorMessage = null
-                            )
+                        immediateDiscovery.copy(
+                            isLoading = false,
+                            isRefreshing = false,
+                            feed = feed,
+                            errorMessage = null
                         )
                     }
                 },
@@ -309,6 +391,18 @@ class MoviesHomeViewModel(
                     }
                 }
             )
+
+            // Update progressive secondary discovery rails when ready
+            val topRated = topRatedDeferred.await()
+            if (topRated.isNotEmpty()) {
+                _uiState.update { it.copy(topRatedRail = topRated) }
+                scheduleDiscoveryRecompute()
+            }
+            val newest = newestDeferred.await()
+            if (newest.isNotEmpty()) {
+                _uiState.update { it.copy(newestRail = newest) }
+                scheduleDiscoveryRecompute()
+            }
         }
     }
 
@@ -639,35 +733,167 @@ class MoviesHomeViewModel(
     }
 
     fun hideTitle(item: MovieTitleSummary) {
+        val opKey = "hide:${item.compositeId}"
+        if (!inFlightMutationKeys.add(opKey)) return
+        val keys = listOf(item.stableMediaKey, item.compositeId)
+        pendingHiddenMediaKeys.addAll(keys)
+        val hiddenNow = effectiveHiddenKeys()
+        _uiState.update { current ->
+            val filtered = MoviesDiscoveryEngine.filterTitles(
+                items = rawFilteredItems,
+                kind = current.selectedKind,
+                genre = current.selectedGenre,
+                language = current.selectedLanguage,
+                country = current.selectedCountry,
+                year = current.selectedYear,
+                runtimeBucket = current.selectedRuntimeBucket,
+                hiddenMediaKeys = hiddenNow
+            )
+            current.copy(
+                hiddenMediaKeys = hiddenNow,
+                watchlist = effectiveWatchlist(),
+                recentlyViewed = effectiveRecentlyViewed(),
+                continueWatching = effectiveContinueWatching(),
+                filteredItems = filtered,
+                actionFeedbackMessage = "Hidden ${item.title}",
+                actionErrorMessage = null
+            )
+        }
+        scheduleDiscoveryRecompute()
+
         viewModelScope.launch {
-            moviesRepository.setTitleHidden(item.providerId, item.id, true)
-            _uiState.update { it.copy(actionFeedbackMessage = "Hidden ${item.title}") }
+            try {
+                val res = runCatching { moviesRepository.setTitleHidden(item, true) }
+                if (res.isFailure) {
+                    pendingHiddenMediaKeys.removeAll(keys.toSet())
+                    val restoredHidden = effectiveHiddenKeys()
+                    _uiState.update { current ->
+                        val filtered = MoviesDiscoveryEngine.filterTitles(
+                            items = rawFilteredItems,
+                            kind = current.selectedKind,
+                            genre = current.selectedGenre,
+                            language = current.selectedLanguage,
+                            country = current.selectedCountry,
+                            year = current.selectedYear,
+                            runtimeBucket = current.selectedRuntimeBucket,
+                            hiddenMediaKeys = restoredHidden
+                        )
+                        current.copy(
+                            hiddenMediaKeys = restoredHidden,
+                            watchlist = effectiveWatchlist(),
+                            recentlyViewed = effectiveRecentlyViewed(),
+                            continueWatching = effectiveContinueWatching(),
+                            filteredItems = filtered,
+                            actionFeedbackMessage = null,
+                            actionErrorMessage = "Couldn't hide ${item.title}. Please try again."
+                        )
+                    }
+                    scheduleDiscoveryRecompute()
+                } else {
+                    if (keys.any { it in rawHiddenKeys }) {
+                        pendingHiddenMediaKeys.removeAll(keys.toSet())
+                    }
+                }
+            } finally {
+                inFlightMutationKeys.remove(opKey)
+            }
         }
     }
 
     fun restartFromBeginning(entry: WatchHistoryItem) {
         viewModelScope.launch {
-            moviesRepository.restartFromBeginning(
-                providerId = entry.providerId,
-                titleId = entry.titleId,
-                seasonNumber = entry.seasonNumber,
-                episodeNumber = entry.episodeNumber
-            )
-            _uiState.update { it.copy(actionFeedbackMessage = "Reset progress for ${entry.title}") }
+            runCatching {
+                moviesRepository.restartFromBeginning(
+                    providerId = entry.providerId,
+                    titleId = entry.titleId,
+                    seasonNumber = entry.seasonNumber,
+                    episodeNumber = entry.episodeNumber
+                )
+            }.onSuccess {
+                _uiState.update { it.copy(actionFeedbackMessage = "Reset progress for ${entry.title}") }
+            }.onFailure {
+                _uiState.update { it.copy(actionErrorMessage = "Couldn't reset progress for ${entry.title}.") }
+            }
         }
     }
 
     fun removeFromContinueWatching(entry: WatchHistoryItem) {
+        val opKey = "cw:${entry.compositeId}"
+        if (!inFlightMutationKeys.add(opKey)) return
+        val keys = listOf(entry.stableMediaKey, entry.compositeId)
+        val removedAt = entry.lastWatchedAt
+        keys.forEach { pendingRemovedContinueWatchingKeys[it] = removedAt }
+        _uiState.update {
+            it.copy(
+                continueWatching = effectiveContinueWatching(),
+                actionFeedbackMessage = "Removed ${entry.title} from Continue Watching",
+                actionErrorMessage = null
+            )
+        }
         viewModelScope.launch {
-            moviesRepository.removeFromContinueWatching(entry.providerId, entry.titleId)
-            _uiState.update { it.copy(actionFeedbackMessage = "Removed ${entry.title} from Continue Watching") }
+            try {
+                val res = runCatching { moviesRepository.removeFromContinueWatching(entry.providerId, entry.titleId) }
+                if (res.isFailure) {
+                    keys.forEach { pendingRemovedContinueWatchingKeys.remove(it) }
+                    _uiState.update {
+                        it.copy(
+                            continueWatching = effectiveContinueWatching(),
+                            actionFeedbackMessage = null,
+                            actionErrorMessage = "Couldn't remove ${entry.title} from Continue Watching."
+                        )
+                    }
+                } else {
+                    val stillInRaw = rawContinueWatching.any {
+                        (it.stableMediaKey in keys || it.compositeId in keys) && it.lastWatchedAt <= removedAt
+                    }
+                    if (!stillInRaw) {
+                        keys.forEach { pendingRemovedContinueWatchingKeys.remove(it) }
+                    }
+                }
+            } finally {
+                inFlightMutationKeys.remove(opKey)
+            }
         }
     }
 
     fun removeRecentlyViewed(item: MovieTitleSummary) {
+        val opKey = "rv:${item.compositeId}"
+        if (!inFlightMutationKeys.add(opKey)) return
+        val keys = listOf(item.stableMediaKey, item.compositeId)
+        val removedAt = System.currentTimeMillis()
+        keys.forEach { pendingRemovedRecentlyViewedKeys[it] = removedAt }
+        _uiState.update {
+            it.copy(
+                recentlyViewed = effectiveRecentlyViewed(),
+                actionFeedbackMessage = "Removed ${item.title} from Viewed",
+                actionErrorMessage = null
+            )
+        }
+        scheduleDiscoveryRecompute()
         viewModelScope.launch {
-            moviesRepository.removeRecentlyViewed(item.providerId, item.id)
-            _uiState.update { it.copy(actionFeedbackMessage = "Removed ${item.title} from Viewed") }
+            try {
+                val res = runCatching { moviesRepository.removeRecentlyViewed(item.providerId, item.id) }
+                if (res.isFailure) {
+                    keys.forEach { pendingRemovedRecentlyViewedKeys.remove(it) }
+                    _uiState.update {
+                        it.copy(
+                            recentlyViewed = effectiveRecentlyViewed(),
+                            actionFeedbackMessage = null,
+                            actionErrorMessage = "Couldn't remove ${item.title} from Viewed."
+                        )
+                    }
+                    scheduleDiscoveryRecompute()
+                } else {
+                    val stillInRaw = rawRecentlyViewed.any {
+                        it.stableMediaKey in keys || it.compositeId in keys
+                    }
+                    if (!stillInRaw) {
+                        keys.forEach { pendingRemovedRecentlyViewedKeys.remove(it) }
+                    }
+                }
+            } finally {
+                inFlightMutationKeys.remove(opKey)
+            }
         }
     }
 
@@ -715,8 +941,33 @@ class MoviesHomeViewModel(
         _uiState.update { it.copy(actionFeedbackMessage = null) }
     }
 
-    private fun applyDiscovery(state: MoviesHomeUiState): MoviesHomeUiState {
+    fun clearActionError() {
+        _uiState.update { it.copy(actionErrorMessage = null) }
+    }
+
+    private fun scheduleDiscoveryRecompute() {
+        discoveryJob?.cancel()
+        discoveryJob = viewModelScope.launch {
+            val snapshot = _uiState.value
+            val updated = kotlinx.coroutines.withContext(computeDispatcher) {
+                computeDiscoverySnapshot(snapshot)
+            }
+            _uiState.update { current ->
+                current.copy(
+                    becauseYouWatchedGroups = updated.becauseYouWatchedGroups,
+                    quickRuntimePicks = updated.quickRuntimePicks,
+                    recentlyAddedRail = updated.recentlyAddedRail,
+                    availableLanguages = updated.availableLanguages,
+                    surprisePick = updated.surprisePick
+                )
+            }
+        }
+    }
+
+    private fun computeDiscoverySnapshot(state: MoviesHomeUiState): MoviesHomeUiState {
         val hidden = state.hiddenMediaKeys
+        val watchlistSnapshot = effectiveWatchlist()
+        val recentlyViewedSnapshot = effectiveRecentlyViewed()
         val candidatePool = (
             state.feed?.featuredBanners.orEmpty() +
                 state.feed?.sections.orEmpty().flatMap { it.items } +
@@ -726,7 +977,7 @@ class MoviesHomeViewModel(
 
         val byw = MoviesDiscoveryEngine.buildBecauseYouWatchedGroups(
             watchHistory = latestNonTrailerHistory,
-            watchlist = rawWatchlist,
+            watchlist = watchlistSnapshot,
             candidatePool = candidatePool,
             hiddenMediaKeys = hidden
         )
@@ -741,9 +992,9 @@ class MoviesHomeViewModel(
         val languages = MoviesDiscoveryEngine.extractAvailableLanguages(candidatePool)
         val surprise = MoviesDiscoveryEngine.pickSurpriseMe(
             watchHistory = latestNonTrailerHistory,
-            recentlyViewed = rawRecentlyViewed,
+            recentlyViewed = recentlyViewedSnapshot,
             hiddenMediaKeys = hidden,
-            watchlist = rawWatchlist,
+            watchlist = watchlistSnapshot,
             candidatePool = candidatePool,
             seed = surpriseSeed,
             preferredKind = surprisePreferredKind
@@ -759,7 +1010,7 @@ class MoviesHomeViewModel(
     }
 
     private fun recomputeDiscovery() {
-        _uiState.update { current -> applyDiscovery(current) }
+        scheduleDiscoveryRecompute()
     }
 
     private fun applyClientFiltersToFilteredItems() {
@@ -867,8 +1118,56 @@ class MoviesHomeViewModel(
     }
 
     fun toggleWatchlist(item: MovieTitleSummary) {
+        val opKey = "wl:${item.compositeId}"
+        if (!inFlightMutationKeys.add(opKey)) return
+        val currentlyInWatchlist = effectiveWatchlist().any {
+            it.compositeId == item.compositeId || it.stableMediaKey == item.stableMediaKey
+        }
+        val keys = listOf(item.stableMediaKey, item.compositeId)
+        if (currentlyInWatchlist) {
+            pendingWatchlistAdded.remove(item.compositeId)
+            pendingWatchlistRemovedKeys.addAll(keys)
+        } else {
+            pendingWatchlistRemovedKeys.removeAll(keys.toSet())
+            pendingWatchlistAdded[item.compositeId] = item
+        }
+        _uiState.update {
+            it.copy(
+                watchlist = effectiveWatchlist(),
+                actionFeedbackMessage = if (currentlyInWatchlist) {
+                    "Removed ${item.title} from Watchlist"
+                } else {
+                    "Added ${item.title} to Watchlist"
+                },
+                actionErrorMessage = null
+            )
+        }
+        scheduleDiscoveryRecompute()
+
         viewModelScope.launch {
-            moviesRepository.toggleWatchlist(item)
+            try {
+                val res = runCatching { moviesRepository.toggleWatchlist(item) }
+                if (res.isFailure) {
+                    if (currentlyInWatchlist) {
+                        pendingWatchlistRemovedKeys.removeAll(keys.toSet())
+                    } else {
+                        pendingWatchlistAdded.remove(item.compositeId)
+                    }
+                    _uiState.update {
+                        it.copy(
+                            watchlist = effectiveWatchlist(),
+                            actionFeedbackMessage = null,
+                            actionErrorMessage = "Couldn't update Watchlist for ${item.title}."
+                        )
+                    }
+                    scheduleDiscoveryRecompute()
+                } else {
+                    pendingWatchlistAdded.remove(item.compositeId)
+                    pendingWatchlistRemovedKeys.removeAll(keys.toSet())
+                }
+            } finally {
+                inFlightMutationKeys.remove(opKey)
+            }
         }
     }
 

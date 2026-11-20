@@ -6,11 +6,15 @@ import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.model.RuntimeBucket
 import com.laterbox.app.movies.domain.model.SurprisePickResult
 import com.laterbox.app.movies.domain.model.WatchHistoryItem
+import java.time.LocalDate
+import java.time.YearMonth
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.random.Random
 
 object MoviesDiscoveryEngine {
+
+    private val DATE_KEY_REGEX = Regex("(\\d{4})(?:-(\\d{1,2}))?(?:-(\\d{1,2}))?")
 
     fun buildBecauseYouWatchedGroups(
         watchHistory: List<WatchHistoryItem>,
@@ -369,14 +373,12 @@ object MoviesDiscoveryEngine {
      */
     internal fun parseSortableDateKey(rawDate: String?): Long {
         val clean = rawDate?.trim()?.takeIf { it.isNotBlank() } ?: return 0L
-        val parts = Regex("(\\d{4})(?:-(\\d{1,2}))?(?:-(\\d{1,2}))?").find(clean) ?: return 0L
+        val parts = DATE_KEY_REGEX.find(clean) ?: return 0L
         val year = parts.groupValues[1].toIntOrNull()?.takeIf { it in 1880..2100 } ?: return 0L
         val month = parts.groupValues[2].toIntOrNull()?.coerceIn(1, 12) ?: 1
-        val day = parts.groupValues[3].toIntOrNull()?.coerceIn(1, 31) ?: 1
-        val cal = java.util.GregorianCalendar(java.util.TimeZone.getTimeZone("UTC")).apply {
-            clear()
-            set(year, month - 1, day, 0, 0, 0)
-        }
-        return cal.timeInMillis.coerceAtLeast(1L)
+        val maxDay = YearMonth.of(year, month).lengthOfMonth()
+        val day = (parts.groupValues[3].toIntOrNull() ?: 1).coerceIn(1, maxDay)
+        val epochMillis = LocalDate.of(year, month, day).toEpochDay() * 86_400_000L
+        return epochMillis.coerceAtLeast(1L)
     }
 }

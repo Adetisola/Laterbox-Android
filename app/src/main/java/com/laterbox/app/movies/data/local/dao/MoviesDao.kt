@@ -4,7 +4,10 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
+import androidx.room.Upsert
 import com.laterbox.app.movies.data.local.entity.CanonicalMediaEntity
+import com.laterbox.app.movies.data.local.entity.HiddenTitleEntity
 import com.laterbox.app.movies.data.local.entity.MediaCollectionCrossRef
 import com.laterbox.app.movies.data.local.entity.MediaProviderLinkEntity
 import com.laterbox.app.movies.data.local.entity.MovieCacheEntryEntity
@@ -84,30 +87,115 @@ interface MoviesDao {
 
     @Query(
         """
-        SELECT * FROM movie_watch_history
-        WHERE is_trailer = 0
-          AND hidden_from_continue_watching = 0
-          AND is_hidden_title = 0
-          AND (is_completed = 0 OR (position_ms > 10000 AND duration_ms > 0 AND (position_ms * 1.0 / duration_ms) < 0.96))
-        ORDER BY last_watched_at DESC
+        SELECT * FROM movie_watch_history w
+        WHERE w.is_trailer = 0
+          AND w.hidden_from_continue_watching = 0
+          AND w.is_hidden_title = 0
+          AND (w.is_completed = 0 OR (w.position_ms > 10000 AND w.duration_ms > 0 AND (w.position_ms * 1.0 / w.duration_ms) < 0.96))
+          AND NOT EXISTS (
+              SELECT 1 FROM hidden_titles h
+              WHERE h.composite_id = w.composite_id
+                 OR (h.canonical_id IS NOT NULL AND h.canonical_id = w.canonical_id)
+          )
+        ORDER BY w.last_watched_at DESC
         LIMIT :limit
         """
     )
     fun observeContinueWatching(limit: Int): Flow<List<MovieWatchHistoryEntity>>
 
-    @Query("SELECT * FROM movie_watch_history WHERE is_hidden_title = 0 ORDER BY last_watched_at DESC LIMIT :limit")
+    @Query(
+        """
+        SELECT * FROM movie_watch_history w
+        WHERE w.is_hidden_title = 0
+          AND NOT EXISTS (
+              SELECT 1 FROM hidden_titles h
+              WHERE h.composite_id = w.composite_id
+                 OR (h.canonical_id IS NOT NULL AND h.canonical_id = w.canonical_id)
+          )
+        ORDER BY w.last_watched_at DESC
+        LIMIT :limit
+        """
+    )
     fun observeViewingHistory(limit: Int): Flow<List<MovieWatchHistoryEntity>>
 
-    @Query("SELECT * FROM movie_watch_history WHERE is_trailer = 0 AND kind = 'movie' AND is_hidden_title = 0 ORDER BY last_watched_at DESC LIMIT :limit")
+    @Query(
+        """
+        SELECT * FROM movie_watch_history w
+        WHERE w.is_trailer = 0 AND w.kind = 'movie' AND w.is_hidden_title = 0
+          AND NOT EXISTS (
+              SELECT 1 FROM hidden_titles h
+              WHERE h.composite_id = w.composite_id
+                 OR (h.canonical_id IS NOT NULL AND h.canonical_id = w.canonical_id)
+          )
+        ORDER BY w.last_watched_at DESC
+        LIMIT :limit
+        """
+    )
     fun observeMovieWatchHistory(limit: Int): Flow<List<MovieWatchHistoryEntity>>
 
-    @Query("SELECT * FROM movie_watch_history WHERE is_trailer = 0 AND kind = 'tv_series' AND is_hidden_title = 0 ORDER BY last_watched_at DESC LIMIT :limit")
+    @Query(
+        """
+        SELECT * FROM movie_watch_history w
+        WHERE w.is_trailer = 0 AND w.kind = 'tv_series' AND w.is_hidden_title = 0
+          AND NOT EXISTS (
+              SELECT 1 FROM hidden_titles h
+              WHERE h.composite_id = w.composite_id
+                 OR (h.canonical_id IS NOT NULL AND h.canonical_id = w.canonical_id)
+          )
+        ORDER BY w.last_watched_at DESC
+        LIMIT :limit
+        """
+    )
     fun observeEpisodeWatchHistory(limit: Int): Flow<List<MovieWatchHistoryEntity>>
 
-    @Query("SELECT * FROM movie_watch_history WHERE is_trailer = 1 AND is_hidden_title = 0 ORDER BY last_watched_at DESC LIMIT :limit")
+    @Query(
+        """
+        SELECT * FROM movie_watch_history w
+        WHERE w.is_trailer = 1 AND w.is_hidden_title = 0
+          AND NOT EXISTS (
+              SELECT 1 FROM hidden_titles h
+              WHERE h.composite_id = w.composite_id
+                 OR (h.canonical_id IS NOT NULL AND h.canonical_id = w.canonical_id)
+          )
+        ORDER BY w.last_watched_at DESC
+        LIMIT :limit
+        """
+    )
     fun observeTrailerHistory(limit: Int): Flow<List<MovieWatchHistoryEntity>>
 
-    @Query("SELECT * FROM movie_watch_history WHERE is_hidden_title = 1 OR hidden_from_continue_watching = 1 ORDER BY last_watched_at DESC LIMIT :limit")
+    @Query("SELECT * FROM hidden_titles ORDER BY hidden_at DESC LIMIT :limit")
+    fun observeHiddenTitles(limit: Int): Flow<List<HiddenTitleEntity>>
+
+    @Query("SELECT * FROM hidden_titles ORDER BY hidden_at DESC LIMIT :limit")
+    suspend fun getHiddenTitlesSnapshot(limit: Int = 200): List<HiddenTitleEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertHiddenTitle(item: HiddenTitleEntity)
+
+    @Query(
+        """
+        DELETE FROM hidden_titles
+        WHERE media_key = :mediaKey
+           OR composite_id = :compositeId
+           OR (:canonicalId IS NOT NULL AND canonical_id = :canonicalId)
+           OR (provider_id = :providerId AND title_id = :titleId)
+        """
+    )
+    suspend fun deleteHiddenTitle(
+        mediaKey: String,
+        compositeId: String,
+        canonicalId: String?,
+        providerId: String,
+        titleId: String
+    )
+
+    @Query("SELECT * FROM movie_watch_history WHERE composite_id = :compositeId OR (:canonicalId IS NOT NULL AND canonical_id = :canonicalId) ORDER BY last_watched_at DESC LIMIT 1")
+    suspend fun getAnyHistoryForTitle(compositeId: String, canonicalId: String?): MovieWatchHistoryEntity?
+
+    @Query("SELECT * FROM movie_recently_viewed WHERE composite_id = :compositeId OR (:canonicalId IS NOT NULL AND canonical_id = :canonicalId) ORDER BY viewed_at DESC LIMIT 1")
+    suspend fun getRecentlyViewedForTitle(compositeId: String, canonicalId: String?): MovieRecentlyViewedEntity?
+
+    @Query("SELECT * FROM movie_watch_history WHERE is_hidden_title = 1 ORDER BY last_watched_at DESC LIMIT :limit")
     fun observeHiddenHistory(limit: Int): Flow<List<MovieWatchHistoryEntity>>
 
     @Query("SELECT * FROM movie_watch_history ORDER BY last_watched_at DESC LIMIT :limit")
@@ -275,11 +363,40 @@ interface MoviesDao {
     @Query("SELECT * FROM canonical_media WHERE kind = :kind AND norm_title = :normTitle")
     suspend fun findCanonicalByKindAndNormTitle(kind: String, normTitle: String): List<CanonicalMediaEntity>
 
-    @androidx.room.Upsert
+    @Upsert
     suspend fun upsertCanonicalMedia(entity: CanonicalMediaEntity)
 
-    @androidx.room.Upsert
+    @Upsert
+    suspend fun upsertCanonicalMediaBatch(entities: List<CanonicalMediaEntity>)
+
+    @Upsert
     suspend fun upsertProviderLink(link: MediaProviderLinkEntity)
+
+    @Upsert
+    suspend fun upsertProviderLinksBatch(links: List<MediaProviderLinkEntity>)
+
+    @Query("SELECT * FROM media_provider_links")
+    suspend fun getAllProviderLinks(): List<MediaProviderLinkEntity>
+
+    @Query("SELECT * FROM canonical_media")
+    suspend fun getAllCanonicalMedia(): List<CanonicalMediaEntity>
+
+    @Transaction
+    suspend fun upsertCanonicalAndLinksBatch(
+        canonicals: List<CanonicalMediaEntity>,
+        links: List<MediaProviderLinkEntity>,
+        watchlistUpdates: List<Pair<String, String>> = emptyList(),
+        historyUpdates: List<Pair<String, String>> = emptyList()
+    ) {
+        if (canonicals.isNotEmpty()) upsertCanonicalMediaBatch(canonicals)
+        if (links.isNotEmpty()) upsertProviderLinksBatch(links)
+        for ((compositeId, cid) in watchlistUpdates) {
+            updateWatchlistCanonicalId(compositeId, cid)
+        }
+        for ((historyKey, cid) in historyUpdates) {
+            updateWatchHistoryCanonicalId(historyKey, cid)
+        }
+    }
 
     @Query("DELETE FROM media_provider_links WHERE provider_id = :providerId AND provider_title_id = :providerTitleId")
     suspend fun deleteProviderLink(providerId: String, providerTitleId: String)

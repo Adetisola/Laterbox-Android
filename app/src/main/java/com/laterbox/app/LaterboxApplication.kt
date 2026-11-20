@@ -124,6 +124,7 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
                 }
 
                 reconcileInspectionsIfNeeded()
+                com.laterbox.app.movies.data.cache.MoviesMediaCache.warmUp(this@LaterboxApplication)
 
                 // Check for yt-dlp binary updates if > 24 hours (deferred to prevent startup lock contention)
                 applicationScope.launch {

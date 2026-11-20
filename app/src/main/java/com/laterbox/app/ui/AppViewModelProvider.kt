@@ -110,7 +110,8 @@ object AppViewModelProvider {
             com.laterbox.app.movies.ui.MoviesHomeViewModel(
                 moviesRepository = app.container.moviesRepository,
                 userPreferencesRepository = app.container.userPreferencesRepository,
-                collectionRepository = app.container.collectionRepository
+                collectionRepository = app.container.collectionRepository,
+                computeDispatcher = kotlinx.coroutines.Dispatchers.Default
             )
         }
         initializer {

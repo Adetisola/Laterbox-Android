@@ -69,6 +69,7 @@ data class MovieDetailUiState(
     val hiddenMediaKeys: Set<String> = emptySet(),
     val rankedRelatedTitles: List<MovieTitleSummary> = emptyList(),
     val actionFeedbackMessage: String? = null,
+    val actionErrorMessage: String? = null,
     val errorMessage: String? = null
 )
 
@@ -393,20 +394,63 @@ class MovieDetailViewModel(
         }
     }
 
+    fun clearActionError() {
+        _uiState.update { it.copy(actionErrorMessage = null) }
+    }
+
     fun removeFromContinueWatching() {
         val summary = _uiState.value.details?.summary ?: return
+        val prevFeedback = _uiState.value.actionFeedbackMessage
+        _uiState.update {
+            it.copy(
+                actionFeedbackMessage = "Removed from Continue Watching",
+                actionErrorMessage = null
+            )
+        }
         viewModelScope.launch {
-            moviesRepository.removeFromContinueWatching(summary.providerId, summary.id)
-            _uiState.update { it.copy(actionFeedbackMessage = "Removed from Continue Watching") }
+            runCatching {
+                moviesRepository.removeFromContinueWatching(summary.providerId, summary.id)
+            }.onFailure {
+                _uiState.update {
+                    it.copy(
+                        actionFeedbackMessage = prevFeedback,
+                        actionErrorMessage = "Couldn't remove ${summary.title} from Continue Watching."
+                    )
+                }
+            }
         }
     }
 
     fun setTitleHidden(hidden: Boolean) {
         val summary = _uiState.value.details?.summary ?: return
+        val prevHidden = _uiState.value.hiddenMediaKeys
+        val updatedHidden = if (hidden) {
+            prevHidden + listOf(summary.stableMediaKey, summary.compositeId)
+        } else {
+            prevHidden - setOf(summary.stableMediaKey, summary.compositeId)
+        }
+        _uiState.update {
+            it.copy(
+                hiddenMediaKeys = updatedHidden,
+                actionFeedbackMessage = if (hidden) "Title hidden from discovery" else "Title unhidden",
+                actionErrorMessage = null
+            )
+        }
         viewModelScope.launch {
-            moviesRepository.setTitleHidden(summary.providerId, summary.id, hidden)
-            _uiState.update {
-                it.copy(actionFeedbackMessage = if (hidden) "Title hidden from discovery" else "Title unhidden")
+            runCatching {
+                moviesRepository.setTitleHidden(summary, hidden)
+            }.onFailure {
+                _uiState.update {
+                    it.copy(
+                        hiddenMediaKeys = prevHidden,
+                        actionFeedbackMessage = null,
+                        actionErrorMessage = if (hidden) {
+                            "Couldn't hide ${summary.title}. Please try again."
+                        } else {
+                            "Couldn't unhide ${summary.title}. Please try again."
+                        }
+                    )
+                }
             }
         }
     }
@@ -709,8 +753,25 @@ class MovieDetailViewModel(
 
     fun toggleWatchlist() {
         val summary = _uiState.value.details?.summary ?: return
+        val wasInWatchlist = _uiState.value.isInWatchlist
+        _uiState.update {
+            it.copy(
+                isInWatchlist = !wasInWatchlist,
+                actionFeedbackMessage = if (wasInWatchlist) "Removed from Watchlist" else "Added to Watchlist",
+                actionErrorMessage = null
+            )
+        }
         viewModelScope.launch {
-            moviesRepository.toggleWatchlist(summary)
+            runCatching { moviesRepository.toggleWatchlist(summary) }
+                .onFailure {
+                    _uiState.update {
+                        it.copy(
+                            isInWatchlist = wasInWatchlist,
+                            actionFeedbackMessage = null,
+                            actionErrorMessage = "Couldn't update Watchlist for ${summary.title}."
+                        )
+                    }
+                }
         }
     }
 

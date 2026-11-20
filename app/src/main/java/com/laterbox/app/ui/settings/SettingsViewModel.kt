@@ -19,6 +19,7 @@ import com.laterbox.app.data.preferences.UserPreferencesRepository
 import com.laterbox.app.data.repository.LinkRepository
 import com.laterbox.app.domain.model.ContentType
 import com.laterbox.app.domain.model.SavedLink
+import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.model.WatchHistoryItem
 import com.laterbox.app.movies.domain.repository.MoviesRepository
 import com.laterbox.app.reminders.NotificationHelper
@@ -28,12 +29,23 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.InputStream
 import java.io.OutputStream
+
+data class ViewingHistoryUiState(
+    val isLoading: Boolean = true,
+    val historyItems: List<WatchHistoryItem> = emptyList(),
+    val recentlyViewed: List<MovieTitleSummary> = emptyList(),
+    val hiddenTitles: List<WatchHistoryItem> = emptyList(),
+    val actionFeedbackMessage: String? = null,
+    val actionErrorMessage: String? = null
+)
 
 class SettingsViewModel(
     private val userPreferencesRepository: UserPreferencesRepository,
@@ -625,6 +637,73 @@ class SettingsViewModel(
         }
     }
 
+    private data class OptimisticHistoryOverrides(
+        val removedHistoryKeys: Set<String> = emptySet(),
+        val clearAllHistoryPending: Boolean = false,
+        val clearTrailersPending: Boolean = false,
+        val removedRecentKeys: Set<String> = emptySet(),
+        val clearRecentPending: Boolean = false,
+        val unhiddenKeys: Set<String> = emptySet(),
+        val actionFeedbackMessage: String? = null,
+        val actionErrorMessage: String? = null
+    )
+
+    private val _viewingHistoryOverrides = MutableStateFlow(OptimisticHistoryOverrides())
+    private val inFlightViewingHistoryOps = mutableSetOf<String>()
+
+    val viewingHistoryUiState: StateFlow<ViewingHistoryUiState> = if (moviesRepository == null) {
+        MutableStateFlow(ViewingHistoryUiState(isLoading = false)).asStateFlow()
+    } else {
+        combine(
+            moviesRepository.observeViewingHistory(100),
+            moviesRepository.observeRecentlyViewed(50),
+            moviesRepository.observeHiddenHistory(100),
+            _viewingHistoryOverrides
+        ) { history, recent, hidden, overrides ->
+            val visibleHistory = when {
+                overrides.clearAllHistoryPending -> emptyList()
+                overrides.clearTrailersPending -> history.filterNot { it.isTrailer }
+                overrides.removedHistoryKeys.isEmpty() -> history
+                else -> history.filterNot {
+                    val effectiveKey = it.historyKey.ifBlank { it.compositeId }
+                    effectiveKey in overrides.removedHistoryKeys || it.compositeId in overrides.removedHistoryKeys
+                }
+            }
+            val visibleRecent = if (overrides.clearRecentPending) {
+                emptyList()
+            } else if (overrides.removedRecentKeys.isEmpty()) {
+                recent
+            } else {
+                recent.filterNot {
+                    it.compositeId in overrides.removedRecentKeys || it.stableMediaKey in overrides.removedRecentKeys
+                }
+            }
+            val visibleHidden = if (overrides.unhiddenKeys.isEmpty()) {
+                hidden
+            } else {
+                hidden.filterNot {
+                    it.compositeId in overrides.unhiddenKeys || it.stableMediaKey in overrides.unhiddenKeys
+                }
+            }
+            ViewingHistoryUiState(
+                isLoading = false,
+                historyItems = visibleHistory,
+                recentlyViewed = visibleRecent,
+                hiddenTitles = visibleHidden,
+                actionFeedbackMessage = overrides.actionFeedbackMessage,
+                actionErrorMessage = overrides.actionErrorMessage
+            )
+        }.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = ViewingHistoryUiState(isLoading = true)
+        )
+    }
+
+    fun clearViewingHistoryFeedback() {
+        _viewingHistoryOverrides.update { it.copy(actionFeedbackMessage = null, actionErrorMessage = null) }
+    }
+
     fun observeViewingHistory(limit: Int = 100): Flow<List<WatchHistoryItem>> =
         moviesRepository?.observeViewingHistory(limit) ?: emptyFlow()
 
@@ -640,36 +719,165 @@ class SettingsViewModel(
     fun observeHiddenHistory(limit: Int = 100): Flow<List<WatchHistoryItem>> =
         moviesRepository?.observeHiddenHistory(limit) ?: emptyFlow()
 
-    fun observeRecentlyViewed(limit: Int = 50): Flow<List<com.laterbox.app.movies.domain.model.MovieTitleSummary>> =
+    fun observeRecentlyViewed(limit: Int = 50): Flow<List<MovieTitleSummary>> =
         moviesRepository?.observeRecentlyViewed(limit) ?: emptyFlow()
 
     fun unhideMovieTitle(providerId: String, titleId: String) {
+        val repo = moviesRepository ?: return
+        val compositeId = "$providerId:$titleId"
+        val opKey = "unhide:$compositeId"
+        if (!inFlightViewingHistoryOps.add(opKey)) return
+        _viewingHistoryOverrides.update {
+            it.copy(
+                unhiddenKeys = it.unhiddenKeys + compositeId,
+                actionFeedbackMessage = "Title restored",
+                actionErrorMessage = null
+            )
+        }
         viewModelScope.launch {
-            moviesRepository?.setTitleHidden(providerId, titleId, false)
+            try {
+                val res = runCatching { repo.setTitleHidden(providerId, titleId, false) }
+                if (res.isFailure) {
+                    _viewingHistoryOverrides.update {
+                        it.copy(
+                            unhiddenKeys = it.unhiddenKeys - compositeId,
+                            actionFeedbackMessage = null,
+                            actionErrorMessage = "Couldn't unhide title. Please try again."
+                        )
+                    }
+                }
+            } finally {
+                inFlightViewingHistoryOps.remove(opKey)
+            }
         }
     }
 
     fun removeRecentlyViewed(providerId: String, titleId: String) {
+        val repo = moviesRepository ?: return
+        val compositeId = "$providerId:$titleId"
+        val opKey = "rv:$compositeId"
+        if (!inFlightViewingHistoryOps.add(opKey)) return
+        _viewingHistoryOverrides.update {
+            it.copy(
+                removedRecentKeys = it.removedRecentKeys + compositeId,
+                actionFeedbackMessage = "Removed from Recently Viewed",
+                actionErrorMessage = null
+            )
+        }
         viewModelScope.launch {
-            moviesRepository?.removeRecentlyViewed(providerId, titleId)
+            try {
+                val res = runCatching { repo.removeRecentlyViewed(providerId, titleId) }
+                if (res.isFailure) {
+                    _viewingHistoryOverrides.update {
+                        it.copy(
+                            removedRecentKeys = it.removedRecentKeys - compositeId,
+                            actionFeedbackMessage = null,
+                            actionErrorMessage = "Couldn't remove title from Recently Viewed."
+                        )
+                    }
+                }
+            } finally {
+                inFlightViewingHistoryOps.remove(opKey)
+            }
         }
     }
 
     fun clearRecentlyViewed() {
+        val repo = moviesRepository ?: return
+        val opKey = "clear_rv"
+        if (!inFlightViewingHistoryOps.add(opKey)) return
+        _viewingHistoryOverrides.update {
+            it.copy(
+                clearRecentPending = true,
+                actionFeedbackMessage = "Cleared Recently Viewed",
+                actionErrorMessage = null
+            )
+        }
         viewModelScope.launch {
-            moviesRepository?.clearRecentlyViewed()
+            try {
+                val res = runCatching { repo.clearRecentlyViewed() }
+                if (res.isFailure) {
+                    _viewingHistoryOverrides.update {
+                        it.copy(
+                            clearRecentPending = false,
+                            actionFeedbackMessage = null,
+                            actionErrorMessage = "Couldn't clear Recently Viewed."
+                        )
+                    }
+                } else {
+                    _viewingHistoryOverrides.update { it.copy(clearRecentPending = false, removedRecentKeys = emptySet()) }
+                }
+            } finally {
+                inFlightViewingHistoryOps.remove(opKey)
+            }
         }
     }
 
     fun deleteViewingHistoryEntry(historyKey: String) {
+        val repo = moviesRepository ?: return
+        val opKey = "del:$historyKey"
+        if (!inFlightViewingHistoryOps.add(opKey)) return
+        _viewingHistoryOverrides.update {
+            it.copy(
+                removedHistoryKeys = it.removedHistoryKeys + historyKey,
+                actionFeedbackMessage = "Removed from Viewing History",
+                actionErrorMessage = null
+            )
+        }
         viewModelScope.launch {
-            moviesRepository?.deleteViewingHistoryEntry(historyKey)
+            try {
+                val res = runCatching { repo.deleteViewingHistoryEntry(historyKey) }
+                if (res.isFailure) {
+                    _viewingHistoryOverrides.update {
+                        it.copy(
+                            removedHistoryKeys = it.removedHistoryKeys - historyKey,
+                            actionFeedbackMessage = null,
+                            actionErrorMessage = "Couldn't delete history entry. Please try again."
+                        )
+                    }
+                }
+            } finally {
+                inFlightViewingHistoryOps.remove(opKey)
+            }
         }
     }
 
     fun clearViewingHistory(trailersOnly: Boolean? = null) {
+        val repo = moviesRepository ?: return
+        val opKey = "clear_hist_${trailersOnly}"
+        if (!inFlightViewingHistoryOps.add(opKey)) return
+        _viewingHistoryOverrides.update {
+            it.copy(
+                clearAllHistoryPending = trailersOnly != true,
+                clearTrailersPending = trailersOnly == true,
+                actionFeedbackMessage = if (trailersOnly == true) "Cleared trailer history" else "Cleared viewing history",
+                actionErrorMessage = null
+            )
+        }
         viewModelScope.launch {
-            moviesRepository?.clearViewingHistory(trailersOnly)
+            try {
+                val res = runCatching { repo.clearViewingHistory(trailersOnly) }
+                if (res.isFailure) {
+                    _viewingHistoryOverrides.update {
+                        it.copy(
+                            clearAllHistoryPending = false,
+                            clearTrailersPending = false,
+                            actionFeedbackMessage = null,
+                            actionErrorMessage = "Couldn't clear viewing history. Please try again."
+                        )
+                    }
+                } else {
+                    _viewingHistoryOverrides.update {
+                        it.copy(
+                            clearAllHistoryPending = false,
+                            clearTrailersPending = false,
+                            removedHistoryKeys = emptySet()
+                        )
+                    }
+                }
+            } finally {
+                inFlightViewingHistoryOps.remove(opKey)
+            }
         }
     }
 }

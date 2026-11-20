@@ -214,12 +214,13 @@ fun MoviesScreen(
         }
     }
 
-    Column(
+    Box(
         modifier = modifier
             .fillMaxSize()
             .background(colors.backgroundPrimary)
             .testTag("movies_home_screen")
     ) {
+        Column(modifier = Modifier.fillMaxSize()) {
         // Fixed Editorial Top Bar (Movies & TV + Search button)
         Row(
             modifier = Modifier
@@ -357,35 +358,6 @@ fun MoviesScreen(
                                 cleaned
                             } else {
                                 listOf("All") + cleaned
-                            }
-                        }
-
-                        // Action feedback toast/banner
-                        uiState.actionFeedbackMessage?.let { feedback ->
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = colors.accentContainer,
-                                border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.3f)),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 4.dp)
-                                    .testTag("movies_home_feedback_banner")
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(
-                                        text = feedback,
-                                        style = typography.metaText.copy(fontWeight = FontWeight.Medium),
-                                        color = colors.accentPrimary,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    TextButton(onClick = onClearActionFeedback) {
-                                        Text("Dismiss", color = colors.accentPrimary)
-                                    }
-                                }
                             }
                         }
 
@@ -766,7 +738,7 @@ fun MoviesScreen(
                                     }
                                     else -> {
                                         val rows = uiState.filteredItems.chunked(3)
-                                        items(rows, key = { row -> row.joinToString("_") { it.compositeId } }) { rowItems ->
+                                        items(rows, key = { row -> row.first().compositeId }) { rowItems ->
                                             Row(
                                                 modifier = Modifier
                                                     .fillMaxWidth()
@@ -830,6 +802,12 @@ fun MoviesScreen(
                             }
                             val visibleNewest = remember(uiState.newestRail, uiState.hiddenMediaKeys) {
                                 uiState.newestRail.filterNot { it.stableMediaKey in uiState.hiddenMediaKeys }
+                            }
+                            val visibleSections = remember(feed.sections, uiState.hiddenMediaKeys) {
+                                feed.sections.mapNotNull { section ->
+                                    val filtered = section.items.filterNot { it.stableMediaKey in uiState.hiddenMediaKeys }
+                                    if (filtered.isEmpty()) null else section to filtered
+                                }
                             }
 
                             LazyColumn(
@@ -955,10 +933,10 @@ fun MoviesScreen(
                                                 contentPadding = PaddingValues(horizontal = 16.dp),
                                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                                             ) {
-                                                itemsIndexed(
+                                                items(
                                                     items = uiState.recentlyViewed,
-                                                    key = { idx, it -> "rv_${idx}_${it.compositeId}" }
-                                                ) { _, item ->
+                                                    key = { "rv_${it.compositeId}" }
+                                                ) { item ->
                                                     val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
                                                     MoviePosterCard(
                                                         item = item,
@@ -1331,39 +1309,68 @@ fun MoviesScreen(
                                 }
 
                                 // Discovery Feed Rails
-                                items(feed.sections, key = { it.id }) { section ->
-                                    val sectionItems = section.items.filterNot { it.stableMediaKey in uiState.hiddenMediaKeys }
-                                    if (sectionItems.isNotEmpty()) {
-                                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                            val inferKind = sectionItems.firstOrNull()?.kind
-                                            SectionHeaderRow(
-                                                title = section.title,
-                                                subtitle = section.subtitle,
-                                                onSeeAll = { onOpenCatalogue(inferKind, null) }
-                                            )
-                                            LazyRow(
-                                                contentPadding = PaddingValues(horizontal = 16.dp),
-                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                            ) {
-                                                items(sectionItems, key = { "${section.id}_${it.compositeId}" }) { item ->
-                                                    val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
-                                                    MoviePosterCard(
-                                                        item = item,
-                                                        onClick = { onOpenDetail(item.providerId, item.id) },
-                                                        isOfflineDownloaded = isOffline,
-                                                        isInWatchlist = item.compositeId in watchlistIds,
-                                                        onToggleWatchlist = onToggleWatchlist,
-                                                        onAddToCollection = { collectionPickerTarget = it },
-                                                        onMarkWatched = onMarkWatched,
-                                                        onHideTitle = onHideTitle
-                                                    )
-                                                }
+                                items(visibleSections, key = { (section, _) -> section.id }) { (section, sectionItems) ->
+                                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        val inferKind = sectionItems.firstOrNull()?.kind
+                                        SectionHeaderRow(
+                                            title = section.title,
+                                            subtitle = section.subtitle,
+                                            onSeeAll = { onOpenCatalogue(inferKind, null) }
+                                        )
+                                        LazyRow(
+                                            contentPadding = PaddingValues(horizontal = 16.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                        ) {
+                                            items(sectionItems, key = { "${section.id}_${it.compositeId}" }) { item ->
+                                                val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
+                                                MoviePosterCard(
+                                                    item = item,
+                                                    onClick = { onOpenDetail(item.providerId, item.id) },
+                                                    isOfflineDownloaded = isOffline,
+                                                    isInWatchlist = item.compositeId in watchlistIds,
+                                                    onToggleWatchlist = onToggleWatchlist,
+                                                    onAddToCollection = { collectionPickerTarget = it },
+                                                    onMarkWatched = onMarkWatched,
+                                                    onHideTitle = onHideTitle
+                                                )
                                             }
                                         }
                                     }
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+        }
+
+        // Non-shifting floating action feedback banner
+        uiState.actionFeedbackMessage?.let { feedback ->
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = colors.accentContainer,
+                border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.3f)),
+                shadowElevation = 4.dp,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = (bottomPaddingDp + 8).dp)
+                    .testTag("movies_home_feedback_banner")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = feedback,
+                        style = typography.metaText.copy(fontWeight = FontWeight.Medium),
+                        color = colors.accentPrimary,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = onClearActionFeedback) {
+                        Text("Dismiss", color = colors.accentPrimary)
                     }
                 }
             }

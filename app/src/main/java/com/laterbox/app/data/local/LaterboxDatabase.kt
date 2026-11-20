@@ -26,6 +26,7 @@ import com.laterbox.app.media.data.db.entity.DownloadTaskEntity
 import com.laterbox.app.media.data.db.entity.MediaInspectionEntity
 import com.laterbox.app.movies.data.local.dao.MoviesDao
 import com.laterbox.app.movies.data.local.entity.CanonicalMediaEntity
+import com.laterbox.app.movies.data.local.entity.HiddenTitleEntity
 import com.laterbox.app.movies.data.local.entity.MediaCollectionCrossRef
 import com.laterbox.app.movies.data.local.entity.MediaProviderLinkEntity
 import com.laterbox.app.movies.data.local.entity.MovieCacheEntryEntity
@@ -58,9 +59,10 @@ import com.laterbox.app.movies.data.local.entity.MovieWatchlistEntity
         MovieRecentlyViewedEntity::class,
         MovieSeriesPreferencesEntity::class,
         MediaCollectionCrossRef::class,
-        MovieViewingReminderEntity::class
+        MovieViewingReminderEntity::class,
+        HiddenTitleEntity::class
     ],
-    version = 16,
+    version = 17,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -916,6 +918,62 @@ abstract class LaterboxDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `hidden_titles` (
+                        `media_key` TEXT NOT NULL,
+                        `composite_id` TEXT NOT NULL,
+                        `provider_id` TEXT NOT NULL,
+                        `title_id` TEXT NOT NULL,
+                        `canonical_id` TEXT,
+                        `kind` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `poster_url` TEXT,
+                        `hidden_at` INTEGER NOT NULL,
+                        PRIMARY KEY(`media_key`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_hidden_titles_provider_id_title_id_kind` ON `hidden_titles` (`provider_id`, `title_id`, `kind`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_hidden_titles_composite_id` ON `hidden_titles` (`composite_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_hidden_titles_canonical_id` ON `hidden_titles` (`canonical_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_hidden_titles_hidden_at` ON `hidden_titles` (`hidden_at`)")
+
+                // Migrate legacy hidden watch-history entries into hidden_titles without losing watch history
+                db.execSQL(
+                    """
+                    INSERT OR IGNORE INTO `hidden_titles` (
+                        `media_key`, `composite_id`, `provider_id`, `title_id`, `canonical_id`,
+                        `kind`, `title`, `poster_url`, `hidden_at`
+                    )
+                    SELECT
+                        COALESCE(`canonical_id`, `provider_id` || ':' || `title_id` || ':' || `kind`),
+                        `composite_id`,
+                        `provider_id`,
+                        `title_id`,
+                        `canonical_id`,
+                        `kind`,
+                        `title`,
+                        `poster_url`,
+                        MAX(`last_watched_at`)
+                    FROM `movie_watch_history`
+                    WHERE `is_hidden_title` = 1
+                    GROUP BY `provider_id`, `title_id`, `kind`
+                    """.trimIndent()
+                )
+                db.execSQL("UPDATE `movie_watch_history` SET `is_hidden_title` = 0 WHERE `is_hidden_title` = 1")
+
+                // Add missing indices for frequent lookup / filter / delete paths
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movie_watch_history_hidden_from_continue_watching` ON `movie_watch_history` (`hidden_from_continue_watching`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_canonical_media_kind_norm_title` ON `canonical_media` (`kind`, `norm_title`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movie_recently_viewed_composite_id` ON `movie_recently_viewed` (`composite_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movie_recently_viewed_provider_id_title_id` ON `movie_recently_viewed` (`provider_id`, `title_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_downloaded_asset_fileStatus_contentCategory` ON `downloaded_asset` (`fileStatus`, `contentCategory`)")
+            }
+        }
+
         @Volatile
         private var INSTANCE: LaterboxDatabase? = null
 
@@ -941,7 +999,8 @@ abstract class LaterboxDatabase : RoomDatabase() {
                         MIGRATION_12_13,
                         MIGRATION_13_14,
                         MIGRATION_14_15,
-                        MIGRATION_15_16
+                        MIGRATION_15_16,
+                        MIGRATION_16_17
                     )
                     .build()
                     .also { INSTANCE = it }

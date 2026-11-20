@@ -23,7 +23,8 @@ import com.laterbox.app.media.domain.model.MediaType
         Index("savedLinkId"),
         Index("checksum"),
         Index("localPath"),
-        Index("sourceRef")
+        Index("sourceRef"),
+        Index(value = ["fileStatus", "contentCategory"])
     ]
 )
 data class DownloadedAssetEntity(

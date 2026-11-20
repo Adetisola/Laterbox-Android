@@ -76,7 +76,8 @@ data class MovieWatchlistEntity(
         Index(value = ["canonical_id"]),
         Index(value = ["is_trailer"]),
         Index(value = ["is_completed"]),
-        Index(value = ["is_hidden_title"])
+        Index(value = ["is_hidden_title"]),
+        Index(value = ["hidden_from_continue_watching"])
     ]
 )
 data class MovieWatchHistoryEntity(
@@ -143,6 +144,7 @@ data class MovieSearchHistoryEntity(
     tableName = "canonical_media",
     indices = [
         Index(value = ["norm_title"]),
+        Index(value = ["kind", "norm_title"]),
         Index(value = ["imdb_id"]),
         Index(value = ["tvmaze_id"])
     ]
@@ -199,7 +201,9 @@ data class MediaProviderLinkEntity(
     tableName = "movie_recently_viewed",
     indices = [
         Index(value = ["viewed_at"]),
-        Index(value = ["canonical_id"])
+        Index(value = ["canonical_id"]),
+        Index(value = ["composite_id"]),
+        Index(value = ["provider_id", "title_id"])
     ]
 )
 data class MovieRecentlyViewedEntity(
@@ -350,4 +354,35 @@ data class MovieViewingReminderEntity(
     val createdAt: Long,
     @ColumnInfo(name = "updated_at")
     val updatedAt: Long
+)
+
+@Entity(
+    tableName = "hidden_titles",
+    indices = [
+        Index(value = ["provider_id", "title_id", "kind"], unique = true),
+        Index(value = ["composite_id"]),
+        Index(value = ["canonical_id"]),
+        Index(value = ["hidden_at"])
+    ]
+)
+data class HiddenTitleEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "media_key")
+    val mediaKey: String,
+    @ColumnInfo(name = "composite_id")
+    val compositeId: String,
+    @ColumnInfo(name = "provider_id")
+    val providerId: String,
+    @ColumnInfo(name = "title_id")
+    val titleId: String,
+    @ColumnInfo(name = "canonical_id")
+    val canonicalId: String? = null,
+    @ColumnInfo(name = "kind")
+    val kind: String,
+    @ColumnInfo(name = "title")
+    val title: String,
+    @ColumnInfo(name = "poster_url")
+    val posterUrl: String? = null,
+    @ColumnInfo(name = "hidden_at")
+    val hiddenAt: Long
 )

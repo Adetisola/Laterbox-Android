@@ -17,6 +17,7 @@ import com.laterbox.app.reminders.smart.MorningEveningConfig
 import com.laterbox.app.reminders.smart.SmartReminderSettings
 import com.laterbox.app.reminders.smart.WeekendConfig
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 enum class ThemeMode {
@@ -1065,19 +1066,33 @@ class UserPreferencesRepository(
         }
     }
 
+    @Volatile
+    private var legacyMoviesPrefsVerifiedClean: Boolean = false
+
     suspend fun migrateLegacyMoviesPreferences() {
+        if (legacyMoviesPrefsVerifiedClean) return
+        val current = dataStore.data.first()
+        val alreadyMigrated = current[PreferencesKeys.MOVIES_PREFS_MIGRATED_V2] ?: false
+        val hasLegacyKeys = current.contains(PreferencesKeys.MOVIES_PROVIDER_MODE) ||
+            current.contains(PreferencesKeys.MOVIES_USE_SAMPLE_FIXTURES_ONLY) ||
+            current.contains(PreferencesKeys.MOVIEBOX_API_KEY)
+        if (alreadyMigrated && !hasLegacyKeys) {
+            legacyMoviesPrefsVerifiedClean = true
+            return
+        }
         dataStore.edit { preferences ->
-            val alreadyMigrated = preferences[PreferencesKeys.MOVIES_PREFS_MIGRATED_V2] ?: false
-            val hasLegacyKeys = preferences.contains(PreferencesKeys.MOVIES_PROVIDER_MODE) ||
+            val migratedNow = preferences[PreferencesKeys.MOVIES_PREFS_MIGRATED_V2] ?: false
+            val legacyNow = preferences.contains(PreferencesKeys.MOVIES_PROVIDER_MODE) ||
                 preferences.contains(PreferencesKeys.MOVIES_USE_SAMPLE_FIXTURES_ONLY) ||
                 preferences.contains(PreferencesKeys.MOVIEBOX_API_KEY)
-            if (!alreadyMigrated || hasLegacyKeys) {
+            if (!migratedNow || legacyNow) {
                 preferences.remove(PreferencesKeys.MOVIES_PROVIDER_MODE)
                 preferences.remove(PreferencesKeys.MOVIES_USE_SAMPLE_FIXTURES_ONLY)
                 preferences.remove(PreferencesKeys.MOVIEBOX_API_KEY)
                 preferences[PreferencesKeys.MOVIES_PREFS_MIGRATED_V2] = true
             }
         }
+        legacyMoviesPrefsVerifiedClean = true
     }
 
     suspend fun setMovieBoxApiBaseUrl(baseUrl: String) {

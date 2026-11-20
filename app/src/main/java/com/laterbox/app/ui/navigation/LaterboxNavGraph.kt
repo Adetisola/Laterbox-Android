@@ -1062,6 +1062,11 @@ fun LaterboxApp(
                         // Movies & TV Discovery Home
                         composable(LaterboxDestination.Movies.route) {
                             val moviesUiState by moviesHomeViewModel.uiState.collectAsState()
+                            LaunchedEffect(moviesUiState.actionErrorMessage) {
+                                val err = moviesUiState.actionErrorMessage ?: return@LaunchedEffect
+                                snackbarHostState.showSnackbar(err, duration = SnackbarDuration.Short)
+                                moviesHomeViewModel.clearActionError()
+                            }
                             com.laterbox.app.movies.ui.MoviesScreen(
                                 uiState = moviesUiState,
                                 onRefresh = moviesHomeViewModel::refresh,
@@ -1178,6 +1183,11 @@ fun LaterboxApp(
                             }
 
                             val catState by moviesCatalogueViewModel.uiState.collectAsState()
+                            LaunchedEffect(catState.actionErrorMessage) {
+                                val err = catState.actionErrorMessage ?: return@LaunchedEffect
+                                snackbarHostState.showSnackbar(err, duration = SnackbarDuration.Short)
+                                moviesCatalogueViewModel.clearActionError()
+                            }
                             com.laterbox.app.movies.ui.MoviesCatalogueScreen(
                                 uiState = catState,
                                 onBackClick = { navController.popBackStack() },
@@ -1234,6 +1244,11 @@ fun LaterboxApp(
                                 movieDetailViewModel.load(providerId, titleId)
                             }
                             val detailState by movieDetailViewModel.uiState.collectAsState()
+                            LaunchedEffect(detailState.actionErrorMessage) {
+                                val err = detailState.actionErrorMessage ?: return@LaunchedEffect
+                                snackbarHostState.showSnackbar(err, duration = SnackbarDuration.Short)
+                                movieDetailViewModel.clearActionError()
+                            }
                             com.laterbox.app.movies.ui.MovieDetailScreen(
                                 uiState = detailState,
                                 onBackClick = { navController.popBackStack() },
@@ -1486,17 +1501,14 @@ fun LaterboxApp(
 
                         // Movies & TV Viewing History
                         composable(LaterboxDestination.MoviesViewingHistory.route) {
-                            val historyItems by remember {
-                                settingsViewModel.observeViewingHistory(limit = 100)
-                            }.collectAsState(initial = emptyList())
-                            val recentlyViewedItems by remember {
-                                settingsViewModel.observeRecentlyViewed(limit = 50)
-                            }.collectAsState(initial = emptyList())
-                            val hiddenHistoryItems by remember {
-                                settingsViewModel.observeHiddenHistory(limit = 100)
-                            }.collectAsState(initial = emptyList())
+                            val historyState by settingsViewModel.viewingHistoryUiState.collectAsState()
+                            LaunchedEffect(historyState.actionErrorMessage) {
+                                val err = historyState.actionErrorMessage ?: return@LaunchedEffect
+                                snackbarHostState.showSnackbar(err, duration = SnackbarDuration.Short)
+                                settingsViewModel.clearViewingHistoryFeedback()
+                            }
                             com.laterbox.app.movies.ui.MoviesViewingHistoryScreen(
-                                items = historyItems,
+                                items = historyState.historyItems,
                                 onBackClick = { navController.popBackStack() },
                                 onOpenDetail = { histProviderId, histTitleId ->
                                     navController.navigate(
@@ -1515,8 +1527,8 @@ fun LaterboxApp(
                                 },
                                 onDeleteItem = settingsViewModel::deleteViewingHistoryEntry,
                                 onClearHistory = settingsViewModel::clearViewingHistory,
-                                recentlyViewed = recentlyViewedItems,
-                                hiddenTitles = hiddenHistoryItems,
+                                recentlyViewed = historyState.recentlyViewed,
+                                hiddenTitles = historyState.hiddenTitles,
                                 onUnhideTitle = settingsViewModel::unhideMovieTitle,
                                 onRemoveRecentlyViewed = settingsViewModel::removeRecentlyViewed,
                                 onClearRecentlyViewed = settingsViewModel::clearRecentlyViewed

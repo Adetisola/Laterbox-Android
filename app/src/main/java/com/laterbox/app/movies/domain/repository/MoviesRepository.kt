@@ -47,6 +47,8 @@ interface MoviesRepository {
 
     suspend fun getDetails(providerId: String, titleId: String, forceRefresh: Boolean = false): Result<MediaDetails>
 
+    fun getCachedSummary(providerId: String, titleId: String): MovieTitleSummary? = null
+
     suspend fun getSeasons(providerId: String, seriesId: String): Result<List<SeasonSummary>>
 
     suspend fun getEpisodes(providerId: String, seriesId: String, seasonNumber: Int): Result<List<EpisodeItem>>
@@ -145,6 +147,8 @@ interface MoviesRepository {
 
     suspend fun removeFromContinueWatching(providerId: String, titleId: String) = Unit
     suspend fun setTitleHidden(providerId: String, titleId: String, hidden: Boolean) = Unit
+    suspend fun setTitleHidden(item: MovieTitleSummary, hidden: Boolean) =
+        setTitleHidden(item.providerId, item.id, hidden)
 
     suspend fun recordTrailerWatch(
         item: MovieTitleSummary,
