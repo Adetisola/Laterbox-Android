@@ -92,6 +92,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -114,6 +115,8 @@ import com.laterbox.app.movies.domain.model.PlaybackMarkerWindow
 import com.laterbox.app.movies.domain.model.PlaybackResolution
 import com.laterbox.app.movies.domain.model.PlaybackSource
 import com.laterbox.app.movies.domain.model.SubtitleTrack
+import com.laterbox.app.movies.playback.LaterboxPlaybackBridge
+import com.laterbox.app.movies.playback.PlaybackSessionService
 import com.laterbox.app.movies.ui.player.PlayerAudioBoostController
 import com.laterbox.app.movies.ui.player.PlayerBrightnessHelper
 import com.laterbox.app.movies.ui.player.PlayerBrightnessHud
@@ -613,15 +616,22 @@ private fun ActiveVideoPlayerContent(
     }
 
     val exoPlayer = remember(playbackEpisodeKey, resolution.title, selectedSource.headers, isAdaptiveSource, isLocalFile) {
+        val audioAttributes = PlaybackSessionService.buildConfiguredAudioAttributes()
+        val seekIncrementMs = (playbackPreferences.doubleTapSeekSeconds.coerceIn(5, 30)) * 1000L
+        val builder = ExoPlayer.Builder(context)
+            .setAudioAttributes(audioAttributes, true)
+            .setHandleAudioBecomingNoisy(true)
+            .setSeekBackIncrementMs(seekIncrementMs)
+            .setSeekForwardIncrementMs(seekIncrementMs)
         if (isLocalFile) {
-            ExoPlayer.Builder(context).build()
+            builder.build()
         } else {
             val mediaSourceFactory = MoviesMediaCache.createMediaSourceFactory(
                 context = context,
                 headers = selectedSource.headers,
                 useDiskCache = !isAdaptiveSource
             )
-            ExoPlayer.Builder(context)
+            builder
                 .setMediaSourceFactory(mediaSourceFactory)
                 .build()
         }
@@ -629,6 +639,25 @@ private fun ActiveVideoPlayerContent(
 
     BackHandler(enabled = isLocked) {
         showControls = true
+    }
+
+    BackHandler(enabled = !isLocked) {
+        when {
+            showMoreMenu -> showMoreMenu = false
+            showQualityDialog -> showQualityDialog = false
+            showSubtitleDialog -> showSubtitleDialog = false
+            showAudioDialog -> showAudioDialog = false
+            showSpeedDialog -> showSpeedDialog = false
+            showDownloadDialog -> showDownloadDialog = false
+            showSubtitleStyleDialog -> showSubtitleStyleDialog = false
+            else -> {
+                val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
+                val dur = exoPlayer.duration.coerceAtLeast(0L)
+                latestSaveEpisodeProgress(pos, dur, playbackEpisodeKey)
+                LaterboxPlaybackBridge.stopAndDetach(context)
+                onBackClick()
+            }
+        }
     }
 
     LaunchedEffect(effectiveIsLandscape, isLocked) {
@@ -686,8 +715,15 @@ private fun ActiveVideoPlayerContent(
         isBuffering = true
         isPlaybackEnded = false
         hasManualAudioOverride = false
+        val metadata = MediaMetadata.Builder()
+            .setTitle(resolution.title)
+            .setDisplayTitle(resolution.title)
+            .setSubtitle(resolution.subtitleHeading)
+            .setIsPlayable(true)
+            .build()
         val itemBuilder = MediaItem.Builder()
             .setUri(Uri.parse(selectedSource.url))
+            .setMediaMetadata(metadata)
 
         val streamMimeType = when {
             selectedSource.format.equals("DASH", ignoreCase = true) ||
@@ -790,6 +826,12 @@ private fun ActiveVideoPlayerContent(
             }
         }
         exoPlayer.addListener(listener)
+        LaterboxPlaybackBridge.attachPlayer(
+            context = context,
+            player = exoPlayer,
+            title = resolution.title,
+            subtitle = resolution.subtitleHeading
+        )
         onDispose {
             val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
             val dur = exoPlayer.duration.coerceAtLeast(0L)
@@ -799,7 +841,7 @@ private fun ActiveVideoPlayerContent(
             latestSaveEpisodeProgress(pos, dur, snapshotEpisodeKey)
             audioBoostController.release()
             exoPlayer.removeListener(listener)
-            exoPlayer.release()
+            LaterboxPlaybackBridge.releasePlayer(context, exoPlayer)
         }
     }
 
@@ -1506,14 +1548,25 @@ private fun ActiveVideoPlayerContent(
                                     .fillMaxSize()
                                     .testTag("player_play_pause_button")
                             ) {
-                                Icon(
-                                    painter = painterResource(
-                                        if (isPlaying) LaterboxIcons.Pause else LaterboxIcons.Play
-                                    ),
-                                    contentDescription = if (isPlaying) "Pause" else "Play",
-                                    tint = colors.onAccentPrimary,
-                                    modifier = Modifier.size(30.dp)
-                                )
+                                Box(contentAlignment = Alignment.Center) {
+                                    if (isBuffering && playerErrorText == null && !isHorizontalScrubbing) {
+                                        CircularProgressIndicator(
+                                            color = colors.onAccentPrimary,
+                                            strokeWidth = 3.dp,
+                                            modifier = Modifier
+                                                .size(52.dp)
+                                                .testTag("player_buffering_indicator")
+                                        )
+                                    }
+                                    Icon(
+                                        painter = painterResource(
+                                            if (isPlaying) LaterboxIcons.Pause else LaterboxIcons.Play
+                                        ),
+                                        contentDescription = if (isPlaying) "Pause" else "Play",
+                                        tint = colors.onAccentPrimary,
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                }
                             }
                         }
 
@@ -1768,23 +1821,21 @@ private fun ActiveVideoPlayerContent(
             modifier = Modifier.align(Alignment.Center)
         )
 
-        // Buffering Indicator (positioned above Play/Pause when controls are open so neither collides)
-        if (isBuffering && playerErrorText == null && !isHorizontalScrubbing) {
-            val offsetForControls = showControls && !isLocked
+        // Center buffering spinner when controls are hidden or locked (controls-open buffering renders unified inside Play/Pause)
+        if (isBuffering && playerErrorText == null && !isHorizontalScrubbing && (!showControls || isLocked)) {
             Surface(
                 shape = CircleShape,
                 color = Color.Black.copy(alpha = 0.60f),
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .padding(bottom = if (offsetForControls) 120.dp else 0.dp)
-                    .size(if (offsetForControls) 42.dp else 56.dp)
+                    .size(56.dp)
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(
                         color = colors.accentPrimary,
-                        strokeWidth = if (offsetForControls) 2.5.dp else 3.5.dp,
+                        strokeWidth = 3.5.dp,
                         modifier = Modifier
-                            .size(if (offsetForControls) 24.dp else 36.dp)
+                            .size(36.dp)
                             .testTag("player_buffering_indicator")
                     )
                 }

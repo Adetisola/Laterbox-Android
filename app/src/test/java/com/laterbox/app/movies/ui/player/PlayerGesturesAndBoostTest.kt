@@ -53,10 +53,13 @@ class PlayerGesturesAndBoostTest {
     // -------------------------------------------------------------------------
 
     @Test
-    fun verticalZone_splitsPlayerCleanlyIntoLeftBrightnessAndRightVolume() {
+    fun verticalZone_splitsPlayerIntoOuter28PercentEdgeZonesAnd44PercentCenterDeadZone() {
         assertEquals(VerticalGestureZone.LEFT, PlayerGesturesMath.classifyVerticalZone(100f, 1000f))
-        assertEquals(VerticalGestureZone.LEFT, PlayerGesturesMath.classifyVerticalZone(499f, 1000f))
-        assertEquals(VerticalGestureZone.RIGHT, PlayerGesturesMath.classifyVerticalZone(500f, 1000f))
+        assertEquals(VerticalGestureZone.LEFT, PlayerGesturesMath.classifyVerticalZone(280f, 1000f))
+        assertEquals(null, PlayerGesturesMath.classifyVerticalZone(281f, 1000f))
+        assertEquals(null, PlayerGesturesMath.classifyVerticalZone(500f, 1000f))
+        assertEquals(null, PlayerGesturesMath.classifyVerticalZone(719f, 1000f))
+        assertEquals(VerticalGestureZone.RIGHT, PlayerGesturesMath.classifyVerticalZone(720f, 1000f))
         assertEquals(VerticalGestureZone.RIGHT, PlayerGesturesMath.classifyVerticalZone(950f, 1000f))
     }
 

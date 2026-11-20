@@ -2,6 +2,7 @@ package com.laterbox.app.media.ui.viewer
 
 import android.content.Intent
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -39,6 +40,10 @@ fun ImageViewer(
 ) {
     val context = LocalContext.current
     val file = File(context.filesDir, "media/${asset.localPath}")
+
+    BackHandler {
+        onDismiss()
+    }
 
     Box(
         modifier = modifier

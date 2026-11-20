@@ -241,6 +241,93 @@ class PlayerResponsivenessAndTouchTest {
         assertFalse(false)
     }
 
+    @Test
+    fun `center 44 percent double tap dead zone ignores seek while outer 28 percent edges seek`() {
+        val tracker = PlayerTapGestureTracker(doubleTapWindowMs = 300L, accumulationWindowMs = 700L)
+
+        // Tap at x = 350/1000 (inside 44% center dead zone [0.28..0.72]) -> never initiates seek
+        assertEquals(
+            PlayerTapOutcome.SetControlsVisible(true),
+            tracker.onTap(350f, 1000f, controlsVisible = false, isLocked = false, stepSeconds = 10, uptimeMs = 1_000L)
+        )
+        assertEquals(
+            PlayerTapOutcome.SetControlsVisible(false),
+            tracker.onTap(350f, 1000f, controlsVisible = true, isLocked = false, stepSeconds = 10, uptimeMs = 1_150L)
+        )
+
+        // Tap at x = 710/1000 (still inside center dead zone < 0.72) -> never seeks
+        assertEquals(
+            PlayerTapOutcome.SetControlsVisible(true),
+            tracker.onTap(710f, 1000f, controlsVisible = false, isLocked = false, stepSeconds = 10, uptimeMs = 2_000L)
+        )
+        assertEquals(
+            PlayerTapOutcome.SetControlsVisible(false),
+            tracker.onTap(710f, 1000f, controlsVisible = true, isLocked = false, stepSeconds = 10, uptimeMs = 2_120L)
+        )
+
+        // Edge taps at 28% and 72% initiate seeks cleanly
+        tracker.onTap(280f, 1000f, controlsVisible = false, isLocked = false, stepSeconds = 10, uptimeMs = 3_000L)
+        assertEquals(
+            PlayerTapOutcome.SeekDelta(-1, 10, 10, false),
+            tracker.onTap(280f, 1000f, controlsVisible = true, isLocked = false, stepSeconds = 10, uptimeMs = 3_150L)
+        )
+        tracker.onTap(720f, 1000f, controlsVisible = false, isLocked = false, stepSeconds = 10, uptimeMs = 4_000L)
+        assertEquals(
+            PlayerTapOutcome.SeekDelta(1, 10, 10, false),
+            tracker.onTap(720f, 1000f, controlsVisible = true, isLocked = false, stepSeconds = 10, uptimeMs = 4_150L)
+        )
+    }
+
+    @Test
+    fun `buffering indicator is unified inside play pause center control and back closes unlocked player`() {
+        val src = PlaybackSource("s720", "https://cdn.example/video.mp4", "MP4", "720p", 720, providerName = "Laterbox")
+        var backCalled = false
+        var latestSavedPos = -1L
+        var backDispatcher: androidx.activity.OnBackPressedDispatcher? = null
+
+        composeTestRule.setContent {
+            backDispatcher = androidx.activity.compose.LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+            LaterboxTheme {
+                MoviePlayerScreen(
+                    uiState = MoviePlayerUiState(
+                        isLoading = false,
+                        resolution = PlaybackResolution.Available(
+                            title = "Unified Control Movie",
+                            sources = listOf(src)
+                        ),
+                        selectedSource = src
+                    ),
+                    onBackClick = { backCalled = true },
+                    onRetry = {},
+                    onSelectSource = { _, _ -> },
+                    onSelectSubtitle = { _, _ -> },
+                    onSaveProgress = { pos, _ -> latestSavedPos = pos },
+                    onOpenExternalUrl = {}
+                )
+            }
+        }
+
+        val bufferingBounds = composeTestRule.onNodeWithTag("player_buffering_indicator", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        val playPauseBounds = composeTestRule.onNodeWithTag("player_play_pause_button")
+            .fetchSemanticsNode().boundsInRoot
+
+        // Unified buffering spinner lives directly inside the center Play/Pause circle (no 120dp offset)
+        assertTrue(
+            "Expected buffering indicator inside Play/Pause bounds ($playPauseBounds), got $bufferingBounds",
+            kotlin.math.abs(bufferingBounds.center.y - playPauseBounds.center.y) < 4f &&
+                kotlin.math.abs(bufferingBounds.center.x - playPauseBounds.center.x) < 4f
+        )
+
+        // Dispatch Android Back on unlocked player -> closes player via onBackClick without popping underlying NavHost
+        composeTestRule.runOnUiThread {
+            backDispatcher?.onBackPressed()
+        }
+        composeTestRule.waitForIdle()
+        assertTrue(backCalled)
+        assertTrue(latestSavedPos >= 0L)
+    }
+
     @androidx.compose.runtime.Composable
     private fun ClockLeafSample(clockState: PlayerClockState, onRecompose: () -> Unit) {
         SideEffect { onRecompose() }

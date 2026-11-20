@@ -3,6 +3,7 @@ package com.laterbox.app.media.ui.viewer
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -26,11 +27,15 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import com.laterbox.app.media.domain.model.MediaAsset
+import com.laterbox.app.movies.playback.LaterboxPlaybackBridge
 import com.laterbox.app.ui.components.LaterboxIcons
 import java.io.File
 
@@ -59,18 +64,45 @@ fun MediaPlayerScreen(
     val context = LocalContext.current
     val file = File(context.filesDir, "media/${asset.localPath}")
 
+    BackHandler {
+        LaterboxPlaybackBridge.stopAndDetach(context)
+        onDismiss()
+    }
+
     val exoPlayer = remember(asset.id) {
-        ExoPlayer.Builder(context).build().apply {
-            val mediaItem = MediaItem.fromUri(Uri.fromFile(file))
-            setMediaItem(mediaItem)
-            prepare()
-            playWhenReady = true
-        }
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+            .build()
+        ExoPlayer.Builder(context)
+            .setAudioAttributes(audioAttributes, true)
+            .setHandleAudioBecomingNoisy(true)
+            .build()
+            .apply {
+                val metadata = MediaMetadata.Builder()
+                    .setTitle(asset.title ?: "Audio Playback")
+                    .setArtist(asset.artist)
+                    .setAlbumTitle(asset.album)
+                    .build()
+                val mediaItem = MediaItem.Builder()
+                    .setUri(Uri.fromFile(file))
+                    .setMediaMetadata(metadata)
+                    .build()
+                setMediaItem(mediaItem)
+                prepare()
+                playWhenReady = true
+            }
     }
 
     DisposableEffect(exoPlayer) {
+        LaterboxPlaybackBridge.attachPlayer(
+            context = context,
+            player = exoPlayer,
+            title = asset.title ?: "Audio Playback",
+            subtitle = asset.artist
+        )
         onDispose {
-            exoPlayer.release()
+            LaterboxPlaybackBridge.releasePlayer(context, exoPlayer)
         }
     }
 

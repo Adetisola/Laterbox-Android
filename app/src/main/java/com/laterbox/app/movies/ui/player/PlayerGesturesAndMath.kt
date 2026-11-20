@@ -45,9 +45,16 @@ object PlayerGesturesMath {
     const val MAX_FULL_SWIPE_SPAN_MS = 180_000L
     const val MIN_FULL_SWIPE_SPAN_MS = 30_000L
 
-    fun classifyVerticalZone(touchX: Float, widthPx: Float): VerticalGestureZone {
+    const val EDGE_GESTURE_FRACTION = 0.28f
+
+    fun classifyVerticalZone(touchX: Float, widthPx: Float): VerticalGestureZone? {
         val safeWidth = widthPx.coerceAtLeast(1f)
-        return if (touchX < safeWidth / 2f) VerticalGestureZone.LEFT else VerticalGestureZone.RIGHT
+        val fraction = (touchX / safeWidth).coerceIn(0f, 1f)
+        return when {
+            fraction <= EDGE_GESTURE_FRACTION -> VerticalGestureZone.LEFT
+            fraction >= 1f - EDGE_GESTURE_FRACTION -> VerticalGestureZone.RIGHT
+            else -> null
+        }
     }
 
     /**
@@ -263,6 +270,7 @@ fun Modifier.playerDragGestures(
                                             onVolumeDelta(deltaPercent)
                                         }
                                     }
+                                    null -> break
                                 }
                             }
                         }
@@ -374,9 +382,10 @@ class PlayerTapGestureTracker(
         uptimeMs: Long
     ): PlayerTapOutcome {
         val safeWidth = widthPx.coerceAtLeast(1f)
+        val fraction = (touchX / safeWidth).coerceIn(0f, 1f)
         val zone = when {
-            touchX < safeWidth * 0.35f -> PlayerTapZone.LEFT
-            touchX > safeWidth * 0.65f -> PlayerTapZone.RIGHT
+            fraction <= PlayerGesturesMath.EDGE_GESTURE_FRACTION -> PlayerTapZone.LEFT
+            fraction >= 1f - PlayerGesturesMath.EDGE_GESTURE_FRACTION -> PlayerTapZone.RIGHT
             else -> PlayerTapZone.CENTER
         }
 
