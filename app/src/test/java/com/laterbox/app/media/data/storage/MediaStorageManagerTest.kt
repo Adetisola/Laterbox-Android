@@ -86,4 +86,57 @@ class MediaStorageManagerTest {
         val ext = storageManager.resolveExtension(mime, null, MediaType.AUDIO)
         assertTrue("WebM audio must resolve to webm or opus, not m4a", ext == "webm" || ext == "opus")
     }
+
+    @Test
+    fun partFiles_storedUnderFilesDirDownloadPartsAndMigrateLegacySafely() {
+        val activeId = "task_active_1"
+        val inProgressId = "task_downloading_2"
+        val orphanId = "task_orphan_3"
+
+        val legacyDir = File(context.cacheDir, "media_parts").apply { mkdirs() }
+        val legacyActive = File(legacyDir, "$activeId.part").apply { writeText("active-bytes-123") }
+        val legacyInProgress = File(legacyDir, "$inProgressId.part").apply { writeText("inflight-bytes") }
+        val legacyOrphan = File(legacyDir, "$orphanId.part").apply { writeText("orphan-bytes") }
+
+        val migrated = storageManager.migrateLegacyPartFilesIfNeeded(
+            activeTaskIds = setOf(activeId, inProgressId),
+            inProgressTaskIds = setOf(inProgressId)
+        )
+        assertEquals(1, migrated)
+
+        // Active/paused migrated to filesDir/download_parts
+        val expectedNew = File(File(context.filesDir, "download_parts"), "$activeId.part")
+        assertTrue(expectedNew.exists())
+        assertEquals("active-bytes-123", expectedNew.readText())
+        assertTrue(!legacyActive.exists())
+
+        // In-progress task locked & untouched during migration
+        assertTrue(legacyInProgress.exists())
+
+        // Orphan deleted
+        assertTrue(!legacyOrphan.exists())
+
+        // Cleanup
+        storageManager.deletePartFile(activeId)
+        storageManager.deletePartFile(inProgressId)
+    }
+
+    @Test
+    fun sweepOrphanPartFiles_protectsActiveAndInProgressTasks() {
+        val activeFile = storageManager.getPartFile("keep_active").apply { writeText("a") }
+        val inProgressFile = storageManager.getPartFile("keep_running").apply { writeText("b") }
+        val orphanFile = storageManager.getPartFile("drop_orphan").apply { writeText("c") }
+
+        val deleted = storageManager.sweepOrphanPartFiles(
+            activeTaskIds = setOf("keep_active"),
+            inProgressTaskIds = setOf("keep_running")
+        )
+        assertEquals(1, deleted)
+        assertTrue(activeFile.exists())
+        assertTrue(inProgressFile.exists())
+        assertTrue(!orphanFile.exists())
+
+        storageManager.deletePartFile("keep_active")
+        storageManager.deletePartFile("keep_running")
+    }
 }

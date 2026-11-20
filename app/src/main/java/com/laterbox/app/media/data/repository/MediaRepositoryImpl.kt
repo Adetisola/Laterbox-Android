@@ -270,7 +270,9 @@ class MediaRepositoryImpl(
 
     override suspend fun runOrphanSweep(): Unit = withContext(Dispatchers.IO) {
         val activeIds = taskDao.getActiveAndPausedTaskIds().toSet()
-        storageManager.sweepOrphanPartFiles(activeIds)
+        val inProgressIds = taskDao.getInProgressTaskIds().toSet()
+        storageManager.migrateLegacyPartFilesIfNeeded(activeIds, inProgressIds)
+        storageManager.sweepOrphanPartFiles(activeIds, inProgressIds)
 
         val allAssets = assetDao.getAllAssets().first()
         for (asset in allAssets) {

@@ -58,7 +58,8 @@ class SettingsViewModel(
     private val database: com.laterbox.app.data.local.LaterboxDatabase? = null,
     private val backendBaseUrlProvider: (suspend () -> String)? = null,
     private val appCheckTokenProvider: (suspend (Boolean) -> String?)? = null,
-    private val moviesRepository: MoviesRepository? = null
+    private val moviesRepository: MoviesRepository? = null,
+    private val appStorageManager: com.laterbox.app.storage.AppStorageManager? = null
 ) : ViewModel() {
 
     private val runtimeManager: com.laterbox.app.media.data.adapters.ytdlp.YtDlpRuntimeManager? =
@@ -879,6 +880,75 @@ class SettingsViewModel(
                 inFlightViewingHistoryOps.remove(opKey)
             }
         }
+    }
+
+    private val resolvedStorageManager: com.laterbox.app.storage.AppStorageManager?
+        get() = appStorageManager ?: (appContext?.applicationContext as? com.laterbox.app.LaterboxApplication)
+            ?.container?.appStorageManager
+
+    private val _appStorageReport = MutableStateFlow<com.laterbox.app.storage.AppStorageReport?>(null)
+    val appStorageReport: StateFlow<com.laterbox.app.storage.AppStorageReport?> = _appStorageReport.asStateFlow()
+
+    private val _isStorageLoading = MutableStateFlow(false)
+    val isStorageLoading: StateFlow<Boolean> = _isStorageLoading.asStateFlow()
+
+    private val _isClearingSafeCache = MutableStateFlow(false)
+    val isClearingSafeCache: StateFlow<Boolean> = _isClearingSafeCache.asStateFlow()
+
+    private val _storageFeedbackMessage = MutableStateFlow<String?>(null)
+    val storageFeedbackMessage: StateFlow<String?> = _storageFeedbackMessage.asStateFlow()
+
+    fun refreshAppStorage() {
+        val manager = resolvedStorageManager ?: return
+        viewModelScope.launch {
+            _isStorageLoading.value = true
+            try {
+                _appStorageReport.value = manager.inspectStorage()
+            } finally {
+                _isStorageLoading.value = false
+            }
+        }
+    }
+
+    fun clearSafeCaches() {
+        val manager = resolvedStorageManager ?: return
+        if (_isClearingSafeCache.value) return
+        viewModelScope.launch {
+            _isClearingSafeCache.value = true
+            try {
+                val res = manager.clearSafeCaches()
+                _appStorageReport.value = res.report
+                val freedStr = appContext?.let {
+                    android.text.format.Formatter.formatShortFileSize(it, res.bytesFreed)
+                } ?: "${res.bytesFreed} B"
+                _storageFeedbackMessage.value = "Cleared safe caches ($freedStr freed)"
+            } finally {
+                _isClearingSafeCache.value = false
+            }
+        }
+    }
+
+    fun runStorageMaintenance() {
+        val manager = resolvedStorageManager ?: return
+        if (_isClearingSafeCache.value) return
+        viewModelScope.launch {
+            _isClearingSafeCache.value = true
+            try {
+                val res = manager.runMaintenanceCleanup()
+                _appStorageReport.value = res.report
+                val freedStr = appContext?.let {
+                    android.text.format.Formatter.formatShortFileSize(it, res.bytesFreed)
+                } ?: "${res.bytesFreed} B"
+                _storageFeedbackMessage.value =
+                    "Maintenance complete ($freedStr freed, ${res.expiredEntriesPruned} expired entries pruned)"
+            } finally {
+                _isClearingSafeCache.value = false
+            }
+        }
+    }
+
+    fun dismissStorageFeedback() {
+        _storageFeedbackMessage.value = null
     }
 }
 

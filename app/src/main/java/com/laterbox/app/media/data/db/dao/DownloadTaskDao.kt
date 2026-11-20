@@ -124,6 +124,9 @@ interface DownloadTaskDao {
     @Query("SELECT id FROM download_task WHERE status IN ('QUEUED', 'WAITING_FOR_WIFI', 'INSPECTING', 'READY', 'DOWNLOADING', 'PAUSED', 'PROCESSING')")
     suspend fun getActiveAndPausedTaskIds(): List<String>
 
+    @Query("SELECT id FROM download_task WHERE status IN ('DOWNLOADING', 'PROCESSING')")
+    suspend fun getInProgressTaskIds(): List<String>
+
     @Query("SELECT * FROM download_task WHERE status = 'QUEUED'")
     suspend fun getQueuedTasks(): List<DownloadTaskEntity>
 

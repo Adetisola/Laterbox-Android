@@ -41,6 +41,7 @@ interface AppContainer {
     val moviesRepository: com.laterbox.app.movies.domain.repository.MoviesRepository
     val moviesDownloadBridge: com.laterbox.app.movies.data.download.MoviesDownloadBridge
     val subtitleDownloadManager: com.laterbox.app.movies.data.download.SubtitleDownloadManager
+    val appStorageManager: com.laterbox.app.storage.AppStorageManager
     suspend fun resolveBackendBaseUrl(): String
     suspend fun getBackendAppCheckToken(forceRefresh: Boolean = false): String?
 }
@@ -286,6 +287,15 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
 
     override val moviesDownloadBridge: com.laterbox.app.movies.data.download.MoviesDownloadBridge by lazy {
         com.laterbox.app.movies.data.download.MoviesDownloadBridge(
+            mediaRepository = mediaRepository
+        )
+    }
+
+    override val appStorageManager: com.laterbox.app.storage.AppStorageManager by lazy {
+        com.laterbox.app.storage.AppStorageManager(
+            context = context.applicationContext,
+            moviesDao = database.moviesDao(),
+            downloadTaskDao = database.downloadTaskDao(),
             mediaRepository = mediaRepository
         )
     }

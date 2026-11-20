@@ -79,7 +79,8 @@ object AppViewModelProvider {
                 database = app.container.database,
                 backendBaseUrlProvider = { app.container.resolveBackendBaseUrl() },
                 appCheckTokenProvider = { forceRefresh -> app.container.getBackendAppCheckToken(forceRefresh) },
-                moviesRepository = app.container.moviesRepository
+                moviesRepository = app.container.moviesRepository,
+                appStorageManager = app.container.appStorageManager
             )
         }
         initializer {

@@ -1412,6 +1412,7 @@ fun LaterboxApp(
                                 onNavigateToMediaDownloads = { navController.navigate(LaterboxDestination.SettingsMediaDownloads.route) },
                                 onNavigateToMoviesTv = { navController.navigate(LaterboxDestination.SettingsMoviesTv.route) },
                                 onNavigateToDataStorage = { navController.navigate(LaterboxDestination.SettingsDataStorage.route) },
+                                onNavigateToAppStorage = { navController.navigate(LaterboxDestination.SettingsAppStorage.route) },
                                 onNavigateToAboutPrivacy = { navController.navigate(LaterboxDestination.SettingsAboutPrivacy.route) },
                                 onBackClick = { navController.popBackStack() }
                             )
@@ -1582,6 +1583,26 @@ fun LaterboxApp(
                                 onAllowSystemBackupChange = settingsViewModel::setAllowSystemBackup,
                                 onExportBackup = settingsViewModel::exportBackup,
                                 onImportBackup = settingsViewModel::importBackup,
+                                onBackClick = { navController.popBackStack() }
+                            )
+                        }
+
+                        // Settings: App Storage
+                        composable(LaterboxDestination.SettingsAppStorage.route) {
+                            val storageReport by settingsViewModel.appStorageReport.collectAsState()
+                            val isStorageLoading by settingsViewModel.isStorageLoading.collectAsState()
+                            val isClearingSafeCache by settingsViewModel.isClearingSafeCache.collectAsState()
+                            val storageFeedback by settingsViewModel.storageFeedbackMessage.collectAsState()
+
+                            com.laterbox.app.ui.settings.AppStorageSettingsScreen(
+                                report = storageReport,
+                                isLoading = isStorageLoading,
+                                isClearingSafeCache = isClearingSafeCache,
+                                feedbackMessage = storageFeedback,
+                                onRefresh = settingsViewModel::refreshAppStorage,
+                                onClearSafeCache = settingsViewModel::clearSafeCaches,
+                                onRunMaintenance = settingsViewModel::runStorageMaintenance,
+                                onDismissFeedback = settingsViewModel::dismissStorageFeedback,
                                 onBackClick = { navController.popBackStack() }
                             )
                         }

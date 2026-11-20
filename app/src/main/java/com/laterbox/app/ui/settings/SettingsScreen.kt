@@ -49,7 +49,8 @@ fun SettingsScreen(
     onNavigateToAboutPrivacy: () -> Unit,
     onBackClick: () -> Unit,
     modifier: Modifier = Modifier,
-    onNavigateToMoviesTv: () -> Unit = {}
+    onNavigateToMoviesTv: () -> Unit = {},
+    onNavigateToAppStorage: () -> Unit = {}
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -189,6 +190,14 @@ fun SettingsScreen(
                     title = "Data & Storage",
                     subtitle = "JSON backup & restore, Android OS auto-backup",
                     onClick = onNavigateToDataStorage
+                )
+
+                SettingsCategoryRow(
+                    iconRes = LaterboxIcons.Folder,
+                    title = "App Storage",
+                    subtitle = "Cache usage, downloaded media footprint & safe cleanup",
+                    onClick = onNavigateToAppStorage,
+                    modifier = Modifier.testTag("settings_category_app_storage")
                 )
 
                 SettingsCategoryRow(

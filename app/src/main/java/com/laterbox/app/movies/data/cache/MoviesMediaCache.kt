@@ -120,6 +120,57 @@ object MoviesMediaCache {
         return DefaultMediaSourceFactory(createDataSourceFactory(context, headers, useDiskCache))
     }
 
+    fun cacheDir(context: Context): File =
+        File(context.applicationContext.cacheDir, CACHE_DIR_NAME)
+
+    fun measureUsedBytes(context: Context): Long {
+        val dir = cacheDir(context)
+        if (!dir.exists()) return 0L
+        return runCatching {
+            dir.walkBottomUp().filter { it.isFile }.sumOf { it.length() }
+        }.getOrDefault(0L)
+    }
+
+    fun clearCache(context: Context): Long {
+        val before = measureUsedBytes(context)
+        val ready = getCacheIfReady()
+        if (ready != null) {
+            runCatching {
+                ready.keys.toList().forEach { key ->
+                    runCatching { ready.removeResource(key) }
+                }
+            }
+        } else {
+            val dir = cacheDir(context)
+            if (dir.exists()) {
+                dir.listFiles()?.forEach { child ->
+                    runCatching { child.deleteRecursively() }
+                }
+            }
+        }
+        val after = measureUsedBytes(context)
+        return (before - after).coerceAtLeast(0L)
+    }
+
+    fun trimCacheToMaxBytes(context: Context, targetMaxBytes: Long): Long {
+        val before = measureUsedBytes(context)
+        if (before <= targetMaxBytes) return 0L
+        val ready = getCacheIfReady() ?: return 0L
+        val keysByOldest = ready.keys
+            .map { key ->
+                val spans = runCatching { ready.getCachedSpans(key) }.getOrDefault(emptySet())
+                val oldestTouch = spans.minOfOrNull { it.lastTouchTimestamp } ?: Long.MAX_VALUE
+                key to oldestTouch
+            }
+            .sortedBy { it.second }
+        for ((key, _) in keysByOldest) {
+            if (measureUsedBytes(context) <= targetMaxBytes) break
+            runCatching { ready.removeResource(key) }
+        }
+        val after = measureUsedBytes(context)
+        return (before - after).coerceAtLeast(0L)
+    }
+
     fun releaseForTesting() {
         synchronized(this) {
             runCatching { cacheInstance?.release() }

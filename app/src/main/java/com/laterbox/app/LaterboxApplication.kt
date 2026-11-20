@@ -114,7 +114,8 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
                     Log.w("LaterboxApplication", "yt-dlp runtime init warning: ${t.message}")
                 }
 
-                container.mediaRepository.runOrphanSweep()
+                container.appStorageManager.runMaintenanceCleanup()
+                com.laterbox.app.storage.StorageMaintenanceWorker.enqueuePeriodic(this@LaterboxApplication)
 
                 try {
                     val currentVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: "1.0.0"

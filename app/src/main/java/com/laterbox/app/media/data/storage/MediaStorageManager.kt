@@ -22,15 +22,82 @@ class MediaStorageManager(private val context: Context) {
         get() = File(context.filesDir, "media").apply { if (!exists()) mkdirs() }
 
     private val partsBaseDir: File
-        get() = File(context.cacheDir, "media_parts").apply { if (!exists()) mkdirs() }
+        get() = File(context.filesDir, "download_parts").apply { if (!exists()) mkdirs() }
+
+    internal val legacyPartsBaseDir: File
+        get() = File(context.cacheDir, "media_parts")
+
+    fun getCurrentPartsDir(): File = partsBaseDir
 
     fun getPartFile(taskId: String): File {
-        return File(partsBaseDir, "$taskId.part")
+        val target = File(partsBaseDir, "$taskId.part")
+        val legacy = File(legacyPartsBaseDir, "$taskId.part")
+        if (!target.exists() && legacy.exists() && legacy.isFile) {
+            moveFileSafely(legacy, target)
+        }
+        return target
     }
 
     fun deletePartFile(taskId: String): Boolean {
-        val file = getPartFile(taskId)
-        return if (file.exists()) file.delete() else true
+        val target = File(partsBaseDir, "$taskId.part")
+        val legacy = File(legacyPartsBaseDir, "$taskId.part")
+        val a = if (target.exists()) target.delete() else true
+        val b = if (legacy.exists()) legacy.delete() else true
+        return a && b
+    }
+
+    /**
+     * Idempotently migrates resumable `.part` files from legacy `cacheDir/media_parts`
+     * into `filesDir/download_parts`, skipping any task currently downloading/processing.
+     */
+    fun migrateLegacyPartFilesIfNeeded(
+        activeTaskIds: Set<String> = emptySet(),
+        inProgressTaskIds: Set<String> = emptySet()
+    ): Int {
+        val legacyDir = legacyPartsBaseDir
+        if (!legacyDir.exists() || !legacyDir.isDirectory) return 0
+        val legacyFiles = legacyDir.listFiles() ?: return 0
+        var migrated = 0
+        for (file in legacyFiles) {
+            if (!file.isFile || !file.name.endsWith(".part")) continue
+            val taskId = file.name.removeSuffix(".part")
+            if (taskId in inProgressTaskIds) continue
+            if (taskId !in activeTaskIds) {
+                file.delete()
+                continue
+            }
+            val target = File(partsBaseDir, file.name)
+            if (!target.exists() || (file.length() > target.length() && target.length() == 0L)) {
+                if (moveFileSafely(file, target)) {
+                    migrated++
+                }
+            } else {
+                file.delete()
+            }
+        }
+        if (legacyDir.listFiles().isNullOrEmpty()) {
+            legacyDir.delete()
+        }
+        return migrated
+    }
+
+    private fun moveFileSafely(source: File, target: File): Boolean {
+        return try {
+            target.parentFile?.let { if (!it.exists()) it.mkdirs() }
+            if (source.renameTo(target)) {
+                true
+            } else {
+                source.inputStream().use { input ->
+                    target.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                source.delete()
+                true
+            }
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     fun resolveFile(relativePath: String): File {
@@ -150,16 +217,24 @@ class MediaStorageManager(private val context: Context) {
     }
 
     /**
-     * Cleans up partial .part files that do not correspond to any active or paused task.
+     * Cleans up partial .part files that do not correspond to any active or paused task,
+     * never touching tasks currently in progress.
      */
-    fun sweepOrphanPartFiles(activeTaskIds: Set<String>): Int {
+    fun sweepOrphanPartFiles(
+        activeTaskIds: Set<String>,
+        inProgressTaskIds: Set<String> = emptySet()
+    ): Int {
         var deleted = 0
-        val files = partsBaseDir.listFiles() ?: return 0
-        for (file in files) {
-            if (file.isFile && file.name.endsWith(".part")) {
-                val taskId = file.name.removeSuffix(".part")
-                if (taskId !in activeTaskIds) {
-                    if (file.delete()) deleted++
+        val protectedIds = activeTaskIds + inProgressTaskIds
+        listOf(partsBaseDir, legacyPartsBaseDir).forEach { dir ->
+            if (!dir.exists() || !dir.isDirectory) return@forEach
+            val files = dir.listFiles() ?: return@forEach
+            for (file in files) {
+                if (file.isFile && file.name.endsWith(".part")) {
+                    val taskId = file.name.removeSuffix(".part")
+                    if (taskId !in protectedIds) {
+                        if (file.delete()) deleted++
+                    }
                 }
             }
         }

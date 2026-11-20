@@ -1,0 +1,214 @@
+package com.laterbox.app.storage
+
+import android.content.Context
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.room.Room
+import androidx.test.core.app.ApplicationProvider
+import com.laterbox.app.data.local.LaterboxDatabase
+import com.laterbox.app.media.data.db.entity.DownloadTaskEntity
+import com.laterbox.app.media.data.storage.MediaStorageManager
+import com.laterbox.app.movies.data.local.entity.MovieCacheEntryEntity
+import com.laterbox.app.ui.settings.AppStorageSettingsScreen
+import com.laterbox.app.ui.theme.LaterboxTheme
+import kotlinx.coroutines.test.runTest
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import java.io.File
+
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
+class AppStorageManagerTest {
+
+    @get:Rule
+    val composeTestRule = createComposeRule()
+
+    private lateinit var context: Context
+    private lateinit var db: LaterboxDatabase
+    private var fakeClockMs = 1_700_000_000_000L
+
+    @Before
+    fun setUp() {
+        context = ApplicationProvider.getApplicationContext()
+        db = Room.inMemoryDatabaseBuilder(context, LaterboxDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        cleanAppStorageDirs()
+    }
+
+    @After
+    fun tearDown() {
+        db.close()
+        cleanAppStorageDirs()
+    }
+
+    private fun cleanAppStorageDirs() {
+        File(context.filesDir, "media").deleteRecursively()
+        File(context.filesDir, "download_parts").deleteRecursively()
+        File(context.cacheDir, "media_parts").deleteRecursively()
+        File(context.cacheDir, "image_cache").deleteRecursively()
+        File(context.cacheDir, "movies_media_cache").deleteRecursively()
+        File(context.cacheDir, "stale_temp.tmp").delete()
+    }
+
+    @Test
+    fun inspectAndClearSafeCaches_preservesDownloadsAndPartialFilesWhileClearingDisposableCaches() = runTest {
+        val manager = AppStorageManager(
+            context = context,
+            moviesDao = db.moviesDao(),
+            downloadTaskDao = db.downloadTaskDao(),
+            storageManager = MediaStorageManager(context),
+            nowMs = { fakeClockMs }
+        )
+
+        val downloadedFile = File(File(context.filesDir, "media/video").apply { mkdirs() }, "movie.mp4").apply {
+            writeBytes(ByteArray(1200))
+        }
+        val activePartFile = File(File(context.filesDir, "download_parts").apply { mkdirs() }, "active_1.part").apply {
+            writeBytes(ByteArray(800))
+        }
+        val imageCacheFile = File(File(context.cacheDir, "image_cache").apply { mkdirs() }, "poster.img").apply {
+            writeBytes(ByteArray(500))
+        }
+        val streamCacheFile = File(File(context.cacheDir, "movies_media_cache").apply { mkdirs() }, "seg.exo").apply {
+            writeBytes(ByteArray(700))
+        }
+        val staleTemp = File(context.cacheDir, "stale_temp.tmp").apply {
+            writeBytes(ByteArray(300))
+        }
+
+        db.moviesDao().upsertCacheEntry(
+            MovieCacheEntryEntity("expired_key", "moviebox", "{}", fakeClockMs - 10_000L, fakeClockMs - 1_000L)
+        )
+        db.moviesDao().upsertCacheEntry(
+            MovieCacheEntryEntity("fresh_key", "moviebox", "{}", fakeClockMs - 1_000L, fakeClockMs + 60_000L)
+        )
+
+        val before = manager.inspectStorage()
+        assertEquals(1200L, before.downloadedMediaBytes)
+        assertEquals(800L, before.inProgressDownloadsBytes)
+        assertEquals(500L, before.imageCacheBytes)
+        assertEquals(700L, before.streamPlaybackCacheBytes)
+        assertTrue(before.tempAndOtherCacheBytes >= 300L)
+        assertEquals(2, before.cachedApiEntryCount)
+
+        val cleanup = manager.clearSafeCaches()
+        assertTrue(cleanup.bytesFreed >= 1500L)
+        assertEquals(1, cleanup.expiredEntriesPruned)
+
+        // Disposable caches removed
+        assertFalse(imageCacheFile.exists())
+        assertFalse(streamCacheFile.exists())
+        assertFalse(staleTemp.exists())
+
+        // User media & active partial downloads untouched
+        assertTrue(downloadedFile.exists())
+        assertTrue(activePartFile.exists())
+        assertEquals(1200L, cleanup.report.downloadedMediaBytes)
+        assertEquals(800L, cleanup.report.inProgressDownloadsBytes)
+        assertEquals(0L, cleanup.report.imageCacheBytes)
+        assertEquals(0L, cleanup.report.streamPlaybackCacheBytes)
+    }
+
+    @Test
+    fun runMaintenanceCleanup_migratesLegacyPartsAndSweepsExpiredAndOrphanTemp() = runTest {
+        db.downloadTaskDao().insertTask(
+            DownloadTaskEntity(
+                id = "paused_1",
+                savedLinkId = null,
+                sourceUrl = "https://cdn.example/video.mp4",
+                sourcePlatform = "MovieBox",
+                candidateId = "cand_1",
+                formatSelector = "720p",
+                mediaType = "VIDEO",
+                qualityLabel = "720p",
+                title = "Paused Movie",
+                status = "PAUSED",
+                createdAt = fakeClockMs,
+                updatedAt = fakeClockMs
+            )
+        )
+        val legacyDir = File(context.cacheDir, "media_parts").apply { mkdirs() }
+        File(legacyDir, "paused_1.part").writeBytes(ByteArray(400))
+        File(legacyDir, "dead_orphan.part").writeBytes(ByteArray(250))
+
+        val oldTemp = File(context.cacheDir, "stale_temp.tmp").apply {
+            writeBytes(ByteArray(300))
+            setLastModified(fakeClockMs - (48L * 60L * 60L * 1000L))
+        }
+        db.moviesDao().upsertCacheEntry(
+            MovieCacheEntryEntity("old_entry", "moviebox", "{}", fakeClockMs - 10_000L, fakeClockMs - 5_000L)
+        )
+
+        val manager = AppStorageManager(
+            context = context,
+            moviesDao = db.moviesDao(),
+            downloadTaskDao = db.downloadTaskDao(),
+            storageManager = MediaStorageManager(context),
+            nowMs = { fakeClockMs }
+        )
+
+        val result = manager.runMaintenanceCleanup()
+        assertEquals(1, result.expiredEntriesPruned)
+        assertFalse(oldTemp.exists())
+        assertTrue(File(File(context.filesDir, "download_parts"), "paused_1.part").exists())
+        assertFalse(File(File(context.filesDir, "download_parts"), "dead_orphan.part").exists())
+    }
+
+    @Test
+    fun appStorageSettingsScreen_displaysBreakdownAndInvokesClearSafeCache() {
+        var cleared = false
+        val report = AppStorageReport(
+            downloadedMediaBytes = 50L * 1024 * 1024,
+            inProgressDownloadsBytes = 5L * 1024 * 1024,
+            streamPlaybackCacheBytes = 12L * 1024 * 1024,
+            imageCacheBytes = 8L * 1024 * 1024,
+            databaseAndMetadataBytes = 2L * 1024 * 1024,
+            extractorRuntimesBytes = 0L,
+            tempAndOtherCacheBytes = 1L * 1024 * 1024,
+            safeClearableBytes = 21L * 1024 * 1024,
+            totalUsedBytes = 78L * 1024 * 1024,
+            deviceFreeBytes = 2_000L * 1024 * 1024,
+            deviceTotalBytes = 10_000L * 1024 * 1024,
+            storagePressureHigh = false,
+            cachedApiEntryCount = 14
+        )
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                AppStorageSettingsScreen(
+                    report = report,
+                    isLoading = false,
+                    isClearingSafeCache = false,
+                    feedbackMessage = null,
+                    onRefresh = {},
+                    onClearSafeCache = { cleared = true },
+                    onRunMaintenance = {},
+                    onDismissFeedback = {},
+                    onBackClick = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("app_storage_settings_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Downloaded Media & Subtitles").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithText("Stream Playback Cache").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("clear_safe_cache_button")
+            .performScrollTo()
+            .assertIsDisplayed()
+            .performClick()
+        assertTrue(cleared)
+    }
+}

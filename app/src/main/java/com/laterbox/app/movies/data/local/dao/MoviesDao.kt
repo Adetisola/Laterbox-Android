@@ -31,6 +31,12 @@ interface MoviesDao {
     @Query("DELETE FROM movie_cache_entries WHERE expires_at < :nowMs")
     suspend fun pruneExpiredCache(nowMs: Long)
 
+    @Query("DELETE FROM movie_cache_entries")
+    suspend fun clearAllCacheEntries()
+
+    @Query("SELECT COUNT(*) FROM movie_cache_entries")
+    suspend fun countCacheEntries(): Int
+
     @Query("SELECT * FROM movie_watchlist_items ORDER BY added_at DESC")
     fun observeWatchlist(): Flow<List<MovieWatchlistEntity>>
 
