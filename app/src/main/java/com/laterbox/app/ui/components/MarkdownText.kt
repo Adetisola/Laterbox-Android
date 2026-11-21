@@ -100,13 +100,25 @@ private val COMMONMARK_PARSER: Parser = Parser.builder()
     .extensions(MARKDOWN_EXTENSIONS)
     .build()
 
+internal fun normalizeStreamingMarkdown(markdown: String, isStreaming: Boolean): String {
+    if (!isStreaming || markdown.isEmpty()) return markdown
+    var normalized = markdown
+    // Close an unclosed triple-backtick code fence while streaming so code blocks don't flicker as raw paragraphs
+    val fenceCount = Regex("```").findAll(normalized).count()
+    if (fenceCount % 2 == 1) {
+        normalized += "\n```"
+    }
+    return normalized
+}
+
 /**
  * Parses [markdown] into a CommonMark AST safely, returning null if parsing fails on malformed
  * or extreme nesting inputs so callers can fall back cleanly to plain text.
  */
-internal fun parseMarkdownDocumentSafely(markdown: String): Node? {
+internal fun parseMarkdownDocumentSafely(markdown: String, isStreaming: Boolean = false): Node? {
     if (markdown.isEmpty()) return null
-    return runCatching { COMMONMARK_PARSER.parse(markdown) }.getOrNull()
+    val effective = normalizeStreamingMarkdown(markdown, isStreaming)
+    return runCatching { COMMONMARK_PARSER.parse(effective) }.getOrNull()
 }
 
 /**
@@ -201,6 +213,7 @@ fun MarkdownText(
     markdown: String,
     isUserMessage: Boolean,
     modifier: Modifier = Modifier,
+    isStreaming: Boolean = false,
     onLinkClick: ((String) -> Unit)? = null
 ) {
     val colors = LaterboxTheme.colors
@@ -228,7 +241,7 @@ fun MarkdownText(
         }
     }
 
-    val document = remember(markdown) { parseMarkdownDocumentSafely(markdown) }
+    val document = remember(markdown, isStreaming) { parseMarkdownDocumentSafely(markdown, isStreaming) }
     if (document == null) {
         Text(
             text = markdown,

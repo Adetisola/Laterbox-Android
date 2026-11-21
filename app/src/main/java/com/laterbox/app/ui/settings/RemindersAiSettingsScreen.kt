@@ -43,7 +43,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationManagerCompat
@@ -87,7 +89,9 @@ fun RemindersAiSettingsScreen(
     onSmartNotificationsTipsChange: (Boolean) -> Unit = {},
     onSmartNotificationsMoviesTvChange: (Boolean) -> Unit = {},
     onQuietHoursEnabledChange: (Boolean) -> Unit = {},
-    onQuietHoursWindowChange: (Int, Int) -> Unit = { _, _ -> }
+    onQuietHoursWindowChange: (Int, Int) -> Unit = { _, _ -> },
+    onSetAssistantCategoryPermission: (String, Boolean) -> Unit = { _, _ -> },
+    onRevokeAllAssistantPermissions: () -> Unit = {}
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -584,6 +588,81 @@ fun RemindersAiSettingsScreen(
                                     text = "Reset",
                                     style = typography.buttonLabel,
                                     color = colors.accentPrimary
+                                )
+                            }
+                        }
+                    }
+
+                    SettingsDivider()
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("settings_assistant_permissions_section"),
+                        verticalArrangement = Arrangement.spacedBy(spacing.xs)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Assistant Action Permissions",
+                                    style = typography.uiMedium,
+                                    color = colors.textPrimary
+                                )
+                                Text(
+                                    text = "Choose which action categories can run without asking each time. Destructive deletes always ask first.",
+                                    style = typography.metaText,
+                                    color = colors.textSecondary
+                                )
+                            }
+                            if (preferences.grantedAssistantActionCategories.isNotEmpty()) {
+                                TextButton(
+                                    onClick = onRevokeAllAssistantPermissions,
+                                    modifier = Modifier.testTag("settings_revoke_all_assistant_permissions")
+                                ) {
+                                    Text(
+                                        text = "Revoke All",
+                                        style = typography.buttonLabel,
+                                        color = colors.statusDanger
+                                    )
+                                }
+                            }
+                        }
+
+                        com.laterbox.app.ai.AssistantPermissionCategory.configurableCategories.forEach { category ->
+                            val isAlwaysAllowed = category.key in preferences.grantedAssistantActionCategories
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                    Text(
+                                        text = category.displayName,
+                                        style = typography.bodyPrimary.copy(fontSize = 13.5.sp, fontWeight = FontWeight.Medium),
+                                        color = colors.textPrimary
+                                    )
+                                    Text(
+                                        text = "${if (isAlwaysAllowed) "Always allowed" else "Ask before running"} · ${category.description}",
+                                        style = typography.metaText,
+                                        color = colors.textSecondary
+                                    )
+                                }
+                                Switch(
+                                    checked = isAlwaysAllowed,
+                                    onCheckedChange = { checked ->
+                                        onSetAssistantCategoryPermission(category.key, checked)
+                                    },
+                                    modifier = Modifier.testTag("settings_perm_${category.key}"),
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = colors.surfaceElevated,
+                                        checkedTrackColor = colors.accentPrimary
+                                    )
                                 )
                             }
                         }

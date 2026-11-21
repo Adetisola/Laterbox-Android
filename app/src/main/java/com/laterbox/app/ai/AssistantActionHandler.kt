@@ -5,8 +5,78 @@ import org.json.JSONObject
 
 enum class ActionCategory { READ_ONLY, STATE_CHANGING }
 
+enum class AssistantPermissionCategory(
+    val key: String,
+    val displayName: String,
+    val description: String,
+    val requiresApprovalByDefault: Boolean
+) {
+    NAVIGATION_DISCOVERY(
+        key = "NAVIGATION_DISCOVERY",
+        displayName = "Navigation & Discovery",
+        description = "Open sections, search links, or search Movies & TV catalogue.",
+        requiresApprovalByDefault = false
+    ),
+    PLAYBACK_CONTROL(
+        key = "PLAYBACK_CONTROL",
+        displayName = "Playback Control",
+        description = "Launch playback for movies, episodes, or downloaded videos.",
+        requiresApprovalByDefault = false
+    ),
+    LIBRARY_MANAGEMENT(
+        key = "LIBRARY_MANAGEMENT",
+        displayName = "Library Management",
+        description = "Manage watchlist, collections, watched history, retries, and downloads.",
+        requiresApprovalByDefault = true
+    ),
+    REMINDER_MANAGEMENT(
+        key = "REMINDER_MANAGEMENT",
+        displayName = "Reminders & Alerts",
+        description = "Schedule viewing reminders or mute series alerts.",
+        requiresApprovalByDefault = true
+    ),
+    CONVERSATION_MANAGEMENT(
+        key = "CONVERSATION_MANAGEMENT",
+        displayName = "Conversation Management",
+        description = "Rename or delete assistant conversations.",
+        requiresApprovalByDefault = true
+    );
+
+    companion object {
+        val configurableCategories: List<AssistantPermissionCategory> = listOf(
+            LIBRARY_MANAGEMENT,
+            REMINDER_MANAGEMENT,
+            CONVERSATION_MANAGEMENT
+        )
+
+        fun fromKey(key: String?): AssistantPermissionCategory? =
+            entries.firstOrNull { it.key.equals(key?.trim(), ignoreCase = true) }
+    }
+}
+
 sealed interface ChatAction {
     val label: String
+
+    val permissionCategory: AssistantPermissionCategory
+        get() = when (this) {
+            is OpenMoviePlayer -> AssistantPermissionCategory.PLAYBACK_CONTROL
+            is RetryInspection,
+            is RetryDownload,
+            is RefreshMetadata,
+            is ToggleMovieWatchlist,
+            is AddMovieToCollection,
+            is MarkMovieWatched,
+            is DeleteDownload -> AssistantPermissionCategory.LIBRARY_MANAGEMENT
+            is ScheduleMovieReminder,
+            is MuteSeriesReminders -> AssistantPermissionCategory.REMINDER_MANAGEMENT
+            is RenameConversation,
+            is DeleteConversation -> AssistantPermissionCategory.CONVERSATION_MANAGEMENT
+            else -> AssistantPermissionCategory.NAVIGATION_DISCOVERY
+        }
+
+    /** Irreversible destructive actions ALWAYS require explicit confirmation even when category is Always Allowed. */
+    val isIrreversibleDestructive: Boolean
+        get() = this is DeleteConversation || this is DeleteDownload
 
     /** Read-only actions run after allowlist + target validation; state-changing ones need approval. */
     val category: ActionCategory
@@ -18,7 +88,10 @@ sealed interface ChatAction {
             is AddMovieToCollection,
             is MarkMovieWatched,
             is ScheduleMovieReminder,
-            is MuteSeriesReminders -> ActionCategory.STATE_CHANGING
+            is MuteSeriesReminders,
+            is RenameConversation,
+            is DeleteConversation,
+            is DeleteDownload -> ActionCategory.STATE_CHANGING
             else -> ActionCategory.READ_ONLY
         }
 
@@ -33,6 +106,7 @@ sealed interface ChatAction {
             is MarkMovieWatched -> "MARK_MOVIE_WATCHED"
             is ScheduleMovieReminder -> "SCHEDULE_MOVIE_REMINDER"
             is MuteSeriesReminders -> "MUTE_SERIES_REMINDERS"
+            is RenameConversation -> "RENAME_CONVERSATION"
             else -> null
         }
 
@@ -46,6 +120,9 @@ sealed interface ChatAction {
             is MarkMovieWatched -> if (watched) "Mark as watched" else "Mark as unwatched"
             is ScheduleMovieReminder -> "Schedule viewing reminder"
             is MuteSeriesReminders -> if (muted) "Mute series reminders" else "Unmute series reminders"
+            is RenameConversation -> "Rename conversation"
+            is DeleteConversation -> "Delete conversation"
+            is DeleteDownload -> "Delete downloaded file"
             else -> label
         }
 
@@ -74,6 +151,9 @@ sealed interface ChatAction {
             } else {
                 "Re-enable proactive Smart Reminders for \"${title}\"."
             }
+            is RenameConversation -> "Rename this conversation to \"$title\" and lock the title."
+            is DeleteConversation -> "Permanently remove \"${title}\" and its chat history from this device."
+            is DeleteDownload -> "Permanently remove downloaded file \"${title}\" from device storage."
             else -> label
         }
 
@@ -87,6 +167,9 @@ sealed interface ChatAction {
             is MarkMovieWatched -> title
             is ScheduleMovieReminder -> title
             is MuteSeriesReminders -> title
+            is RenameConversation -> title
+            is DeleteConversation -> title
+            is DeleteDownload -> title
             else -> null
         }
 
@@ -100,6 +183,9 @@ sealed interface ChatAction {
             is MarkMovieWatched -> "Updates your local watch history & completion state."
             is ScheduleMovieReminder -> "Schedules a local reminder notification."
             is MuteSeriesReminders -> "Updates reminder mute state for this series locally."
+            is RenameConversation -> "Updates the conversation title locally and prevents auto-renaming."
+            is DeleteConversation -> "Irreversible: permanently deletes messages in this conversation."
+            is DeleteDownload -> "Irreversible: permanently deletes this file from offline storage."
             else -> "Opens a screen. Nothing changes."
         }
 
@@ -273,6 +359,31 @@ sealed interface ChatAction {
         } else {
             "Unmute reminders: ${title.take(20)}"
         }
+    }
+
+    data class RenameConversation(
+        val conversationId: String? = null,
+        val title: String,
+        val requiresConfirmation: Boolean = true
+    ) : ChatAction {
+        override val label: String get() = "Rename: ${title.take(24)}"
+    }
+
+    data class DeleteConversation(
+        val conversationId: String? = null,
+        val title: String,
+        val requiresConfirmation: Boolean = true
+    ) : ChatAction {
+        override val label: String get() = "Delete conversation"
+    }
+
+    data class DeleteDownload(
+        val taskId: String? = null,
+        val assetId: String? = null,
+        val title: String,
+        val requiresConfirmation: Boolean = true
+    ) : ChatAction {
+        override val label: String get() = "Delete download: ${title.take(20)}"
     }
 }
 
@@ -459,6 +570,25 @@ object AssistantActionHandler {
                     obj.put("title", action.title)
                     obj.put("requiresConfirmation", true)
                 }
+                is ChatAction.RenameConversation -> {
+                    obj.put("type", "RENAME_CONVERSATION")
+                    action.conversationId?.let { obj.put("conversationId", it) }
+                    obj.put("title", action.title)
+                    obj.put("requiresConfirmation", true)
+                }
+                is ChatAction.DeleteConversation -> {
+                    obj.put("type", "DELETE_CONVERSATION")
+                    action.conversationId?.let { obj.put("conversationId", it) }
+                    obj.put("title", action.title)
+                    obj.put("requiresConfirmation", true)
+                }
+                is ChatAction.DeleteDownload -> {
+                    obj.put("type", "DELETE_DOWNLOAD")
+                    action.taskId?.let { obj.put("taskId", it) }
+                    action.assetId?.let { obj.put("assetId", it) }
+                    obj.put("title", action.title)
+                    obj.put("requiresConfirmation", true)
+                }
             }
             array.put(obj)
         }
@@ -617,7 +747,40 @@ object AssistantActionHandler {
                     )
                 } else null
             }
-            // Destructive or unknown types (delete, clear, wipe, export...) are never accepted.
+            "RENAME_CONVERSATION" -> {
+                val convId = obj.optString("conversationId").trim().takeIf { it.isNotBlank() }?.take(80)
+                val title = obj.optString("title").trim().take(60)
+                if (title.isNotBlank()) {
+                    ChatAction.RenameConversation(
+                        conversationId = convId,
+                        title = title,
+                        requiresConfirmation = true
+                    )
+                } else null
+            }
+            "DELETE_CONVERSATION" -> {
+                val convId = obj.optString("conversationId").trim().takeIf { it.isNotBlank() }?.take(80)
+                val title = obj.optString("title").trim().ifBlank { "this conversation" }.take(60)
+                ChatAction.DeleteConversation(
+                    conversationId = convId,
+                    title = title,
+                    requiresConfirmation = true
+                )
+            }
+            "DELETE_DOWNLOAD" -> {
+                val taskId = obj.optString("taskId").trim().takeIf { it.isNotBlank() }?.take(80)
+                val assetId = obj.optString("assetId").trim().takeIf { it.isNotBlank() }?.take(80)
+                val title = obj.optString("title").trim().ifBlank { "Downloaded file" }.take(60)
+                if (taskId != null || assetId != null) {
+                    ChatAction.DeleteDownload(
+                        taskId = taskId,
+                        assetId = assetId,
+                        title = title,
+                        requiresConfirmation = true
+                    )
+                } else null
+            }
+            // Unknown types are never accepted.
             else -> null
         }
     }

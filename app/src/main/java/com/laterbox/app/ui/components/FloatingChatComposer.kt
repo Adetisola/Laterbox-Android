@@ -575,18 +575,96 @@ private fun ActionApprovalCard(
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
+    var detailsExpanded by remember(action) { mutableStateOf(action.isIrreversibleDestructive) }
+    val accentTint = if (action.isIrreversibleDestructive) colors.statusDanger else colors.accentPrimary
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 4.dp)
             .testTag("action_approval_card")
     ) {
-        Text(action.actionName, style = typography.bodyPrimary.copy(fontSize = 15.sp, fontWeight = FontWeight.SemiBold), color = colors.textPrimary)
-        Text(action.explanation, modifier = Modifier.padding(top = 2.dp), style = typography.bodyPrimary.copy(fontSize = 13.sp), color = colors.textSecondary)
-        action.targetLabel?.let {
-            Text("Item: $it", modifier = Modifier.padding(top = 6.dp), style = typography.bodyPrimary.copy(fontSize = 13.sp, fontWeight = FontWeight.Medium), color = colors.textPrimary, maxLines = 2)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (action.isIrreversibleDestructive) {
+                        colors.statusDanger.copy(alpha = 0.14f)
+                    } else {
+                        colors.accentContainer
+                    }
+                ) {
+                    Text(
+                        text = if (action.isIrreversibleDestructive) {
+                            "Destructive · Confirm"
+                        } else {
+                            action.permissionCategory.displayName
+                        },
+                        style = typography.metaText.copy(fontSize = 11.sp, fontWeight = FontWeight.SemiBold),
+                        color = accentTint,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                    )
+                }
+            }
+            Text(
+                text = if (detailsExpanded) "Hide details" else "Details",
+                style = typography.metaText.copy(fontSize = 12.sp, fontWeight = FontWeight.Medium),
+                color = colors.accentPrimary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(role = Role.Button) { detailsExpanded = !detailsExpanded }
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                    .testTag("approval_toggle_details")
+            )
         }
-        Text(action.consequenceSummary, modifier = Modifier.padding(top = 2.dp), style = typography.bodyPrimary.copy(fontSize = 12.sp), color = colors.textTertiary)
+
+        Spacer(Modifier.size(4.dp))
+        Text(
+            text = action.actionName,
+            style = typography.bodyPrimary.copy(fontSize = 15.sp, fontWeight = FontWeight.SemiBold),
+            color = colors.textPrimary
+        )
+        Text(
+            text = action.explanation,
+            modifier = Modifier.padding(top = 2.dp),
+            style = typography.bodyPrimary.copy(fontSize = 13.sp),
+            color = colors.textSecondary
+        )
+
+        if (detailsExpanded) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(colors.surfaceSecondary)
+                    .padding(horizontal = 10.dp, vertical = 8.dp)
+            ) {
+                action.targetLabel?.let {
+                    Text(
+                        text = "Target: $it",
+                        style = typography.bodyPrimary.copy(fontSize = 12.5.sp, fontWeight = FontWeight.Medium),
+                        color = colors.textPrimary,
+                        maxLines = 2
+                    )
+                }
+                Text(
+                    text = action.consequenceSummary,
+                    modifier = Modifier.padding(top = if (action.targetLabel != null) 2.dp else 0.dp),
+                    style = typography.bodyPrimary.copy(fontSize = 12.sp),
+                    color = if (action.isIrreversibleDestructive) colors.statusDanger else colors.textTertiary
+                )
+            }
+        }
+
         Row(
             modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -594,10 +672,15 @@ private fun ActionApprovalCard(
             ApprovalButton("Don't allow", filled = false, onClick = onDeny, tag = "approval_deny", modifier = Modifier.weight(1f))
             ApprovalButton("Allow once", filled = true, onClick = onAllowOnce, tag = "approval_allow_once", modifier = Modifier.weight(1f))
         }
-        ApprovalButton(
-            "Always allow in this conversation", filled = false, onClick = onAlwaysAllow,
-            tag = "approval_always_allow", modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
-        )
+        if (!action.isIrreversibleDestructive) {
+            ApprovalButton(
+                "Always allow ${action.permissionCategory.displayName}",
+                filled = false,
+                onClick = onAlwaysAllow,
+                tag = "approval_always_allow",
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+            )
+        }
         Spacer(Modifier.size(6.dp))
         Box(Modifier.fillMaxWidth().size(width = 0.dp, height = 1.dp).background(colors.borderSubtle))
     }

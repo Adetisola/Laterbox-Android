@@ -536,6 +536,24 @@ class SettingsViewModel(
         }
     }
 
+    fun setAssistantCategoryPermission(categoryKey: String, allowed: Boolean) {
+        viewModelScope.launch {
+            userPreferencesRepository.setAssistantCategoryPermission(categoryKey, allowed)
+        }
+    }
+
+    fun revokeAllAssistantCategoryPermissions() {
+        viewModelScope.launch {
+            userPreferencesRepository.revokeAllAssistantCategoryPermissions()
+        }
+    }
+
+    fun setAnalyticsEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            userPreferencesRepository.setAnalyticsEnabled(enabled)
+        }
+    }
+
     fun setSmartNotificationsExtractionFailure(enabled: Boolean) {
         viewModelScope.launch {
             userPreferencesRepository.setSmartNotificationsExtractionFailure(enabled)

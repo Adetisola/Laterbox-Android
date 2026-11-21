@@ -2,13 +2,21 @@ package com.laterbox.app.ai
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.InputStreamReader
 import java.util.concurrent.TimeUnit
 
 data class GeneratedTitleResult(
@@ -16,18 +24,285 @@ data class GeneratedTitleResult(
     val source: String
 )
 
+data class AiGroundingSource(
+    val title: String,
+    val url: String
+)
+
+sealed interface BackendAiStreamEvent {
+    data class Started(
+        val manifestRevision: String,
+        val manifestSynced: Boolean
+    ) : BackendAiStreamEvent
+
+    data class TextDelta(val chunk: String) : BackendAiStreamEvent
+
+    data class ActionProposed(
+        val action: ChatAction,
+        val category: String,
+        val requiresApproval: Boolean
+    ) : BackendAiStreamEvent
+
+    data class Completed(
+        val fullText: String,
+        val displayText: String,
+        val actions: List<ChatAction>,
+        val webGrounded: Boolean,
+        val groundingSources: List<AiGroundingSource>
+    ) : BackendAiStreamEvent
+
+    data class Error(
+        val code: String,
+        val message: String,
+        val retryable: Boolean
+    ) : BackendAiStreamEvent
+}
+
 /**
  * Client for Laterbox's authenticated FastAPI AI backend `/ai/v1/` endpoints.
  */
 class LaterboxBackendAiClient(
     private val okHttpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(90, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
         .build(),
     private val baseUrlProvider: suspend () -> String,
     private val appCheckTokenProvider: suspend (forceRefresh: Boolean) -> String?
 ) {
+
+    fun streamChat(
+        conversationId: String,
+        turns: List<GeminiTurn>,
+        capabilitySnapshot: CapabilitySnapshot,
+        runtimeContextBlock: String,
+        actionSpecBlock: String = LaterboxKnowledgeBase.ALLOWED_ACTION_SPEC,
+        grantedCategories: Set<String> = emptySet(),
+        enableWebSearch: Boolean = true
+    ): Flow<BackendAiStreamEvent> = flow {
+        val baseUrl = baseUrlProvider().trim().trimEnd('/')
+        val parsedBase = baseUrl.toHttpUrlOrNull()
+        if (parsedBase == null) {
+            emit(
+                BackendAiStreamEvent.Error(
+                    code = "INVALID_BACKEND_URL",
+                    message = "Backend server address isn't valid.",
+                    retryable = false
+                )
+            )
+            return@flow
+        }
+
+        val url = parsedBase.newBuilder()
+            .addPathSegments("ai/v1/chat/stream")
+            .build()
+
+        val messagesArray = JSONArray().apply {
+            for (t in turns) {
+                put(
+                    JSONObject().apply {
+                        put("role", t.role.apiValue)
+                        put("text", t.text)
+                    }
+                )
+            }
+        }
+
+        val payload = JSONObject().apply {
+            put("conversationId", conversationId)
+            put("messages", messagesArray)
+            put("runtimeSnapshot", AppCapabilityRegistry.toRuntimeSnapshotJson(capabilitySnapshot))
+            put("runtimeContextBlock", runtimeContextBlock.take(32000))
+            put("actionSpecBlock", actionSpecBlock.take(8000))
+            put("grantedCategories", JSONArray(grantedCategories.toList()))
+            put("enableWebSearch", enableWebSearch)
+        }.toString()
+
+        var token = runCatching { appCheckTokenProvider(false) }.getOrNull()
+        var response = executeStreamCall(url, payload, token)
+        if (response != null && (response.code == 401 || response.code == 403)) {
+            response.close()
+            val refreshed = runCatching { appCheckTokenProvider(true) }.getOrNull()
+            if (!refreshed.isNullOrBlank() && refreshed != token) {
+                token = refreshed
+                response = executeStreamCall(url, payload, token)
+            }
+        }
+
+        if (response == null) {
+            emit(
+                BackendAiStreamEvent.Error(
+                    code = "NETWORK_UNREACHABLE",
+                    message = "Unable to connect right now. Check your internet connection and try again.",
+                    retryable = true
+                )
+            )
+            return@flow
+        }
+
+        response.use { resp ->
+            if (!resp.isSuccessful) {
+                val msg = if (resp.code == 401 || resp.code == 403) {
+                    "App verification couldn't be completed for this request. Please try again."
+                } else {
+                    "Laterbox Assistant is temporarily unavailable (${resp.code})."
+                }
+                emit(
+                    BackendAiStreamEvent.Error(
+                        code = "HTTP_${resp.code}",
+                        message = msg,
+                        retryable = resp.code >= 500 || resp.code == 429
+                    )
+                )
+                return@flow
+            }
+
+            val body = resp.body
+            if (body == null) {
+                emit(
+                    BackendAiStreamEvent.Error(
+                        code = "EMPTY_BODY",
+                        message = "Empty response from Laterbox Assistant.",
+                        retryable = true
+                    )
+                )
+                return@flow
+            }
+
+            BufferedReader(InputStreamReader(body.byteStream(), Charsets.UTF_8)).use { reader ->
+                var currentEvent: String? = null
+                val dataBuffer = StringBuilder()
+
+                fun dispatchBufferedEvent(): BackendAiStreamEvent? {
+                    val ev = currentEvent?.trim()
+                    val dataStr = dataBuffer.toString().trim()
+                    currentEvent = null
+                    dataBuffer.setLength(0)
+                    if (ev.isNullOrEmpty() || dataStr.isEmpty()) return null
+                    val obj = runCatching { JSONObject(dataStr) }.getOrNull() ?: return null
+                    return when (ev) {
+                        "response_start" -> BackendAiStreamEvent.Started(
+                            manifestRevision = obj.optString("manifestRevision", ""),
+                            manifestSynced = obj.optBoolean("manifestSynced", true)
+                        )
+                        "text_delta" -> {
+                            val chunk = obj.optString("chunk", "")
+                            if (chunk.isNotEmpty()) BackendAiStreamEvent.TextDelta(chunk) else null
+                        }
+                        "action_proposed" -> {
+                            val actionObj = obj.optJSONObject("action") ?: return null
+                            val parsedAction = AssistantActionHandler.fromJsonList("[$actionObj]").firstOrNull()
+                                ?: return null
+                            BackendAiStreamEvent.ActionProposed(
+                                action = parsedAction,
+                                category = obj.optString("category", ""),
+                                requiresApproval = obj.optBoolean("requiresApproval", true)
+                            )
+                        }
+                        "response_complete" -> {
+                            val fullText = obj.optString("fullText", "")
+                            val displayText = obj.optString("displayText", fullText)
+                            val actionsArr = obj.optJSONArray("actions")
+                            val actions = if (actionsArr != null) {
+                                AssistantActionHandler.fromJsonList(actionsArr.toString())
+                            } else emptyList()
+                            val webGrounded = obj.optBoolean("webGrounded", false)
+                            val sourcesArr = obj.optJSONArray("groundingSources")
+                            val sources = buildList {
+                                if (sourcesArr != null) {
+                                    for (i in 0 until sourcesArr.length()) {
+                                        val sObj = sourcesArr.optJSONObject(i) ?: continue
+                                        val sUrl = sObj.optString("url", "").trim()
+                                        if (sUrl.startsWith("https://")) {
+                                            add(AiGroundingSource(sObj.optString("title", sUrl), sUrl))
+                                        }
+                                    }
+                                }
+                            }
+                            BackendAiStreamEvent.Completed(
+                                fullText = fullText,
+                                displayText = displayText,
+                                actions = actions,
+                                webGrounded = webGrounded,
+                                groundingSources = sources
+                            )
+                        }
+                        "response_error" -> BackendAiStreamEvent.Error(
+                            code = obj.optString("code", "ERROR"),
+                            message = obj.optString("message", "Unable to answer right now."),
+                            retryable = obj.optBoolean("retryable", true)
+                        )
+                        else -> null
+                    }
+                }
+
+                while (true) {
+                    currentCoroutineContext().ensureActive()
+                    val line = reader.readLine() ?: break
+                    when {
+                        line.isEmpty() -> {
+                            dispatchBufferedEvent()?.let { emit(it) }
+                        }
+                        line.startsWith("event:") -> {
+                            currentEvent = line.substring(6).trim()
+                        }
+                        line.startsWith("data:") -> {
+                            if (dataBuffer.isNotEmpty()) dataBuffer.append('\n')
+                            dataBuffer.append(line.substring(5).trim())
+                        }
+                    }
+                }
+                if (currentEvent != null && dataBuffer.isNotEmpty()) {
+                    dispatchBufferedEvent()?.let { emit(it) }
+                }
+            }
+        }
+    }.flowOn(Dispatchers.IO)
+
+    private fun executeStreamCall(
+        url: okhttp3.HttpUrl,
+        payload: String,
+        appCheckToken: String?
+    ): okhttp3.Response? {
+        val requestBuilder = Request.Builder()
+            .url(url)
+            .post(payload.toRequestBody(JSON_MEDIA_TYPE))
+            .header("Accept", "text/event-stream")
+            .header("Content-Type", "application/json")
+        if (!appCheckToken.isNullOrBlank()) {
+            requestBuilder.header("X-Firebase-AppCheck", appCheckToken)
+        }
+        return try {
+            okHttpClient.newCall(requestBuilder.build()).execute()
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    suspend fun reportActionResult(
+        conversationId: String,
+        actionType: String,
+        category: String,
+        status: String,
+        detail: String = ""
+    ) {
+        val baseUrl = baseUrlProvider().trim().trimEnd('/')
+        val parsedBase = baseUrl.toHttpUrlOrNull() ?: return
+        val url = parsedBase.newBuilder()
+            .addPathSegments("ai/v1/chat/action-result")
+            .build()
+        val payload = JSONObject().apply {
+            put("conversationId", conversationId)
+            put("actionType", actionType)
+            put("category", category)
+            put("status", status)
+            put("detail", detail.take(500))
+        }.toString()
+        val token = runCatching { appCheckTokenProvider(false) }.getOrNull()
+        executePostJson(url, payload, token)
+    }
 
     suspend fun generateConversationTitle(
         firstUserMessage: String,

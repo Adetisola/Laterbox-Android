@@ -201,7 +201,9 @@ data class UserPreferences(
     val subtitleTextColorArgb: Int = 0xFFFFFFFF.toInt(),
     val subtitleBackgroundColorArgb: Int = 0xFF000000.toInt(),
     val subtitleBackgroundOpacity: Float = 0.67f,
-    val subtitleEdgeType: Int = 2
+    val subtitleEdgeType: Int = 2,
+    val grantedAssistantActionCategories: Set<String> = emptySet(),
+    val analyticsEnabled: Boolean = true
 ) {
     val allowSystemBackup: Boolean get() = includeInBackup
 
@@ -361,6 +363,8 @@ class UserPreferencesRepository(
         val SUBTITLE_BACKGROUND_COLOR_ARGB = intPreferencesKey("subtitle_background_color_argb")
         val SUBTITLE_BACKGROUND_OPACITY = floatPreferencesKey("subtitle_background_opacity")
         val SUBTITLE_EDGE_TYPE = intPreferencesKey("subtitle_edge_type")
+        val GRANTED_ASSISTANT_CATEGORIES = stringSetPreferencesKey("granted_assistant_categories")
+        val ANALYTICS_ENABLED = booleanPreferencesKey("analytics_enabled")
     }
 
     val userPreferencesFlow: Flow<UserPreferences> = dataStore.data.map { preferences ->
@@ -583,7 +587,9 @@ class UserPreferencesRepository(
             subtitleTextColorArgb = preferences[PreferencesKeys.SUBTITLE_TEXT_COLOR_ARGB] ?: 0xFFFFFFFF.toInt(),
             subtitleBackgroundColorArgb = preferences[PreferencesKeys.SUBTITLE_BACKGROUND_COLOR_ARGB] ?: 0xFF000000.toInt(),
             subtitleBackgroundOpacity = (preferences[PreferencesKeys.SUBTITLE_BACKGROUND_OPACITY] ?: 0.67f).coerceIn(0f, 1f),
-            subtitleEdgeType = (preferences[PreferencesKeys.SUBTITLE_EDGE_TYPE] ?: 2).coerceIn(0, 2)
+            subtitleEdgeType = (preferences[PreferencesKeys.SUBTITLE_EDGE_TYPE] ?: 2).coerceIn(0, 2),
+            grantedAssistantActionCategories = preferences[PreferencesKeys.GRANTED_ASSISTANT_CATEGORIES] ?: emptySet(),
+            analyticsEnabled = preferences[PreferencesKeys.ANALYTICS_ENABLED] ?: true
         )
     }
 
@@ -1174,6 +1180,31 @@ class UserPreferencesRepository(
             preferences[PreferencesKeys.SUBTITLE_BACKGROUND_COLOR_ARGB] = config.backgroundColorArgb
             preferences[PreferencesKeys.SUBTITLE_BACKGROUND_OPACITY] = config.backgroundOpacity.coerceIn(0f, 1f)
             preferences[PreferencesKeys.SUBTITLE_EDGE_TYPE] = config.edgeType.coerceIn(0, 2)
+        }
+    }
+
+    suspend fun setAssistantCategoryPermission(categoryKey: String, allowed: Boolean) {
+        val clean = categoryKey.trim().uppercase()
+        if (clean.isEmpty()) return
+        dataStore.edit { preferences ->
+            val current = preferences[PreferencesKeys.GRANTED_ASSISTANT_CATEGORIES] ?: emptySet()
+            preferences[PreferencesKeys.GRANTED_ASSISTANT_CATEGORIES] = if (allowed) {
+                current + clean
+            } else {
+                current - clean
+            }
+        }
+    }
+
+    suspend fun revokeAllAssistantCategoryPermissions() {
+        dataStore.edit { preferences ->
+            preferences.remove(PreferencesKeys.GRANTED_ASSISTANT_CATEGORIES)
+        }
+    }
+
+    suspend fun setAnalyticsEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.ANALYTICS_ENABLED] = enabled
         }
     }
 }

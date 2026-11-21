@@ -31,7 +31,13 @@ object LaterboxKnowledgeBase {
         - {"type":"MARK_MOVIE_WATCHED","providerId":"<providerId>","titleId":"<titleId>","seasonNumber":1,"episodeNumber":1,"watched":true,"title":"<short label>"} (confirmation-gated state change; season/episode optional)
         - {"type":"SCHEDULE_MOVIE_REMINDER","providerId":"<providerId>","titleId":"<titleId>","triggerAtMillis":1730000000000,"note":"<optional note>","title":"<short label>"} (confirmation-gated state change)
         - {"type":"MUTE_SERIES_REMINDERS","providerId":"<providerId>","titleId":"<titleId>","muted":true,"title":"<short label>"} (confirmation-gated state change)
-        Never invent linkId, taskId, providerId, or titleId values not present in the context.
+        - {"type":"RENAME_CONVERSATION","title":"<short new title>"} (confirmation-gated state change)
+        - {"type":"DELETE_CONVERSATION","title":"<current conversation title>"} (irreversible destructive action; always asks confirmation)
+        - {"type":"DELETE_DOWNLOAD","taskId":"<optional taskId>","assetId":"<optional assetId>","title":"<file title>"} (irreversible destructive action; always asks confirmation)
+        Recommendation & Data Guardrails:
+        - Never invent linkId, taskId, assetId, providerId, or titleId values not present in the context.
+        - Never emit OPEN_MOVIE_DETAIL, OPEN_MOVIE_PLAYER, TOGGLE_MOVIE_WATCHLIST, or MARK_MOVIE_WATCHED for general knowledge titles without exact providerId and titleId from context.
+        - Clearly distinguish titles saved in Laterbox locally, available in active catalogue search results, or recommended from general knowledge.
     """.trimIndent()
 
     val FEATURE_GUIDE: String

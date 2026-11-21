@@ -1022,7 +1022,10 @@ fun LaterboxApp(
                                         is ChatAction.AddMovieToCollection,
                                         is ChatAction.MarkMovieWatched,
                                         is ChatAction.ScheduleMovieReminder,
-                                        is ChatAction.MuteSeriesReminders -> {
+                                        is ChatAction.MuteSeriesReminders,
+                                        is ChatAction.RenameConversation,
+                                        is ChatAction.DeleteConversation,
+                                        is ChatAction.DeleteDownload -> {
                                             chatViewModel.requestMutatingActionConfirmation(action)
                                         }
                                     }
@@ -1613,7 +1616,8 @@ fun LaterboxApp(
                                 onDismissUpdateDialog = settingsViewModel::dismissUpdateDialog,
                                 onPostponeUpdate = settingsViewModel::postponeUpdate,
                                 localMetrics = localMetrics,
-                                onResetActivityCounters = settingsViewModel::resetActivityCounters
+                                onResetActivityCounters = settingsViewModel::resetActivityCounters,
+                                onAnalyticsEnabledChange = settingsViewModel::setAnalyticsEnabled
                             )
                         }
 
@@ -1660,7 +1664,9 @@ fun LaterboxApp(
                                 onSmartNotificationsTipsChange = settingsViewModel::setSmartNotificationsTips,
                                 onSmartNotificationsMoviesTvChange = settingsViewModel::setSmartNotificationsMoviesTv,
                                 onQuietHoursEnabledChange = settingsViewModel::setQuietHoursEnabled,
-                                onQuietHoursWindowChange = settingsViewModel::setQuietHoursWindow
+                                onQuietHoursWindowChange = settingsViewModel::setQuietHoursWindow,
+                                onSetAssistantCategoryPermission = settingsViewModel::setAssistantCategoryPermission,
+                                onRevokeAllAssistantPermissions = settingsViewModel::revokeAllAssistantCategoryPermissions
                             )
                         }
 

@@ -366,8 +366,9 @@ class ChatViewModel(
     }
 
     /**
-     * Entry point for state-changing assistant actions. Validates the target first, then either
-     * runs immediately (conversation grant) or surfaces the inline approval card.
+     * Entry point for state-changing assistant actions. Validates the target first, checks
+     * category grants (while ALWAYS confirming irreversible destructive actions), and either
+     * executes immediately or surfaces the expandable approval panel.
      */
     fun requestMutatingActionConfirmation(action: ChatAction) {
         if (action.category != ActionCategory.STATE_CHANGING) return
@@ -375,13 +376,18 @@ class ChatViewModel(
             val convId = _activeConversationId.value
             val problem = validateActionTarget(action)
             if (problem != null) {
+                reportActionOutcome(convId, action, "failed", problem)
                 postReceipt(convId, "I couldn't ${action.actionName.lowercase()}: $problem Nothing was changed.")
                 return@launch
             }
             val permissionKey = action.permissionKey
-            if (convId != null && permissionKey != null &&
-                chatRepository.isActionAlwaysAllowed(convId, permissionKey)
-            ) {
+            val prefs = userPreferencesRepository.userPreferencesFlow.first()
+            val categoryAllowed = !action.isIrreversibleDestructive &&
+                (!action.permissionCategory.requiresApprovalByDefault ||
+                    action.permissionCategory.key in prefs.grantedAssistantActionCategories ||
+                    (convId != null && permissionKey != null && chatRepository.isActionAlwaysAllowed(convId, permissionKey)))
+
+            if (categoryAllowed) {
                 executeApprovedAction(action, convId)
             } else {
                 _pendingMutatingAction.value = action
@@ -393,9 +399,11 @@ class ChatViewModel(
     fun dismissMutatingAction() {
         val action = _pendingMutatingAction.value ?: return
         _pendingMutatingAction.value = null
+        val convId = _activeConversationId.value
         viewModelScope.launch {
+            reportActionOutcome(convId, action, "denied", "Denied by user")
             postReceipt(
-                _activeConversationId.value,
+                convId,
                 "Okay, I won't ${action.actionName.lowercase()}${action.targetLabel?.let { " for \"$it\"" }.orEmpty()}. Nothing was changed."
             )
         }
@@ -409,15 +417,39 @@ class ChatViewModel(
         viewModelScope.launch { executeApprovedAction(action, convId) }
     }
 
-    /** "Always allow in this conversation": persists a grant for this action type only. */
+    /** "Always allow [Category]": persists category grant in DataStore + conversation DB (blocked for destructive actions). */
     fun alwaysAllowMutatingActionInConversation() {
         val action = _pendingMutatingAction.value ?: return
         _pendingMutatingAction.value = null
         val convId = _activeConversationId.value
         viewModelScope.launch {
-            val key = action.permissionKey
-            if (convId != null && key != null) chatRepository.grantActionPermission(convId, key)
+            if (!action.isIrreversibleDestructive) {
+                userPreferencesRepository.setAssistantCategoryPermission(action.permissionCategory.key, true)
+                val key = action.permissionKey
+                if (convId != null && key != null) chatRepository.grantActionPermission(convId, key)
+            }
             executeApprovedAction(action, convId)
+        }
+    }
+
+    private fun reportActionOutcome(
+        conversationId: String?,
+        action: ChatAction,
+        status: String,
+        detail: String
+    ) {
+        val client = backendAiClient ?: return
+        val convId = conversationId ?: return
+        viewModelScope.launch {
+            runCatching {
+                client.reportActionResult(
+                    conversationId = convId,
+                    actionType = action.permissionKey ?: action.actionName.uppercase().replace(' ', '_'),
+                    category = action.permissionCategory.key,
+                    status = status,
+                    detail = detail
+                )
+            }
         }
     }
 
@@ -511,6 +543,15 @@ class ChatViewModel(
             resolveMovieSummary(action.providerId, action.titleId) == null -> "that title could not be found."
             else -> null
         }
+        is ChatAction.RenameConversation -> when {
+            action.title.isBlank() -> "no new title was provided."
+            else -> null
+        }
+        is ChatAction.DeleteConversation -> null
+        is ChatAction.DeleteDownload -> when {
+            action.taskId.isNullOrBlank() && action.assetId.isNullOrBlank() -> "that download reference is incomplete."
+            else -> null
+        }
         else -> "that action isn't supported."
     }
 
@@ -533,6 +574,9 @@ class ChatViewModel(
             is ChatAction.MarkMovieWatched -> "MMW:${action.providerId}:${action.titleId}:${action.seasonNumber}:${action.episodeNumber}:${action.watched}"
             is ChatAction.ScheduleMovieReminder -> "SMR:${action.providerId}:${action.titleId}:${action.triggerAtMillis}"
             is ChatAction.MuteSeriesReminders -> "MSR:${action.providerId}:${action.titleId}:${action.muted}"
+            is ChatAction.RenameConversation -> "RC:${action.conversationId ?: conversationId.orEmpty()}:${action.title}"
+            is ChatAction.DeleteConversation -> "DC:${action.conversationId ?: conversationId.orEmpty()}"
+            is ChatAction.DeleteDownload -> "DD:${action.taskId.orEmpty()}:${action.assetId.orEmpty()}"
             else -> return
         }
         if (!executingActionKeys.add(dedupeKey)) return
@@ -540,6 +584,7 @@ class ChatViewModel(
             // Independent re-validation: state may have changed while the card was open.
             val problem = validateActionTarget(action)
             if (problem != null) {
+                reportActionOutcome(conversationId, action, "failed", problem)
                 postReceipt(conversationId, "I couldn't ${action.actionName.lowercase()}: $problem Nothing was changed.")
                 return
             }
@@ -660,12 +705,38 @@ class ChatViewModel(
                     if (action.muted) "Muted proactive Smart Reminders for \"${summary.title}\"."
                     else "Unmuted proactive Smart Reminders for \"${summary.title}\"."
                 }
+                is ChatAction.RenameConversation -> {
+                    val targetId = action.conversationId ?: conversationId
+                        ?: return postReceipt(conversationId, "No active conversation to rename.")
+                    val ok = chatRepository.renameConversation(targetId, action.title)
+                    if (ok) "Renamed conversation to \"${action.title}\"."
+                    else "Unable to rename this conversation."
+                }
+                is ChatAction.DeleteConversation -> {
+                    val targetId = action.conversationId ?: conversationId
+                        ?: return postReceipt(conversationId, "No active conversation to delete.")
+                    reportActionOutcome(targetId, action, "executed", "Deleted conversation")
+                    deleteConversation(targetId)
+                    _statusNotice.value = "Deleted conversation \"${action.title}\"."
+                    return
+                }
+                is ChatAction.DeleteDownload -> {
+                    if (!action.assetId.isNullOrBlank()) {
+                        mediaRepository.deleteAsset(action.assetId)
+                    }
+                    if (!action.taskId.isNullOrBlank()) {
+                        mediaRepository.cancelDownload(action.taskId)
+                    }
+                    "Removed \"${action.title}\" from downloads."
+                }
                 else -> return
             }
+            reportActionOutcome(conversationId, action, "executed", receipt)
             postReceipt(conversationId, receipt)
         } catch (ce: CancellationException) {
             throw ce
         } catch (t: Throwable) {
+            reportActionOutcome(conversationId, action, "failed", t.message.orEmpty())
             postReceipt(conversationId, "That didn't work: ${GeminiClient.redactSecrets(t.message).take(120).ifBlank { "unexpected error" }}.")
         } finally {
             executingActionKeys.remove(dedupeKey)
@@ -749,40 +820,104 @@ class ChatViewModel(
                 val turns = buildTurnsFromSnapshot(snapshot)
 
                 var receivedTerminal = false
-                GeminiClient.streamChat(
-                    turns = turns,
-                    systemInstruction = builtContext.systemInstruction,
-                    customApiKey = prefs.geminiApiKey.ifBlank { null }
-                ).collect { event ->
-                    when (event) {
-                        is GeminiStreamEvent.Delta -> {
-                            accumulated.append(event.chunk)
-                            _streamingPartialText.value = accumulated.toString()
+                var fallbackToDirectGemini = backendAiClient == null
+
+                if (backendAiClient != null) {
+                    var backendNotConfigured = false
+                    backendAiClient.streamChat(
+                        conversationId = conversationId,
+                        turns = turns,
+                        capabilitySnapshot = builtContext.capabilitySnapshot,
+                        runtimeContextBlock = builtContext.contextBlock,
+                        actionSpecBlock = com.laterbox.app.ai.LaterboxKnowledgeBase.ALLOWED_ACTION_SPEC,
+                        grantedCategories = prefs.grantedAssistantActionCategories,
+                        enableWebSearch = true
+                    ).collect { event ->
+                        when (event) {
+                            is com.laterbox.app.ai.BackendAiStreamEvent.Started -> Unit
+                            is com.laterbox.app.ai.BackendAiStreamEvent.TextDelta -> {
+                                accumulated.append(event.chunk)
+                                _streamingPartialText.value = accumulated.toString()
+                            }
+                            is com.laterbox.app.ai.BackendAiStreamEvent.ActionProposed -> Unit
+                            is com.laterbox.app.ai.BackendAiStreamEvent.Completed -> {
+                                receivedTerminal = true
+                                val finalDisplay = event.displayText.ifBlank {
+                                    AssistantActionHandler.parseModelResponse(event.fullText).displayText
+                                }
+                                val cleanReply = GeminiClient.redactSecrets(finalDisplay, resolvedKey)
+                                val actions = if (event.actions.isNotEmpty()) {
+                                    event.actions
+                                } else {
+                                    AssistantActionHandler.parseModelResponse(event.fullText).actions
+                                }
+                                chatRepository.updateAssistantMessage(
+                                    messageId = placeholder.id,
+                                    conversationId = conversationId,
+                                    content = cleanReply,
+                                    status = ChatMessageStatus.COMPLETE,
+                                    actionsJson = AssistantActionHandler.toJsonList(actions)
+                                )
+                                launchContextualTitleGeneration(conversationId, latestPrompt, cleanReply)
+                            }
+                            is com.laterbox.app.ai.BackendAiStreamEvent.Error -> {
+                                if (event.code == "AI_NOT_CONFIGURED" && !resolvedKey.isNullOrBlank()) {
+                                    backendNotConfigured = true
+                                } else {
+                                    receivedTerminal = true
+                                    val cleanError = GeminiClient.redactSecrets(event.message, resolvedKey)
+                                    chatRepository.updateAssistantMessage(
+                                        messageId = placeholder.id,
+                                        conversationId = conversationId,
+                                        content = GeminiClient.redactSecrets(accumulated.toString(), resolvedKey),
+                                        status = ChatMessageStatus.FAILED,
+                                        errorMessage = cleanError
+                                    )
+                                }
+                            }
                         }
-                        is GeminiStreamEvent.Completed -> {
-                            receivedTerminal = true
-                            val parsed = AssistantActionHandler.parseModelResponse(event.fullText)
-                            val cleanReply = GeminiClient.redactSecrets(parsed.displayText, resolvedKey)
-                            val actionsJson = AssistantActionHandler.toJsonList(parsed.actions)
-                            chatRepository.updateAssistantMessage(
-                                messageId = placeholder.id,
-                                conversationId = conversationId,
-                                content = cleanReply,
-                                status = ChatMessageStatus.COMPLETE,
-                                actionsJson = actionsJson
-                            )
-                            launchContextualTitleGeneration(conversationId, latestPrompt, cleanReply)
-                        }
-                        is GeminiStreamEvent.Error -> {
-                            receivedTerminal = true
-                            val cleanError = GeminiClient.redactSecrets(event.reason.userMessage, resolvedKey)
-                            chatRepository.updateAssistantMessage(
-                                messageId = placeholder.id,
-                                conversationId = conversationId,
-                                content = GeminiClient.redactSecrets(accumulated.toString(), resolvedKey),
-                                status = ChatMessageStatus.FAILED,
-                                errorMessage = cleanError
-                            )
+                    }
+                    if (backendNotConfigured && !receivedTerminal) {
+                        fallbackToDirectGemini = true
+                    }
+                }
+
+                if (fallbackToDirectGemini) {
+                    GeminiClient.streamChat(
+                        turns = turns,
+                        systemInstruction = builtContext.systemInstruction,
+                        customApiKey = prefs.geminiApiKey.ifBlank { null }
+                    ).collect { event ->
+                        when (event) {
+                            is GeminiStreamEvent.Delta -> {
+                                accumulated.append(event.chunk)
+                                _streamingPartialText.value = accumulated.toString()
+                            }
+                            is GeminiStreamEvent.Completed -> {
+                                receivedTerminal = true
+                                val parsed = AssistantActionHandler.parseModelResponse(event.fullText)
+                                val cleanReply = GeminiClient.redactSecrets(parsed.displayText, resolvedKey)
+                                val actionsJson = AssistantActionHandler.toJsonList(parsed.actions)
+                                chatRepository.updateAssistantMessage(
+                                    messageId = placeholder.id,
+                                    conversationId = conversationId,
+                                    content = cleanReply,
+                                    status = ChatMessageStatus.COMPLETE,
+                                    actionsJson = actionsJson
+                                )
+                                launchContextualTitleGeneration(conversationId, latestPrompt, cleanReply)
+                            }
+                            is GeminiStreamEvent.Error -> {
+                                receivedTerminal = true
+                                val cleanError = GeminiClient.redactSecrets(event.reason.userMessage, resolvedKey)
+                                chatRepository.updateAssistantMessage(
+                                    messageId = placeholder.id,
+                                    conversationId = conversationId,
+                                    content = GeminiClient.redactSecrets(accumulated.toString(), resolvedKey),
+                                    status = ChatMessageStatus.FAILED,
+                                    errorMessage = cleanError
+                                )
+                            }
                         }
                     }
                 }

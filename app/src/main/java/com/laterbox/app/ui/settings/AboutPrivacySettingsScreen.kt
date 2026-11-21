@@ -43,7 +43,9 @@ fun AboutPrivacySettingsScreen(
     onBackClick: () -> Unit,
     modifier: Modifier = Modifier,
     localMetrics: LocalLibraryMetrics? = null,
-    onResetActivityCounters: (() -> Unit)? = null
+    onResetActivityCounters: (() -> Unit)? = null,
+    analyticsEnabled: Boolean = true,
+    onAnalyticsEnabledChange: ((Boolean) -> Unit)? = null
 ) {
     val colors = LaterboxTheme.colors
     val spacing = LaterboxTheme.spacing
@@ -72,7 +74,9 @@ fun AboutPrivacySettingsScreen(
                 onDismissUpdateDialog = onDismissUpdateDialog,
                 onPostponeUpdate = onPostponeUpdate,
                 localMetrics = localMetrics,
-                onResetActivityCounters = onResetActivityCounters
+                onResetActivityCounters = onResetActivityCounters,
+                analyticsEnabled = analyticsEnabled,
+                onAnalyticsEnabledChange = onAnalyticsEnabledChange
             )
 
             Spacer(modifier = Modifier.height(80.dp))
@@ -89,6 +93,8 @@ fun AboutLaterboxSection(
     onPostponeUpdate: (String) -> Unit,
     localMetrics: LocalLibraryMetrics? = null,
     onResetActivityCounters: (() -> Unit)? = null,
+    analyticsEnabled: Boolean = true,
+    onAnalyticsEnabledChange: ((Boolean) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -112,7 +118,7 @@ fun AboutLaterboxSection(
                     color = colors.textPrimary
                 )
                 Text(
-                    text = "A calm, local-first space for your saved links, notes, collections, and offline media. Your library stays on your device — no user account, no analytics, and no tracking.",
+                    text = "A calm, local-first space for your saved links, notes, collections, and offline media. Your library stays on your device with no accounts, no ads, and no personal profiling.",
                     style = typography.bodySecondary,
                     color = colors.textSecondary
                 )
@@ -127,10 +133,42 @@ fun AboutLaterboxSection(
                 Text(
                     text = "• Saved Links & Previews: When you save a link, Laterbox loads page details directly from that website. For public social posts that block standard previews, a public preview lookup service may be used without sending any personal data.\n" +
                            "• Media & Streaming: Videos, audio, and subtitles you choose to play or download are fetched directly over your connection.\n" +
-                           "• Optional AI Features: If you turn on the AI assistant or smart reminders, only your prompt and relevant saved context needed for your request (such as link titles, notes, or URLs) are sent to your configured external AI service. Your API key and downloaded files never leave your device.",
+                           "• Optional AI Assistant: When you chat with Laterbox Assistant, your prompt and bounded library context are routed through Laterbox's backend to Google Gemini (with optional Google Search grounding for outside facts). Downloaded files and personal identifiers are never sent.\n" +
+                           "• Anonymous Usage Analytics (Opt-Out Anytime): By default, Laterbox sends lightweight anonymous app-usage signals (random install/session IDs, app version, high-level screen/feature counts — never titles, prompts, search queries, filenames, or personal data) to help measure stability and active adoption.",
                     style = typography.bodySecondary,
                     color = colors.textSecondary
                 )
+
+                if (onAnalyticsEnabledChange != null) {
+                    SettingsDivider()
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                            Text(
+                                text = "Anonymous Usage Analytics",
+                                style = typography.uiMedium,
+                                color = colors.textPrimary
+                            )
+                            Text(
+                                text = "Shares anonymous screen/feature counts and session heartbeats only. Zero titles, queries, or personal info.",
+                                style = typography.metaText,
+                                color = colors.textSecondary
+                            )
+                        }
+                        androidx.compose.material3.Switch(
+                            checked = analyticsEnabled,
+                            onCheckedChange = onAnalyticsEnabledChange,
+                            modifier = Modifier.testTag("settings_analytics_toggle"),
+                            colors = androidx.compose.material3.SwitchDefaults.colors(
+                                checkedThumbColor = colors.surfaceElevated,
+                                checkedTrackColor = colors.accentPrimary
+                            )
+                        )
+                    }
+                }
 
                 Spacer(modifier = Modifier.height(spacing.xs))
 

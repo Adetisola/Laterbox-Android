@@ -20,7 +20,8 @@ import kotlinx.coroutines.withContext
 
 data class BuiltAssistantContext(
     val systemInstruction: String,
-    val contextBlock: String
+    val contextBlock: String,
+    val capabilitySnapshot: CapabilitySnapshot = CapabilitySnapshot()
 )
 
 class LaterboxContextEngine(
@@ -426,7 +427,11 @@ class LaterboxContextEngine(
 
         BuiltAssistantContext(
             systemInstruction = systemInstruction,
-            contextBlock = contextBlock
+            contextBlock = contextBlock,
+            capabilitySnapshot = capabilitySnapshot.copy(
+                clientVersionCode = com.laterbox.app.BuildConfig.VERSION_CODE,
+                clientVersionName = com.laterbox.app.BuildConfig.VERSION_NAME
+            )
         )
     }
 

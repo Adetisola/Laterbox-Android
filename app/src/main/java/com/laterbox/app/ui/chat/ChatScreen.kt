@@ -448,22 +448,22 @@ fun ChatScreen(
                         verticalArrangement = Arrangement.spacedBy(spacing.xs)
                     ) {
                         Text(
-                            text = "• Sent only when you press Send: Nothing syncs automatically in the background.",
+                            text = "• Sent only when you press Send: Prompts go through Laterbox's secured backend to Google Gemini only when you interact.",
                             style = typography.bodySecondary.copy(fontSize = 13.sp),
                             color = colors.textSecondary
                         )
                         Text(
-                            text = "• Relevant library context (up to 10 links): Link titles, domains, URLs, personal notes, descriptions, read/reminder flags, and collection names.",
+                            text = "• Bounded library context: Up to 10 relevant saved links, active collections, and capability readiness summaries (never private file paths or full downloaded videos).",
                             style = typography.bodySecondary.copy(fontSize = 13.sp),
                             color = colors.textSecondary
                         )
                         Text(
-                            text = "• Basic app status: Inbox/archive counts, downloaded file count, media readiness, and recent error summaries without private file paths.",
+                            text = "• Live web answers: When you ask about outside news or release dates, verified Google Search grounding may be consulted.",
                             style = typography.bodySecondary.copy(fontSize = 13.sp),
                             color = colors.textSecondary
                         )
                         Text(
-                            text = "• Never sent: Your API key, local database file, device storage paths, or downloaded media files.",
+                            text = "• Action control: Mutating actions obey per-category permissions you can revoke in Settings, and destructive deletes always confirm.",
                             style = typography.bodySecondary.copy(fontSize = 13.sp),
                             color = colors.textPrimary
                         )
@@ -805,6 +805,7 @@ private fun ChatMessageBubble(
                         MarkdownText(
                             markdown = displayedContent,
                             isUserMessage = isUser,
+                            isStreaming = isStreamingThis,
                             onLinkClick = onMarkdownLinkClick
                         )
                     }
