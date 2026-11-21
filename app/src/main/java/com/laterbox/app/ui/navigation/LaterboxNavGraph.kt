@@ -1041,7 +1041,15 @@ fun LaterboxApp(
                                 onCancelDictation = { chatViewModel.cancelDictation() },
                                 showAudioConsent = pendingAudioConsentTarget == "CHAT",
                                 onAcceptAudioConsent = acceptAudioConsentAndStart,
-                                onDismissAudioConsent = { pendingAudioConsentTarget = null }
+                                onDismissAudioConsent = { pendingAudioConsentTarget = null },
+                                onRenameConversation = { newTitle ->
+                                    val convId = chatUiState.activeConversationId ?: return@ChatScreen
+                                    chatViewModel.renameConversation(convId, newTitle)
+                                },
+                                onDeleteConversation = {
+                                    val convId = chatUiState.activeConversationId ?: return@ChatScreen
+                                    chatViewModel.deleteConversation(convId)
+                                }
                             )
                         }
 
@@ -2013,6 +2021,7 @@ fun LaterboxApp(
                     onNewChatClick = handleNewChat,
                     onConversationClick = handleOpenConversation,
                     onDeleteConversation = { convId -> chatViewModel.deleteConversation(convId) },
+                    onRenameConversation = { convId, title -> chatViewModel.renameConversation(convId, title) },
                     currentRoute = currentRoute,
                     onNavigateMoviesSubRoute = { subRoute ->
                         haptics.tick()
@@ -2053,6 +2062,7 @@ fun LaterboxApp(
                         onNewChatClick = handleNewChat,
                         onConversationClick = handleOpenConversation,
                         onDeleteConversation = { convId -> chatViewModel.deleteConversation(convId) },
+                        onRenameConversation = { convId, title -> chatViewModel.renameConversation(convId, title) },
                         currentRoute = currentRoute,
                         onNavigateMoviesSubRoute = { subRoute ->
                             haptics.tick()

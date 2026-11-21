@@ -83,6 +83,7 @@ fun LaterboxModalDrawerSheet(
     onNewChatClick: () -> Unit,
     onConversationClick: (ChatConversationEntity) -> Unit,
     onDeleteConversation: (String) -> Unit,
+    onRenameConversation: (String, String) -> Unit = { _, _ -> },
     currentRoute: String? = null,
     onNavigateMoviesSubRoute: (String) -> Unit = {},
     moviesTvEnabled: Boolean = true,
@@ -110,6 +111,7 @@ fun LaterboxModalDrawerSheet(
             onNewChatClick = onNewChatClick,
             onConversationClick = onConversationClick,
             onDeleteConversation = onDeleteConversation,
+            onRenameConversation = onRenameConversation,
             currentRoute = currentRoute,
             onNavigateMoviesSubRoute = onNavigateMoviesSubRoute,
             moviesTvEnabled = moviesTvEnabled
@@ -134,6 +136,7 @@ fun LaterboxPersistentSidePanel(
     onNewChatClick: () -> Unit,
     onConversationClick: (ChatConversationEntity) -> Unit,
     onDeleteConversation: (String) -> Unit,
+    onRenameConversation: (String, String) -> Unit = { _, _ -> },
     currentRoute: String? = null,
     onNavigateMoviesSubRoute: (String) -> Unit = {},
     moviesTvEnabled: Boolean = true,
@@ -164,6 +167,7 @@ fun LaterboxPersistentSidePanel(
                 onNewChatClick = onNewChatClick,
                 onConversationClick = onConversationClick,
                 onDeleteConversation = onDeleteConversation,
+                onRenameConversation = onRenameConversation,
                 currentRoute = currentRoute,
                 onNavigateMoviesSubRoute = onNavigateMoviesSubRoute,
                 moviesTvEnabled = moviesTvEnabled,
@@ -196,6 +200,7 @@ fun LaterboxDrawerContent(
     onNewChatClick: () -> Unit,
     onConversationClick: (ChatConversationEntity) -> Unit,
     onDeleteConversation: (String) -> Unit,
+    onRenameConversation: (String, String) -> Unit = { _, _ -> },
     currentRoute: String? = null,
     onNavigateMoviesSubRoute: (String) -> Unit = {},
     moviesTvEnabled: Boolean = true,
@@ -206,6 +211,7 @@ fun LaterboxDrawerContent(
     val spacing = LaterboxTheme.spacing
 
     var conversationPendingDelete by remember { mutableStateOf<ChatConversationEntity?>(null) }
+    var conversationPendingRename by remember { mutableStateOf<ChatConversationEntity?>(null) }
 
     val isOnMoviesRoute = currentSection == DrawerPrimarySection.MOVIES ||
         currentRoute?.startsWith("movies") == true
@@ -214,6 +220,49 @@ fun LaterboxDrawerContent(
         if (isOnMoviesRoute) {
             isMoviesExpanded = true
         }
+    }
+
+    conversationPendingRename?.let { conv ->
+        var draftTitle by remember(conv.id, conv.title) { mutableStateOf(conv.title) }
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { conversationPendingRename = null },
+            containerColor = colors.surfaceElevated,
+            title = {
+                Text(
+                    text = "Rename conversation",
+                    style = typography.titleLarge,
+                    color = colors.textPrimary
+                )
+            },
+            text = {
+                androidx.compose.material3.OutlinedTextField(
+                    value = draftTitle,
+                    onValueChange = { if (it.length <= 60) draftTitle = it },
+                    singleLine = true,
+                    placeholder = { Text("Conversation title") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(
+                    enabled = draftTitle.trim().isNotEmpty(),
+                    onClick = {
+                        val trimmed = draftTitle.trim()
+                        conversationPendingRename = null
+                        if (trimmed.isNotEmpty()) {
+                            onRenameConversation(conv.id, trimmed)
+                        }
+                    }
+                ) {
+                    Text("Save", color = colors.accentPrimary, fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { conversationPendingRename = null }) {
+                    Text("Cancel", color = colors.textSecondary)
+                }
+            }
+        )
     }
 
     conversationPendingDelete?.let { conv ->
@@ -225,7 +274,8 @@ fun LaterboxDrawerContent(
                 conversationPendingDelete = null
                 onDeleteConversation(conv.id)
             },
-            onDismiss = { conversationPendingDelete = null }
+            onDismiss = { conversationPendingDelete = null },
+            isDestructive = true
         )
     }
 
@@ -386,23 +436,55 @@ fun LaterboxDrawerContent(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
                     )
-                    Box(
-                        modifier = Modifier
-                            .size(30.dp)
-                            .clip(CircleShape)
-                            .clickable(
-                                role = Role.Button,
-                                onClickLabel = "Delete conversation ${conversation.title}",
-                                onClick = { conversationPendingDelete = conversation }
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            painter = painterResource(id = LaterboxIcons.Delete),
-                            contentDescription = "Delete conversation",
-                            modifier = Modifier.size(14.dp),
-                            tint = colors.textTertiary
-                        )
+                    var showItemMenu by remember { mutableStateOf(false) }
+                    Box {
+                        Box(
+                            modifier = Modifier
+                                .size(30.dp)
+                                .clip(CircleShape)
+                                .clickable(
+                                    role = Role.Button,
+                                    onClickLabel = "Actions for ${conversation.title}",
+                                    onClick = { showItemMenu = true }
+                                )
+                                .testTag("drawer_conv_more_${conversation.id}"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                painter = painterResource(id = LaterboxIcons.MoreVertical),
+                                contentDescription = "Conversation actions",
+                                modifier = Modifier.size(15.dp),
+                                tint = colors.textTertiary
+                            )
+                        }
+                        androidx.compose.material3.DropdownMenu(
+                            expanded = showItemMenu,
+                            onDismissRequest = { showItemMenu = false },
+                            containerColor = colors.surfaceElevated
+                        ) {
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = { Text("Rename", color = colors.textPrimary) },
+                                onClick = {
+                                    showItemMenu = false
+                                    conversationPendingRename = conversation
+                                }
+                            )
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = { Text("Delete", color = colors.statusDanger) },
+                                leadingIcon = {
+                                    Icon(
+                                        painter = painterResource(id = LaterboxIcons.Delete),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = colors.statusDanger
+                                    )
+                                },
+                                onClick = {
+                                    showItemMenu = false
+                                    conversationPendingDelete = conversation
+                                }
+                            )
+                        }
                     }
                 }
             }

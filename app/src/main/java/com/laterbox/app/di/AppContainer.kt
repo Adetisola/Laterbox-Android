@@ -43,6 +43,7 @@ interface AppContainer {
     val subtitleDownloadManager: com.laterbox.app.movies.data.download.SubtitleDownloadManager
     val appStorageManager: com.laterbox.app.storage.AppStorageManager
     val remoteConfigManager: com.laterbox.app.remoteconfig.RemoteConfigManager
+    val backendAiClient: com.laterbox.app.ai.LaterboxBackendAiClient
     suspend fun resolveBackendBaseUrl(): String
     suspend fun getBackendAppCheckToken(forceRefresh: Boolean = false): String?
 }
@@ -335,6 +336,19 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             clientVersionCode = versionCode,
         )
         com.laterbox.app.remoteconfig.RemoteConfigManager(repository = repository)
+    }
+
+    override val backendAiClient: com.laterbox.app.ai.LaterboxBackendAiClient by lazy {
+        val aiOkHttp = sharedOkHttpClient.newBuilder()
+            .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(90, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+        com.laterbox.app.ai.LaterboxBackendAiClient(
+            okHttpClient = aiOkHttp,
+            baseUrlProvider = { resolveBackendBaseUrl() },
+            appCheckTokenProvider = { forceRefresh -> getBackendAppCheckToken(forceRefresh) }
+        )
     }
 
     override suspend fun resolveBackendBaseUrl(): String {

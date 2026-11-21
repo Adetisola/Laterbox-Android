@@ -65,7 +65,7 @@ import com.laterbox.app.movies.data.local.entity.MovieWatchlistEntity
         HiddenTitleEntity::class,
         DownloadPlaybackProgressEntity::class
     ],
-    version = 18,
+    version = 19,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -998,6 +998,12 @@ abstract class LaterboxDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_18_19 = object : Migration(18, 19) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `chat_conversations` ADD COLUMN `is_title_manual` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         @Volatile
         private var INSTANCE: LaterboxDatabase? = null
 
@@ -1025,7 +1031,8 @@ abstract class LaterboxDatabase : RoomDatabase() {
                         MIGRATION_14_15,
                         MIGRATION_15_16,
                         MIGRATION_16_17,
-                        MIGRATION_17_18
+                        MIGRATION_17_18,
+                        MIGRATION_18_19
                     )
                     .build()
                     .also { INSTANCE = it }

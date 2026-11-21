@@ -2062,4 +2062,40 @@ class LaterboxDatabaseTest {
             context.deleteDatabase(dbName)
         }
     }
+
+    @Test
+    fun migration18To19_addsIsTitleManualColumnToChatConversations() {
+        val instrumentation = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+        val helper = androidx.room.testing.MigrationTestHelper(
+            instrumentation,
+            LaterboxDatabase::class.java
+        )
+        val dbName = "migration_18_19_test.db"
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        context.deleteDatabase(dbName)
+
+        helper.createDatabase(dbName, 18).use { v18Db ->
+            v18Db.execSQL(
+                "INSERT INTO `chat_conversations` (`id`, `title`, `created_at`, `updated_at`, `last_message_preview`, `is_pinned`) " +
+                    "VALUES ('conv_1', 'Sci-fi classics', 1000, 2000, 'Hello', 0)"
+            )
+        }
+
+        val migratedDb = helper.runMigrationsAndValidate(
+            dbName,
+            19,
+            true,
+            LaterboxDatabase.MIGRATION_18_19
+        )
+        try {
+            migratedDb.query("SELECT `title`, `is_title_manual` FROM `chat_conversations` WHERE `id` = 'conv_1'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("Sci-fi classics", c.getString(0))
+                assertEquals(0, c.getInt(1))
+            }
+        } finally {
+            migratedDb.close()
+            context.deleteDatabase(dbName)
+        }
+    }
 }

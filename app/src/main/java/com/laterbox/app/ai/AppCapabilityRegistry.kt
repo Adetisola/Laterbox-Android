@@ -1,5 +1,37 @@
 package com.laterbox.app.ai
 
+import org.json.JSONArray
+import org.json.JSONObject
+import java.security.MessageDigest
+
+enum class CapabilityAvailability {
+    SUPPORTED,
+    CONDITIONALLY_AVAILABLE,
+    DISABLED,
+    UNAVAILABLE,
+    UNKNOWN
+}
+
+data class ProductCapabilityItem(
+    val id: String,
+    val section: String,
+    val title: String,
+    val description: String,
+    val defaultStatus: CapabilityAvailability = CapabilityAvailability.SUPPORTED,
+    val minVersionCode: Int = 1,
+    val remoteFeatureKey: String? = null,
+    val conditionNote: String? = null
+)
+
+data class ResolvedCapabilityItem(
+    val id: String,
+    val section: String,
+    val title: String,
+    val description: String,
+    val status: CapabilityAvailability,
+    val reason: String? = null
+)
+
 /**
  * High-level product sections registered in [AppCapabilityRegistry].
  */
@@ -24,8 +56,8 @@ data class SectionCapabilitySpec(
 )
 
 /**
- * Live runtime capability snapshot injected into [LaterboxContextEngine] so the assistant
- * reflects real current app features, installed engines, Movies & TV library state, and user storage state.
+ * Live runtime capability snapshot injected into [LaterboxContextEngine] and backend AI sync
+ * so the assistant reflects real current app features, installed engines, Movies & TV library state, and user storage state.
  */
 data class CapabilitySnapshot(
     val ytDlpState: String = "NOT_INITIALIZED",
@@ -53,14 +85,280 @@ data class CapabilitySnapshot(
     val moviesCompletedCount: Int = 0,
     val moviesOfflineCount: Int = 0,
     val collectionsCount: Int = 0,
-    val moviesActiveRemindersCount: Int = 0
+    val moviesActiveRemindersCount: Int = 0,
+    val clientVersionCode: Int? = null,
+    val clientVersionName: String? = null,
+    val manifestVersion: Int = 2,
+    val manifestRevision: String = "2026.11.21-v2",
+    val moviesTvEnabled: Boolean = true,
+    val providerMovieboxEnabled: Boolean = true,
+    val providerInternetArchiveEnabled: Boolean = true,
+    val providerTvmazeEnabled: Boolean = true,
+    val moviesRecommendationsEnabled: Boolean = true,
+    val playerIntroSkipEnabled: Boolean = true
 )
 
 /**
  * Single source of truth for Laterbox's current features across all sections,
- * transcript & Movies/TV capabilities, and honest limitations.
+ * versioned & hashed Product Capability Manifest, and honest limitations.
  */
 object AppCapabilityRegistry {
+
+    const val MANIFEST_VERSION = 2
+    const val MANIFEST_REVISION = "2026.11.21-v2"
+
+    val productManifestItems: List<ProductCapabilityItem> = listOf(
+        ProductCapabilityItem(
+            id = "inbox.save_organize",
+            section = "Inbox",
+            title = "Save, Search & Organize Links",
+            description = "Save links via Share sheet, text-selection pill, Clipboard detection, or in-app sheet with offline Room search, filters, and layouts.",
+            defaultStatus = CapabilityAvailability.SUPPORTED
+        ),
+        ProductCapabilityItem(
+            id = "collections.unified",
+            section = "Collections",
+            title = "Unified Collections",
+            description = "Create, rename, and delete custom collections holding both saved links and Movies & TV titles.",
+            defaultStatus = CapabilityAvailability.SUPPORTED
+        ),
+        ProductCapabilityItem(
+            id = "downloads.media_extraction",
+            section = "Downloads",
+            title = "Media Downloader & Offline Library",
+            description = "Inspect and download video/audio formats on-device with Queue and Library tabs plus optional folder export.",
+            defaultStatus = CapabilityAvailability.SUPPORTED
+        ),
+        ProductCapabilityItem(
+            id = "downloads.youtube_transcripts",
+            section = "Downloads",
+            title = "YouTube Captions & Transcript Export",
+            description = "Extract available YouTube captions for videos or playlists without downloading video/audio, copy to clipboard, and export Markdown (.md), Plain Text (.txt), or PDF (.pdf).",
+            defaultStatus = CapabilityAvailability.CONDITIONALLY_AVAILABLE,
+            conditionNote = "Requires accessible caption tracks on the YouTube video or playlist; local Whisper speech transcription is not built in."
+        ),
+        ProductCapabilityItem(
+            id = "downloads.saf_export",
+            section = "Downloads",
+            title = "Automatic Folder Export",
+            description = "Export downloaded media or transcript documents to a user-selected Android folder.",
+            defaultStatus = CapabilityAvailability.CONDITIONALLY_AVAILABLE,
+            conditionNote = "Requires granting access to an export folder in Settings."
+        ),
+        ProductCapabilityItem(
+            id = "movies.discovery_and_library",
+            section = "Movies & TV",
+            title = "Movies & TV Discovery and Library",
+            description = "Browse curated rails, search catalogue providers, manage Watchlist, Continue Watching, Collections, and watch history.",
+            defaultStatus = CapabilityAvailability.SUPPORTED,
+            remoteFeatureKey = "movies_tv_enabled"
+        ),
+        ProductCapabilityItem(
+            id = "movies.recommendations",
+            section = "Movies & TV",
+            title = "Personalized Recommendations & Surprise Me",
+            description = "Shows Because You Watched, More Like This, and Surprise Me suggestions.",
+            defaultStatus = CapabilityAvailability.SUPPORTED,
+            remoteFeatureKey = "movies_recommendations_enabled"
+        ),
+        ProductCapabilityItem(
+            id = "movies.pip_and_mini_player",
+            section = "Movies & TV",
+            title = "Picture-in-Picture & Mini-Player",
+            description = "Pressing Home during playback enters system Picture-in-Picture; pressing Back transitions smoothly into an in-app mini-player.",
+            defaultStatus = CapabilityAvailability.SUPPORTED,
+            minVersionCode = 62,
+            remoteFeatureKey = "movies_tv_enabled"
+        ),
+        ProductCapabilityItem(
+            id = "movies.intro_skip",
+            section = "Movies & TV",
+            title = "Skip Intro & Skip Recap",
+            description = "Shows skip buttons in the player when verified timestamps exist in source metadata.",
+            defaultStatus = CapabilityAvailability.CONDITIONALLY_AVAILABLE,
+            remoteFeatureKey = "player_intro_skip_enabled",
+            conditionNote = "Appears only when verified intro or recap timestamps are provided by the stream source."
+        ),
+        ProductCapabilityItem(
+            id = "sharing.deep_links_and_files",
+            section = "Sharing",
+            title = "Share Titles & Downloaded Files",
+            description = "Share Movie or TV Series links directly to Laterbox web/app links, and share generic downloaded files safely via Android FileProvider (individual downloaded episodes share the series link instead).",
+            defaultStatus = CapabilityAvailability.SUPPORTED,
+            minVersionCode = 62
+        ),
+        ProductCapabilityItem(
+            id = "reminders.smart_and_scheduled",
+            section = "Reminders",
+            title = "Scheduled & Smart Reminders",
+            description = "Per-link reminders, Movies & TV viewing alerts, Quiet Hours, and notification history.",
+            defaultStatus = CapabilityAvailability.SUPPORTED,
+            remoteFeatureKey = "smart_reminders_enabled"
+        ),
+        ProductCapabilityItem(
+            id = "assistant.chat_and_actions",
+            section = "Assistant",
+            title = "Laterbox Assistant & Actions",
+            description = "Streaming Q&A, live web search grounding for outside facts, and permission-aware in-app actions.",
+            defaultStatus = CapabilityAvailability.SUPPORTED,
+            remoteFeatureKey = "ai_assistant_enabled"
+        ),
+        ProductCapabilityItem(
+            id = "archive.saved_links",
+            section = "Archive",
+            title = "Archived Links",
+            description = "Store finished links out of the active Inbox with search and one-tap restore.",
+            defaultStatus = CapabilityAvailability.SUPPORTED
+        )
+    )
+
+    val MANIFEST_HASH: String by lazy {
+        computeManifestHash(productManifestItems, MANIFEST_VERSION)
+    }
+
+    fun computeManifestHash(
+        items: List<ProductCapabilityItem> = productManifestItems,
+        manifestVersion: Int = MANIFEST_VERSION
+    ): String {
+        val sortedItems = items.sortedBy { it.id }
+        val canonical = buildString {
+            append("{\"items\":[")
+            sortedItems.forEachIndexed { idx, item ->
+                if (idx > 0) append(',')
+                append('{')
+                append("\"conditionNote\":"); appendJsonNullableString(item.conditionNote); append(',')
+                append("\"defaultStatus\":"); appendJsonString(item.defaultStatus.name); append(',')
+                append("\"description\":"); appendJsonString(item.description); append(',')
+                append("\"id\":"); appendJsonString(item.id); append(',')
+                append("\"minVersionCode\":"); append(item.minVersionCode); append(',')
+                append("\"remoteFeatureKey\":"); appendJsonNullableString(item.remoteFeatureKey); append(',')
+                append("\"section\":"); appendJsonString(item.section); append(',')
+                append("\"title\":"); appendJsonString(item.title)
+                append('}')
+            }
+            append("],\"manifestVersion\":")
+            append(manifestVersion)
+            append('}')
+        }
+        val digest = MessageDigest.getInstance("SHA-256").digest(canonical.toByteArray(Charsets.UTF_8))
+        return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    private fun StringBuilder.appendJsonNullableString(value: String?) {
+        if (value == null) append("null") else appendJsonString(value)
+    }
+
+    private fun StringBuilder.appendJsonString(value: String) {
+        append('"')
+        for (ch in value) {
+            when (ch) {
+                '\\' -> append("\\\\")
+                '"' -> append("\\\"")
+                '\b' -> append("\\b")
+                '\u000C' -> append("\\f")
+                '\n' -> append("\\n")
+                '\r' -> append("\\r")
+                '\t' -> append("\\t")
+                else -> append(ch)
+            }
+        }
+        append('"')
+    }
+
+    fun evaluateCapabilities(snapshot: CapabilitySnapshot): List<ResolvedCapabilityItem> {
+        val clientVer = snapshot.clientVersionCode
+        return productManifestItems.map { item ->
+            var status = item.defaultStatus
+            var reason: String? = item.conditionNote
+
+            if (clientVer != null && clientVer < item.minVersionCode) {
+                status = CapabilityAvailability.UNAVAILABLE
+                reason = "Requires a newer app version (build ${item.minVersionCode}+)."
+            } else {
+                when (item.id) {
+                    "assistant.chat_and_actions" -> if (!snapshot.assistantEnabled) {
+                        status = CapabilityAvailability.DISABLED
+                        reason = "Disabled in your Laterbox Assistant settings."
+                    }
+                    "reminders.smart_and_scheduled" -> if (!snapshot.smartRemindersEnabled) {
+                        status = CapabilityAvailability.DISABLED
+                        reason = "Smart Reminders are turned off in Settings."
+                    }
+                    "movies.discovery_and_library",
+                    "movies.pip_and_mini_player" -> if (!snapshot.moviesTvEnabled) {
+                        status = CapabilityAvailability.DISABLED
+                        reason = "Movies & TV section is currently disabled."
+                    }
+                    "movies.recommendations" -> if (!snapshot.moviesRecommendationsEnabled) {
+                        status = CapabilityAvailability.DISABLED
+                        reason = "Personalized recommendations are turned off."
+                    }
+                    "movies.intro_skip" -> if (!snapshot.playerIntroSkipEnabled) {
+                        status = CapabilityAvailability.DISABLED
+                        reason = "Skip intro controls are turned off."
+                    }
+                    "downloads.youtube_transcripts" -> if (!snapshot.youtubeTranscriptsReady) {
+                        status = CapabilityAvailability.UNAVAILABLE
+                        reason = "YouTube transcript extraction is unavailable right now."
+                    } else if (snapshot.ytDlpState == "FAILED") {
+                        status = CapabilityAvailability.CONDITIONALLY_AVAILABLE
+                        reason = "On-device extractor initialization failed; watch-page captions fallback may still work when captions exist."
+                    }
+                    "downloads.saf_export" -> if (snapshot.configuredExportFolderWritable && !snapshot.configuredExportFolderName.isNullOrBlank()) {
+                        status = CapabilityAvailability.SUPPORTED
+                        reason = "Export folder \"${snapshot.configuredExportFolderName}\" is ready."
+                    } else if (!snapshot.configuredExportFolderName.isNullOrBlank()) {
+                        status = CapabilityAvailability.CONDITIONALLY_AVAILABLE
+                        reason = "Export folder \"${snapshot.configuredExportFolderName}\" needs permission re-selection."
+                    }
+                }
+            }
+
+            ResolvedCapabilityItem(
+                id = item.id,
+                section = item.section,
+                title = item.title,
+                description = item.description,
+                status = status,
+                reason = reason
+            )
+        }
+    }
+
+    fun toRuntimeSnapshotJson(snapshot: CapabilitySnapshot): JSONObject = JSONObject().apply {
+        snapshot.clientVersionCode?.let { put("clientVersionCode", it) }
+        snapshot.clientVersionName?.let { put("clientVersionName", it) }
+        put("manifestVersion", snapshot.manifestVersion)
+        put("manifestRevision", snapshot.manifestRevision)
+        put("manifestHash", MANIFEST_HASH)
+        put("ytDlpState", snapshot.ytDlpState)
+        put("ytDlpVersion", snapshot.ytDlpVersion ?: JSONObject.NULL)
+        put("quickJsReady", snapshot.quickJsReady)
+        put("quickJsVersion", snapshot.quickJsVersion ?: JSONObject.NULL)
+        put("ffmpegState", snapshot.ffmpegState)
+        put("youtubeTranscriptsReady", snapshot.youtubeTranscriptsReady)
+        put("transcriptClipboardCopySupported", snapshot.transcriptClipboardCopySupported)
+        put("downloadsLibraryDocumentsSupported", snapshot.downloadsLibraryDocumentsSupported)
+        put("storedDocumentCount", snapshot.storedDocumentCount)
+        put("configuredExportFolderName", snapshot.configuredExportFolderName ?: JSONObject.NULL)
+        put("configuredExportFolderWritable", snapshot.configuredExportFolderWritable)
+        put("assistantEnabled", snapshot.assistantEnabled)
+        put("smartRemindersEnabled", snapshot.smartRemindersEnabled)
+        put("quietHoursSummary", snapshot.quietHoursSummary)
+        put("moviesTvEnabled", snapshot.moviesTvEnabled)
+        put("providerMovieboxEnabled", snapshot.providerMovieboxEnabled)
+        put("providerInternetArchiveEnabled", snapshot.providerInternetArchiveEnabled)
+        put("providerTvmazeEnabled", snapshot.providerTvmazeEnabled)
+        put("moviesRecommendationsEnabled", snapshot.moviesRecommendationsEnabled)
+        put("playerIntroSkipEnabled", snapshot.playerIntroSkipEnabled)
+        put("moviesProvidersSummary", snapshot.moviesProvidersSummary)
+        put("moviesWatchlistCount", snapshot.moviesWatchlistCount)
+        put("moviesInProgressCount", snapshot.moviesInProgressCount)
+        put("moviesCompletedCount", snapshot.moviesCompletedCount)
+        put("moviesOfflineCount", snapshot.moviesOfflineCount)
+        put("collectionsCount", snapshot.collectionsCount)
+        put("moviesActiveRemindersCount", snapshot.moviesActiveRemindersCount)
+    }
 
     val sectionSpecs: List<SectionCapabilitySpec> = listOf(
         SectionCapabilitySpec(

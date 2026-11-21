@@ -97,13 +97,18 @@ fun ChatScreen(
     showAudioConsent: Boolean = false,
     onAcceptAudioConsent: () -> Unit = {},
     onDismissAudioConsent: () -> Unit = {},
-    onMarkdownLinkClick: ((String) -> Unit)? = null
+    onMarkdownLinkClick: ((String) -> Unit)? = null,
+    onRenameConversation: (String) -> Unit = {},
+    onDeleteConversation: () -> Unit = {}
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
     val spacing = LaterboxTheme.spacing
     val listState = rememberLazyListState()
     var showContextTransparencyDialog by remember { mutableStateOf(false) }
+    var showConversationMenu by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var showDeleteConfirmDialog by remember { mutableStateOf(false) }
 
     val density = LocalDensity.current
     val isImeVisible = WindowInsets.ime.getBottom(density) > WindowInsets.navigationBars.getBottom(density)
@@ -112,6 +117,67 @@ fun ChatScreen(
         if (itemCount > 0) {
             listState.animateScrollToItem((itemCount - 1).coerceAtLeast(0))
         }
+    }
+
+    if (showRenameDialog && uiState.activeConversationId != null) {
+        var draftTitle by remember(uiState.activeConversationId, uiState.activeConversationTitle) {
+            mutableStateOf(uiState.activeConversationTitle)
+        }
+        AlertDialog(
+            onDismissRequest = { showRenameDialog = false },
+            containerColor = colors.surfaceElevated,
+            title = {
+                Text(
+                    text = "Rename conversation",
+                    style = typography.titleLarge,
+                    color = colors.textPrimary
+                )
+            },
+            text = {
+                androidx.compose.material3.OutlinedTextField(
+                    value = draftTitle,
+                    onValueChange = { if (it.length <= 60) draftTitle = it },
+                    singleLine = true,
+                    placeholder = { Text("Conversation title") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("chat_rename_input")
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = draftTitle.trim().isNotEmpty(),
+                    onClick = {
+                        val trimmed = draftTitle.trim()
+                        showRenameDialog = false
+                        if (trimmed.isNotEmpty()) {
+                            onRenameConversation(trimmed)
+                        }
+                    }
+                ) {
+                    Text("Save", color = colors.accentPrimary, fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRenameDialog = false }) {
+                    Text("Cancel", color = colors.textSecondary)
+                }
+            }
+        )
+    }
+
+    if (showDeleteConfirmDialog && uiState.activeConversationId != null) {
+        com.laterbox.app.ui.components.LaterboxConfirmDialog(
+            title = "Delete conversation?",
+            message = "\"${uiState.activeConversationTitle}\" will be permanently removed from this device.",
+            confirmText = "Delete",
+            onConfirm = {
+                showDeleteConfirmDialog = false
+                onDeleteConversation()
+            },
+            onDismiss = { showDeleteConfirmDialog = false },
+            isDestructive = true
+        )
     }
 
     Box(
@@ -145,7 +211,7 @@ fun ChatScreen(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = "Powered by Google AI Studio (Gemini)",
+                        text = "Laterbox Assistant",
                         style = typography.metaText,
                         color = colors.textSecondary,
                         maxLines = 1
@@ -168,6 +234,48 @@ fun ChatScreen(
                     contentDescription = "New chat",
                     onClick = onNewChatClick
                 )
+
+                if (uiState.activeConversationId != null) {
+                    Spacer(modifier = Modifier.width(spacing.xs))
+                    Box {
+                        LaterboxIconButton(
+                            iconRes = LaterboxIcons.MoreVertical,
+                            contentDescription = "Conversation actions",
+                            onClick = { showConversationMenu = true },
+                            modifier = Modifier.testTag("chat_more_actions_button")
+                        )
+                        androidx.compose.material3.DropdownMenu(
+                            expanded = showConversationMenu,
+                            onDismissRequest = { showConversationMenu = false },
+                            containerColor = colors.surfaceElevated
+                        ) {
+                            androidx.compose.material3.DropdownMenuItem(
+                                modifier = Modifier.testTag("chat_action_rename"),
+                                text = { Text("Rename", color = colors.textPrimary) },
+                                onClick = {
+                                    showConversationMenu = false
+                                    showRenameDialog = true
+                                }
+                            )
+                            androidx.compose.material3.DropdownMenuItem(
+                                modifier = Modifier.testTag("chat_action_delete"),
+                                text = { Text("Delete", color = colors.statusDanger) },
+                                leadingIcon = {
+                                    Icon(
+                                        painter = painterResource(LaterboxIcons.Delete),
+                                        contentDescription = null,
+                                        tint = colors.statusDanger,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                onClick = {
+                                    showConversationMenu = false
+                                    showDeleteConfirmDialog = true
+                                }
+                            )
+                        }
+                    }
+                }
             }
 
             if (uiState.assistantEnabled && uiState.aiDisclosureAccepted) {

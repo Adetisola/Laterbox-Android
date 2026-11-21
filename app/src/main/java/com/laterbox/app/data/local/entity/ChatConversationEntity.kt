@@ -22,5 +22,7 @@ data class ChatConversationEntity(
     @ColumnInfo(name = "last_message_preview")
     val lastMessagePreview: String? = null,
     @ColumnInfo(name = "is_pinned")
-    val isPinned: Boolean = false
+    val isPinned: Boolean = false,
+    @ColumnInfo(name = "is_title_manual", defaultValue = "0")
+    val isTitleManual: Boolean = false
 )

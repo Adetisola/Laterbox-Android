@@ -96,7 +96,8 @@ object AppViewModelProvider {
                 speech = app.container.speechCoordinator,
                 moviesRepository = app.container.moviesRepository,
                 collectionRepository = app.container.collectionRepository,
-                reminderScheduler = app.container.reminderScheduler
+                reminderScheduler = app.container.reminderScheduler,
+                backendAiClient = app.container.backendAiClient
             )
         }
         initializer {
