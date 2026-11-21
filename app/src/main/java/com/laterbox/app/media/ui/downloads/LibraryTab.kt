@@ -285,6 +285,7 @@ fun LibraryAssetCard(
     onExport: () -> Unit,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier,
+    onShare: (() -> Unit)? = null,
     isSelected: Boolean = false,
     isInSelectionMode: Boolean = false,
     onLongClick: (() -> Unit)? = null,
@@ -508,6 +509,30 @@ fun LibraryAssetCard(
                                 onExport()
                             }
                         )
+                        onShare?.let { shareAction ->
+                            DropdownMenuItem(
+                                modifier = Modifier.testTag("asset_menu_share_${asset.id}"),
+                                text = {
+                                    Text(
+                                        text = "Share",
+                                        style = typography.bodyPrimary,
+                                        color = colors.textPrimary
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        painter = painterResource(LaterboxIcons.Share),
+                                        contentDescription = null,
+                                        tint = colors.textSecondary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                onClick = {
+                                    showMoreMenu = false
+                                    shareAction()
+                                }
+                            )
+                        }
                         DropdownMenuItem(
                             modifier = Modifier.testTag("asset_menu_delete_${asset.id}"),
                             text = {
@@ -543,6 +568,7 @@ fun DownloadedSeriesGroupCard(
     onOpen: () -> Unit,
     onExportAll: () -> Unit,
     onDeleteSeries: () -> Unit,
+    onShareSeries: (() -> Unit)? = null,
     isSelected: Boolean = false,
     isInSelectionMode: Boolean = false,
     onLongClick: () -> Unit = {},
@@ -700,6 +726,30 @@ fun DownloadedSeriesGroupCard(
                                 onExportAll()
                             }
                         )
+                        onShareSeries?.let { shareSeriesAction ->
+                            DropdownMenuItem(
+                                modifier = Modifier.testTag("series_menu_share_${group.seriesKey}"),
+                                text = {
+                                    Text(
+                                        text = "Share Series",
+                                        style = typography.bodyPrimary,
+                                        color = colors.textPrimary
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        painter = painterResource(LaterboxIcons.Share),
+                                        contentDescription = null,
+                                        tint = colors.textSecondary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                onClick = {
+                                    showMoreMenu = false
+                                    shareSeriesAction()
+                                }
+                            )
+                        }
                         DropdownMenuItem(
                             modifier = Modifier.testTag("series_menu_delete_${group.seriesKey}"),
                             text = {

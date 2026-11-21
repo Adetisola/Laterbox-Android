@@ -130,6 +130,7 @@ fun MoviesScreen(
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
     val focusManager = LocalFocusManager.current
+    val moviesContext = androidx.compose.ui.platform.LocalContext.current
 
     val homeListState = rememberLazyListState()
     val filteredListState = rememberLazyListState()
@@ -795,7 +796,8 @@ fun MoviesScreen(
                                                         onToggleWatchlist = onToggleWatchlist,
                                                         onAddToCollection = { collectionPickerTarget = it },
                                                         onMarkWatched = onMarkWatched,
-                                                        onHideTitle = onHideTitle
+                                                        onHideTitle = onHideTitle,
+                                                        onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) }
                                                     )
                                                 }
                                                 repeat(3 - rowItems.size) {
@@ -1069,7 +1071,8 @@ fun MoviesScreen(
                                                                     onToggleWatchlist = onToggleWatchlist,
                                                                     onAddToCollection = { collectionPickerTarget = it },
                                                                     onMarkWatched = onMarkWatched,
-                                                                    onHideTitle = onHideTitle
+                                                                    onHideTitle = onHideTitle,
+                                                                    onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) }
                                                                 )
                                                             }
                                                         }
@@ -1106,6 +1109,7 @@ fun MoviesScreen(
                                                                     onAddToCollection = { collectionPickerTarget = it },
                                                                     onMarkWatched = onMarkWatched,
                                                                     onHideTitle = onHideTitle,
+                                                                    onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) },
                                                                     onRemoveFromViewed = { pendingRemoveViewed = it },
                                                                     menuButtonTestTag = "poster_menu_recent_${item.id}"
                                                                 )
@@ -1142,7 +1146,8 @@ fun MoviesScreen(
                                                                             onToggleWatchlist = onToggleWatchlist,
                                                                             onAddToCollection = { collectionPickerTarget = it },
                                                                             onMarkWatched = onMarkWatched,
-                                                                            onHideTitle = onHideTitle
+                                                                            onHideTitle = onHideTitle,
+                                                                            onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) }
                                                                         )
                                                                     }
                                                                 }
@@ -1272,7 +1277,8 @@ fun MoviesScreen(
                                                                     onToggleWatchlist = onToggleWatchlist,
                                                                     onAddToCollection = { collectionPickerTarget = it },
                                                                     onMarkWatched = onMarkWatched,
-                                                                    onHideTitle = onHideTitle
+                                                                    onHideTitle = onHideTitle,
+                                                                    onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) }
                                                                 )
                                                             }
                                                         }
@@ -1305,7 +1311,8 @@ fun MoviesScreen(
                                                                     onToggleWatchlist = onToggleWatchlist,
                                                                     onAddToCollection = { collectionPickerTarget = it },
                                                                     onMarkWatched = onMarkWatched,
-                                                                    onHideTitle = onHideTitle
+                                                                    onHideTitle = onHideTitle,
+                                                                    onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) }
                                                                 )
                                                             }
                                                         }
@@ -1338,7 +1345,8 @@ fun MoviesScreen(
                                                                     onToggleWatchlist = onToggleWatchlist,
                                                                     onAddToCollection = { collectionPickerTarget = it },
                                                                     onMarkWatched = onMarkWatched,
-                                                                    onHideTitle = onHideTitle
+                                                                    onHideTitle = onHideTitle,
+                                                                    onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) }
                                                                 )
                                                             }
                                                         }
@@ -1371,7 +1379,8 @@ fun MoviesScreen(
                                                                     onToggleWatchlist = onToggleWatchlist,
                                                                     onAddToCollection = { collectionPickerTarget = it },
                                                                     onMarkWatched = onMarkWatched,
-                                                                    onHideTitle = onHideTitle
+                                                                    onHideTitle = onHideTitle,
+                                                                    onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) }
                                                                 )
                                                             }
                                                         }
@@ -1402,7 +1411,8 @@ fun MoviesScreen(
                                                                     onToggleWatchlist = onToggleWatchlist,
                                                                     onAddToCollection = { collectionPickerTarget = it },
                                                                     onMarkWatched = onMarkWatched,
-                                                                    onHideTitle = onHideTitle
+                                                                    onHideTitle = onHideTitle,
+                                                                    onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) }
                                                                 )
                                                             }
                                                         }

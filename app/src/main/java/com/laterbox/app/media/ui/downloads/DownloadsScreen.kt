@@ -809,6 +809,7 @@ internal fun DownloadsScreenContent(
                                 is DownloadLibraryEntry.SeriesGroup -> {
                                     val allGroupIdsSelected = entry.allAssets.isNotEmpty() &&
                                         entry.allAssets.all { uiState.selectedAssetIds.contains(it.id) }
+                                    val seriesContext = androidx.compose.ui.platform.LocalContext.current
                                     DownloadedSeriesGroupCard(
                                         group = entry,
                                         onOpen = {
@@ -820,6 +821,12 @@ internal fun DownloadsScreenContent(
                                         },
                                         onExportAll = { onExportSeries(entry) },
                                         onDeleteSeries = { pendingDeleteSeries = entry },
+                                        onShareSeries = {
+                                            com.laterbox.app.media.share.LaterboxShareHelper.shareSeriesGroup(
+                                                seriesContext,
+                                                entry
+                                            )
+                                        },
                                         isSelected = allGroupIdsSelected,
                                         isInSelectionMode = uiState.isSelectionMode,
                                         onLongClick = { onToggleSeriesSelection(entry) }
@@ -828,6 +835,8 @@ internal fun DownloadsScreenContent(
                                 is DownloadLibraryEntry.SingleAsset -> {
                                     val asset = entry.asset
                                     val isSelected = uiState.selectedAssetIds.contains(asset.id)
+                                    val assetContext = androidx.compose.ui.platform.LocalContext.current
+                                    val canShareAsset = !com.laterbox.app.media.share.LaterboxShareHelper.isBlockedEpisodeAsset(asset)
                                     LibraryAssetCard(
                                         asset = asset,
                                         onOpen = {
@@ -839,6 +848,16 @@ internal fun DownloadsScreenContent(
                                         },
                                         onExport = { onExportAsset(asset) },
                                         onDelete = { pendingDeleteAsset = asset },
+                                        onShare = if (canShareAsset) {
+                                            {
+                                                com.laterbox.app.media.share.LaterboxShareHelper.shareAsset(
+                                                    assetContext,
+                                                    asset
+                                                )
+                                            }
+                                        } else {
+                                            null
+                                        },
                                         isSelected = isSelected,
                                         isInSelectionMode = uiState.isSelectionMode,
                                         onLongClick = { onToggleAssetSelection(asset.id) },

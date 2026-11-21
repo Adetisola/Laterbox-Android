@@ -731,6 +731,7 @@ fun MoviesCatalogueScreen(
                             }
                         }
                         val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
+                        val catContext = androidx.compose.ui.platform.LocalContext.current
                         MoviePosterCard(
                             item = item,
                             onClick = { onOpenDetail(item.providerId, item.id) },
@@ -740,7 +741,8 @@ fun MoviesCatalogueScreen(
                             onToggleWatchlist = onToggleWatchlist,
                             onAddToCollection = { collectionPickerTarget = it },
                             onMarkWatched = onMarkWatched,
-                            onHideTitle = onHideTitle
+                            onHideTitle = onHideTitle,
+                            onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(catContext, it) }
                         )
                     }
 
@@ -788,6 +790,7 @@ fun MoviesCatalogueScreen(
                                 }
                             }
                             val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
+                            val suppContext = androidx.compose.ui.platform.LocalContext.current
                             MoviePosterCard(
                                 item = item,
                                 onClick = { onOpenDetail(item.providerId, item.id) },
@@ -798,6 +801,7 @@ fun MoviesCatalogueScreen(
                                 onAddToCollection = { collectionPickerTarget = it },
                                 onMarkWatched = onMarkWatched,
                                 onHideTitle = onHideTitle,
+                                onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(suppContext, it) },
                                 showSourceStatusBadge = true
                             )
                         }

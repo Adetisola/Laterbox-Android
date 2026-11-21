@@ -169,6 +169,7 @@ fun MoviePosterCard(
     onMarkWatched: ((MovieTitleSummary) -> Unit)? = null,
     onHideTitle: ((MovieTitleSummary) -> Unit)? = null,
     onRemoveFromViewed: ((MovieTitleSummary) -> Unit)? = null,
+    onShareTitle: ((MovieTitleSummary) -> Unit)? = null,
     menuButtonTestTag: String = "poster_actions_${item.id}",
     showSourceStatusBadge: Boolean = false
 ) {
@@ -179,7 +180,8 @@ fun MoviePosterCard(
         onAddToCollection != null ||
         onMarkWatched != null ||
         onHideTitle != null ||
-        onRemoveFromViewed != null
+        onRemoveFromViewed != null ||
+        onShareTitle != null
 
     Column(
         modifier = modifier
@@ -340,6 +342,24 @@ fun MoviePosterCard(
                                         onClick = {
                                             menuExpanded = false
                                             mark(item)
+                                        }
+                                    )
+                                }
+                                onShareTitle?.let { share ->
+                                    DropdownMenuItem(
+                                        text = { Text("Share", color = colors.textPrimary) },
+                                        leadingIcon = {
+                                            Icon(
+                                                painter = painterResource(LaterboxIcons.Share),
+                                                contentDescription = null,
+                                                tint = colors.textSecondary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        },
+                                        modifier = Modifier.testTag("poster_share_${item.id}"),
+                                        onClick = {
+                                            menuExpanded = false
+                                            share(item)
                                         }
                                     )
                                 }

@@ -659,6 +659,29 @@ fun MovieDetailScreen(
                                                         onDismissRequest = { showMoreActionsMenu = false },
                                                         containerColor = colors.surfaceElevated
                                                     ) {
+                                                        val detailContext = androidx.compose.ui.platform.LocalContext.current
+                                                        DropdownMenuItem(
+                                                            text = { Text("Share", color = colors.textPrimary) },
+                                                            leadingIcon = {
+                                                                Icon(
+                                                                    painter = painterResource(LaterboxIcons.Share),
+                                                                    contentDescription = null,
+                                                                    tint = colors.textSecondary,
+                                                                    modifier = Modifier.size(18.dp)
+                                                                )
+                                                            },
+                                                            onClick = {
+                                                                showMoreActionsMenu = false
+                                                                com.laterbox.app.media.share.LaterboxShareHelper.shareMovieDetails(
+                                                                    context = detailContext,
+                                                                    providerId = summary.providerId,
+                                                                    titleId = summary.id,
+                                                                    title = summary.title,
+                                                                    kind = summary.kind
+                                                                )
+                                                            },
+                                                            modifier = Modifier.testTag("detail_action_share")
+                                                        )
                                                         DropdownMenuItem(
                                                             text = { Text("Save to Collection", color = colors.textPrimary) },
                                                             leadingIcon = {
@@ -1697,9 +1720,13 @@ fun MovieDetailScreen(
                                         key = { index, rel -> "rel_${index}_${rel.compositeId}" }
                                     ) { _, rel ->
                                         val isRelOffline = offlineLookup.hasTitle(rel.providerId, rel.id)
+                                        val relContext = androidx.compose.ui.platform.LocalContext.current
                                         MoviePosterCard(
                                             item = rel,
                                             isOfflineDownloaded = isRelOffline,
+                                            onShareTitle = {
+                                                com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(relContext, it)
+                                            },
                                             onClick = { onOpenRelated(rel.providerId, rel.id) }
                                         )
                                     }

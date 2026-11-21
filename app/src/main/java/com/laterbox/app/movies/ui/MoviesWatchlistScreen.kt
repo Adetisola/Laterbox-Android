@@ -240,6 +240,7 @@ fun MoviesWatchlistScreen(
                 ) {
                     items(filteredItems, key = { "wl_grid_${it.compositeId}" }) { item ->
                         val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
+                        val watchlistContext = androidx.compose.ui.platform.LocalContext.current
                         MoviePosterCard(
                             item = item,
                             onClick = { onOpenDetail(item.providerId, item.id) },
@@ -250,6 +251,7 @@ fun MoviesWatchlistScreen(
                             onAddToCollection = { collectionPickerTarget = it },
                             onMarkWatched = onMarkWatched,
                             onHideTitle = onHideTitle,
+                            onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(watchlistContext, it) },
                             menuButtonTestTag = "watchlist_card_menu_${item.id}"
                         )
                     }

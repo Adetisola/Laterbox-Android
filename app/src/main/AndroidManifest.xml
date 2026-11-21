@@ -45,6 +45,13 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="laterbox-website.vercel.app" android:pathPrefix="/movie/" />
+                <data android:scheme="https" android:host="laterbox-website.vercel.app" android:pathPrefix="/series/" />
+            </intent-filter>
         </activity>
 
         <!-- Dedicated Fullscreen Video Player & System Picture-in-Picture Activity -->

@@ -14,6 +14,7 @@ import com.laterbox.app.data.preferences.ThemeMode
 import com.laterbox.app.data.preferences.UserPreferences
 import com.laterbox.app.movies.playback.LocalIsInPictureInPictureMode
 import com.laterbox.app.ui.navigation.LaterboxApp
+import com.laterbox.app.ui.navigation.LaterboxDeepLinks
 import com.laterbox.app.ui.theme.LaterboxTheme
 import kotlinx.coroutines.flow.MutableStateFlow
 
@@ -96,6 +97,12 @@ class MainActivity : ComponentActivity() {
             openDestinationState.value = dest to prompt
             intent.removeExtra(EXTRA_OPEN_DESTINATION)
             intent.removeExtra(EXTRA_CHAT_INITIAL_PROMPT)
+        } else {
+            val deepLinkRoute = LaterboxDeepLinks.parseIncomingIntent(intent)
+            if (!deepLinkRoute.isNullOrBlank()) {
+                openDestinationState.value = deepLinkRoute to null
+                intent?.data = null
+            }
         }
     }
 }
