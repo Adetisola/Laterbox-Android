@@ -117,6 +117,11 @@ fun MoviesScreen(
     onClearActionFeedback: () -> Unit = {},
     onMenuClick: (() -> Unit)? = null,
     bottomPaddingDp: Int = 96,
+    remoteConfig: com.laterbox.app.remoteconfig.RemoteConfigSnapshot = com.laterbox.app.remoteconfig.RemoteConfigSnapshot.default(),
+    recommendationsEnabled: Boolean = true,
+    dismissedAnnouncementIds: Set<String> = emptySet(),
+    onRemoteAction: (String) -> Unit = {},
+    onDismissRemoteAnnouncement: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -919,436 +924,512 @@ fun MoviesScreen(
                                     }
                                 }
 
-                                // Featured Hero Carousel
-                                if (visibleBanners.isNotEmpty()) {
-                                    item(key = "hero_carousel") {
-                                        MoviesHeroCarousel(
-                                            banners = visibleBanners,
-                                            watchlistIds = watchlistIds,
-                                            onBannerClick = { item -> onOpenDetail(item.providerId, item.id) },
-                                            onPlayClick = { item ->
-                                                val defaultSeason = if (item.kind.isEpisodic) 1 else null
-                                                val defaultEpisode = if (item.kind.isEpisodic) 1 else null
-                                                onOpenPlayer(item.providerId, item.id, defaultSeason, defaultEpisode)
-                                            },
-                                            onToggleWatchlist = onToggleWatchlist
+                                // Remote Maintenance Notice Banner on Movies Hub
+                                if (remoteConfig.maintenance.enabled &&
+                                    remoteConfig.maintenance.mode != com.laterbox.app.remoteconfig.RemoteMaintenanceMode.NONE
+                                ) {
+                                    item(key = "remote_movies_maintenance") {
+                                        com.laterbox.app.remoteconfig.RemoteMaintenanceNoticeBanner(
+                                            maintenance = remoteConfig.maintenance,
+                                            modifier = Modifier.padding(horizontal = 16.dp)
                                         )
                                     }
                                 }
 
-                                // Continue Watching Rail
-                                if (uiState.continueWatching.isNotEmpty()) {
-                                    item(key = "continue_watching_rail") {
-                                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                            SectionHeaderRow(
-                                                title = "Continue Watching",
-                                                subtitle = "Pick up where you left off",
-                                                onSeeAll = null
-                                            )
-                                            LazyRow(
-                                                contentPadding = PaddingValues(horizontal = 16.dp),
-                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                            ) {
-                                                items(uiState.continueWatching, key = { it.compositeId + (it.episodeLabel ?: "") }) { entry ->
-                                                    val isOffline = if (entry.seasonNumber != null && entry.episodeNumber != null) {
-                                                        offlineLookup.hasEpisode(
-                                                            entry.providerId,
-                                                            entry.titleId,
-                                                            entry.seasonNumber,
-                                                            entry.episodeNumber
-                                                        )
-                                                    } else {
-                                                        offlineLookup.hasTitle(entry.providerId, entry.titleId)
-                                                    }
-                                                    ContinueWatchingCard(
-                                                        item = entry,
-                                                        onClick = {
-                                                            onOpenPlayer(
-                                                                entry.providerId,
-                                                                entry.titleId,
-                                                                entry.seasonNumber,
-                                                                entry.episodeNumber
-                                                            )
+                                // Remote Movies-surface Announcements
+                                val moviesAnnouncements = remoteConfig.activeAnnouncementsForSurface(
+                                    surface = com.laterbox.app.remoteconfig.RemoteUiSurface.MOVIES,
+                                    dismissedIds = dismissedAnnouncementIds
+                                )
+                                moviesAnnouncements.forEach { ann ->
+                                    item(key = "remote_movies_ann_${ann.id}") {
+                                        com.laterbox.app.remoteconfig.RemoteAnnouncementBannerCard(
+                                            title = ann.title,
+                                            message = ann.message,
+                                            severity = ann.severity,
+                                            dismissible = ann.dismissible,
+                                            actionLabel = ann.actionLabel,
+                                            actionDestination = ann.actionDestination,
+                                            onActionClick = onRemoteAction,
+                                            onDismissClick = if (ann.dismissible) {
+                                                { onDismissRemoteAnnouncement(ann.id) }
+                                            } else null,
+                                            modifier = Modifier.padding(horizontal = 16.dp)
+                                        )
+                                    }
+                                }
+
+                                // Server-driven allowlisted UI components & ordered rails
+                                val renderSlots = com.laterbox.app.remoteconfig.RemoteConfigLayoutHelper.buildMoviesHomeSlots(
+                                    snapshot = remoteConfig,
+                                    recommendationsEnabled = recommendationsEnabled
+                                )
+                                renderSlots.forEach { slot ->
+                                    when (slot.kind) {
+                                        com.laterbox.app.remoteconfig.MoviesHomeSlotKind.ANNOUNCEMENT_BANNER -> {
+                                            val comp = slot.component ?: return@forEach
+                                            if (!comp.dismissible || comp.id !in dismissedAnnouncementIds) {
+                                                item(key = slot.key) {
+                                                    com.laterbox.app.remoteconfig.RemoteAnnouncementBannerCard(
+                                                        title = comp.title,
+                                                        message = comp.subtitle,
+                                                        severity = comp.severity,
+                                                        dismissible = comp.dismissible,
+                                                        actionLabel = comp.actionLabel,
+                                                        actionDestination = comp.actionDestination,
+                                                        onActionClick = onRemoteAction,
+                                                        onDismissClick = if (comp.dismissible) {
+                                                            { onDismissRemoteAnnouncement(comp.id) }
+                                                        } else null,
+                                                        modifier = Modifier.padding(horizontal = 16.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        com.laterbox.app.remoteconfig.MoviesHomeSlotKind.FEATURED_CALLOUT_CARD -> {
+                                            val comp = slot.component ?: return@forEach
+                                            item(key = slot.key) {
+                                                com.laterbox.app.remoteconfig.RemoteFeaturedCalloutCard(
+                                                    component = comp,
+                                                    onActionClick = onRemoteAction,
+                                                    modifier = Modifier.padding(horizontal = 16.dp)
+                                                )
+                                            }
+                                        }
+
+                                        com.laterbox.app.remoteconfig.MoviesHomeSlotKind.HERO_CAROUSEL -> {
+                                            val cappedBanners = visibleBanners.take(slot.maxItems)
+                                            if (cappedBanners.isNotEmpty()) {
+                                                item(key = "hero_carousel") {
+                                                    MoviesHeroCarousel(
+                                                        banners = cappedBanners,
+                                                        watchlistIds = watchlistIds,
+                                                        onBannerClick = { item -> onOpenDetail(item.providerId, item.id) },
+                                                        onPlayClick = { item ->
+                                                            val defaultSeason = if (item.kind.isEpisodic) 1 else null
+                                                            val defaultEpisode = if (item.kind.isEpisodic) 1 else null
+                                                            onOpenPlayer(item.providerId, item.id, defaultSeason, defaultEpisode)
                                                         },
-                                                        isOfflineDownloaded = isOffline,
-                                                        onOpenDetail = { onOpenDetail(entry.providerId, entry.titleId) },
-                                                        onRestartFromBeginning = { onRestartContinueWatching(entry) },
-                                                        onMarkWatched = { onMarkContinueWatchingWatched(entry) },
-                                                        onRemoveFromContinueWatching = { onRemoveContinueWatching(entry) }
+                                                        onToggleWatchlist = onToggleWatchlist
                                                     )
                                                 }
                                             }
                                         }
-                                    }
-                                }
 
-                                // Your Watchlist Rail
-                                if (uiState.watchlist.isNotEmpty()) {
-                                    item(key = "watchlist_rail") {
-                                        Column(
-                                            verticalArrangement = Arrangement.spacedBy(10.dp),
-                                            modifier = Modifier.testTag("movies_home_watchlist_rail")
-                                        ) {
-                                            SectionHeaderRow(
-                                                title = "Your Watchlist",
-                                                subtitle = "${uiState.watchlist.size} saved titles",
-                                                onSeeAll = onOpenWatchlist
-                                            )
-                                            LazyRow(
-                                                contentPadding = PaddingValues(horizontal = 16.dp),
-                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                            ) {
-                                                items(uiState.watchlist, key = { "wl_${it.compositeId}" }) { item ->
-                                                    val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
-                                                    MoviePosterCard(
-                                                        item = item,
-                                                        onClick = { onOpenDetail(item.providerId, item.id) },
-                                                        isOfflineDownloaded = isOffline,
-                                                        isInWatchlist = true,
-                                                        onToggleWatchlist = onToggleWatchlist,
-                                                        onAddToCollection = { collectionPickerTarget = it },
-                                                        onMarkWatched = onMarkWatched,
-                                                        onHideTitle = onHideTitle
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // Recently Viewed Rail
-                                if (uiState.recentlyViewed.isNotEmpty()) {
-                                    item(key = "recently_viewed_rail") {
-                                        Column(
-                                            verticalArrangement = Arrangement.spacedBy(10.dp),
-                                            modifier = Modifier.testTag("movies_home_recently_viewed_rail")
-                                        ) {
-                                            SectionHeaderRow(
-                                                title = "Recently Viewed",
-                                                subtitle = "Titles you checked out recently",
-                                                onSeeAll = null
-                                            )
-                                            LazyRow(
-                                                contentPadding = PaddingValues(horizontal = 16.dp),
-                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                            ) {
-                                                items(
-                                                    items = uiState.recentlyViewed,
-                                                    key = { "rv_${it.compositeId}" }
-                                                ) { item ->
-                                                    val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
-                                                    MoviePosterCard(
-                                                        item = item,
-                                                        onClick = { onOpenDetail(item.providerId, item.id) },
-                                                        isOfflineDownloaded = isOffline,
-                                                        isInWatchlist = item.compositeId in watchlistIds,
-                                                        onToggleWatchlist = onToggleWatchlist,
-                                                        onAddToCollection = { collectionPickerTarget = it },
-                                                        onMarkWatched = onMarkWatched,
-                                                        onHideTitle = onHideTitle,
-                                                        onRemoveFromViewed = { pendingRemoveViewed = it },
-                                                        menuButtonTestTag = "poster_menu_recent_${item.id}"
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // Because You Watched Rails
-                                uiState.becauseYouWatchedGroups.forEachIndexed { idx, group ->
-                                    if (group.items.isNotEmpty()) {
-                                        item(key = "byw_${idx}_${group.anchorTitle}") {
-                                            Column(
-                                                verticalArrangement = Arrangement.spacedBy(10.dp),
-                                                modifier = Modifier.testTag("movies_home_byw_rail_$idx")
-                                            ) {
-                                                SectionHeaderRow(
-                                                    title = "Because You Watched ${group.anchorTitle}",
-                                                    subtitle = "Recommended from your viewing history",
-                                                    onSeeAll = null
-                                                )
-                                                LazyRow(
-                                                    contentPadding = PaddingValues(horizontal = 16.dp),
-                                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                                ) {
-                                                    items(group.items, key = { "byw_${idx}_${it.compositeId}" }) { item ->
-                                                        val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
-                                                        MoviePosterCard(
-                                                            item = item,
-                                                            onClick = { onOpenDetail(item.providerId, item.id) },
-                                                            isOfflineDownloaded = isOffline,
-                                                            isInWatchlist = item.compositeId in watchlistIds,
-                                                            onToggleWatchlist = onToggleWatchlist,
-                                                            onAddToCollection = { collectionPickerTarget = it },
-                                                            onMarkWatched = onMarkWatched,
-                                                            onHideTitle = onHideTitle
+                                        com.laterbox.app.remoteconfig.MoviesHomeSlotKind.CONTENT_RAIL -> when (slot.railId) {
+                                            "continue_watching" -> if (uiState.continueWatching.isNotEmpty()) {
+                                                item(key = "continue_watching_rail") {
+                                                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                                        SectionHeaderRow(
+                                                            title = slot.customTitle.ifBlank { "Continue Watching" },
+                                                            subtitle = "Pick up where you left off",
+                                                            onSeeAll = null
                                                         )
+                                                        LazyRow(
+                                                            contentPadding = PaddingValues(horizontal = 16.dp),
+                                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                                        ) {
+                                                            items(
+                                                                uiState.continueWatching.take(slot.maxItems),
+                                                                key = { it.compositeId + (it.episodeLabel ?: "") }
+                                                            ) { entry ->
+                                                                val isOffline = if (entry.seasonNumber != null && entry.episodeNumber != null) {
+                                                                    offlineLookup.hasEpisode(
+                                                                        entry.providerId,
+                                                                        entry.titleId,
+                                                                        entry.seasonNumber,
+                                                                        entry.episodeNumber
+                                                                    )
+                                                                } else {
+                                                                    offlineLookup.hasTitle(entry.providerId, entry.titleId)
+                                                                }
+                                                                ContinueWatchingCard(
+                                                                    item = entry,
+                                                                    onClick = {
+                                                                        onOpenPlayer(
+                                                                            entry.providerId,
+                                                                            entry.titleId,
+                                                                            entry.seasonNumber,
+                                                                            entry.episodeNumber
+                                                                        )
+                                                                    },
+                                                                    isOfflineDownloaded = isOffline,
+                                                                    onOpenDetail = { onOpenDetail(entry.providerId, entry.titleId) },
+                                                                    onRestartFromBeginning = { onRestartContinueWatching(entry) },
+                                                                    onMarkWatched = { onMarkContinueWatchingWatched(entry) },
+                                                                    onRemoveFromContinueWatching = { onRemoveContinueWatching(entry) }
+                                                                )
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
-                                        }
-                                    }
-                                }
 
-                                // Surprise Me Spotlight Card
-                                uiState.surprisePick?.let { surprise ->
-                                    item(key = "surprise_me_card") {
-                                        Surface(
-                                            shape = RoundedCornerShape(16.dp),
-                                            color = colors.surfacePrimary,
-                                            border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.28f)),
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 16.dp)
-                                                .testTag("movies_home_surprise_card")
-                                        ) {
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .clickable { onOpenDetail(surprise.pick.providerId, surprise.pick.id) }
-                                                    .padding(12.dp),
-                                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .width(72.dp)
-                                                        .height(104.dp)
-                                                        .clip(RoundedCornerShape(10.dp))
-                                                        .background(colors.surfaceSecondary),
-                                                    contentAlignment = Alignment.Center
-                                                ) {
-                                                    if (!surprise.pick.posterUrl.isNullOrBlank()) {
-                                                        AsyncImage(
-                                                            model = surprise.pick.posterUrl,
-                                                            contentDescription = surprise.pick.title,
-                                                            contentScale = ContentScale.Crop,
-                                                            modifier = Modifier.fillMaxSize()
-                                                        )
-                                                    } else {
-                                                        Icon(
-                                                            painter = painterResource(LaterboxIcons.Sparkles),
-                                                            contentDescription = null,
-                                                            tint = colors.accentPrimary
-                                                        )
-                                                    }
-                                                }
-                                                Column(
-                                                    modifier = Modifier.weight(1f),
-                                                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                                                ) {
-                                                    Text(
-                                                        text = "SURPRISE ME",
-                                                        style = typography.caption.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
-                                                        color = colors.accentPrimary
-                                                    )
-                                                    Text(
-                                                        text = surprise.pick.title,
-                                                        style = typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
-                                                        color = colors.textPrimary,
-                                                        maxLines = 2,
-                                                        overflow = TextOverflow.Ellipsis
-                                                    )
-                                                    Text(
-                                                        text = surprise.rationale,
-                                                        style = typography.metaText,
-                                                        color = colors.textSecondary,
-                                                        maxLines = 2,
-                                                        overflow = TextOverflow.Ellipsis
-                                                    )
-                                                    Row(
-                                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                                        verticalAlignment = Alignment.CenterVertically,
-                                                        modifier = Modifier.padding(top = 4.dp)
+                                            "watchlist" -> if (uiState.watchlist.isNotEmpty()) {
+                                                item(key = "watchlist_rail") {
+                                                    Column(
+                                                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                                                        modifier = Modifier.testTag("movies_home_watchlist_rail")
                                                     ) {
-                                                        Button(
-                                                            onClick = { onOpenDetail(surprise.pick.providerId, surprise.pick.id) },
-                                                            colors = ButtonDefaults.buttonColors(containerColor = colors.accentPrimary),
-                                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                                        SectionHeaderRow(
+                                                            title = slot.customTitle.ifBlank { "Your Watchlist" },
+                                                            subtitle = "${uiState.watchlist.size} saved titles",
+                                                            onSeeAll = onOpenWatchlist
+                                                        )
+                                                        LazyRow(
+                                                            contentPadding = PaddingValues(horizontal = 16.dp),
+                                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
                                                         ) {
-                                                            Text("Open", style = typography.caption.copy(fontWeight = FontWeight.SemiBold))
-                                                        }
-                                                        OutlinedButton(
-                                                            onClick = { onRerollSurprise(null) },
-                                                            border = BorderStroke(0.75.dp, colors.borderSubtle),
-                                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                                                            modifier = Modifier.testTag("movies_surprise_reroll")
-                                                        ) {
-                                                            Text(
-                                                                text = "Pick another",
-                                                                style = typography.caption,
-                                                                color = colors.textPrimary
-                                                            )
+                                                            items(uiState.watchlist.take(slot.maxItems), key = { "wl_${it.compositeId}" }) { item ->
+                                                                val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
+                                                                MoviePosterCard(
+                                                                    item = item,
+                                                                    onClick = { onOpenDetail(item.providerId, item.id) },
+                                                                    isOfflineDownloaded = isOffline,
+                                                                    isInWatchlist = true,
+                                                                    onToggleWatchlist = onToggleWatchlist,
+                                                                    onAddToCollection = { collectionPickerTarget = it },
+                                                                    onMarkWatched = onMarkWatched,
+                                                                    onHideTitle = onHideTitle
+                                                                )
+                                                            }
                                                         }
                                                     }
                                                 }
                                             }
-                                        }
-                                    }
-                                }
 
-                                // Quick Picks (<90m) Rail
-                                if (uiState.quickRuntimePicks.isNotEmpty()) {
-                                    item(key = "quick_picks_rail") {
-                                        Column(
-                                            verticalArrangement = Arrangement.spacedBy(10.dp),
-                                            modifier = Modifier.testTag("movies_home_quick_picks_rail")
-                                        ) {
-                                            SectionHeaderRow(
-                                                title = "Quick Picks (<90m)",
-                                                subtitle = "Easy to finish tonight",
-                                                onSeeAll = null
-                                            )
-                                            LazyRow(
-                                                contentPadding = PaddingValues(horizontal = 16.dp),
-                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                            ) {
-                                                items(uiState.quickRuntimePicks, key = { "qp_${it.compositeId}" }) { item ->
-                                                    val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
-                                                    MoviePosterCard(
-                                                        item = item,
-                                                        onClick = { onOpenDetail(item.providerId, item.id) },
-                                                        isOfflineDownloaded = isOffline,
-                                                        isInWatchlist = item.compositeId in watchlistIds,
-                                                        onToggleWatchlist = onToggleWatchlist,
-                                                        onAddToCollection = { collectionPickerTarget = it },
-                                                        onMarkWatched = onMarkWatched,
-                                                        onHideTitle = onHideTitle
-                                                    )
+                                            "recently_viewed" -> if (uiState.recentlyViewed.isNotEmpty()) {
+                                                item(key = "recently_viewed_rail") {
+                                                    Column(
+                                                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                                                        modifier = Modifier.testTag("movies_home_recently_viewed_rail")
+                                                    ) {
+                                                        SectionHeaderRow(
+                                                            title = slot.customTitle.ifBlank { "Recently Viewed" },
+                                                            subtitle = "Titles you checked out recently",
+                                                            onSeeAll = null
+                                                        )
+                                                        LazyRow(
+                                                            contentPadding = PaddingValues(horizontal = 16.dp),
+                                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                                        ) {
+                                                            items(
+                                                                uiState.recentlyViewed.take(slot.maxItems),
+                                                                key = { "rv_${it.compositeId}" }
+                                                            ) { item ->
+                                                                val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
+                                                                MoviePosterCard(
+                                                                    item = item,
+                                                                    onClick = { onOpenDetail(item.providerId, item.id) },
+                                                                    isOfflineDownloaded = isOffline,
+                                                                    isInWatchlist = item.compositeId in watchlistIds,
+                                                                    onToggleWatchlist = onToggleWatchlist,
+                                                                    onAddToCollection = { collectionPickerTarget = it },
+                                                                    onMarkWatched = onMarkWatched,
+                                                                    onHideTitle = onHideTitle,
+                                                                    onRemoveFromViewed = { pendingRemoveViewed = it },
+                                                                    menuButtonTestTag = "poster_menu_recent_${item.id}"
+                                                                )
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                             }
-                                        }
-                                    }
-                                }
 
-                                // Grounded Recently Added Rail
-                                if (uiState.recentlyAddedRail.isNotEmpty()) {
-                                    item(key = "recently_added_rail") {
-                                        Column(
-                                            verticalArrangement = Arrangement.spacedBy(10.dp),
-                                            modifier = Modifier.testTag("movies_home_recently_added_rail")
-                                        ) {
-                                            SectionHeaderRow(
-                                                title = "Recently Added",
-                                                subtitle = "Latest verified additions & releases",
-                                                onSeeAll = null
-                                            )
-                                            LazyRow(
-                                                contentPadding = PaddingValues(horizontal = 16.dp),
-                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                            ) {
-                                                items(uiState.recentlyAddedRail, key = { "ra_${it.compositeId}" }) { item ->
-                                                    val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
-                                                    MoviePosterCard(
-                                                        item = item,
-                                                        onClick = { onOpenDetail(item.providerId, item.id) },
-                                                        isOfflineDownloaded = isOffline,
-                                                        isInWatchlist = item.compositeId in watchlistIds,
-                                                        onToggleWatchlist = onToggleWatchlist,
-                                                        onAddToCollection = { collectionPickerTarget = it },
-                                                        onMarkWatched = onMarkWatched,
-                                                        onHideTitle = onHideTitle
-                                                    )
+                                            "because_you_watched" -> if (recommendationsEnabled) {
+                                                uiState.becauseYouWatchedGroups.forEachIndexed { idx, group ->
+                                                    if (group.items.isNotEmpty()) {
+                                                        item(key = "byw_${idx}_${group.anchorTitle}") {
+                                                            Column(
+                                                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                                                                modifier = Modifier.testTag("movies_home_byw_rail_$idx")
+                                                            ) {
+                                                                SectionHeaderRow(
+                                                                    title = "Because You Watched ${group.anchorTitle}",
+                                                                    subtitle = "Recommended from your viewing history",
+                                                                    onSeeAll = null
+                                                                )
+                                                                LazyRow(
+                                                                    contentPadding = PaddingValues(horizontal = 16.dp),
+                                                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                                                ) {
+                                                                    items(group.items.take(slot.maxItems), key = { "byw_${idx}_${it.compositeId}" }) { item ->
+                                                                        val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
+                                                                        MoviePosterCard(
+                                                                            item = item,
+                                                                            onClick = { onOpenDetail(item.providerId, item.id) },
+                                                                            isOfflineDownloaded = isOffline,
+                                                                            isInWatchlist = item.compositeId in watchlistIds,
+                                                                            onToggleWatchlist = onToggleWatchlist,
+                                                                            onAddToCollection = { collectionPickerTarget = it },
+                                                                            onMarkWatched = onMarkWatched,
+                                                                            onHideTitle = onHideTitle
+                                                                        )
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                uiState.surprisePick?.let { surprise ->
+                                                    item(key = "surprise_me_card") {
+                                                        Surface(
+                                                            shape = RoundedCornerShape(16.dp),
+                                                            color = colors.surfacePrimary,
+                                                            border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.28f)),
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .padding(horizontal = 16.dp)
+                                                                .testTag("movies_home_surprise_card")
+                                                        ) {
+                                                            Row(
+                                                                modifier = Modifier
+                                                                    .fillMaxWidth()
+                                                                    .clickable { onOpenDetail(surprise.pick.providerId, surprise.pick.id) }
+                                                                    .padding(12.dp),
+                                                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                                                verticalAlignment = Alignment.CenterVertically
+                                                            ) {
+                                                                Box(
+                                                                    modifier = Modifier
+                                                                        .width(72.dp)
+                                                                        .height(104.dp)
+                                                                        .clip(RoundedCornerShape(10.dp))
+                                                                        .background(colors.surfaceSecondary),
+                                                                    contentAlignment = Alignment.Center
+                                                                ) {
+                                                                    if (!surprise.pick.posterUrl.isNullOrBlank()) {
+                                                                        AsyncImage(
+                                                                            model = surprise.pick.posterUrl,
+                                                                            contentDescription = surprise.pick.title,
+                                                                            contentScale = ContentScale.Crop,
+                                                                            modifier = Modifier.fillMaxSize()
+                                                                        )
+                                                                    } else {
+                                                                        Icon(
+                                                                            painter = painterResource(LaterboxIcons.Sparkles),
+                                                                            contentDescription = null,
+                                                                            tint = colors.accentPrimary
+                                                                        )
+                                                                    }
+                                                                }
+                                                                Column(
+                                                                    modifier = Modifier.weight(1f),
+                                                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                                                ) {
+                                                                    Text(
+                                                                        text = "SURPRISE ME",
+                                                                        style = typography.caption.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
+                                                                        color = colors.accentPrimary
+                                                                    )
+                                                                    Text(
+                                                                        text = surprise.pick.title,
+                                                                        style = typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
+                                                                        color = colors.textPrimary,
+                                                                        maxLines = 2,
+                                                                        overflow = TextOverflow.Ellipsis
+                                                                    )
+                                                                    Text(
+                                                                        text = surprise.rationale,
+                                                                        style = typography.metaText,
+                                                                        color = colors.textSecondary,
+                                                                        maxLines = 2,
+                                                                        overflow = TextOverflow.Ellipsis
+                                                                    )
+                                                                    Row(
+                                                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                                        verticalAlignment = Alignment.CenterVertically,
+                                                                        modifier = Modifier.padding(top = 4.dp)
+                                                                    ) {
+                                                                        Button(
+                                                                            onClick = { onOpenDetail(surprise.pick.providerId, surprise.pick.id) },
+                                                                            colors = ButtonDefaults.buttonColors(containerColor = colors.accentPrimary),
+                                                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                                                        ) {
+                                                                            Text("Open", style = typography.caption.copy(fontWeight = FontWeight.SemiBold))
+                                                                        }
+                                                                        OutlinedButton(
+                                                                            onClick = { onRerollSurprise(null) },
+                                                                            border = BorderStroke(0.75.dp, colors.borderSubtle),
+                                                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                                                            modifier = Modifier.testTag("movies_surprise_reroll")
+                                                                        ) {
+                                                                            Text(
+                                                                                text = "Pick another",
+                                                                                style = typography.caption,
+                                                                                color = colors.textPrimary
+                                                                            )
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                             }
-                                        }
-                                    }
-                                }
 
-                                // Top Rated Rail
-                                if (visibleTopRated.isNotEmpty()) {
-                                    item(key = "top_rated_rail") {
-                                        Column(
-                                            verticalArrangement = Arrangement.spacedBy(10.dp),
-                                            modifier = Modifier.testTag("movies_home_top_rated_rail")
-                                        ) {
-                                            SectionHeaderRow(
-                                                title = "Top Rated",
-                                                subtitle = "Highest-rated films & series",
-                                                onSeeAll = { onOpenCatalogueWithSort(null, null, CatalogueSort.TOP_RATED, null) }
-                                            )
-                                            LazyRow(
-                                                contentPadding = PaddingValues(horizontal = 16.dp),
-                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                            ) {
-                                                items(visibleTopRated, key = { "tr_${it.compositeId}" }) { item ->
-                                                    val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
-                                                    MoviePosterCard(
-                                                        item = item,
-                                                        onClick = { onOpenDetail(item.providerId, item.id) },
-                                                        isOfflineDownloaded = isOffline,
-                                                        isInWatchlist = item.compositeId in watchlistIds,
-                                                        onToggleWatchlist = onToggleWatchlist,
-                                                        onAddToCollection = { collectionPickerTarget = it },
-                                                        onMarkWatched = onMarkWatched,
-                                                        onHideTitle = onHideTitle
-                                                    )
+                                            "quick_picks" -> if (recommendationsEnabled && uiState.quickRuntimePicks.isNotEmpty()) {
+                                                item(key = "quick_picks_rail") {
+                                                    Column(
+                                                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                                                        modifier = Modifier.testTag("movies_home_quick_picks_rail")
+                                                    ) {
+                                                        SectionHeaderRow(
+                                                            title = slot.customTitle.ifBlank { "Quick Picks (<90m)" },
+                                                            subtitle = "Easy to finish tonight",
+                                                            onSeeAll = null
+                                                        )
+                                                        LazyRow(
+                                                            contentPadding = PaddingValues(horizontal = 16.dp),
+                                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                                        ) {
+                                                            items(uiState.quickRuntimePicks.take(slot.maxItems), key = { "qp_${it.compositeId}" }) { item ->
+                                                                val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
+                                                                MoviePosterCard(
+                                                                    item = item,
+                                                                    onClick = { onOpenDetail(item.providerId, item.id) },
+                                                                    isOfflineDownloaded = isOffline,
+                                                                    isInWatchlist = item.compositeId in watchlistIds,
+                                                                    onToggleWatchlist = onToggleWatchlist,
+                                                                    onAddToCollection = { collectionPickerTarget = it },
+                                                                    onMarkWatched = onMarkWatched,
+                                                                    onHideTitle = onHideTitle
+                                                                )
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                             }
-                                        }
-                                    }
-                                }
 
-                                // Newest Rail
-                                if (visibleNewest.isNotEmpty()) {
-                                    item(key = "newest_rail") {
-                                        Column(
-                                            verticalArrangement = Arrangement.spacedBy(10.dp),
-                                            modifier = Modifier.testTag("movies_home_newest_rail")
-                                        ) {
-                                            SectionHeaderRow(
-                                                title = "Newest",
-                                                subtitle = "Latest releases added",
-                                                onSeeAll = { onOpenCatalogueWithSort(null, null, CatalogueSort.NEWEST, null) }
-                                            )
-                                            LazyRow(
-                                                contentPadding = PaddingValues(horizontal = 16.dp),
-                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                            ) {
-                                                items(visibleNewest, key = { "nw_${it.compositeId}" }) { item ->
-                                                    val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
-                                                    MoviePosterCard(
-                                                        item = item,
-                                                        onClick = { onOpenDetail(item.providerId, item.id) },
-                                                        isOfflineDownloaded = isOffline,
-                                                        isInWatchlist = item.compositeId in watchlistIds,
-                                                        onToggleWatchlist = onToggleWatchlist,
-                                                        onAddToCollection = { collectionPickerTarget = it },
-                                                        onMarkWatched = onMarkWatched,
-                                                        onHideTitle = onHideTitle
-                                                    )
+                                            "recently_added" -> if (uiState.recentlyAddedRail.isNotEmpty()) {
+                                                item(key = "recently_added_rail") {
+                                                    Column(
+                                                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                                                        modifier = Modifier.testTag("movies_home_recently_added_rail")
+                                                    ) {
+                                                        SectionHeaderRow(
+                                                            title = slot.customTitle.ifBlank { "Recently Added" },
+                                                            subtitle = "Latest verified additions & releases",
+                                                            onSeeAll = null
+                                                        )
+                                                        LazyRow(
+                                                            contentPadding = PaddingValues(horizontal = 16.dp),
+                                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                                        ) {
+                                                            items(uiState.recentlyAddedRail.take(slot.maxItems), key = { "ra_${it.compositeId}" }) { item ->
+                                                                val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
+                                                                MoviePosterCard(
+                                                                    item = item,
+                                                                    onClick = { onOpenDetail(item.providerId, item.id) },
+                                                                    isOfflineDownloaded = isOffline,
+                                                                    isInWatchlist = item.compositeId in watchlistIds,
+                                                                    onToggleWatchlist = onToggleWatchlist,
+                                                                    onAddToCollection = { collectionPickerTarget = it },
+                                                                    onMarkWatched = onMarkWatched,
+                                                                    onHideTitle = onHideTitle
+                                                                )
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                             }
-                                        }
-                                    }
-                                }
 
-                                // Discovery Feed Rails
-                                items(visibleSections, key = { (section, _) -> section.id }) { (section, sectionItems) ->
-                                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                        val inferKind = sectionItems.firstOrNull()?.kind
-                                        SectionHeaderRow(
-                                            title = section.title,
-                                            subtitle = section.subtitle,
-                                            onSeeAll = { onOpenCatalogue(inferKind, null) }
-                                        )
-                                        LazyRow(
-                                            contentPadding = PaddingValues(horizontal = 16.dp),
-                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                        ) {
-                                            items(sectionItems, key = { "${section.id}_${it.compositeId}" }) { item ->
-                                                val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
-                                                MoviePosterCard(
-                                                    item = item,
-                                                    onClick = { onOpenDetail(item.providerId, item.id) },
-                                                    isOfflineDownloaded = isOffline,
-                                                    isInWatchlist = item.compositeId in watchlistIds,
-                                                    onToggleWatchlist = onToggleWatchlist,
-                                                    onAddToCollection = { collectionPickerTarget = it },
-                                                    onMarkWatched = onMarkWatched,
-                                                    onHideTitle = onHideTitle
-                                                )
+                                            "top_rated" -> if (visibleTopRated.isNotEmpty()) {
+                                                item(key = "top_rated_rail") {
+                                                    Column(
+                                                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                                                        modifier = Modifier.testTag("movies_home_top_rated_rail")
+                                                    ) {
+                                                        SectionHeaderRow(
+                                                            title = slot.customTitle.ifBlank { "Top Rated" },
+                                                            subtitle = "Highest-rated films & series",
+                                                            onSeeAll = { onOpenCatalogueWithSort(null, null, CatalogueSort.TOP_RATED, null) }
+                                                        )
+                                                        LazyRow(
+                                                            contentPadding = PaddingValues(horizontal = 16.dp),
+                                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                                        ) {
+                                                            items(visibleTopRated.take(slot.maxItems), key = { "tr_${it.compositeId}" }) { item ->
+                                                                val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
+                                                                MoviePosterCard(
+                                                                    item = item,
+                                                                    onClick = { onOpenDetail(item.providerId, item.id) },
+                                                                    isOfflineDownloaded = isOffline,
+                                                                    isInWatchlist = item.compositeId in watchlistIds,
+                                                                    onToggleWatchlist = onToggleWatchlist,
+                                                                    onAddToCollection = { collectionPickerTarget = it },
+                                                                    onMarkWatched = onMarkWatched,
+                                                                    onHideTitle = onHideTitle
+                                                                )
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            "newest" -> if (visibleNewest.isNotEmpty()) {
+                                                item(key = "newest_rail") {
+                                                    Column(
+                                                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                                                        modifier = Modifier.testTag("movies_home_newest_rail")
+                                                    ) {
+                                                        SectionHeaderRow(
+                                                            title = slot.customTitle.ifBlank { "Newest" },
+                                                            subtitle = "Latest releases added",
+                                                            onSeeAll = { onOpenCatalogueWithSort(null, null, CatalogueSort.NEWEST, null) }
+                                                        )
+                                                        LazyRow(
+                                                            contentPadding = PaddingValues(horizontal = 16.dp),
+                                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                                        ) {
+                                                            items(visibleNewest.take(slot.maxItems), key = { "nw_${it.compositeId}" }) { item ->
+                                                                val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
+                                                                MoviePosterCard(
+                                                                    item = item,
+                                                                    onClick = { onOpenDetail(item.providerId, item.id) },
+                                                                    isOfflineDownloaded = isOffline,
+                                                                    isInWatchlist = item.compositeId in watchlistIds,
+                                                                    onToggleWatchlist = onToggleWatchlist,
+                                                                    onAddToCollection = { collectionPickerTarget = it },
+                                                                    onMarkWatched = onMarkWatched,
+                                                                    onHideTitle = onHideTitle
+                                                                )
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            "discovery_sections" -> {
+                                                items(visibleSections, key = { (section, _) -> section.id }) { (section, sectionItems) ->
+                                                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                                        val inferKind = sectionItems.firstOrNull()?.kind
+                                                        SectionHeaderRow(
+                                                            title = section.title,
+                                                            subtitle = section.subtitle,
+                                                            onSeeAll = { onOpenCatalogue(inferKind, null) }
+                                                        )
+                                                        LazyRow(
+                                                            contentPadding = PaddingValues(horizontal = 16.dp),
+                                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                                        ) {
+                                                            items(sectionItems.take(slot.maxItems), key = { "${section.id}_${it.compositeId}" }) { item ->
+                                                                val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
+                                                                MoviePosterCard(
+                                                                    item = item,
+                                                                    onClick = { onOpenDetail(item.providerId, item.id) },
+                                                                    isOfflineDownloaded = isOffline,
+                                                                    isInWatchlist = item.compositeId in watchlistIds,
+                                                                    onToggleWatchlist = onToggleWatchlist,
+                                                                    onAddToCollection = { collectionPickerTarget = it },
+                                                                    onMarkWatched = onMarkWatched,
+                                                                    onHideTitle = onHideTitle
+                                                                )
+                                                            }
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
                                     }

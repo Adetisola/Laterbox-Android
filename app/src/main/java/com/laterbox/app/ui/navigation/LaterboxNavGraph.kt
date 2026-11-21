@@ -173,6 +173,63 @@ fun LaterboxApp(
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
     val preferences by settingsViewModel.preferences.collectAsState()
+    val remoteConfigManager = remember(context) {
+        (context.applicationContext as? LaterboxApplication)?.container?.remoteConfigManager
+    }
+    val remoteConfigState by (
+        remoteConfigManager?.state ?: remember {
+            kotlinx.coroutines.flow.MutableStateFlow(com.laterbox.app.remoteconfig.RemoteConfigState())
+        }
+        ).collectAsState()
+    val dismissedAnnouncementIds by (
+        remoteConfigManager?.dismissedAnnouncementIds ?: remember {
+            kotlinx.coroutines.flow.MutableStateFlow(emptySet())
+        }
+        ).collectAsState()
+    val remoteConfig = remoteConfigState.activeConfig
+    val moviesTvEnabled = remoteConfig.isFeatureEnabled(com.laterbox.app.ai.RemoteCapabilities.KEY_MOVIES_TV)
+    val recommendationsEnabled = remoteConfig.isFeatureEnabled(com.laterbox.app.ai.RemoteCapabilities.KEY_MOVIES_RECOMMENDATIONS)
+    val introSkipEnabled = remoteConfig.isFeatureEnabled(com.laterbox.app.ai.RemoteCapabilities.KEY_PLAYER_INTRO_SKIP)
+    val effectiveAssistantEnabled = preferences.assistantEnabled &&
+        !remoteConfig.maintenance.enabled &&
+        remoteConfig.isFeatureEnabled(com.laterbox.app.ai.RemoteCapabilities.KEY_AI_ASSISTANT)
+    var sessionDismissedRecommendedUpdate by rememberSaveable { mutableStateOf(false) }
+
+    val handleRemoteAction: (String) -> Unit = { destination ->
+        val clean = destination.trim()
+        when (clean) {
+            "inbox" -> navController.navigate(LaterboxDestination.Inbox.route) {
+                popUpTo(LaterboxDestination.Inbox.route) { inclusive = true }
+                launchSingleTop = true
+            }
+            "collections" -> navController.navigate(LaterboxDestination.Collections.route) {
+                popUpTo(LaterboxDestination.Inbox.route)
+                launchSingleTop = true
+            }
+            "movies" -> if (moviesTvEnabled) {
+                navController.navigate(LaterboxDestination.Movies.route) {
+                    popUpTo(LaterboxDestination.Inbox.route)
+                    launchSingleTop = true
+                }
+            }
+            "downloads" -> navController.navigate(LaterboxDestination.Downloads.route) {
+                popUpTo(LaterboxDestination.Inbox.route)
+                launchSingleTop = true
+            }
+            "archive" -> navController.navigate(LaterboxDestination.Archive.route) {
+                popUpTo(LaterboxDestination.Inbox.route)
+                launchSingleTop = true
+            }
+            "settings" -> navController.navigate(LaterboxDestination.Settings.route) {
+                popUpTo(LaterboxDestination.Inbox.route)
+                launchSingleTop = true
+            }
+            else -> if (clean.startsWith("https://", ignoreCase = true)) {
+                BrowserLauncher.openUrl(context, clean, colors)
+            }
+        }
+    }
+
     val inboxUiState by inboxViewModel.uiState.collectAsState()
     val chatUiState by chatViewModel.uiState.collectAsState()
     val recentConversations by chatViewModel.recentConversations.collectAsState()
@@ -210,9 +267,18 @@ fun LaterboxApp(
         pendingAudioConsentTarget = null
     }
 
-    LaunchedEffect(preferences.assistantEnabled) {
-        if (!preferences.assistantEnabled) {
+    LaunchedEffect(effectiveAssistantEnabled) {
+        if (!effectiveAssistantEnabled) {
             collapseInboxComposer()
+        }
+    }
+
+    LaunchedEffect(moviesTvEnabled, currentRoute) {
+        if (!moviesTvEnabled && currentRoute != null && currentRoute.startsWith("movies")) {
+            navController.navigate(LaterboxDestination.Inbox.route) {
+                popUpTo(LaterboxDestination.Inbox.route) { inclusive = true }
+                launchSingleTop = true
+            }
         }
     }
 
@@ -795,7 +861,37 @@ fun LaterboxApp(
                                     inboxOverlayHeightPx + (if (showHandsetBottomBar) bottomBarHeightPx else 0)
                                 } else {
                                     0
-                                }
+                                },
+                                remoteConfig = remoteConfig,
+                                dismissedAnnouncementIds = dismissedAnnouncementIds,
+                                showRecommendedUpdateBanner = com.laterbox.app.remoteconfig.RemoteConfigLayoutHelper.shouldShowRecommendedUpdateBanner(
+                                    versionPolicy = remoteConfig.versionPolicy,
+                                    currentVersionCode = com.laterbox.app.BuildConfig.VERSION_CODE,
+                                    dismissedInSession = sessionDismissedRecommendedUpdate
+                                ),
+                                onDismissRecommendedUpdate = { sessionDismissedRecommendedUpdate = true },
+                                onTriggerUpdateCheck = {
+                                    coroutineScope.launch {
+                                        val app = context.applicationContext as? LaterboxApplication
+                                        if (app != null) {
+                                            val baseUrl = app.container.resolveBackendBaseUrl()
+                                            val res = GitHubUpdateChecker.checkForUpdate(
+                                                currentVersionName = com.laterbox.app.BuildConfig.VERSION_NAME,
+                                                releasesUrl = GitHubUpdateChecker.buildBackendUpdateUrl(baseUrl, forceRefresh = true),
+                                                context = context.applicationContext,
+                                                appCheckTokenProvider = { force -> app.container.getBackendAppCheckToken(force) },
+                                                forceRefresh = true
+                                            )
+                                            if (res is com.laterbox.app.update.UpdateCheckResult.UpdateAvailable) {
+                                                appUpdateInfoToPrompt = res.updateInfo
+                                            } else {
+                                                BrowserLauncher.openUrl(context, "https://laterbox-website.vercel.app", colors)
+                                            }
+                                        }
+                                    }
+                                },
+                                onRemoteAction = handleRemoteAction,
+                                onDismissRemoteAnnouncement = { id -> remoteConfigManager?.dismissAnnouncement(id) }
                             )
                         }
 
@@ -1145,7 +1241,12 @@ fun LaterboxApp(
                                 },
                                 onClearActionFeedback = moviesHomeViewModel::clearActionFeedback,
                                 onMenuClick = openMenuHandler,
-                                bottomPaddingDp = if (showHandsetBottomBar) 96 else 24
+                                bottomPaddingDp = if (showHandsetBottomBar) 96 else 24,
+                                remoteConfig = remoteConfig,
+                                recommendationsEnabled = recommendationsEnabled,
+                                dismissedAnnouncementIds = dismissedAnnouncementIds,
+                                onRemoteAction = handleRemoteAction,
+                                onDismissRemoteAnnouncement = { id -> remoteConfigManager?.dismissAnnouncement(id) }
                             )
                         }
 
@@ -1399,7 +1500,8 @@ fun LaterboxApp(
                                     navController.navigate(
                                         LaterboxDestination.MovieDetail.createRoute(relProvider, relId)
                                     )
-                                }
+                                },
+                                introSkipEnabled = introSkipEnabled
                             )
                         }
 
@@ -1669,7 +1771,7 @@ fun LaterboxApp(
                                         }
                                         .padding(horizontal = 16.dp, vertical = 6.dp)
                                 ) {
-                                    if (isInboxComposerExpanded && preferences.assistantEnabled) {
+                                    if (isInboxComposerExpanded && effectiveAssistantEnabled) {
                                         Column(
                                             modifier = Modifier.fillMaxWidth(),
                                             verticalArrangement = Arrangement.spacedBy(2.dp)
@@ -1741,7 +1843,7 @@ fun LaterboxApp(
                                         }
                                     } else {
                                         InboxActionDock(
-                                            assistantEnabled = preferences.assistantEnabled,
+                                            assistantEnabled = effectiveAssistantEnabled,
                                             onAskClick = {
                                                 haptics.tick()
                                                 isInboxComposerExpanded = true
@@ -1767,6 +1869,7 @@ fun LaterboxApp(
                                 LaterboxBottomBar(
                                     currentDestination = bottomDestination,
                                     downloadsBadgeCount = activeDownloadsCount,
+                                    showMoviesTab = moviesTvEnabled,
                                     onDestinationSelected = { dest ->
                                         val targetRoute = when (dest) {
                                             BottomBarDestination.INBOX -> LaterboxDestination.Inbox.route
@@ -1823,7 +1926,8 @@ fun LaterboxApp(
                             popUpTo(LaterboxDestination.Inbox.route)
                             launchSingleTop = false
                         }
-                    }
+                    },
+                    moviesTvEnabled = moviesTvEnabled
                 )
                 Box(modifier = Modifier.weight(1f)) {
                     mainContent()
@@ -1862,7 +1966,8 @@ fun LaterboxApp(
                                 popUpTo(LaterboxDestination.Inbox.route)
                                 launchSingleTop = false
                             }
-                        }
+                        },
+                        moviesTvEnabled = moviesTvEnabled
                     )
                 }
             ) {
@@ -2179,6 +2284,36 @@ fun LaterboxApp(
             },
             appCheckTokenProvider = app?.let { laterboxApp ->
                 { forceRefresh -> laterboxApp.container.getBackendAppCheckToken(forceRefresh) }
+            }
+        )
+    } else if (com.laterbox.app.remoteconfig.RemoteConfigLayoutHelper.shouldShowBlockingUpdateDialog(
+            versionPolicy = remoteConfig.versionPolicy,
+            currentVersionCode = com.laterbox.app.BuildConfig.VERSION_CODE
+        )
+    ) {
+        com.laterbox.app.remoteconfig.RemoteForcedUpdateDialog(
+            versionPolicy = remoteConfig.versionPolicy,
+            onUpdateNow = {
+                coroutineScope.launch {
+                    val app = context.applicationContext as? LaterboxApplication
+                    if (app != null) {
+                        val baseUrl = app.container.resolveBackendBaseUrl()
+                        val res = GitHubUpdateChecker.checkForUpdate(
+                            currentVersionName = com.laterbox.app.BuildConfig.VERSION_NAME,
+                            releasesUrl = GitHubUpdateChecker.buildBackendUpdateUrl(baseUrl, forceRefresh = true),
+                            context = context.applicationContext,
+                            appCheckTokenProvider = { force -> app.container.getBackendAppCheckToken(force) },
+                            forceRefresh = true
+                        )
+                        if (res is com.laterbox.app.update.UpdateCheckResult.UpdateAvailable) {
+                            appUpdateInfoToPrompt = res.updateInfo
+                        } else {
+                            BrowserLauncher.openUrl(context, "https://laterbox-website.vercel.app", colors)
+                        }
+                    } else {
+                        BrowserLauncher.openUrl(context, "https://laterbox-website.vercel.app", colors)
+                    }
+                }
             }
         )
     }

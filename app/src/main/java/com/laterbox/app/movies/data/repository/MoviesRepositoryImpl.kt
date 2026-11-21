@@ -76,8 +76,14 @@ class MoviesRepositoryImpl(
     private val subtitleDownloadManager: com.laterbox.app.movies.data.download.SubtitleDownloadManager? = null,
     private val downloadPlaybackProgressDao: com.laterbox.app.media.data.db.dao.DownloadPlaybackProgressDao? = null,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-    private val defaultDispatcher: CoroutineDispatcher = Dispatchers.Default
+    private val defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val isMovieBoxEnabled: () -> Boolean = { true },
+    private val isInternetArchiveEnabled: () -> Boolean = { true },
+    private val isTvMazeEnabled: () -> Boolean = { true }
 ) : MoviesRepository {
+
+    private fun activeMovieBox(): MovieBoxProvider? =
+        if (isMovieBoxEnabled()) movieBoxProvider else null
 
     @Volatile
     private var hasBackfilledCanonicalState: Boolean = false
@@ -118,7 +124,7 @@ class MoviesRepositoryImpl(
         }
 
         val currentMs = nowMs()
-        val mb = movieBoxProvider
+        val mb = activeMovieBox()
         val mbCacheKey = mb?.let { buildMovieBoxHomeCacheKey(it.activeBaseUrl()) }
         val mbCachedEntry = mbCacheKey?.let { moviesDao.getCacheEntry(it) }
 
@@ -224,14 +230,18 @@ class MoviesRepositoryImpl(
             }
         }
 
-        val iaDeferred = async { internetArchiveProvider.getHomeFeed() }
-        val tvMazeDeferred = async { tvMazeProvider.getHomeFeed() }
+        val iaDeferred = if (isInternetArchiveEnabled()) {
+            async { internetArchiveProvider.getHomeFeed() }
+        } else null
+        val tvMazeDeferred = if (isTvMazeEnabled()) {
+            async { tvMazeProvider.getHomeFeed() }
+        } else null
 
-        val iaResult = iaDeferred.await()
-        val tvMazeResult = tvMazeDeferred.await()
+        val iaResult = iaDeferred?.await()
+        val tvMazeResult = tvMazeDeferred?.await()
 
-        val iaFeed = iaResult.getOrNull()
-        val tvFeed = tvMazeResult.getOrNull()
+        val iaFeed = iaResult?.getOrNull()
+        val tvFeed = tvMazeResult?.getOrNull()
 
         if (iaFeed == null && tvFeed == null) {
             if (!forceRefresh || fallbackNotice == null) {
@@ -250,9 +260,9 @@ class MoviesRepositoryImpl(
                     }
                 }
             }
-            val firstError = iaResult.exceptionOrNull()
-                ?: tvMazeResult.exceptionOrNull()
-                ?: IllegalStateException("Unable to load Movies & TV catalogue")
+            val firstError = iaResult?.exceptionOrNull()
+                ?: tvMazeResult?.exceptionOrNull()
+                ?: IllegalStateException("Movies & TV discovery providers are currently paused.")
             return@withContext Result.failure(firstError)
         }
 
@@ -341,7 +351,7 @@ class MoviesRepositoryImpl(
         val effectiveCountry = country?.takeUnless { it.equals("All", ignoreCase = true) }
         val effectiveYear = year?.takeUnless { it.equals("All", ignoreCase = true) }
 
-        val mb = movieBoxProvider
+        val mb = activeMovieBox()
         if (mb != null) {
             if (kind == MediaKind.SHORT_DRAMA) {
                 // Prefer fresh/cached home feed Short Drama rails before forcing a fresh /home network call.
@@ -419,10 +429,10 @@ class MoviesRepositoryImpl(
         val querySeries = kind == null || kind == MediaKind.TV_SERIES
         val perProviderSize = if (kind == null) (pageSize / 2).coerceAtLeast(8) else pageSize
 
-        val iaDeferred = if (queryMovies) {
+        val iaDeferred = if (queryMovies && isInternetArchiveEnabled()) {
             async { internetArchiveProvider.getCatalogue(MediaKind.MOVIE, page, perProviderSize, effectiveGenre, sort, effectiveCountry, effectiveYear) }
         } else null
-        val tvDeferred = if (querySeries) {
+        val tvDeferred = if (querySeries && isTvMazeEnabled()) {
             async { tvMazeProvider.getCatalogue(MediaKind.TV_SERIES, page, perProviderSize, effectiveGenre, sort, effectiveCountry, effectiveYear) }
         } else null
 
@@ -494,12 +504,16 @@ class MoviesRepositoryImpl(
         if (isDebugSampleFixturesEnabled()) {
             return@withContext fixtureProvider.getGenres()
         }
-        val mbResult = movieBoxProvider?.getGenres()
+        val mbResult = activeMovieBox()?.getGenres()
         if (mbResult != null && mbResult.isSuccess) {
             return@withContext mbResult
         }
-        val iaGenres = internetArchiveProvider.getGenres().getOrDefault(emptyList())
-        val tvGenres = tvMazeProvider.getGenres().getOrDefault(emptyList())
+        val iaGenres = if (isInternetArchiveEnabled()) {
+            internetArchiveProvider.getGenres().getOrDefault(emptyList())
+        } else emptyList()
+        val tvGenres = if (isTvMazeEnabled()) {
+            tvMazeProvider.getGenres().getOrDefault(emptyList())
+        } else emptyList()
         val combined = buildList {
             add("All")
             addAll((iaGenres + tvGenres).filterNot { it.equals("All", ignoreCase = true) }.distinct())
@@ -523,13 +537,14 @@ class MoviesRepositoryImpl(
 
         val queryMovies = kind == null || kind == MediaKind.MOVIE
         val querySeries = kind == null || kind == MediaKind.TV_SERIES
-        val suppPerProviderSize = if (movieBoxProvider != null) {
+        val mbActive = activeMovieBox()
+        val suppPerProviderSize = if (mbActive != null) {
             (pageSize / 2).coerceIn(6, 12)
         } else {
             if (kind == null) (pageSize / 2).coerceAtLeast(8) else pageSize
         }
 
-        val mbDeferred = movieBoxProvider?.let { provider ->
+        val mbDeferred = mbActive?.let { provider ->
             async<Result<CataloguePage>> {
                 try {
                     provider.search(clean, kind, page, pageSize)
@@ -540,7 +555,7 @@ class MoviesRepositoryImpl(
                 }
             }
         }
-        val iaDeferred = if (queryMovies) {
+        val iaDeferred = if (queryMovies && isInternetArchiveEnabled()) {
             async<Result<CataloguePage>> {
                 try {
                     internetArchiveProvider.search(clean, MediaKind.MOVIE, page, suppPerProviderSize)
@@ -551,7 +566,7 @@ class MoviesRepositoryImpl(
                 }
             }
         } else null
-        val tvDeferred = if (querySeries) {
+        val tvDeferred = if (querySeries && isTvMazeEnabled()) {
             async<Result<CataloguePage>> {
                 try {
                     tvMazeProvider.search(clean, MediaKind.TV_SERIES, page, suppPerProviderSize)
@@ -633,19 +648,23 @@ class MoviesRepositoryImpl(
             return@withContext fixtureProvider.getSuggestions(clean, limit)
         }
 
-        val mbResult = movieBoxProvider?.getSuggestions(clean, limit)
+        val mbResult = activeMovieBox()?.getSuggestions(clean, limit)
         if (mbResult != null && mbResult.isSuccess) {
             return@withContext mbResult
         }
 
-        val iaDeferred = async { internetArchiveProvider.getSuggestions(clean, limit) }
-        val tvDeferred = async { tvMazeProvider.getSuggestions(clean, limit) }
+        val iaDeferred = if (isInternetArchiveEnabled()) {
+            async { internetArchiveProvider.getSuggestions(clean, limit) }
+        } else null
+        val tvDeferred = if (isTvMazeEnabled()) {
+            async { tvMazeProvider.getSuggestions(clean, limit) }
+        } else null
 
-        val results = listOf(iaDeferred.await(), tvDeferred.await())
+        val results = listOfNotNull(iaDeferred?.await(), tvDeferred?.await())
         val lists = results.mapNotNull { it.getOrNull() }
         if (lists.isEmpty()) {
             return@withContext Result.failure(
-                results.firstNotNullOfOrNull { it.exceptionOrNull() } ?: IllegalStateException("Suggestions failed")
+                results.firstNotNullOfOrNull { it.exceptionOrNull() } ?: IllegalStateException("Suggestions unavailable")
             )
         }
         val merged = interleaveLists(lists).distinctBy { "${it.providerId}:${it.id}" }.take(limit)
@@ -908,10 +927,14 @@ class MoviesRepositoryImpl(
 
     private suspend fun fetchProviderDetails(providerId: String, titleId: String): Result<MediaDetails> =
         when (providerId) {
-            MovieBoxProvider.PROVIDER_ID -> movieBoxProvider?.getDetails(titleId)
-                ?: Result.failure(IllegalStateException("Streaming service is not configured."))
-            InternetArchiveMoviesProvider.PROVIDER_ID -> internetArchiveProvider.getDetails(titleId)
-            TvMazeSeriesProvider.PROVIDER_ID -> tvMazeProvider.getDetails(titleId)
+            MovieBoxProvider.PROVIDER_ID -> activeMovieBox()?.getDetails(titleId)
+                ?: Result.failure(IllegalStateException("Streaming service is currently paused."))
+            InternetArchiveMoviesProvider.PROVIDER_ID ->
+                if (isInternetArchiveEnabled()) internetArchiveProvider.getDetails(titleId)
+                else Result.failure(IllegalStateException("Internet Archive provider is currently paused."))
+            TvMazeSeriesProvider.PROVIDER_ID ->
+                if (isTvMazeEnabled()) tvMazeProvider.getDetails(titleId)
+                else Result.failure(IllegalStateException("TVMaze provider is currently paused."))
             TmdbOptionalMoviesProvider.PROVIDER_ID -> tmdbProvider.getDetails(titleId)
             else -> Result.failure(IllegalArgumentException("Unknown provider '$providerId'"))
         }
@@ -923,9 +946,11 @@ class MoviesRepositoryImpl(
         personImageUrl: String?
     ): Result<PersonFilmography> = withContext(ioDispatcher) {
         val result = when (providerId) {
-            MovieBoxProvider.PROVIDER_ID -> movieBoxProvider?.getPersonFilmography(personId, personName, personImageUrl)
-                ?: Result.failure(IllegalStateException("Streaming service is not configured."))
-            TvMazeSeriesProvider.PROVIDER_ID -> tvMazeProvider.getPersonFilmography(personId, personName, personImageUrl)
+            MovieBoxProvider.PROVIDER_ID -> activeMovieBox()?.getPersonFilmography(personId, personName, personImageUrl)
+                ?: Result.failure(IllegalStateException("Streaming service is currently paused."))
+            TvMazeSeriesProvider.PROVIDER_ID ->
+                if (isTvMazeEnabled()) tvMazeProvider.getPersonFilmography(personId, personName, personImageUrl)
+                else Result.failure(IllegalStateException("TVMaze provider is currently paused."))
             else -> Result.failure(UnsupportedOperationException("Person filmography is not supported for $providerId"))
         }
         result.map { filmography ->
@@ -940,9 +965,11 @@ class MoviesRepositoryImpl(
             preferPlayable = false
         )
         val primary = when (resolvedProviderId) {
-            MovieBoxProvider.PROVIDER_ID -> movieBoxProvider?.getSeasons(resolvedSeriesId)
-                ?: Result.failure(IllegalStateException("Streaming service is not configured."))
-            TvMazeSeriesProvider.PROVIDER_ID -> tvMazeProvider.getSeasons(resolvedSeriesId)
+            MovieBoxProvider.PROVIDER_ID -> activeMovieBox()?.getSeasons(resolvedSeriesId)
+                ?: Result.failure(IllegalStateException("Streaming service is currently paused."))
+            TvMazeSeriesProvider.PROVIDER_ID ->
+                if (isTvMazeEnabled()) tvMazeProvider.getSeasons(resolvedSeriesId)
+                else Result.failure(IllegalStateException("TVMaze provider is currently paused."))
             TmdbOptionalMoviesProvider.PROVIDER_ID -> tmdbProvider.getSeasons(resolvedSeriesId)
             DevelopmentMoviesFixtureProvider.PROVIDER_ID -> fixtureProvider.getSeasons(resolvedSeriesId)
             else -> Result.success(emptyList())
@@ -952,7 +979,7 @@ class MoviesRepositoryImpl(
         val linkedAlternates = mediaResolver.getLinksForTitle(resolvedProviderId, resolvedSeriesId)
             .filterNot { it.providerId == resolvedProviderId }
         for (alt in linkedAlternates) {
-            if (alt.providerId == TvMazeSeriesProvider.PROVIDER_ID) {
+            if (alt.providerId == TvMazeSeriesProvider.PROVIDER_ID && isTvMazeEnabled()) {
                 val altRes = tvMazeProvider.getSeasons(alt.providerTitleId)
                 if (altRes.isSuccess) return@withContext altRes
             }
@@ -980,9 +1007,11 @@ class MoviesRepositoryImpl(
         }
 
         val result = when (resolvedProviderId) {
-            MovieBoxProvider.PROVIDER_ID -> movieBoxProvider?.getEpisodes(resolvedSeriesId, seasonNumber)
-                ?: Result.failure(IllegalStateException("Streaming service is not configured."))
-            TvMazeSeriesProvider.PROVIDER_ID -> tvMazeProvider.getEpisodes(resolvedSeriesId, seasonNumber)
+            MovieBoxProvider.PROVIDER_ID -> activeMovieBox()?.getEpisodes(resolvedSeriesId, seasonNumber)
+                ?: Result.failure(IllegalStateException("Streaming service is currently paused."))
+            TvMazeSeriesProvider.PROVIDER_ID ->
+                if (isTvMazeEnabled()) tvMazeProvider.getEpisodes(resolvedSeriesId, seasonNumber)
+                else Result.failure(IllegalStateException("TVMaze provider is currently paused."))
             TmdbOptionalMoviesProvider.PROVIDER_ID -> tmdbProvider.getEpisodes(resolvedSeriesId, seasonNumber)
             else -> Result.success(emptyList())
         }
@@ -1007,7 +1036,7 @@ class MoviesRepositoryImpl(
         val linkedAlternates = mediaResolver.getLinksForTitle(resolvedProviderId, resolvedSeriesId)
             .filterNot { it.providerId == resolvedProviderId }
         for (alt in linkedAlternates) {
-            if (alt.providerId == TvMazeSeriesProvider.PROVIDER_ID) {
+            if (alt.providerId == TvMazeSeriesProvider.PROVIDER_ID && isTvMazeEnabled()) {
                 val altRes = tvMazeProvider.getEpisodes(alt.providerTitleId, seasonNumber)
                 if (altRes.isSuccess) return@withContext altRes
             }
@@ -1033,7 +1062,7 @@ class MoviesRepositoryImpl(
         )
         when (resolvedProviderId) {
             MovieBoxProvider.PROVIDER_ID ->
-                movieBoxProvider?.getSeasonEpisodeSizes(resolvedSeriesId, seasonNumber, episodeNumbers)
+                activeMovieBox()?.getSeasonEpisodeSizes(resolvedSeriesId, seasonNumber, episodeNumbers)
                     ?: Result.success(emptyMap())
             else -> Result.success(emptyMap())
         }
@@ -1110,12 +1139,20 @@ class MoviesRepositoryImpl(
 
         val networkResult = when (resolvedProviderId) {
             MovieBoxProvider.PROVIDER_ID ->
-                movieBoxProvider?.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
-                    ?: Result.failure(IllegalStateException("Streaming service is not configured."))
+                activeMovieBox()?.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
+                    ?: Result.failure(IllegalStateException("Streaming service is currently paused. Downloaded local files remain playable offline."))
             InternetArchiveMoviesProvider.PROVIDER_ID ->
-                internetArchiveProvider.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
+                if (isInternetArchiveEnabled()) {
+                    internetArchiveProvider.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
+                } else {
+                    Result.failure(IllegalStateException("Internet Archive provider is currently paused."))
+                }
             TvMazeSeriesProvider.PROVIDER_ID ->
-                tvMazeProvider.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
+                if (isTvMazeEnabled()) {
+                    tvMazeProvider.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
+                } else {
+                    Result.failure(IllegalStateException("TVMaze provider is currently paused."))
+                }
             TmdbOptionalMoviesProvider.PROVIDER_ID ->
                 tmdbProvider.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
             DevelopmentMoviesFixtureProvider.PROVIDER_ID ->
@@ -1144,10 +1181,14 @@ class MoviesRepositoryImpl(
         )
         return when (resolvedProviderId) {
             MovieBoxProvider.PROVIDER_ID ->
-                movieBoxProvider?.getSubtitles(resolvedTitleId, seasonNumber, episodeNumber)
+                activeMovieBox()?.getSubtitles(resolvedTitleId, seasonNumber, episodeNumber)
                     ?: Result.success(emptyList())
             InternetArchiveMoviesProvider.PROVIDER_ID ->
-                internetArchiveProvider.getSubtitles(resolvedTitleId, seasonNumber, episodeNumber)
+                if (isInternetArchiveEnabled()) {
+                    internetArchiveProvider.getSubtitles(resolvedTitleId, seasonNumber, episodeNumber)
+                } else {
+                    Result.success(emptyList())
+                }
             DevelopmentMoviesFixtureProvider.PROVIDER_ID ->
                 fixtureProvider.getSubtitles(resolvedTitleId, seasonNumber, episodeNumber)
             else -> Result.success(emptyList())

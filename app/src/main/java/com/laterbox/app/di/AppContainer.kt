@@ -283,7 +283,18 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
                 if (file.exists() && file.length() > 0L) android.net.Uri.fromFile(file).toString() else null
             },
             subtitleDownloadManager = subtitleDownloadManager,
-            downloadPlaybackProgressDao = database.downloadPlaybackProgressDao()
+            downloadPlaybackProgressDao = database.downloadPlaybackProgressDao(),
+            isMovieBoxEnabled = {
+                val cfg = remoteConfigManager.currentConfig
+                !cfg.maintenance.enabled &&
+                    cfg.isFeatureEnabled(com.laterbox.app.ai.RemoteCapabilities.KEY_PROVIDER_MOVIEBOX)
+            },
+            isInternetArchiveEnabled = {
+                remoteConfigManager.isFeatureEnabled(com.laterbox.app.ai.RemoteCapabilities.KEY_PROVIDER_INTERNET_ARCHIVE)
+            },
+            isTvMazeEnabled = {
+                remoteConfigManager.isFeatureEnabled(com.laterbox.app.ai.RemoteCapabilities.KEY_PROVIDER_TVMAZE)
+            }
         )
     }
 

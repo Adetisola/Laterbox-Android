@@ -159,6 +159,7 @@ fun MoviePlayerScreen(
     onSubtitleStyleChange: (SubtitleStyleConfig) -> Unit = {},
     onOpenRelatedTitle: (providerId: String, titleId: String) -> Unit = { _, _ -> },
     onSaveProgressForEpisode: ((positionMs: Long, durationMs: Long, expectedEpisodeKey: String) -> Unit)? = null,
+    introSkipEnabled: Boolean = true,
     modifier: Modifier = Modifier,
     @androidx.annotation.VisibleForTesting simulatePlaybackEndedForTest: Boolean = false
 ) {
@@ -250,7 +251,8 @@ fun MoviePlayerScreen(
                     onDownloadSource = onDownloadSource,
                     onDismissDownloadStatus = onDismissDownloadStatus,
                     onSubtitleStyleChange = onSubtitleStyleChange,
-                    onOpenRelatedTitle = onOpenRelatedTitle
+                    onOpenRelatedTitle = onOpenRelatedTitle,
+                    introSkipEnabled = introSkipEnabled
                 )
             }
         }
@@ -523,7 +525,8 @@ private fun ActiveVideoPlayerContent(
     onDownloadSource: (PlaybackSource) -> Unit,
     onDismissDownloadStatus: () -> Unit,
     onSubtitleStyleChange: (SubtitleStyleConfig) -> Unit,
-    onOpenRelatedTitle: (String, String) -> Unit
+    onOpenRelatedTitle: (String, String) -> Unit,
+    introSkipEnabled: Boolean = true
 ) {
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
@@ -1870,6 +1873,7 @@ private fun ActiveVideoPlayerContent(
 
         // Metadata-gated Skip Intro / Skip Recap floating pills (derivedStateOf avoids 400ms recompositions)
         val activeSkipWindow by remember(
+            introSkipEnabled,
             introWindow,
             recapWindow,
             isLocked,
@@ -1882,7 +1886,7 @@ private fun ActiveVideoPlayerContent(
             derivedStateOf {
                 val pos = clockState.positionMs
                 when {
-                    isLocked || playerErrorText != null || isHorizontalScrubbing || showNextEpisodeCard || showMovieEndCard -> null
+                    !introSkipEnabled || isLocked || playerErrorText != null || isHorizontalScrubbing || showNextEpisodeCard || showMovieEndCard -> null
                     introWindow != null && pos >= introWindow.startMs && pos < introWindow.endMs ->
                         Triple(introWindow, "Skip Intro", "player_skip_intro_button")
                     recapWindow != null && pos >= recapWindow.startMs && pos < recapWindow.endMs ->

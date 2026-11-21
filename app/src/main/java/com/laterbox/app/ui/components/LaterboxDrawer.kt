@@ -85,6 +85,7 @@ fun LaterboxModalDrawerSheet(
     onDeleteConversation: (String) -> Unit,
     currentRoute: String? = null,
     onNavigateMoviesSubRoute: (String) -> Unit = {},
+    moviesTvEnabled: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -110,7 +111,8 @@ fun LaterboxModalDrawerSheet(
             onConversationClick = onConversationClick,
             onDeleteConversation = onDeleteConversation,
             currentRoute = currentRoute,
-            onNavigateMoviesSubRoute = onNavigateMoviesSubRoute
+            onNavigateMoviesSubRoute = onNavigateMoviesSubRoute,
+            moviesTvEnabled = moviesTvEnabled
         )
     }
 }
@@ -134,6 +136,7 @@ fun LaterboxPersistentSidePanel(
     onDeleteConversation: (String) -> Unit,
     currentRoute: String? = null,
     onNavigateMoviesSubRoute: (String) -> Unit = {},
+    moviesTvEnabled: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -163,6 +166,7 @@ fun LaterboxPersistentSidePanel(
                 onDeleteConversation = onDeleteConversation,
                 currentRoute = currentRoute,
                 onNavigateMoviesSubRoute = onNavigateMoviesSubRoute,
+                moviesTvEnabled = moviesTvEnabled,
                 modifier = Modifier.weight(1f)
             )
             Box(
@@ -194,6 +198,7 @@ fun LaterboxDrawerContent(
     onDeleteConversation: (String) -> Unit,
     currentRoute: String? = null,
     onNavigateMoviesSubRoute: (String) -> Unit = {},
+    moviesTvEnabled: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -296,14 +301,16 @@ fun LaterboxDrawerContent(
                     selected = currentSection == DrawerPrimarySection.COLLECTIONS,
                     onClick = onNavigateCollections
                 )
-                MoviesAccordionNavSection(
-                    selected = isOnMoviesRoute,
-                    expanded = isMoviesExpanded,
-                    currentRoute = currentRoute,
-                    onToggleExpanded = { isMoviesExpanded = !isMoviesExpanded },
-                    onNavigateLanding = onNavigateMovies,
-                    onNavigateSubRoute = onNavigateMoviesSubRoute
-                )
+                if (moviesTvEnabled) {
+                    MoviesAccordionNavSection(
+                        selected = isOnMoviesRoute,
+                        expanded = isMoviesExpanded,
+                        currentRoute = currentRoute,
+                        onToggleExpanded = { isMoviesExpanded = !isMoviesExpanded },
+                        onNavigateLanding = onNavigateMovies,
+                        onNavigateSubRoute = onNavigateMoviesSubRoute
+                    )
+                }
                 DrawerNavItem(
                     label = "Downloads",
                     iconRes = LaterboxIcons.Download,

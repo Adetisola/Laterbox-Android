@@ -142,6 +142,13 @@ fun InboxScreen(
     onMenuClick: (() -> Unit)? = null,
     listState: LazyListState = rememberLazyListState(),
     bottomComposerHeightPx: Int = 0,
+    remoteConfig: com.laterbox.app.remoteconfig.RemoteConfigSnapshot = com.laterbox.app.remoteconfig.RemoteConfigSnapshot.default(),
+    dismissedAnnouncementIds: Set<String> = emptySet(),
+    showRecommendedUpdateBanner: Boolean = false,
+    onDismissRecommendedUpdate: () -> Unit = {},
+    onTriggerUpdateCheck: () -> Unit = {},
+    onRemoteAction: (String) -> Unit = {},
+    onDismissRemoteAnnouncement: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -756,6 +763,96 @@ fun InboxScreen(
                                 bottom = listBottomClearance
                             )
                         ) {
+                            if (remoteConfig.maintenance.enabled &&
+                                remoteConfig.maintenance.mode != com.laterbox.app.remoteconfig.RemoteMaintenanceMode.NONE
+                            ) {
+                                item(key = "remote_maintenance_banner") {
+                                    com.laterbox.app.remoteconfig.RemoteMaintenanceNoticeBanner(
+                                        maintenance = remoteConfig.maintenance,
+                                        modifier = Modifier.padding(top = 6.dp, bottom = 8.dp)
+                                    )
+                                }
+                            }
+
+                            if (showRecommendedUpdateBanner) {
+                                item(key = "remote_recommended_update_banner") {
+                                    val tag = remoteConfig.versionPolicy.recommendedTag.takeIf { it.isNotBlank() }
+                                    val title = if (tag != null) "Update Available ($tag)" else "Update Available"
+                                    val body = remoteConfig.versionPolicy.updateMessage.ifBlank {
+                                        "A newer version of Laterbox is available with improvements and fixes."
+                                    }
+                                    com.laterbox.app.remoteconfig.RemoteAnnouncementBannerCard(
+                                        title = title,
+                                        message = body,
+                                        severity = com.laterbox.app.remoteconfig.RemoteAnnouncementSeverity.INFO,
+                                        dismissible = true,
+                                        actionLabel = "Update",
+                                        actionDestination = "update_check",
+                                        onActionClick = { onTriggerUpdateCheck() },
+                                        onDismissClick = onDismissRecommendedUpdate,
+                                        modifier = Modifier.padding(top = 6.dp, bottom = 8.dp)
+                                    )
+                                }
+                            }
+
+                            val inboxAnnouncements = remoteConfig.activeAnnouncementsForSurface(
+                                surface = com.laterbox.app.remoteconfig.RemoteUiSurface.INBOX,
+                                dismissedIds = dismissedAnnouncementIds
+                            )
+                            inboxAnnouncements.forEach { ann ->
+                                item(key = "remote_ann_${ann.id}") {
+                                    com.laterbox.app.remoteconfig.RemoteAnnouncementBannerCard(
+                                        title = ann.title,
+                                        message = ann.message,
+                                        severity = ann.severity,
+                                        dismissible = ann.dismissible,
+                                        actionLabel = ann.actionLabel,
+                                        actionDestination = ann.actionDestination,
+                                        onActionClick = onRemoteAction,
+                                        onDismissClick = if (ann.dismissible) {
+                                            { onDismissRemoteAnnouncement(ann.id) }
+                                        } else null,
+                                        modifier = Modifier.padding(top = 6.dp, bottom = 8.dp)
+                                    )
+                                }
+                            }
+
+                            val inboxComponents = remoteConfig.componentsForSurface(
+                                com.laterbox.app.remoteconfig.RemoteUiSurface.INBOX
+                            ).filter { it.visible }
+                            inboxComponents.forEach { comp ->
+                                when (comp.type) {
+                                    com.laterbox.app.ai.RemoteCapabilities.TYPE_ANNOUNCEMENT_BANNER -> {
+                                        if (!comp.dismissible || comp.id !in dismissedAnnouncementIds) {
+                                            item(key = "remote_sdui_ann_${comp.id}") {
+                                                com.laterbox.app.remoteconfig.RemoteAnnouncementBannerCard(
+                                                    title = comp.title,
+                                                    message = comp.subtitle,
+                                                    severity = comp.severity,
+                                                    dismissible = comp.dismissible,
+                                                    actionLabel = comp.actionLabel,
+                                                    actionDestination = comp.actionDestination,
+                                                    onActionClick = onRemoteAction,
+                                                    onDismissClick = if (comp.dismissible) {
+                                                        { onDismissRemoteAnnouncement(comp.id) }
+                                                    } else null,
+                                                    modifier = Modifier.padding(top = 6.dp, bottom = 8.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                    com.laterbox.app.ai.RemoteCapabilities.TYPE_FEATURED_CALLOUT_CARD -> {
+                                        item(key = "remote_sdui_callout_${comp.id}") {
+                                            com.laterbox.app.remoteconfig.RemoteFeaturedCalloutCard(
+                                                component = comp,
+                                                onActionClick = onRemoteAction,
+                                                modifier = Modifier.padding(top = 6.dp, bottom = 8.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
                             groupedLinks.forEach { group ->
                                 stickyHeader(key = "header_${group.title}", contentType = "date_header") {
                                     val isCollapsed = collapsedGroups.contains(group.title)

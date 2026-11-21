@@ -62,8 +62,16 @@ fun LaterboxBottomBar(
     currentDestination: BottomBarDestination,
     onDestinationSelected: (BottomBarDestination) -> Unit,
     modifier: Modifier = Modifier,
-    downloadsBadgeCount: Int = 0
+    downloadsBadgeCount: Int = 0,
+    showMoviesTab: Boolean = true
 ) {
+    val visibleDestinations = remember(showMoviesTab) {
+        if (showMoviesTab) {
+            BottomBarDestination.entries
+        } else {
+            BottomBarDestination.entries.filterNot { it == BottomBarDestination.MOVIES }
+        }
+    }
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -98,7 +106,7 @@ fun LaterboxBottomBar(
                 horizontalArrangement = Arrangement.SpaceAround,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                BottomBarDestination.entries.forEach { destination ->
+                visibleDestinations.forEach { destination ->
                     val isSelected = destination == currentDestination
                     val iconTint by animateColorAsState(
                         targetValue = if (isSelected) LaterboxTheme.colors.accentPrimary else LaterboxTheme.colors.textSecondary,

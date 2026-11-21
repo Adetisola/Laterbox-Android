@@ -92,9 +92,15 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
                 MetadataSyncWorker.enqueue(this@LaterboxApplication)
 
                 val prefs = container.userPreferencesRepository.userPreferencesFlow.first()
+                val smartSettings = prefs.toSmartReminderSettings()
                 SmartReminderCoordinator.sync(
                     context = this@LaterboxApplication,
-                    settings = prefs.toSmartReminderSettings()
+                    settings = smartSettings.copy(
+                        enabled = smartSettings.enabled &&
+                            container.remoteConfigManager.isFeatureEnabled(
+                                com.laterbox.app.ai.RemoteCapabilities.KEY_SMART_REMINDERS
+                            )
+                    )
                 )
 
                 // Recover any interrupted media downloads quickly
@@ -134,7 +140,12 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
                 applicationScope.launch {
                     kotlinx.coroutines.delay(15_000L)
                     try {
-                        container.ytDlpUpdater.updateIfStale()
+                        if (container.remoteConfigManager.isFeatureEnabled(
+                                com.laterbox.app.ai.RemoteCapabilities.KEY_YTDLP_AUTO_UPDATE
+                            )
+                        ) {
+                            container.ytDlpUpdater.updateIfStale()
+                        }
                     } catch (t: Throwable) {
                         Log.w("LaterboxApplication", "Deferred yt-dlp update check error: ${t.message}")
                     }
