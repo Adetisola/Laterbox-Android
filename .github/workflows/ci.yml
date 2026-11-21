@@ -55,6 +55,7 @@ jobs:
 
       - name: Upload Test Reports
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: test-reports
@@ -62,6 +63,7 @@ jobs:
           retention-days: 7
 
       - name: Upload Debug APK
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: laterbox-debug-apk

@@ -75,7 +75,22 @@ class AssistantActionPermissionsTest {
     private lateinit var mediaRepo: RecordingFakeMediaRepository
     private lateinit var moviesRepo: RecordingFakeMoviesRepository
     private lateinit var collectionRepo: CollectionRepository
+    private lateinit var prefs: UserPreferencesRepository
     private lateinit var vm: ChatViewModel
+
+    private suspend fun awaitCondition(
+        scope: kotlinx.coroutines.test.TestScope,
+        timeoutMs: Long = 3_000L,
+        predicate: suspend () -> Boolean
+    ) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            scope.testScheduler.advanceUntilIdle()
+            if (predicate()) return
+            Thread.sleep(10)
+        }
+        scope.testScheduler.advanceUntilIdle()
+    }
 
     @Before
     fun setUp() {
@@ -91,7 +106,11 @@ class AssistantActionPermissionsTest {
         mediaRepo = RecordingFakeMediaRepository()
         moviesRepo = RecordingFakeMoviesRepository()
         collectionRepo = CollectionRepository(db.collectionDao())
-        val prefs = UserPreferencesRepository(ctx)
+        prefs = UserPreferencesRepository(ctx)
+        kotlinx.coroutines.runBlocking {
+            prefs.revokeAllAssistantCategoryPermissions()
+            prefs.userPreferencesFlow.first()
+        }
         val activityRepo = ActivityEventRepository(db.activityEventDao())
         vm = ChatViewModel(
             chatRepository = chatRepo,
@@ -120,15 +139,15 @@ class AssistantActionPermissionsTest {
         )
         val convId = chatRepo.createConversation("Check")
         vm.selectConversation(convId)
-        advanceUntilIdle()
+        awaitCondition(this) { vm.uiState.value.activeConversationId == convId }
 
         val action = ChatAction.RetryInspection(linkId, "Talk")
         vm.requestMutatingActionConfirmation(action)
-        advanceUntilIdle()
+        awaitCondition(this) { vm.uiState.value.pendingMutatingAction != null }
         assertEquals(action, vm.uiState.value.pendingMutatingAction)
 
         vm.confirmMutatingAction()
-        advanceUntilIdle()
+        awaitCondition(this) { mediaRepo.inspectedLinkIds.size == 1 && chatRepo.getMessagesSnapshot(convId).isNotEmpty() }
 
         assertNull(vm.uiState.value.pendingMutatingAction)
         assertEquals(listOf(linkId), mediaRepo.inspectedLinkIds)
@@ -138,12 +157,12 @@ class AssistantActionPermissionsTest {
 
         // Second request in same conversation must ask again
         vm.requestMutatingActionConfirmation(action)
-        advanceUntilIdle()
+        awaitCondition(this) { vm.uiState.value.pendingMutatingAction != null }
         assertNotNull(vm.uiState.value.pendingMutatingAction)
     }
 
     @Test
-    fun alwaysAllow_isScopedToConversationAndActionType_andCascadeDeletes() = runTest(mainDispatcher) {
+    fun alwaysAllow_grantsCategorySafely_keepsOtherCategoriesAndDestructivePrompted_andCascadeDeletes() = runTest(mainDispatcher) {
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.uiState.collect {} }
         val linkId = db.savedLinkDao().insertLink(
             SavedLinkEntity(originalUrl = "https://example.com/v2", normalizedUrl = "https://example.com/v2", title = "Demo", domain = "example.com")
@@ -155,43 +174,64 @@ class AssistantActionPermissionsTest {
             assetId = null, status = DownloadState.FAILED, progress = 0,
             downloadedBytes = 0, totalBytes = null, createdAt = 1L, updatedAt = 1L
         )
+        moviesRepo.seedTitle(
+            MovieTitleSummary(
+                id = "42",
+                providerId = "tvmaze",
+                kind = MediaKind.TV_SERIES,
+                title = "Andor",
+                releaseYear = 2022,
+                sourceBadge = DataSourceBadge.LIVE_TVMAZE
+            )
+        )
         val convA = chatRepo.createConversation("Conv A")
         val convB = chatRepo.createConversation("Conv B")
 
         vm.selectConversation(convA)
-        advanceUntilIdle()
+        awaitCondition(this) { vm.uiState.value.activeConversationId == convA }
         vm.requestMutatingActionConfirmation(ChatAction.RetryInspection(linkId, "Demo"))
-        advanceUntilIdle()
+        awaitCondition(this) { vm.uiState.value.pendingMutatingAction != null }
         vm.alwaysAllowMutatingActionInConversation()
-        advanceUntilIdle()
+        awaitCondition(this) {
+            mediaRepo.inspectedLinkIds.size == 1 &&
+                "LIBRARY_MANAGEMENT" in kotlinx.coroutines.runBlocking { prefs.userPreferencesFlow.first().grantedAssistantActionCategories }
+        }
 
         assertEquals(1, mediaRepo.inspectedLinkIds.size)
         assertEquals(listOf("RETRY_INSPECTION"), chatRepo.getGrantedActionTypes(convA))
 
-        // Repeat RetryInspection in Conv A runs automatically without prompt
-        vm.requestMutatingActionConfirmation(ChatAction.RetryInspection(linkId, "Demo"))
-        advanceUntilIdle()
-        assertNull(vm.uiState.value.pendingMutatingAction)
-        assertEquals(2, mediaRepo.inspectedLinkIds.size)
-
-        // Different action type in Conv A still prompts
+        // Repeat Library Management action runs automatically without prompting
         vm.requestMutatingActionConfirmation(ChatAction.RetryDownload("task-1", "Demo Video"))
-        advanceUntilIdle()
-        assertTrue(vm.uiState.value.pendingMutatingAction is ChatAction.RetryDownload)
-        vm.dismissMutatingAction()
-        advanceUntilIdle()
-        assertTrue(chatRepo.getMessagesSnapshot(convA).last().content.contains("Nothing was changed"))
+        awaitCondition(this) { mediaRepo.retriedTaskIds.size == 1 }
+        assertNull(vm.uiState.value.pendingMutatingAction)
 
-        // Same action in Conv B still prompts
+        // Irreversible destructive action in the same category STILL requires explicit confirmation
+        vm.requestMutatingActionConfirmation(ChatAction.DeleteDownload(taskId = "task-1", title = "Demo Video"))
+        awaitCondition(this) { vm.uiState.value.pendingMutatingAction is ChatAction.DeleteDownload }
+        assertTrue(vm.uiState.value.pendingMutatingAction is ChatAction.DeleteDownload)
+        vm.dismissMutatingAction()
+        awaitCondition(this) { vm.uiState.value.pendingMutatingAction == null }
+
+        // Different category (Reminder Management) still prompts
+        vm.requestMutatingActionConfirmation(
+            ChatAction.ScheduleMovieReminder("tvmaze", "42", triggerAtMillis = System.currentTimeMillis() + 600_000L, title = "Andor")
+        )
+        awaitCondition(this) { vm.uiState.value.pendingMutatingAction is ChatAction.ScheduleMovieReminder }
+        assertTrue(vm.uiState.value.pendingMutatingAction is ChatAction.ScheduleMovieReminder)
+        vm.dismissMutatingAction()
+        awaitCondition(this) { vm.uiState.value.pendingMutatingAction == null }
+
+        // Revoking categories restores prompting in Conv B
+        kotlinx.coroutines.runBlocking { prefs.revokeAllAssistantCategoryPermissions() }
         vm.selectConversation(convB)
-        advanceUntilIdle()
+        awaitCondition(this) { vm.uiState.value.activeConversationId == convB }
         vm.requestMutatingActionConfirmation(ChatAction.RetryInspection(linkId, "Demo"))
-        advanceUntilIdle()
+        awaitCondition(this) { vm.uiState.value.pendingMutatingAction is ChatAction.RetryInspection }
         assertTrue(vm.uiState.value.pendingMutatingAction is ChatAction.RetryInspection)
 
-        // Deleting Conv A cascades permission rows
+        // Deleting Conv A cascades conversation permission rows
         chatRepo.deleteConversation(convA)
-        advanceUntilIdle()
+        awaitCondition(this) { db.chatDao().getGrantedActionTypes(convA).isEmpty() }
         assertTrue(db.chatDao().getGrantedActionTypes(convA).isEmpty())
     }
 
@@ -200,11 +240,11 @@ class AssistantActionPermissionsTest {
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.uiState.collect {} }
         val convId = chatRepo.createConversation("Errors")
         vm.selectConversation(convId)
-        advanceUntilIdle()
+        awaitCondition(this) { vm.uiState.value.activeConversationId == convId }
 
         // Missing link ID must fail validation without prompting or executing
         vm.requestMutatingActionConfirmation(ChatAction.RetryInspection(9999L, "Ghost"))
-        advanceUntilIdle()
+        awaitCondition(this) { chatRepo.getMessagesSnapshot(convId).isNotEmpty() }
         assertNull(vm.uiState.value.pendingMutatingAction)
         assertTrue(mediaRepo.inspectedLinkIds.isEmpty())
         assertTrue(chatRepo.getMessagesSnapshot(convId).last().content.contains("no longer exists"))
@@ -222,11 +262,11 @@ class AssistantActionPermissionsTest {
         )
         mediaRepo.retryDelayMs = 200L
         vm.requestMutatingActionConfirmation(ChatAction.RetryDownload("task-dup", "V3"))
-        advanceUntilIdle()
+        awaitCondition(this) { vm.uiState.value.pendingMutatingAction is ChatAction.RetryDownload }
         vm.alwaysAllowMutatingActionInConversation()
         // Trigger a second duplicate while first is still suspending
         vm.requestMutatingActionConfirmation(ChatAction.RetryDownload("task-dup", "V3"))
-        advanceUntilIdle()
+        awaitCondition(this) { mediaRepo.retriedTaskIds.isNotEmpty() }
         assertEquals(1, mediaRepo.retriedTaskIds.size)
     }
 
@@ -245,13 +285,13 @@ class AssistantActionPermissionsTest {
 
         val convId = chatRepo.createConversation("Movies Actions")
         vm.selectConversation(convId)
-        advanceUntilIdle()
+        awaitCondition(this) { vm.uiState.value.activeConversationId == convId }
 
         // 1. Unknown title is rejected before prompting
         vm.requestMutatingActionConfirmation(
             ChatAction.ToggleMovieWatchlist("tvmaze", "999999", add = true, title = "Unknown")
         )
-        advanceUntilIdle()
+        awaitCondition(this) { chatRepo.getMessagesSnapshot(convId).isNotEmpty() }
         assertNull(vm.uiState.value.pendingMutatingAction)
         assertTrue(chatRepo.getMessagesSnapshot(convId).last().content.contains("could not be found"))
 
@@ -259,7 +299,7 @@ class AssistantActionPermissionsTest {
         vm.requestMutatingActionConfirmation(
             ChatAction.ScheduleMovieReminder("tvmaze", "66", triggerAtMillis = 1000L, title = "Severance")
         )
-        advanceUntilIdle()
+        awaitCondition(this) { chatRepo.getMessagesSnapshot(convId).size >= 2 }
         assertNull(vm.uiState.value.pendingMutatingAction)
         assertTrue(chatRepo.getMessagesSnapshot(convId).last().content.contains("already in the past"))
 
@@ -267,10 +307,10 @@ class AssistantActionPermissionsTest {
         vm.requestMutatingActionConfirmation(
             ChatAction.ToggleMovieWatchlist("tvmaze", "66", add = true, title = "Severance")
         )
-        advanceUntilIdle()
+        awaitCondition(this) { vm.uiState.value.pendingMutatingAction is ChatAction.ToggleMovieWatchlist }
         assertTrue(vm.uiState.value.pendingMutatingAction is ChatAction.ToggleMovieWatchlist)
         vm.confirmMutatingAction()
-        advanceUntilIdle()
+        awaitCondition(this) { moviesRepo.observeIsInWatchlist("tvmaze:66").first() && chatRepo.getMessagesSnapshot(convId).size >= 3 }
         assertTrue(moviesRepo.observeIsInWatchlist("tvmaze:66").first())
         assertTrue(chatRepo.getMessagesSnapshot(convId).last().content.contains("Added \"Severance\" to your Movies & TV watchlist"))
 
@@ -278,9 +318,9 @@ class AssistantActionPermissionsTest {
         vm.requestMutatingActionConfirmation(
             ChatAction.AddMovieToCollection("tvmaze", "66", collectionName = "Weekend Binges", title = "Severance")
         )
-        advanceUntilIdle()
+        awaitCondition(this) { vm.uiState.value.pendingMutatingAction is ChatAction.AddMovieToCollection }
         vm.confirmMutatingAction()
-        advanceUntilIdle()
+        awaitCondition(this) { moviesRepo.addedToCollection.isNotEmpty() }
         val createdCol = collectionRepo.collectionsWithCounts.first()
             .map { it.collection }
             .firstOrNull { it.name == "Weekend Binges" }
@@ -291,9 +331,9 @@ class AssistantActionPermissionsTest {
         vm.requestMutatingActionConfirmation(
             ChatAction.MarkMovieWatched("tvmaze", "66", seasonNumber = 1, episodeNumber = 3, watched = true, title = "Severance")
         )
-        advanceUntilIdle()
+        awaitCondition(this) { vm.uiState.value.pendingMutatingAction is ChatAction.MarkMovieWatched }
         vm.confirmMutatingAction()
-        advanceUntilIdle()
+        awaitCondition(this) { moviesRepo.markedWatched.isNotEmpty() }
         assertEquals(listOf("tvmaze:66:S1E3"), moviesRepo.markedWatched)
 
         // 6. ScheduleMovieReminder schedules future reminder
@@ -301,25 +341,25 @@ class AssistantActionPermissionsTest {
         vm.requestMutatingActionConfirmation(
             ChatAction.ScheduleMovieReminder("tvmaze", "66", triggerAtMillis = futureMs, note = "Watch S1E4", title = "Severance")
         )
-        advanceUntilIdle()
+        awaitCondition(this) { vm.uiState.value.pendingMutatingAction is ChatAction.ScheduleMovieReminder }
         vm.confirmMutatingAction()
-        advanceUntilIdle()
+        awaitCondition(this) { moviesRepo.scheduledReminders.isNotEmpty() }
         assertEquals(1, moviesRepo.scheduledReminders.size)
         assertEquals(futureMs, moviesRepo.scheduledReminders.first().triggerAtMillis)
 
-        // 7. Always allow scoped to MuteSeriesReminders executes repeats automatically
+        // 7. Always allow scoped to Reminder Management executes repeats automatically
         vm.requestMutatingActionConfirmation(
             ChatAction.MuteSeriesReminders("tvmaze", "66", muted = true, title = "Severance")
         )
-        advanceUntilIdle()
+        awaitCondition(this) { vm.uiState.value.pendingMutatingAction is ChatAction.MuteSeriesReminders }
         vm.alwaysAllowMutatingActionInConversation()
-        advanceUntilIdle()
+        awaitCondition(this) { moviesRepo.mutedSeries["tvmaze:66"] == true }
         assertTrue(moviesRepo.mutedSeries["tvmaze:66"] == true)
 
         vm.requestMutatingActionConfirmation(
             ChatAction.MuteSeriesReminders("tvmaze", "66", muted = false, title = "Severance")
         )
-        advanceUntilIdle()
+        awaitCondition(this) { moviesRepo.mutedSeries["tvmaze:66"] == false }
         assertNull(vm.uiState.value.pendingMutatingAction)
         assertFalse(moviesRepo.mutedSeries["tvmaze:66"] ?: true)
     }

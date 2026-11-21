@@ -192,10 +192,12 @@ class InboxUiAndChatFlowTest {
         }
 
         composeTestRule.onNodeWithTag("action_approval_card").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Item: Kotlin Talk").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Library Management").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("approval_toggle_details").performClick()
+        composeTestRule.onNodeWithText("Target: Kotlin Talk").assertIsDisplayed()
         composeTestRule.onNodeWithText("Don't allow").performClick()
         composeTestRule.onNodeWithText("Allow once").performClick()
-        composeTestRule.onNodeWithText("Always allow in this conversation").performClick()
+        composeTestRule.onNodeWithText("Always allow Library Management").performClick()
         assertTrue(denied && allowedOnce && alwaysAllowed)
         composeTestRule.onNodeWithTag("composer_add_link_button").assertIsDisplayed()
     }
@@ -287,8 +289,9 @@ class InboxUiAndChatFlowTest {
             .performScrollToNode(hasText("Find failed YouTube downloads"))
         composeTestRule.onNodeWithText("Find failed YouTube downloads")
             .assertIsDisplayed()
-        composeTestRule.onNodeWithContentDescription("Delete conversation")
+        composeTestRule.onNodeWithTag("drawer_conv_more_c-123")
             .performClick()
+        composeTestRule.onNodeWithText("Delete").performClick()
         composeTestRule.onNodeWithText("Delete conversation?").assertIsDisplayed()
         composeTestRule.onNodeWithText("Delete").performClick()
         assertEquals("c-123", deletedId)
