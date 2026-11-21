@@ -349,6 +349,7 @@ jobs:
             $DRY_FLAG
 
       - name: Upload Build Artifacts (Private CI Retention)
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: laterbox-release-artifacts
