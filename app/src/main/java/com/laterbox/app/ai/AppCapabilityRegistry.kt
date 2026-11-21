@@ -187,3 +187,96 @@ object AppCapabilityRegistry {
     }.trim()
 }
 
+object RemoteCapabilities {
+    const val FEATURE_MOVIES_TV = "feature:movies_tv_enabled"
+    const val FEATURE_PROVIDER_MOVIEBOX = "feature:provider_moviebox_enabled"
+    const val FEATURE_PROVIDER_INTERNET_ARCHIVE = "feature:provider_internet_archive_enabled"
+    const val FEATURE_PROVIDER_TVMAZE = "feature:provider_tvmaze_enabled"
+    const val FEATURE_MOVIES_RECOMMENDATIONS = "feature:movies_recommendations_enabled"
+    const val FEATURE_AI_ASSISTANT = "feature:ai_assistant_enabled"
+    const val FEATURE_SMART_REMINDERS = "feature:smart_reminders_enabled"
+    const val FEATURE_PLAYER_INTRO_SKIP = "feature:player_intro_skip_enabled"
+    const val FEATURE_YTDLP_AUTO_UPDATE = "feature:ytdlp_auto_update_enabled"
+
+    const val KEY_MOVIES_TV = "movies_tv_enabled"
+    const val KEY_PROVIDER_MOVIEBOX = "provider_moviebox_enabled"
+    const val KEY_PROVIDER_INTERNET_ARCHIVE = "provider_internet_archive_enabled"
+    const val KEY_PROVIDER_TVMAZE = "provider_tvmaze_enabled"
+    const val KEY_MOVIES_RECOMMENDATIONS = "movies_recommendations_enabled"
+    const val KEY_AI_ASSISTANT = "ai_assistant_enabled"
+    const val KEY_SMART_REMINDERS = "smart_reminders_enabled"
+    const val KEY_PLAYER_INTRO_SKIP = "player_intro_skip_enabled"
+    const val KEY_YTDLP_AUTO_UPDATE = "ytdlp_auto_update_enabled"
+
+    const val UI_ANNOUNCEMENT_BANNER = "ui:announcement_banner"
+    const val UI_HERO_CAROUSEL = "ui:hero_carousel"
+    const val UI_CONTENT_RAIL = "ui:content_rail"
+    const val UI_FEATURED_CALLOUT_CARD = "ui:featured_callout_card"
+
+    const val TYPE_ANNOUNCEMENT_BANNER = "announcement_banner"
+    const val TYPE_HERO_CAROUSEL = "hero_carousel"
+    const val TYPE_CONTENT_RAIL = "content_rail"
+    const val TYPE_FEATURED_CALLOUT_CARD = "featured_callout_card"
+
+    val SUPPORTED_FEATURE_KEYS: Set<String> = setOf(
+        KEY_MOVIES_TV,
+        KEY_PROVIDER_MOVIEBOX,
+        KEY_PROVIDER_INTERNET_ARCHIVE,
+        KEY_PROVIDER_TVMAZE,
+        KEY_MOVIES_RECOMMENDATIONS,
+        KEY_AI_ASSISTANT,
+        KEY_SMART_REMINDERS,
+        KEY_PLAYER_INTRO_SKIP,
+        KEY_YTDLP_AUTO_UPDATE,
+    )
+
+    val DEFAULT_FEATURES: Map<String, Boolean> = SUPPORTED_FEATURE_KEYS.associateWith { true }
+
+    val SUPPORTED_UI_COMPONENT_TYPES: Set<String> = setOf(
+        TYPE_ANNOUNCEMENT_BANNER,
+        TYPE_HERO_CAROUSEL,
+        TYPE_CONTENT_RAIL,
+        TYPE_FEATURED_CALLOUT_CARD,
+    )
+
+    val SUPPORTED_RAIL_IDS: Set<String> = setOf(
+        "continue_watching",
+        "watchlist",
+        "recently_viewed",
+        "because_you_watched",
+        "quick_picks",
+        "recently_added",
+        "top_rated",
+        "newest",
+        "discovery_sections",
+    )
+
+    val SUPPORTED_DESTINATIONS: Set<String> = setOf(
+        "movies",
+        "downloads",
+        "collections",
+        "inbox",
+        "archive",
+        "settings",
+    )
+
+    val declaredCapabilities: Set<String> = setOf(
+        FEATURE_MOVIES_TV,
+        FEATURE_PROVIDER_MOVIEBOX,
+        FEATURE_PROVIDER_INTERNET_ARCHIVE,
+        FEATURE_PROVIDER_TVMAZE,
+        FEATURE_MOVIES_RECOMMENDATIONS,
+        FEATURE_AI_ASSISTANT,
+        FEATURE_SMART_REMINDERS,
+        FEATURE_PLAYER_INTRO_SKIP,
+        FEATURE_YTDLP_AUTO_UPDATE,
+        UI_ANNOUNCEMENT_BANNER,
+        UI_HERO_CAROUSEL,
+        UI_CONTENT_RAIL,
+        UI_FEATURED_CALLOUT_CARD,
+    )
+
+    fun declaredCapabilitiesCsv(): String = declaredCapabilities.sorted().joinToString(",")
+}
+
+

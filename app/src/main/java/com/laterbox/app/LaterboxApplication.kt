@@ -81,6 +81,9 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
             Log.w("LaterboxApplication", "Failed to install App Check provider: ${e.message}")
         }
 
+        // Initialize Remote Config non-blockingly (hydrates local DataStore cache first, fetches after frame settles)
+        container.remoteConfigManager.initializeNonBlocking()
+
         // Fast startup state recovery first; defer heavy yt-dlp / FFmpeg / orphan sweep I/O
         applicationScope.launch {
             try {
@@ -147,6 +150,7 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
 
             override fun onActivityStarted(activity: android.app.Activity) {
                 if (startedActivities == 0) {
+                    container.remoteConfigManager.onAppForegrounded()
                     applicationScope.launch {
                         reconcileInspectionsIfNeeded()
                     }

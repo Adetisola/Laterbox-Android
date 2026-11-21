@@ -1,0 +1,323 @@
+package com.laterbox.app.remoteconfig
+
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import com.laterbox.app.ai.RemoteCapabilities
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
+import okhttp3.OkHttpClient
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
+
+class RemoteConfigTest {
+
+    @get:Rule
+    val tempFolder = TemporaryFolder()
+
+    private lateinit var server: MockWebServer
+
+    @Before
+    fun setUp() {
+        server = MockWebServer()
+        server.start()
+    }
+
+    @After
+    fun tearDown() {
+        server.shutdown()
+    }
+
+    private fun sampleValidPayload(
+        revision: Int = 4,
+        expiresAt: String? = "2099-01-01T00:00:00Z",
+        minRefresh: Int = 900,
+    ): String = """
+        {
+          "schemaVersion": 1,
+          "revision": $revision,
+          "publishedAt": "2026-11-21T01:00:00Z",
+          "expiresAt": ${if (expiresAt == null) "null" else "\"$expiresAt\""},
+          "general": {
+            "minRefreshIntervalSeconds": $minRefresh,
+            "staleCacheMaxAgeSeconds": 86400
+          },
+          "versionPolicy": {
+            "minimumSupportedVersionCode": 50,
+            "recommendedVersionCode": 65,
+            "enforcementEnabled": false,
+            "recommendedTag": "v1.0.65",
+            "updateMessage": "New streaming stability improvements available."
+          },
+          "maintenance": {
+            "enabled": true,
+            "mode": "partial",
+            "title": "Streaming Maintenance",
+            "message": "MovieBox streaming is undergoing scheduled maintenance.",
+            "allowLocalOfflineAccess": true
+          },
+          "announcements": [
+            {
+              "id": "ann-1",
+              "title": "Maintenance Notice",
+              "message": "Local Inbox & Downloads continue normally.",
+              "severity": "warning",
+              "surface": "inbox",
+              "dismissible": true,
+              "actionLabel": "Open Downloads",
+              "actionDestination": "downloads",
+              "minVersionCode": 60,
+              "maxVersionCode": 0,
+              "enabled": true
+            },
+            {
+              "id": "ann-old-only",
+              "title": "Old App Only",
+              "message": "Should be excluded on v62",
+              "severity": "info",
+              "surface": "inbox",
+              "dismissible": true,
+              "actionLabel": "",
+              "actionDestination": "",
+              "minVersionCode": 1,
+              "maxVersionCode": 55,
+              "enabled": true
+            }
+          ],
+          "features": {
+            "movies_tv_enabled": true,
+            "provider_moviebox_enabled": false,
+            "unknown_future_flag": false
+          },
+          "ui": {
+            "components": [
+              {
+                "id": "rail-watch",
+                "type": "content_rail",
+                "surface": "movies",
+                "visible": true,
+                "order": 20,
+                "railId": "watchlist",
+                "title": "Your Queue",
+                "maxItems": 10
+              },
+              {
+                "id": "callout-good",
+                "type": "featured_callout_card",
+                "surface": "movies",
+                "visible": true,
+                "order": 5,
+                "title": "Offline Vault",
+                "subtitle": "Watch saved downloads anytime",
+                "actionLabel": "Browse",
+                "actionDestination": "downloads"
+              },
+              {
+                "id": "unknown-future-widget",
+                "type": "experimental_3d_carousel",
+                "surface": "movies",
+                "visible": true,
+                "order": 1
+              },
+              {
+                "id": "bad-xss-callout",
+                "type": "featured_callout_card",
+                "surface": "movies",
+                "visible": true,
+                "order": 2,
+                "title": "Tap",
+                "actionDestination": "javascript:alert(1)"
+              }
+            ]
+          }
+        }
+    """.trimIndent()
+
+    @Test
+    fun validator_parsesValidPayload_andFiltersUnknownAndOutOfRangeItems() {
+        val nowMs = 1_795_200_000_000L
+        val result = RemoteConfigValidator.parseAndValidate(
+            rawJson = sampleValidPayload(),
+            clientVersionCode = 62,
+            source = RemoteConfigSource.NETWORK,
+            etag = "\"rev-4\"",
+            fetchedAtEpochMs = nowMs,
+            nowEpochMs = nowMs,
+        )
+        assertTrue(result is RemoteConfigParseResult.Valid)
+        val snap = (result as RemoteConfigParseResult.Valid).snapshot
+
+        assertEquals(4, snap.revision)
+        assertTrue(snap.maintenance.isPartialActive)
+        assertFalse(snap.isFeatureEnabled(RemoteCapabilities.KEY_PROVIDER_MOVIEBOX))
+        assertTrue(snap.isFeatureEnabled(RemoteCapabilities.KEY_MOVIES_TV))
+        // Unknown feature key ignored safely, returns fallback default
+        assertTrue(snap.isFeatureEnabled("unknown_future_flag", defaultValue = true))
+
+        // Only ann-1 matches versionCode 62
+        assertEquals(1, snap.announcements.size)
+        assertEquals("ann-1", snap.announcements.first().id)
+
+        // Unknown widget and javascript: callout rejected; remaining components sorted by order
+        assertEquals(2, snap.ui.components.size)
+        assertEquals("callout-good", snap.ui.components[0].id)
+        assertEquals("rail-watch", snap.ui.components[1].id)
+    }
+
+    @Test
+    fun validator_rejectsMalformedJsonUnsupportedSchemaAndExpiredConfig() {
+        val nowMs = 1_795_200_000_000L
+
+        val malformed = RemoteConfigValidator.parseAndValidate("{not valid json", 62, RemoteConfigSource.NETWORK)
+        assertTrue(malformed is RemoteConfigParseResult.Rejected)
+
+        val badSchema = RemoteConfigValidator.parseAndValidate(
+            rawJson = """{"schemaVersion": 99, "revision": 1}""",
+            clientVersionCode = 62,
+            source = RemoteConfigSource.NETWORK,
+        )
+        assertTrue(badSchema is RemoteConfigParseResult.Rejected)
+
+        val expired = RemoteConfigValidator.parseAndValidate(
+            rawJson = sampleValidPayload(expiresAt = "2020-01-01T00:00:00Z"),
+            clientVersionCode = 62,
+            source = RemoteConfigSource.NETWORK,
+            fetchedAtEpochMs = nowMs,
+            nowEpochMs = nowMs,
+            enforceExpiry = true,
+        )
+        assertTrue(expired is RemoteConfigParseResult.Rejected)
+    }
+
+    @Test
+    fun client_handles200_304_appCheckRetry_andInvalidJsonSafely() = runBlocking {
+        // 1) Initial 200 with ETag
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .addHeader("ETag", "\"rev-4-abc\"")
+                .setBody(sampleValidPayload(revision = 4))
+        )
+        val tokenCalls = AtomicInteger(0)
+        val client = RemoteConfigClient(
+            okHttpClient = OkHttpClient(),
+            baseUrlProvider = { server.url("/").toString().trimEnd('/') },
+            appCheckTokenProvider = { force ->
+                tokenCalls.incrementAndGet()
+                if (force) "fresh-appcheck-token" else "initial-appcheck-token"
+            },
+            clientVersionCode = 62,
+            clientVersionName = "1.0.62",
+        )
+
+        val outcome1 = client.fetchPublishedConfig(cachedEtag = null)
+        assertTrue(outcome1 is RemoteConfigFetchOutcome.Updated)
+        val req1 = server.takeRequest()
+        assertEquals("/config/v1/published", req1.requestUrl?.encodedPath)
+        assertEquals("62", req1.requestUrl?.queryParameter("versionCode"))
+        assertEquals("1.0.62", req1.requestUrl?.queryParameter("versionName"))
+        assertTrue(req1.requestUrl?.queryParameter("capabilities").orEmpty().contains("feature:movies_tv_enabled"))
+        assertEquals("initial-appcheck-token", req1.getHeader("X-Firebase-AppCheck"))
+
+        // 2) Conditional 304 Not Modified
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(304)
+                .addHeader("ETag", "\"rev-4-abc\"")
+        )
+        val outcome2 = client.fetchPublishedConfig(cachedEtag = "\"rev-4-abc\"")
+        assertTrue(outcome2 is RemoteConfigFetchOutcome.NotModified)
+        val req2 = server.takeRequest()
+        assertEquals("\"rev-4-abc\"", req2.getHeader("If-None-Match"))
+
+        // 3) 401 triggers single force-refresh App Check retry
+        server.enqueue(MockResponse().setResponseCode(401).setBody("Unauthorized"))
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .addHeader("ETag", "\"rev-5-xyz\"")
+                .setBody(sampleValidPayload(revision = 5))
+        )
+        val outcome3 = client.fetchPublishedConfig(cachedEtag = null)
+        assertTrue(outcome3 is RemoteConfigFetchOutcome.Updated)
+        assertEquals(5, (outcome3 as RemoteConfigFetchOutcome.Updated).snapshot.revision)
+        server.takeRequest()
+        val retryReq = server.takeRequest()
+        assertEquals("fresh-appcheck-token", retryReq.getHeader("X-Firebase-AppCheck"))
+
+        // 4) Malformed 200 payload rejected cleanly
+        server.enqueue(MockResponse().setResponseCode(200).setBody("<html>bad</html>"))
+        val outcome4 = client.fetchPublishedConfig(cachedEtag = null, forceRefresh = true)
+        assertTrue(outcome4 is RemoteConfigFetchOutcome.Failed)
+    }
+
+    @Test
+    fun repository_cachesOfflineStartup_throttlesRefresh_andFallsBackWhenNetworkFails() = runBlocking {
+        val dsFile = File(tempFolder.newFolder("rc_ds"), "test_rc.preferences_pb")
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            var nowMs = 1_795_200_000_000L
+            val dataStore = PreferenceDataStoreFactory.create(scope = scope) { dsFile }
+            val cache = RemoteConfigCache(dataStore)
+            val client = RemoteConfigClient(
+                okHttpClient = OkHttpClient(),
+                baseUrlProvider = { server.url("/").toString().trimEnd('/') },
+                appCheckTokenProvider = { "token-1" },
+                clientVersionCode = 62,
+                clientVersionName = "1.0.62",
+                clockMs = { nowMs },
+            )
+            val repo = RemoteConfigRepository(cache, client, clientVersionCode = 62, clockMs = { nowMs })
+
+            // Empty cache initially -> safe defaults
+            assertNull(repo.loadFromCache())
+            assertTrue(repo.state.value.activeConfig.isFeatureEnabled(RemoteCapabilities.KEY_AI_ASSISTANT))
+
+            // Network refresh stores rev 7 in DataStore
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(200)
+                    .addHeader("ETag", "\"rev-7\"")
+                    .setBody(sampleValidPayload(revision = 7, minRefresh = 900))
+            )
+            val stateAfterFetch = repo.refreshIfNeeded(forceRefresh = false)
+            assertEquals(7, stateAfterFetch.activeConfig.revision)
+            assertEquals(RemoteConfigSource.NETWORK, stateAfterFetch.activeConfig.source)
+
+            // Throttled when called within minRefreshIntervalSeconds (no HTTP request issued)
+            nowMs += 30_000L
+            val throttledState = repo.refreshIfNeeded(forceRefresh = false)
+            assertEquals(7, throttledState.activeConfig.revision)
+            assertEquals(1, server.requestCount)
+
+            // New repository instance cold boots offline from cached DataStore without network
+            val coldBootRepo = RemoteConfigRepository(cache, client, clientVersionCode = 62, clockMs = { nowMs })
+            val hydrated = coldBootRepo.loadFromCache()
+            assertNotNull(hydrated)
+            assertEquals(7, hydrated?.revision)
+            assertEquals(RemoteConfigSource.CACHE, hydrated?.source)
+
+            // Even if network fails later after interval expires, cached snapshot remains active
+            nowMs += 1_000_000L
+            server.enqueue(MockResponse().setResponseCode(503).setBody("Unavailable"))
+            val failedRefreshState = coldBootRepo.refreshIfNeeded(forceRefresh = false)
+            assertEquals(7, failedRefreshState.activeConfig.revision)
+            assertNotNull(failedRefreshState.lastError)
+        } finally {
+            scope.cancel()
+        }
+    }
+}

@@ -242,6 +242,7 @@ dependencies {
     testImplementation(libs.compose.ui.test.junit4)
     testImplementation(libs.robolectric)
     testImplementation(libs.mockwebserver)
+    testImplementation("org.json:json:20240303")
     testImplementation(libs.work.testing)
     testImplementation(libs.turbine)
     testImplementation(libs.kotlinx.coroutines.test)

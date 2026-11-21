@@ -42,6 +42,7 @@ interface AppContainer {
     val moviesDownloadBridge: com.laterbox.app.movies.data.download.MoviesDownloadBridge
     val subtitleDownloadManager: com.laterbox.app.movies.data.download.SubtitleDownloadManager
     val appStorageManager: com.laterbox.app.storage.AppStorageManager
+    val remoteConfigManager: com.laterbox.app.remoteconfig.RemoteConfigManager
     suspend fun resolveBackendBaseUrl(): String
     suspend fun getBackendAppCheckToken(forceRefresh: Boolean = false): String?
 }
@@ -299,6 +300,30 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             downloadTaskDao = database.downloadTaskDao(),
             mediaRepository = mediaRepository
         )
+    }
+
+    override val remoteConfigManager: com.laterbox.app.remoteconfig.RemoteConfigManager by lazy {
+        val rcOkHttp = sharedOkHttpClient.newBuilder()
+            .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .callTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+        val versionCode = com.laterbox.app.BuildConfig.VERSION_CODE
+        val cache = com.laterbox.app.remoteconfig.RemoteConfigCache(context.applicationContext)
+        val client = com.laterbox.app.remoteconfig.RemoteConfigClient(
+            okHttpClient = rcOkHttp,
+            baseUrlProvider = { resolveBackendBaseUrl() },
+            appCheckTokenProvider = { forceRefresh -> getBackendAppCheckToken(forceRefresh) },
+            clientVersionCode = versionCode,
+            clientVersionName = com.laterbox.app.BuildConfig.VERSION_NAME,
+        )
+        val repository = com.laterbox.app.remoteconfig.RemoteConfigRepository(
+            cache = cache,
+            client = client,
+            clientVersionCode = versionCode,
+        )
+        com.laterbox.app.remoteconfig.RemoteConfigManager(repository = repository)
     }
 
     override suspend fun resolveBackendBaseUrl(): String {
