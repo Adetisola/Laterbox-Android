@@ -103,7 +103,7 @@ jobs:
 
       - name: Mint Scoped Distribution GitHub App Token
         id: dist_token
-        if: steps.resolve_target.outputs.dry_run != 'true' && secrets.DISTRIBUTION_APP_ID != '' && secrets.DISTRIBUTION_APP_PRIVATE_KEY != ''
+        if: steps.resolve_target.outputs.dry_run != 'true'
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ secrets.DISTRIBUTION_APP_ID }}

@@ -54,7 +54,7 @@ jobs:
 
       - name: Mint Scoped Target Repo Token
         id: target_token
-        if: inputs.dry_run != true && secrets.DISTRIBUTION_APP_ID != '' && secrets.DISTRIBUTION_APP_PRIVATE_KEY != ''
+        if: inputs.dry_run != true
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ secrets.DISTRIBUTION_APP_ID }}
