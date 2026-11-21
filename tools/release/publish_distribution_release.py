@@ -134,13 +134,20 @@ def ensure_distribution_repo_artifact_tag(distribution_repo: str, tag_name: str)
 
 
 def verify_public_download_url(url: str) -> None:
-    req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "Laterbox-Release-Verifier"})
+    req = urllib.request.Request(
+        url,
+        method="GET",
+        headers={
+            "User-Agent": "Laterbox-Release-Verifier",
+            "Range": "bytes=0-0",
+        },
+    )
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
-            if resp.status not in (200, 301, 302, 303, 307, 308):
+            if resp.status not in (200, 206, 301, 302, 303, 307, 308):
                 raise RuntimeError(f"Download probe returned HTTP {resp.status} for {url}")
     except urllib.error.HTTPError as exc:
-        if exc.code not in (200, 301, 302, 303, 307, 308):
+        if exc.code not in (200, 206, 301, 302, 303, 307, 308):
             raise RuntimeError(f"Download probe failed HTTP {exc.code} for {url}") from exc
 
 
