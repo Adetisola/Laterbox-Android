@@ -1155,7 +1155,59 @@ fun LaterboxApp(
                                     }
                                 },
                                 onMenuClick = openMenuHandler,
-                                onOpenVideoAsset = { asset -> activeViewerAsset = asset }
+                                onOpenVideoAsset = { asset -> activeViewerAsset = asset },
+                                onOpenSeries = { series ->
+                                    navController.navigate(
+                                        LaterboxDestination.DownloadedSeriesDetail.createRoute(series.seriesKey)
+                                    )
+                                }
+                            )
+                        }
+
+                        // Downloaded TV Series Detail Screen
+                        composable(
+                            route = LaterboxDestination.DownloadedSeriesDetail.route,
+                            arguments = listOf(navArgument("seriesKey") { type = NavType.StringType })
+                        ) { backStackEntry ->
+                            val rawKey = backStackEntry.arguments?.getString("seriesKey").orEmpty()
+                            val seriesKey = android.net.Uri.decode(rawKey)
+                            val dlState by downloadsViewModel.uiState.collectAsState()
+                            val seriesGroup = dlState.libraryEntries
+                                .filterIsInstance<com.laterbox.app.media.ui.downloads.DownloadLibraryEntry.SeriesGroup>()
+                                .firstOrNull { it.seriesKey == seriesKey }
+
+                            com.laterbox.app.media.ui.downloads.DownloadedSeriesDetailScreen(
+                                seriesGroup = seriesGroup,
+                                subtitleSummaries = dlState.subtitleSummaries,
+                                retryingSubtitleAssetIds = dlState.retryingSubtitleAssetIds,
+                                playbackProgressByAssetId = dlState.playbackProgressByAssetId,
+                                onBackClick = { navController.popBackStack() },
+                                onOpenEpisode = { asset -> activeViewerAsset = asset },
+                                onExportEpisode = { asset ->
+                                    downloadsViewModel.onExportAsset(asset.id) { success ->
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            if (success) "Saved to device" else "Failed to save to device",
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                },
+                                onDeleteEpisode = { asset ->
+                                    downloadsViewModel.onDeleteAsset(asset.id)
+                                },
+                                onExportAllSeries = { group ->
+                                    downloadsViewModel.onExportAssets(group.allAssets.map { it.id }) { succeeded, total ->
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            if (succeeded > 0) "Saved $succeeded of $total episode${if (total == 1) "" else "s"} to device" else "Failed to save episodes",
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                },
+                                onDeleteSeries = { group ->
+                                    downloadsViewModel.onDeleteAssets(group.allAssets.map { it.id })
+                                },
+                                onRetrySubtitles = downloadsViewModel::onRetryAssetSubtitles
                             )
                         }
 

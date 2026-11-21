@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -20,6 +21,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -525,6 +528,198 @@ fun LibraryAssetCard(
                             onClick = {
                                 showMoreMenu = false
                                 onDelete()
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun DownloadedSeriesGroupCard(
+    group: DownloadLibraryEntry.SeriesGroup,
+    onOpen: () -> Unit,
+    onExportAll: () -> Unit,
+    onDeleteSeries: () -> Unit,
+    isSelected: Boolean = false,
+    isInSelectionMode: Boolean = false,
+    onLongClick: () -> Unit = {},
+    modifier: Modifier = Modifier
+) {
+    val colors = LaterboxTheme.colors
+    val typography = LaterboxTheme.typography
+    val spacing = LaterboxTheme.spacing
+    var showMoreMenu by remember { mutableStateOf(false) }
+
+    LaterboxCard(
+        onClick = onOpen,
+        onLongClick = onLongClick,
+        elevation = LaterboxTheme.elevations.card,
+        modifier = modifier.testTag("downloaded_series_card_${group.seriesKey}")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(if (isSelected) colors.accentPrimary.copy(alpha = 0.08f) else colors.surfacePrimary)
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (isInSelectionMode) {
+                Checkbox(
+                    checked = isSelected,
+                    onCheckedChange = { onLongClick() },
+                    colors = CheckboxDefaults.colors(
+                        checkedColor = colors.accentPrimary,
+                        checkmarkColor = colors.surfacePrimary
+                    )
+                )
+                Spacer(modifier = Modifier.width(spacing.xs))
+            }
+
+            Box(
+                modifier = Modifier
+                    .width(56.dp)
+                    .aspectRatio(2f / 3f)
+                    .clip(LaterboxTheme.shapes.Thumbnail)
+                    .background(colors.surfaceSecondary),
+                contentAlignment = Alignment.Center
+            ) {
+                val context = LocalContext.current
+                val firstAsset = group.allAssets.firstOrNull()
+                val thumbFile = firstAsset?.thumbnailPath?.let { File(context.filesDir, it) }
+                val imageModel: Any? = when {
+                    !group.posterUrl.isNullOrBlank() -> group.posterUrl
+                    thumbFile?.exists() == true -> thumbFile
+                    else -> null
+                }
+                if (imageModel != null) {
+                    AsyncImage(
+                        model = imageModel,
+                        contentDescription = group.seriesTitle,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    Icon(
+                        painter = painterResource(LaterboxIcons.Movies),
+                        contentDescription = null,
+                        tint = colors.accentPrimary,
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(spacing.md))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = group.seriesTitle,
+                    style = typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = colors.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(spacing.xxs))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    LaterboxBadge(
+                        text = "TV Series",
+                        variant = LaterboxBadgeVariant.ACCENT
+                    )
+                    val epLabel = if (group.distinctEpisodeCount == 1) {
+                        "1 episode"
+                    } else {
+                        "${group.distinctEpisodeCount} episodes"
+                    }
+                    val fileSuffix = if (group.totalFileCount > group.distinctEpisodeCount) {
+                        " (${group.totalFileCount} files)"
+                    } else {
+                        ""
+                    }
+                    Text(
+                        text = "$epLabel$fileSuffix",
+                        style = typography.bodySmall,
+                        color = colors.textSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Spacer(modifier = Modifier.height(spacing.xxs))
+                Text(
+                    text = "${group.seasons.size} ${if (group.seasons.size == 1) "season" else "seasons"} · ${formatBytes(group.totalBytes)}",
+                    style = typography.metaText,
+                    color = colors.textSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            if (!isInSelectionMode) {
+                Box {
+                    IconButton(
+                        onClick = { showMoreMenu = true },
+                        modifier = Modifier
+                            .size(36.dp)
+                            .testTag("series_more_button_${group.seriesKey}")
+                    ) {
+                        Icon(
+                            painter = painterResource(LaterboxIcons.MoreVertical),
+                            contentDescription = "Series actions",
+                            tint = colors.textSecondary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = showMoreMenu,
+                        onDismissRequest = { showMoreMenu = false },
+                        containerColor = colors.surfaceElevated
+                    ) {
+                        DropdownMenuItem(
+                            modifier = Modifier.testTag("series_menu_export_${group.seriesKey}"),
+                            text = {
+                                Text(
+                                    text = "Save All to Device",
+                                    style = typography.bodyPrimary,
+                                    color = colors.textPrimary
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    painter = painterResource(LaterboxIcons.Download),
+                                    contentDescription = null,
+                                    tint = colors.accentPrimary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            },
+                            onClick = {
+                                showMoreMenu = false
+                                onExportAll()
+                            }
+                        )
+                        DropdownMenuItem(
+                            modifier = Modifier.testTag("series_menu_delete_${group.seriesKey}"),
+                            text = {
+                                Text(
+                                    text = "Delete Series",
+                                    style = typography.bodyPrimary,
+                                    color = colors.statusDanger
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    painter = painterResource(LaterboxIcons.Delete),
+                                    contentDescription = null,
+                                    tint = colors.statusDanger,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            },
+                            onClick = {
+                                showMoreMenu = false
+                                onDeleteSeries()
                             }
                         )
                     }

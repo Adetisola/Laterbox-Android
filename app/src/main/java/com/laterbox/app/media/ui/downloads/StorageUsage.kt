@@ -28,6 +28,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -37,6 +41,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.laterbox.app.media.domain.model.MediaAsset
 import com.laterbox.app.media.domain.model.MediaType
+import com.laterbox.app.ui.components.LaterboxConfirmDialog
 import com.laterbox.app.ui.components.LaterboxShapeTokens
 import com.laterbox.app.ui.theme.LaterboxTheme
 
@@ -56,6 +61,22 @@ fun StorageTab(
     val typography = LaterboxTheme.typography
     val spacing = LaterboxTheme.spacing
     val sortedAssets = assets.sortedByDescending { it.fileSize }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+
+    if (showDeleteConfirm) {
+        val count = selectedAssetIds.size
+        LaterboxConfirmDialog(
+            title = "Delete $count ${if (count == 1) "file" else "files"}?",
+            message = "This permanently removes the selected downloaded files from your device storage.",
+            confirmText = "Delete",
+            onConfirm = {
+                showDeleteConfirm = false
+                onDeleteSelectedAssets()
+            },
+            onDismiss = { showDeleteConfirm = false },
+            isDestructive = true
+        )
+    }
 
     Column(modifier = modifier.fillMaxSize()) {
         LazyColumn(
@@ -158,7 +179,7 @@ fun StorageTab(
                                 Text("Cancel", style = typography.uiMedium, color = colors.textSecondary)
                             }
                             Button(
-                                onClick = onDeleteSelectedAssets,
+                                onClick = { showDeleteConfirm = true },
                                 colors = ButtonDefaults.buttonColors(containerColor = colors.statusDanger)
                             ) {
                                 Text("Delete (${selectedAssetIds.size})", style = typography.buttonLabel)

@@ -6,6 +6,9 @@ sealed class LaterboxDestination(val route: String) {
     object Inbox : LaterboxDestination("inbox")
     object Collections : LaterboxDestination("collections")
     object Downloads : LaterboxDestination("downloads")
+    object DownloadedSeriesDetail : LaterboxDestination("downloads/series/{seriesKey}") {
+        fun createRoute(seriesKey: String): String = "downloads/series/${Uri.encode(seriesKey)}"
+    }
     object Archive : LaterboxDestination("archive")
     object Settings : LaterboxDestination("settings")
     object SettingsAppearanceProfile : LaterboxDestination("settings/appearance_profile")

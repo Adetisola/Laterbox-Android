@@ -87,6 +87,7 @@ fun DownloadsScreen(
     onOpenLinkDetail: (Long) -> Unit = {},
     onMenuClick: (() -> Unit)? = null,
     onOpenVideoAsset: ((MediaAsset) -> Unit)? = null,
+    onOpenSeries: (DownloadLibraryEntry.SeriesGroup) -> Unit = {},
     playbackPreferences: com.laterbox.app.movies.ui.PlayerPlaybackPreferences = com.laterbox.app.movies.ui.PlayerPlaybackPreferences(),
     onSubtitleStyleChange: (com.laterbox.app.data.preferences.SubtitleStyleConfig) -> Unit = {}
 ) {
@@ -153,6 +154,22 @@ fun DownloadsScreen(
         onRetryTask = viewModel::onRetryTask,
         onDismissTask = viewModel::onDismissTask,
         onRetrySubtitles = viewModel::onRetryAssetSubtitles,
+        onOpenSeries = onOpenSeries,
+        onExportSeries = { group ->
+            viewModel.onExportAssets(group.allAssets.map { it.id }) { succeeded, total ->
+                Toast.makeText(
+                    context,
+                    if (succeeded > 0) "Saved $succeeded of $total episode${if (total == 1) "" else "s"} to device" else "Failed to save episodes",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        },
+        onDeleteSeries = { group ->
+            viewModel.onDeleteAssets(group.allAssets.map { it.id })
+        },
+        onToggleSeriesSelection = { group ->
+            viewModel.onToggleSeriesSelection(group.allAssets.map { it.id })
+        },
         modifier = modifier
     )
 
@@ -229,6 +246,10 @@ internal fun DownloadsScreenContent(
     onRetryTask: (String) -> Unit,
     onDismissTask: (String) -> Unit,
     onRetrySubtitles: (String) -> Unit = {},
+    onOpenSeries: (DownloadLibraryEntry.SeriesGroup) -> Unit = {},
+    onExportSeries: (DownloadLibraryEntry.SeriesGroup) -> Unit = {},
+    onDeleteSeries: (DownloadLibraryEntry.SeriesGroup) -> Unit = {},
+    onToggleSeriesSelection: (DownloadLibraryEntry.SeriesGroup) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -240,6 +261,8 @@ internal fun DownloadsScreenContent(
     var isSearchVisible by remember { mutableStateOf(false) }
     var showStorageSheet by remember { mutableStateOf(false) }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
+    var pendingDeleteAsset by remember { mutableStateOf<MediaAsset?>(null) }
+    var pendingDeleteSeries by remember { mutableStateOf<DownloadLibraryEntry.SeriesGroup?>(null) }
 
     val effectiveStorageOpen = showStorageSheet || uiState.selectedTab == DownloadsTab.STORAGE
 
@@ -275,6 +298,35 @@ internal fun DownloadsScreenContent(
                 onDeleteSelectedAssets()
             },
             onDismiss = { showDeleteConfirmDialog = false },
+            isDestructive = true
+        )
+    }
+
+    pendingDeleteAsset?.let { asset ->
+        LaterboxConfirmDialog(
+            title = "Delete download?",
+            message = "This permanently removes \"${asset.title ?: "this file"}\" from your device storage.",
+            confirmText = "Delete",
+            onConfirm = {
+                pendingDeleteAsset = null
+                onDeleteAsset(asset)
+            },
+            onDismiss = { pendingDeleteAsset = null },
+            isDestructive = true
+        )
+    }
+
+    pendingDeleteSeries?.let { series ->
+        val fileCount = series.allAssets.size
+        LaterboxConfirmDialog(
+            title = "Delete series downloads?",
+            message = "This permanently removes all $fileCount downloaded ${if (fileCount == 1) "file" else "files"} for \"${series.seriesTitle}\" from your device storage.",
+            confirmText = "Delete Series",
+            onConfirm = {
+                pendingDeleteSeries = null
+                onDeleteSeries(series)
+            },
+            onDismiss = { pendingDeleteSeries = null },
             isDestructive = true
         )
     }
@@ -729,8 +781,13 @@ internal fun DownloadsScreenContent(
                         }
                     }
 
-                    // 4. Library Asset Cards
-                    if (uiState.assets.isEmpty()) {
+                    // 4. Library Asset & Series Group Cards
+                    val effectiveEntries = if (uiState.libraryEntries.isNotEmpty() || uiState.assets.isEmpty()) {
+                        uiState.libraryEntries
+                    } else {
+                        DownloadedSeriesGrouper.group(uiState.assets)
+                    }
+                    if (effectiveEntries.isEmpty()) {
                         item(key = "empty_filter_state") {
                             EmptyStateView(
                                 title = "No ${uiState.selectedCategory.label.lowercase()} downloads",
@@ -742,27 +799,51 @@ internal fun DownloadsScreenContent(
                             )
                         }
                     } else {
-                        items(uiState.assets, key = { "lib_${it.id}" }) { asset ->
-                            val isSelected = uiState.selectedAssetIds.contains(asset.id)
-                            LibraryAssetCard(
-                                asset = asset,
-                                onOpen = {
-                                    if (uiState.isSelectionMode) {
-                                        onToggleAssetSelection(asset.id)
-                                    } else {
-                                        onOpenAsset(asset)
-                                    }
-                                },
-                                onExport = { onExportAsset(asset) },
-                                onDelete = { onDeleteAsset(asset) },
-                                isSelected = isSelected,
-                                isInSelectionMode = uiState.isSelectionMode,
-                                onLongClick = { onToggleAssetSelection(asset.id) },
-                                subtitleSummary = uiState.subtitleSummaries[asset.id],
-                                isRetryingSubtitles = uiState.retryingSubtitleAssetIds.contains(asset.id),
-                                onRetrySubtitles = { onRetrySubtitles(asset.id) },
-                                playbackProgress = uiState.playbackProgressByAssetId[asset.id]
-                            )
+                        items(effectiveEntries, key = { it.entryKey }) { entry ->
+                            when (entry) {
+                                is DownloadLibraryEntry.SeriesGroup -> {
+                                    val allGroupIdsSelected = entry.allAssets.isNotEmpty() &&
+                                        entry.allAssets.all { uiState.selectedAssetIds.contains(it.id) }
+                                    DownloadedSeriesGroupCard(
+                                        group = entry,
+                                        onOpen = {
+                                            if (uiState.isSelectionMode) {
+                                                onToggleSeriesSelection(entry)
+                                            } else {
+                                                onOpenSeries(entry)
+                                            }
+                                        },
+                                        onExportAll = { onExportSeries(entry) },
+                                        onDeleteSeries = { pendingDeleteSeries = entry },
+                                        isSelected = allGroupIdsSelected,
+                                        isInSelectionMode = uiState.isSelectionMode,
+                                        onLongClick = { onToggleSeriesSelection(entry) }
+                                    )
+                                }
+                                is DownloadLibraryEntry.SingleAsset -> {
+                                    val asset = entry.asset
+                                    val isSelected = uiState.selectedAssetIds.contains(asset.id)
+                                    LibraryAssetCard(
+                                        asset = asset,
+                                        onOpen = {
+                                            if (uiState.isSelectionMode) {
+                                                onToggleAssetSelection(asset.id)
+                                            } else {
+                                                onOpenAsset(asset)
+                                            }
+                                        },
+                                        onExport = { onExportAsset(asset) },
+                                        onDelete = { pendingDeleteAsset = asset },
+                                        isSelected = isSelected,
+                                        isInSelectionMode = uiState.isSelectionMode,
+                                        onLongClick = { onToggleAssetSelection(asset.id) },
+                                        subtitleSummary = uiState.subtitleSummaries[asset.id],
+                                        isRetryingSubtitles = uiState.retryingSubtitleAssetIds.contains(asset.id),
+                                        onRetrySubtitles = { onRetrySubtitles(asset.id) },
+                                        playbackProgress = uiState.playbackProgressByAssetId[asset.id]
+                                    )
+                                }
+                            }
                         }
                     }
                 }

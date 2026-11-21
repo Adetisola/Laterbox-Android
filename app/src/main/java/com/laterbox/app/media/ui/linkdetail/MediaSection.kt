@@ -67,6 +67,7 @@ import com.laterbox.app.media.ui.downloads.formatBytes
 import com.laterbox.app.ui.components.LaterboxBadge
 import com.laterbox.app.ui.components.LaterboxBadgeVariant
 import com.laterbox.app.ui.components.LaterboxCard
+import com.laterbox.app.ui.components.LaterboxConfirmDialog
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.components.LaterboxPrimaryButton
 import com.laterbox.app.ui.components.LaterboxSecondaryButton
@@ -101,6 +102,21 @@ fun MediaSection(
     val spacing = LaterboxTheme.spacing
 
     var pendingCandidateToDownload by remember { mutableStateOf<MediaCandidate?>(null) }
+    var pendingDeleteAsset by remember { mutableStateOf<MediaAsset?>(null) }
+
+    pendingDeleteAsset?.let { asset ->
+        LaterboxConfirmDialog(
+            title = "Delete download?",
+            message = "This permanently removes \"${asset.title ?: "this file"}\" from your device storage.",
+            confirmText = "Delete",
+            onConfirm = {
+                pendingDeleteAsset = null
+                onDeleteAsset(asset)
+            },
+            onDismiss = { pendingDeleteAsset = null },
+            isDestructive = true
+        )
+    }
 
     val notificationLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -159,7 +175,7 @@ fun MediaSection(
                         asset = asset,
                         onOpen = { onOpenAsset(asset) },
                         onExport = { onExportAsset(asset) },
-                        onDelete = { onDeleteAsset(asset) }
+                        onDelete = { pendingDeleteAsset = asset }
                     )
                 }
             }

@@ -52,7 +52,8 @@ data class DownloadsUiState(
     val isQueueSelectionMode: Boolean = false,
     val subtitleSummaries: Map<String, com.laterbox.app.movies.data.download.AssetSubtitleSummary> = emptyMap(),
     val retryingSubtitleAssetIds: Set<String> = emptySet(),
-    val playbackProgressByAssetId: Map<String, com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressEntity> = emptyMap()
+    val playbackProgressByAssetId: Map<String, com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressEntity> = emptyMap(),
+    val libraryEntries: List<DownloadLibraryEntry> = emptyList()
 )
 
 private data class ViewSelections(
@@ -193,7 +194,8 @@ class DownloadsViewModel(
             isQueueSelectionMode = selections.isQueueSelectionMode,
             subtitleSummaries = subtitleSummaries,
             retryingSubtitleAssetIds = retryingSubIds,
-            playbackProgressByAssetId = progressByAssetId
+            playbackProgressByAssetId = progressByAssetId,
+            libraryEntries = DownloadedSeriesGrouper.group(assets)
         )
     }.stateIn(
         scope = viewModelScope,
@@ -235,6 +237,19 @@ class DownloadsViewModel(
         _isSelectionMode.value = current.isNotEmpty()
     }
 
+    fun onToggleSeriesSelection(assetIds: List<String>) {
+        if (assetIds.isEmpty()) return
+        val current = _selectedAssetIds.value.toMutableSet()
+        val allSelected = assetIds.all { it in current }
+        if (allSelected) {
+            current.removeAll(assetIds.toSet())
+        } else {
+            current.addAll(assetIds)
+        }
+        _selectedAssetIds.value = current
+        _isSelectionMode.value = current.isNotEmpty()
+    }
+
     fun onSelectAllAssets(assets: List<MediaAsset>) {
         _selectedAssetIds.value = assets.map { it.id }.toSet()
         _isSelectionMode.value = true
@@ -252,6 +267,30 @@ class DownloadsViewModel(
                 mediaRepository.deleteAsset(id)
             }
             onClearSelection()
+        }
+    }
+
+    fun onDeleteAssets(assetIds: List<String>) {
+        if (assetIds.isEmpty()) return
+        viewModelScope.launch {
+            for (id in assetIds) {
+                mediaRepository.deleteAsset(id)
+            }
+        }
+    }
+
+    fun onExportAssets(assetIds: List<String>, onResult: (Int, Int) -> Unit = { _, _ -> }) {
+        if (assetIds.isEmpty()) {
+            onResult(0, 0)
+            return
+        }
+        viewModelScope.launch {
+            var successCount = 0
+            for (id in assetIds) {
+                val res = mediaRepository.exportAsset(id)
+                if (res.isSuccess) successCount++
+            }
+            onResult(successCount, assetIds.size)
         }
     }
 

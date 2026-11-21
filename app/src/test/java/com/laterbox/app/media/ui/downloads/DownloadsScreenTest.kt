@@ -137,6 +137,9 @@ class DownloadsScreenTest {
         composeTestRule.onNodeWithTag("asset_more_button_asset_1").performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithText("Delete").assertIsDisplayed().performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Delete download?").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Delete").performClick()
         assertEquals("asset_1", deletedAssetId)
 
         // Header Storage button opens Storage modal sheet
