@@ -545,7 +545,9 @@ fun LaterboxApp(
     BackHandler(enabled = drawerState.isOpen) {
         coroutineScope.launch { drawerState.close() }
     }
-    BackHandler(enabled = currentRoute == LaterboxDestination.Inbox.route && isInboxComposerExpanded && !drawerState.isOpen) {
+    val activeTabDockSpec = com.laterbox.app.ui.components.ContextualTabDockResolver.resolveForRoute(currentRoute)
+
+    BackHandler(enabled = activeTabDockSpec != null && isInboxComposerExpanded && !drawerState.isOpen) {
         collapseInboxComposer()
     }
 
@@ -562,13 +564,16 @@ fun LaterboxApp(
             )
         }
         val isLocalVideoViewerActive = activeViewerAsset?.mediaType == com.laterbox.app.media.domain.model.MediaType.VIDEO
-        val isInboxOverlayVisible = currentRoute == LaterboxDestination.Inbox.route &&
+        val isInboxOverlayVisible = activeTabDockSpec != null &&
             !isLocalVideoViewerActive &&
-            !inboxUiState.isSelectionMode &&
+            !(currentRoute == LaterboxDestination.Inbox.route && inboxUiState.isSelectionMode) &&
             inboxUiState.hasCompletedOnboarding
 
-        LaunchedEffect(isInboxOverlayVisible) {
-            if (!isInboxOverlayVisible) inboxOverlayHeightPx = 0
+        LaunchedEffect(isInboxOverlayVisible, currentRoute) {
+            if (!isInboxOverlayVisible) {
+                inboxOverlayHeightPx = 0
+                isInboxComposerExpanded = false
+            }
         }
 
         val closeDrawerIfNarrow: () -> Unit = {
@@ -1242,7 +1247,7 @@ fun LaterboxApp(
                                 onClearActionFeedback = moviesHomeViewModel::clearActionFeedback,
                                 onSettingsClick = { navController.navigate(LaterboxDestination.Settings.route) },
                                 onMenuClick = openMenuHandler,
-                                bottomPaddingDp = if (showHandsetBottomBar) 96 else 24,
+                                bottomPaddingDp = if (showHandsetBottomBar) 148 else 88,
                                 remoteConfig = remoteConfig,
                                 recommendationsEnabled = recommendationsEnabled,
                                 dismissedAnnouncementIds = dismissedAnnouncementIds,
@@ -1842,7 +1847,7 @@ fun LaterboxApp(
                                                 onDismissAudioConsent = { pendingAudioConsentTarget = null }
                                             )
                                         }
-                                    } else {
+                                    } else if (activeTabDockSpec != null) {
                                         InboxActionDock(
                                             assistantEnabled = effectiveAssistantEnabled,
                                             onAskClick = {
@@ -1851,9 +1856,22 @@ fun LaterboxApp(
                                             },
                                             onSaveClick = {
                                                 haptics.tick()
-                                                saveLinkViewModel.reset()
-                                                showSaveSheet = true
-                                            }
+                                                when (activeTabDockSpec.kind) {
+                                                    com.laterbox.app.ui.components.TabQuickActionKind.SAVE_LINK -> {
+                                                        saveLinkViewModel.reset()
+                                                        showSaveSheet = true
+                                                    }
+                                                    com.laterbox.app.ui.components.TabQuickActionKind.NEW_COLLECTION -> {
+                                                        collectionsViewModel.onOpenCreateDialog()
+                                                    }
+                                                    com.laterbox.app.ui.components.TabQuickActionKind.WATCHLIST -> {
+                                                        navController.navigate(LaterboxDestination.MoviesWatchlist.route)
+                                                    }
+                                                }
+                                            },
+                                            primaryLabel = activeTabDockSpec.primaryLabel,
+                                            primaryIconRes = activeTabDockSpec.primaryIconRes,
+                                            primaryButtonTestTag = activeTabDockSpec.primaryButtonTestTag
                                         )
                                     }
                                 }

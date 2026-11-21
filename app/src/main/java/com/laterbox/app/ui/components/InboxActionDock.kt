@@ -1,5 +1,6 @@
 package com.laterbox.app.ui.components
 
+import androidx.annotation.DrawableRes
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
@@ -17,26 +18,68 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.laterbox.app.ui.navigation.LaterboxDestination
 import com.laterbox.app.ui.theme.LaterboxTheme
 
+enum class TabQuickActionKind {
+    SAVE_LINK,
+    NEW_COLLECTION,
+    WATCHLIST
+}
+
+data class TabQuickActionSpec(
+    val kind: TabQuickActionKind,
+    val primaryLabel: String,
+    @DrawableRes val primaryIconRes: Int,
+    val primaryButtonTestTag: String
+)
+
+object ContextualTabDockResolver {
+    fun resolveForRoute(route: String?): TabQuickActionSpec? = when (route) {
+        LaterboxDestination.Inbox.route -> TabQuickActionSpec(
+            kind = TabQuickActionKind.SAVE_LINK,
+            primaryLabel = "Save Link",
+            primaryIconRes = LaterboxIcons.Plus,
+            primaryButtonTestTag = "inbox_dock_save_button"
+        )
+        LaterboxDestination.Collections.route -> TabQuickActionSpec(
+            kind = TabQuickActionKind.NEW_COLLECTION,
+            primaryLabel = "New Collection",
+            primaryIconRes = LaterboxIcons.FolderAdd,
+            primaryButtonTestTag = "collections_dock_new_button"
+        )
+        LaterboxDestination.Movies.route -> TabQuickActionSpec(
+            kind = TabQuickActionKind.WATCHLIST,
+            primaryLabel = "Watchlist",
+            primaryIconRes = LaterboxIcons.Bookmark,
+            primaryButtonTestTag = "movies_dock_watchlist_button"
+        )
+        else -> null
+    }
+}
+
 /**
- * Compact floating action dock for the Inbox screen.
- * Keeps the primary reading surface calm while offering 1-tap access to Save Link
- * and an expandable Ask Laterbox assistant entry point.
+ * Compact floating quick-action dock shared across primary content tabs
+ * (Inbox, Collections, Movies & TV), adapting the primary action to each tab's context.
  */
 @Composable
 fun InboxActionDock(
     assistantEnabled: Boolean,
     onAskClick: () -> Unit,
     onSaveClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    primaryLabel: String = "Save Link",
+    @DrawableRes primaryIconRes: Int = LaterboxIcons.Plus,
+    primaryButtonTestTag: String = "inbox_dock_save_button",
+    dockTestTag: String = "inbox_action_dock",
+    askButtonTestTag: String = "inbox_dock_ask_button"
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -45,7 +88,7 @@ fun InboxActionDock(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .testTag("inbox_action_dock"),
+            .testTag(dockTestTag),
         horizontalArrangement = Arrangement.spacedBy(spacing.sm, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -60,7 +103,7 @@ fun InboxActionDock(
                 modifier = Modifier
                     .heightIn(min = 44.dp)
                     .semantics { role = Role.Button }
-                    .testTag("inbox_dock_ask_button")
+                    .testTag(askButtonTestTag)
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
@@ -91,21 +134,21 @@ fun InboxActionDock(
             modifier = Modifier
                 .heightIn(min = 44.dp)
                 .semantics { role = Role.Button }
-                .testTag("inbox_dock_save_button")
+                .testTag(primaryButtonTestTag)
         ) {
             Row(
                 modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
-                    painter = painterResource(id = LaterboxIcons.Plus),
+                    painter = painterResource(id = primaryIconRes),
                     contentDescription = null,
                     tint = colors.onAccentPrimary,
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = "Save",
+                    text = primaryLabel,
                     style = typography.uiMedium.copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold),
                     color = colors.onAccentPrimary
                 )

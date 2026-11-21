@@ -85,28 +85,6 @@ fun CollectionsScreen(
                 subtitle = "Themed shelves for your library",
                 onMenuClick = onMenuClick
             ) {
-                // + New collection button (moved to dock in Milestone 4)
-                Box(
-                    modifier = Modifier
-                        .sizeIn(minHeight = spacing.minTouchTarget, minWidth = spacing.minTouchTarget)
-                        .clip(LaterboxShapeTokens.Button)
-                        .background(colors.surfaceSecondary)
-                        .border(spacing.hairline, colors.borderSubtle, LaterboxShapeTokens.Button)
-                        .clickable(
-                            role = Role.Button,
-                            onClickLabel = "New collection",
-                            onClick = onOpenCreateDialog
-                        )
-                        .padding(horizontal = spacing.md, vertical = spacing.xs),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "+ New collection",
-                        style = typography.uiMedium.copy(fontSize = 13.sp),
-                        color = colors.accentPrimary
-                    )
-                }
-
                 LaterboxIconButton(
                     iconRes = LaterboxIcons.Settings,
                     contentDescription = "Settings",
@@ -140,7 +118,7 @@ fun CollectionsScreen(
                             start = spacing.base,
                             end = spacing.base,
                             top = spacing.sm,
-                            bottom = 112.dp
+                            bottom = 156.dp
                         ),
                         horizontalArrangement = Arrangement.spacedBy(spacing.sm),
                         verticalArrangement = Arrangement.spacedBy(spacing.sm),
