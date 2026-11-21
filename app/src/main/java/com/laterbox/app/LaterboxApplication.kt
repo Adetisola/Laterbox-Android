@@ -162,6 +162,7 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
             override fun onActivityStarted(activity: android.app.Activity) {
                 if (startedActivities == 0) {
                     container.remoteConfigManager.onAppForegrounded()
+                    container.analyticsTracker.onAppForegrounded()
                     applicationScope.launch {
                         reconcileInspectionsIfNeeded()
                     }
@@ -170,7 +171,11 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
             }
 
             override fun onActivityStopped(activity: android.app.Activity) {
+                val wasForeground = startedActivities > 0
                 startedActivities = (startedActivities - 1).coerceAtLeast(0)
+                if (wasForeground && startedActivities == 0) {
+                    container.analyticsTracker.onAppBackgrounded()
+                }
             }
 
             override fun onActivityCreated(activity: android.app.Activity, savedInstanceState: android.os.Bundle?) {}

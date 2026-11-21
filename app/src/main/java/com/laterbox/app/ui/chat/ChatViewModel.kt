@@ -73,7 +73,8 @@ class ChatViewModel(
     private val moviesRepository: MoviesRepository? = null,
     private val collectionRepository: CollectionRepository? = null,
     private val reminderScheduler: ReminderScheduler? = null,
-    private val backendAiClient: com.laterbox.app.ai.LaterboxBackendAiClient? = null
+    private val backendAiClient: com.laterbox.app.ai.LaterboxBackendAiClient? = null,
+    private val analyticsTracker: com.laterbox.app.analytics.LaterboxAnalyticsTracker? = null
 ) : ViewModel() {
 
     private val _activeConversationId = MutableStateFlow<String?>(null)
@@ -322,6 +323,7 @@ class ChatViewModel(
             return
         }
         pendingConsentConversationId = null
+        analyticsTracker?.trackFeatureUsed("assistant_chat")
         generateAssistantReply(conversationId, trimmedPrompt)
     }
 
@@ -438,6 +440,9 @@ class ChatViewModel(
         status: String,
         detail: String
     ) {
+        if (status == "succeeded") {
+            analyticsTracker?.trackFeatureUsed("assistant_action")
+        }
         val client = backendAiClient ?: return
         val convId = conversationId ?: return
         viewModelScope.launch {

@@ -217,6 +217,10 @@ object LaterboxShareHelper {
         }
         return try {
             context.startActivity(chooser)
+            (context.applicationContext as? com.laterbox.app.LaterboxApplication)
+                ?.container
+                ?.analyticsTracker
+                ?.trackFeatureUsed("media_share")
             true
         } catch (_: ActivityNotFoundException) {
             Toast.makeText(context, "No app available to share with.", Toast.LENGTH_SHORT).show()

@@ -265,6 +265,10 @@ fun LaterboxApp(
 
     LaunchedEffect(currentRoute) {
         pendingAudioConsentTarget = null
+        (context.applicationContext as? LaterboxApplication)
+            ?.container
+            ?.analyticsTracker
+            ?.trackScreenRoute(currentRoute)
     }
 
     LaunchedEffect(effectiveAssistantEnabled) {
@@ -1834,11 +1838,19 @@ fun LaterboxApp(
                                 com.laterbox.app.movies.ui.player.MiniPlayerBar(
                                     state = activeMini,
                                     onOpenFullscreen = {
+                                        (context.applicationContext as? LaterboxApplication)
+                                            ?.container
+                                            ?.analyticsTracker
+                                            ?.trackFeatureUsed("mini_player")
                                         context.startActivity(
                                             com.laterbox.app.movies.playback.PlayerActivity.createReopenIntent(context)
                                         )
                                     },
                                     onTogglePlayPause = {
+                                        (context.applicationContext as? LaterboxApplication)
+                                            ?.container
+                                            ?.analyticsTracker
+                                            ?.trackFeatureUsed("mini_player")
                                         com.laterbox.app.movies.playback.LaterboxPlaybackBridge.toggleMiniPlayerPlayPause()
                                     },
                                     onClose = {

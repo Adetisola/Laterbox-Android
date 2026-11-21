@@ -101,6 +101,10 @@ class MainActivity : ComponentActivity() {
             val deepLinkRoute = LaterboxDeepLinks.parseIncomingIntent(intent)
             if (!deepLinkRoute.isNullOrBlank()) {
                 openDestinationState.value = deepLinkRoute to null
+                (applicationContext as? LaterboxApplication)
+                    ?.container
+                    ?.analyticsTracker
+                    ?.trackFeatureUsed("deep_link_open")
                 intent?.data = null
             }
         }

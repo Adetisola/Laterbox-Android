@@ -186,7 +186,14 @@ object LaterboxPipController {
                 aspectRatio = aspectRatio,
                 autoEnterEnabled = isPlaying
             )
-            act.enterPictureInPictureMode(params)
+            act.enterPictureInPictureMode(params).also { entered ->
+                if (entered) {
+                    (act.applicationContext as? com.laterbox.app.LaterboxApplication)
+                        ?.container
+                        ?.analyticsTracker
+                        ?.trackFeatureUsed("pip_playback")
+                }
+            }
         }.onFailure { err ->
             Log.w(TAG, "Unable to enter Picture-in-Picture: ${err.message}")
         }.getOrDefault(false)

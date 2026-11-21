@@ -44,6 +44,7 @@ interface AppContainer {
     val appStorageManager: com.laterbox.app.storage.AppStorageManager
     val remoteConfigManager: com.laterbox.app.remoteconfig.RemoteConfigManager
     val backendAiClient: com.laterbox.app.ai.LaterboxBackendAiClient
+    val analyticsTracker: com.laterbox.app.analytics.LaterboxAnalyticsTracker
     suspend fun resolveBackendBaseUrl(): String
     suspend fun getBackendAppCheckToken(forceRefresh: Boolean = false): String?
 }
@@ -346,6 +347,21 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             .build()
         com.laterbox.app.ai.LaterboxBackendAiClient(
             okHttpClient = aiOkHttp,
+            baseUrlProvider = { resolveBackendBaseUrl() },
+            appCheckTokenProvider = { forceRefresh -> getBackendAppCheckToken(forceRefresh) }
+        )
+    }
+
+    override val analyticsTracker: com.laterbox.app.analytics.LaterboxAnalyticsTracker by lazy {
+        val analyticsOkHttp = sharedOkHttpClient.newBuilder()
+            .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+        com.laterbox.app.analytics.LaterboxAnalyticsTracker(
+            appContext = context.applicationContext,
+            userPreferencesRepository = userPreferencesRepository,
+            okHttpClient = analyticsOkHttp,
             baseUrlProvider = { resolveBackendBaseUrl() },
             appCheckTokenProvider = { forceRefresh -> getBackendAppCheckToken(forceRefresh) }
         )
