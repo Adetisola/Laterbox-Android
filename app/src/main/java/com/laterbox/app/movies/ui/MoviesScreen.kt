@@ -67,7 +67,9 @@ import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.model.MoviesDiscoveryShortcut
 import com.laterbox.app.movies.domain.model.RuntimeBucket
 import com.laterbox.app.movies.domain.model.WatchHistoryItem
+import com.laterbox.app.ui.components.LaterboxIconButton
 import com.laterbox.app.ui.components.LaterboxIcons
+import com.laterbox.app.ui.components.LaterboxTabHeader
 import com.laterbox.app.ui.theme.LaterboxTheme
 import kotlinx.coroutines.delay
 import kotlin.math.abs
@@ -115,6 +117,7 @@ fun MoviesScreen(
     onOpenCollection: (collectionId: Long, collectionName: String) -> Unit = { _, _ -> },
     onOpenWatchlist: () -> Unit = {},
     onClearActionFeedback: () -> Unit = {},
+    onSettingsClick: () -> Unit = {},
     onMenuClick: (() -> Unit)? = null,
     bottomPaddingDp: Int = 96,
     remoteConfig: com.laterbox.app.remoteconfig.RemoteConfigSnapshot = com.laterbox.app.remoteconfig.RemoteConfigSnapshot.default(),
@@ -233,56 +236,31 @@ fun MoviesScreen(
             .testTag("movies_home_screen")
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-        // Fixed Editorial Top Bar (Movies & TV + Search button)
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
+        LaterboxTabHeader(
+            title = "Movies & TV",
+            subtitle = if (uiState.useSampleFixturesOnly) {
+                "Offline sample cinema mode"
+            } else {
+                "Discover films & series"
+            },
+            onMenuClick = onMenuClick,
+            menuButtonTestTag = "movies_menu_button"
         ) {
-            if (onMenuClick != null) {
-                IconButton(
-                    onClick = onMenuClick,
-                    modifier = Modifier.testTag("movies_menu_button")
-                ) {
-                    Icon(
-                        painter = painterResource(LaterboxIcons.Menu),
-                        contentDescription = "Open menu",
-                        tint = colors.textPrimary
-                    )
-                }
-            }
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Movies & TV",
-                    style = typography.editorialDisplay.copy(fontSize = 26.sp, lineHeight = 30.sp),
-                    color = colors.textPrimary
-                )
-                Text(
-                    text = if (uiState.useSampleFixturesOnly) {
-                        "Offline sample cinema mode"
-                    } else {
-                        "Discover films & series"
-                    },
-                    style = typography.metaText,
-                    color = colors.textSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            IconButton(
+            LaterboxIconButton(
+                iconRes = LaterboxIcons.Search,
+                contentDescription = "Search movies and TV",
                 onClick = {
                     val genreArg = uiState.selectedGenre.takeUnless { it == "All" }
                     onOpenCatalogue(uiState.selectedKind, genreArg)
                 },
                 modifier = Modifier.testTag("movies_search_button")
-            ) {
-                Icon(
-                    painter = painterResource(LaterboxIcons.Search),
-                    contentDescription = "Search movies and TV",
-                    tint = colors.textPrimary
-                )
-            }
+            )
+            LaterboxIconButton(
+                iconRes = LaterboxIcons.Settings,
+                contentDescription = "Settings",
+                onClick = onSettingsClick,
+                modifier = Modifier.testTag("movies_settings_button")
+            )
         }
 
         if (uiState.isRefreshing) {

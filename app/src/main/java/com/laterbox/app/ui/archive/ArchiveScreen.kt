@@ -55,6 +55,7 @@ import com.laterbox.app.ui.components.LaterboxIconButton
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.components.LaterboxSearchField
 import com.laterbox.app.ui.components.LaterboxShapeTokens
+import com.laterbox.app.ui.components.LaterboxTabHeader
 import com.laterbox.app.ui.components.SavedLinkCard
 import com.laterbox.app.ui.theme.LaterboxTheme
 
@@ -90,40 +91,11 @@ fun ArchiveScreen(
             .background(colors.backgroundPrimary)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Header Row
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = spacing.base, vertical = spacing.md),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            LaterboxTabHeader(
+                title = "Archive",
+                subtitle = "Finished reading & stored records",
+                onMenuClick = onMenuClick
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    if (onMenuClick != null) {
-                        LaterboxIconButton(
-                            iconRes = LaterboxIcons.Menu,
-                            contentDescription = "Open navigation menu",
-                            onClick = onMenuClick
-                        )
-                        Spacer(modifier = Modifier.width(spacing.sm))
-                    }
-                    Column {
-                        Text(
-                            text = "Archive",
-                            style = typography.displayLarge,
-                            color = colors.textPrimary
-                        )
-                        Text(
-                            text = "Finished reading & stored records",
-                            style = typography.metaText,
-                            color = colors.textSecondary
-                        )
-                    }
-                }
-
                 LaterboxIconButton(
                     iconRes = LaterboxIcons.Settings,
                     contentDescription = "Settings",

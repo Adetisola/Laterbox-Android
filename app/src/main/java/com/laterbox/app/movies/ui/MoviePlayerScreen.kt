@@ -1503,12 +1503,21 @@ private fun ActiveVideoPlayerContent(
                                 DropdownMenu(
                                     expanded = showMoreMenu,
                                     onDismissRequest = { showMoreMenu = false },
+                                    containerColor = colors.surfaceElevated,
                                     modifier = Modifier.testTag("player_more_menu")
                                 ) {
                                     if (canShowSubtitles) {
                                         val subSummary = selectedSubtitle?.languageCode?.uppercase(Locale.US) ?: "Off"
                                         DropdownMenuItem(
-                                            text = { Text("Subtitles ($subSummary)") },
+                                            text = { Text("Subtitles ($subSummary)", color = colors.textPrimary) },
+                                            leadingIcon = {
+                                                Icon(
+                                                    painter = painterResource(LaterboxIcons.Subtitles),
+                                                    contentDescription = null,
+                                                    tint = colors.textSecondary,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            },
                                             onClick = {
                                                 showMoreMenu = false
                                                 showSubtitleDialog = true
@@ -1519,7 +1528,15 @@ private fun ActiveVideoPlayerContent(
                                     if (canShowAudio) {
                                         val audioSummary = activeAudioBadge?.let { "Audio ($it)" } ?: "Audio"
                                         DropdownMenuItem(
-                                            text = { Text(audioSummary) },
+                                            text = { Text(audioSummary, color = colors.textPrimary) },
+                                            leadingIcon = {
+                                                Icon(
+                                                    painter = painterResource(LaterboxIcons.Play),
+                                                    contentDescription = null,
+                                                    tint = colors.textSecondary,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            },
                                             onClick = {
                                                 showMoreMenu = false
                                                 showAudioDialog = true
@@ -1529,7 +1546,15 @@ private fun ActiveVideoPlayerContent(
                                     }
                                     if (canShowQuality) {
                                         DropdownMenuItem(
-                                            text = { Text("Quality (${selectedSource.qualityLabel})") },
+                                            text = { Text("Quality (${selectedSource.qualityLabel})", color = colors.textPrimary) },
+                                            leadingIcon = {
+                                                Icon(
+                                                    painter = painterResource(LaterboxIcons.Settings),
+                                                    contentDescription = null,
+                                                    tint = colors.textSecondary,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            },
                                             onClick = {
                                                 showMoreMenu = false
                                                 showQualityDialog = true

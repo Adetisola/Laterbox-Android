@@ -1240,6 +1240,7 @@ fun LaterboxApp(
                                     navController.navigate(LaterboxDestination.MoviesWatchlist.route)
                                 },
                                 onClearActionFeedback = moviesHomeViewModel::clearActionFeedback,
+                                onSettingsClick = { navController.navigate(LaterboxDestination.Settings.route) },
                                 onMenuClick = openMenuHandler,
                                 bottomPaddingDp = if (showHandsetBottomBar) 96 else 24,
                                 remoteConfig = remoteConfig,

@@ -76,6 +76,7 @@ import com.laterbox.app.ui.components.LaterboxFilterChip
 import com.laterbox.app.ui.components.LaterboxIconButton
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.components.LaterboxShapeTokens
+import com.laterbox.app.ui.components.LaterboxTabHeader
 import com.laterbox.app.ui.theme.LaterboxTheme
 
 @Composable
@@ -339,93 +340,59 @@ internal fun DownloadsScreenContent(
             .background(colors.backgroundPrimary)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Header Row
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = spacing.base, vertical = spacing.sm),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            val summaryLine = buildString {
+                if (activeQueueCount > 0) {
+                    append("$activeQueueCount active · ")
+                }
+                append("${uiState.assets.size} saved")
+                if (uiState.totalStorageBytes > 0L) {
+                    append(" · ${formatBytes(uiState.totalStorageBytes)}")
+                }
+            }
+            LaterboxTabHeader(
+                title = "Downloads",
+                subtitle = summaryLine,
+                onMenuClick = onMenuClick
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
+                Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = colors.surfacePrimary,
+                    border = BorderStroke(spacing.hairline, colors.borderSubtle),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(18.dp))
+                        .clickable { showStorageSheet = true }
+                        .testTag("downloads_storage_button")
                 ) {
-                    if (onMenuClick != null) {
-                        LaterboxIconButton(
-                            iconRes = LaterboxIcons.Menu,
-                            contentDescription = "Open navigation menu",
-                            onClick = onMenuClick
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Icon(
+                            painter = painterResource(LaterboxIcons.Folder),
+                            contentDescription = "Open storage usage",
+                            tint = colors.accentPrimary,
+                            modifier = Modifier.size(16.dp)
                         )
-                        Spacer(modifier = Modifier.width(spacing.sm))
-                    }
-                    Column {
                         Text(
-                            text = "Downloads",
-                            style = typography.displayLarge,
+                            text = "Storage",
+                            style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
                             color = colors.textPrimary
                         )
-                        val summaryLine = buildString {
-                            if (activeQueueCount > 0) {
-                                append("$activeQueueCount active · ")
-                            }
-                            append("${uiState.assets.size} saved")
-                            if (uiState.totalStorageBytes > 0L) {
-                                append(" · ${formatBytes(uiState.totalStorageBytes)}")
-                            }
-                        }
-                        Text(
-                            text = summaryLine,
-                            style = typography.metaText,
-                            color = colors.textSecondary
-                        )
                     }
                 }
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(spacing.xs)
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(18.dp),
-                        color = colors.surfacePrimary,
-                        border = BorderStroke(spacing.hairline, colors.borderSubtle),
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(18.dp))
-                            .clickable { showStorageSheet = true }
-                            .testTag("downloads_storage_button")
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp)
-                        ) {
-                            Icon(
-                                painter = painterResource(LaterboxIcons.Folder),
-                                contentDescription = "Open storage usage",
-                                tint = colors.accentPrimary,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Text(
-                                text = "Storage",
-                                style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
-                                color = colors.textPrimary
-                            )
-                        }
-                    }
-
-                    LaterboxIconButton(
-                        iconRes = LaterboxIcons.Search,
-                        contentDescription = "Search downloads",
-                        selected = isSearchVisible,
-                        onClick = { isSearchVisible = !isSearchVisible }
-                    )
-                    LaterboxIconButton(
-                        iconRes = LaterboxIcons.Settings,
-                        contentDescription = "Settings",
-                        onClick = onSettingsClick
-                    )
-                }
+                LaterboxIconButton(
+                    iconRes = LaterboxIcons.Search,
+                    contentDescription = "Search downloads",
+                    selected = isSearchVisible,
+                    onClick = { isSearchVisible = !isSearchVisible }
+                )
+                LaterboxIconButton(
+                    iconRes = LaterboxIcons.Settings,
+                    contentDescription = "Settings",
+                    onClick = onSettingsClick
+                )
             }
 
             // Expandable Search Bar

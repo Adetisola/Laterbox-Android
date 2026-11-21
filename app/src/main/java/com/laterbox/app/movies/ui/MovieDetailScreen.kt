@@ -654,10 +654,19 @@ fun MovieDetailScreen(
                                                     }
                                                     DropdownMenu(
                                                         expanded = showMoreActionsMenu,
-                                                        onDismissRequest = { showMoreActionsMenu = false }
+                                                        onDismissRequest = { showMoreActionsMenu = false },
+                                                        containerColor = colors.surfaceElevated
                                                     ) {
                                                         DropdownMenuItem(
-                                                            text = { Text("Save to Collection") },
+                                                            text = { Text("Save to Collection", color = colors.textPrimary) },
+                                                            leadingIcon = {
+                                                                Icon(
+                                                                    painter = painterResource(LaterboxIcons.FolderAdd),
+                                                                    contentDescription = null,
+                                                                    tint = colors.textSecondary,
+                                                                    modifier = Modifier.size(18.dp)
+                                                                )
+                                                            },
                                                             onClick = {
                                                                 showMoreActionsMenu = false
                                                                 showCollectionDialog = true
@@ -667,7 +676,16 @@ fun MovieDetailScreen(
                                                         DropdownMenuItem(
                                                             text = {
                                                                 Text(
-                                                                    if (uiState.viewingReminder != null) "Update Viewing Reminder" else "Remind Me to Watch"
+                                                                    if (uiState.viewingReminder != null) "Update Viewing Reminder" else "Remind Me to Watch",
+                                                                    color = colors.textPrimary
+                                                                )
+                                                            },
+                                                            leadingIcon = {
+                                                                Icon(
+                                                                    painter = painterResource(LaterboxIcons.Bell),
+                                                                    contentDescription = null,
+                                                                    tint = colors.textSecondary,
+                                                                    modifier = Modifier.size(18.dp)
                                                                 )
                                                             },
                                                             onClick = {
@@ -678,7 +696,15 @@ fun MovieDetailScreen(
                                                         )
                                                         if (!uiState.isTitleCompleted) {
                                                             DropdownMenuItem(
-                                                                text = { Text("Mark as Watched") },
+                                                                text = { Text("Mark as Watched", color = colors.textPrimary) },
+                                                                leadingIcon = {
+                                                                    Icon(
+                                                                        painter = painterResource(LaterboxIcons.Check),
+                                                                        contentDescription = null,
+                                                                        tint = colors.textSecondary,
+                                                                        modifier = Modifier.size(18.dp)
+                                                                    )
+                                                                },
                                                                 onClick = {
                                                                     showMoreActionsMenu = false
                                                                     onMarkWatched(false)
@@ -687,7 +713,15 @@ fun MovieDetailScreen(
                                                             )
                                                         } else {
                                                             DropdownMenuItem(
-                                                                text = { Text("Log Rewatch") },
+                                                                text = { Text("Log Rewatch", color = colors.textPrimary) },
+                                                                leadingIcon = {
+                                                                    Icon(
+                                                                        painter = painterResource(LaterboxIcons.Refresh),
+                                                                        contentDescription = null,
+                                                                        tint = colors.textSecondary,
+                                                                        modifier = Modifier.size(18.dp)
+                                                                    )
+                                                                },
                                                                 onClick = {
                                                                     showMoreActionsMenu = false
                                                                     onMarkWatched(true)
@@ -695,7 +729,15 @@ fun MovieDetailScreen(
                                                                 modifier = Modifier.testTag("detail_action_rewatch")
                                                             )
                                                             DropdownMenuItem(
-                                                                text = { Text("Mark Unwatched") },
+                                                                text = { Text("Mark Unwatched", color = colors.textPrimary) },
+                                                                leadingIcon = {
+                                                                    Icon(
+                                                                        painter = painterResource(LaterboxIcons.Close),
+                                                                        contentDescription = null,
+                                                                        tint = colors.textSecondary,
+                                                                        modifier = Modifier.size(18.dp)
+                                                                    )
+                                                                },
                                                                 onClick = {
                                                                     showMoreActionsMenu = false
                                                                     onMarkUnwatched()
@@ -705,7 +747,15 @@ fun MovieDetailScreen(
                                                         }
                                                         if (uiState.savedPositionMs > 0L) {
                                                             DropdownMenuItem(
-                                                                text = { Text("Restart from Beginning") },
+                                                                text = { Text("Restart from Beginning", color = colors.textPrimary) },
+                                                                leadingIcon = {
+                                                                    Icon(
+                                                                        painter = painterResource(LaterboxIcons.Refresh),
+                                                                        contentDescription = null,
+                                                                        tint = colors.textSecondary,
+                                                                        modifier = Modifier.size(18.dp)
+                                                                    )
+                                                                },
                                                                 onClick = {
                                                                     showMoreActionsMenu = false
                                                                     onRestartFromBeginning()
@@ -713,7 +763,15 @@ fun MovieDetailScreen(
                                                                 modifier = Modifier.testTag("detail_action_restart")
                                                             )
                                                             DropdownMenuItem(
-                                                                text = { Text("Remove from Continue Watching") },
+                                                                text = { Text("Remove from Continue Watching", color = colors.statusDanger) },
+                                                                leadingIcon = {
+                                                                    Icon(
+                                                                        painter = painterResource(LaterboxIcons.Delete),
+                                                                        contentDescription = null,
+                                                                        tint = colors.statusDanger,
+                                                                        modifier = Modifier.size(18.dp)
+                                                                    )
+                                                                },
                                                                 onClick = {
                                                                     showMoreActionsMenu = false
                                                                     onRemoveFromContinueWatching()
@@ -725,7 +783,18 @@ fun MovieDetailScreen(
                                                             val isMuted = uiState.seriesPreferences?.remindersMuted == true
                                                             DropdownMenuItem(
                                                                 text = {
-                                                                    Text(if (isMuted) "Unmute Series Alerts" else "Mute Series Alerts")
+                                                                    Text(
+                                                                        if (isMuted) "Unmute Series Alerts" else "Mute Series Alerts",
+                                                                        color = colors.textPrimary
+                                                                    )
+                                                                },
+                                                                leadingIcon = {
+                                                                    Icon(
+                                                                        painter = painterResource(LaterboxIcons.Bell),
+                                                                        contentDescription = null,
+                                                                        tint = colors.textSecondary,
+                                                                        modifier = Modifier.size(18.dp)
+                                                                    )
                                                                 },
                                                                 onClick = {
                                                                     showMoreActionsMenu = false
@@ -735,7 +804,15 @@ fun MovieDetailScreen(
                                                             )
                                                         }
                                                         DropdownMenuItem(
-                                                            text = { Text("Hide Title") },
+                                                            text = { Text("Hide Title", color = colors.statusDanger) },
+                                                            leadingIcon = {
+                                                                Icon(
+                                                                    painter = painterResource(LaterboxIcons.Close),
+                                                                    contentDescription = null,
+                                                                    tint = colors.statusDanger,
+                                                                    modifier = Modifier.size(18.dp)
+                                                                )
+                                                            },
                                                             onClick = {
                                                                 showMoreActionsMenu = false
                                                                 onSetTitleHidden(true)

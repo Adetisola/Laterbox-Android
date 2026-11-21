@@ -50,6 +50,7 @@ import com.laterbox.app.ui.components.LaterboxConfirmDialog
 import com.laterbox.app.ui.components.LaterboxIconButton
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.components.LaterboxShapeTokens
+import com.laterbox.app.ui.components.LaterboxTabHeader
 import com.laterbox.app.ui.theme.LaterboxTheme
 
 @Composable
@@ -79,71 +80,38 @@ fun CollectionsScreen(
             .background(colors.backgroundPrimary)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Header Row
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = spacing.base, vertical = spacing.md),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            LaterboxTabHeader(
+                title = "Collections",
+                subtitle = "Themed shelves for your library",
+                onMenuClick = onMenuClick
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
+                // + New collection button (moved to dock in Milestone 4)
+                Box(
+                    modifier = Modifier
+                        .sizeIn(minHeight = spacing.minTouchTarget, minWidth = spacing.minTouchTarget)
+                        .clip(LaterboxShapeTokens.Button)
+                        .background(colors.surfaceSecondary)
+                        .border(spacing.hairline, colors.borderSubtle, LaterboxShapeTokens.Button)
+                        .clickable(
+                            role = Role.Button,
+                            onClickLabel = "New collection",
+                            onClick = onOpenCreateDialog
+                        )
+                        .padding(horizontal = spacing.md, vertical = spacing.xs),
+                    contentAlignment = Alignment.Center
                 ) {
-                    if (onMenuClick != null) {
-                        LaterboxIconButton(
-                            iconRes = LaterboxIcons.Menu,
-                            contentDescription = "Open navigation menu",
-                            onClick = onMenuClick
-                        )
-                        Spacer(modifier = Modifier.width(spacing.sm))
-                    }
-                    Column {
-                        Text(
-                            text = "Collections",
-                            style = typography.displayLarge,
-                            color = colors.textPrimary
-                        )
-                        Text(
-                            text = "Themed shelves for your library",
-                            style = typography.metaText,
-                            color = colors.textSecondary
-                        )
-                    }
-                }
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // + New collection button
-                    Box(
-                        modifier = Modifier
-                            .sizeIn(minHeight = spacing.minTouchTarget, minWidth = spacing.minTouchTarget)
-                            .clip(LaterboxShapeTokens.Button)
-                            .background(colors.surfaceSecondary)
-                            .border(spacing.hairline, colors.borderSubtle, LaterboxShapeTokens.Button)
-                            .clickable(
-                                role = Role.Button,
-                                onClickLabel = "New collection",
-                                onClick = onOpenCreateDialog
-                            )
-                            .padding(horizontal = spacing.md, vertical = spacing.xs),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "+ New collection",
-                            style = typography.uiMedium.copy(fontSize = 13.sp),
-                            color = colors.accentPrimary
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(spacing.xs))
-
-                    LaterboxIconButton(
-                        iconRes = LaterboxIcons.Settings,
-                        contentDescription = "Settings",
-                        onClick = onSettingsClick
+                    Text(
+                        text = "+ New collection",
+                        style = typography.uiMedium.copy(fontSize = 13.sp),
+                        color = colors.accentPrimary
                     )
                 }
+
+                LaterboxIconButton(
+                    iconRes = LaterboxIcons.Settings,
+                    contentDescription = "Settings",
+                    onClick = onSettingsClick
+                )
             }
 
             when {
@@ -281,17 +249,33 @@ private fun CollectionCard(
                     DropdownMenu(
                         expanded = showMenu,
                         onDismissRequest = { showMenu = false },
-                        modifier = Modifier.background(colors.surfaceElevated)
+                        containerColor = colors.surfaceElevated
                     ) {
                         DropdownMenuItem(
                             text = { Text("Rename", style = typography.uiMedium, color = colors.textPrimary) },
+                            leadingIcon = {
+                                Icon(
+                                    painter = painterResource(LaterboxIcons.Folder),
+                                    contentDescription = null,
+                                    tint = colors.textSecondary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            },
                             onClick = {
                                 showMenu = false
                                 onRename()
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Delete", style = typography.uiMedium, color = colors.accentPrimary) },
+                            text = { Text("Delete", style = typography.uiMedium, color = colors.statusDanger) },
+                            leadingIcon = {
+                                Icon(
+                                    painter = painterResource(LaterboxIcons.Delete),
+                                    contentDescription = null,
+                                    tint = colors.statusDanger,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            },
                             onClick = {
                                 showMenu = false
                                 onDelete()

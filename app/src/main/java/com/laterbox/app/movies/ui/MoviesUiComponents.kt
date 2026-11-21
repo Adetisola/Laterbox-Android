@@ -268,13 +268,23 @@ fun MoviePosterCard(
                             }
                             DropdownMenu(
                                 expanded = menuExpanded,
-                                onDismissRequest = { menuExpanded = false }
+                                onDismissRequest = { menuExpanded = false },
+                                containerColor = colors.surfaceElevated
                             ) {
                                 onToggleWatchlist?.let { toggle ->
                                     DropdownMenuItem(
                                         text = {
                                             Text(
-                                                if (isInWatchlist) "Remove from Watchlist" else "Add to Watchlist"
+                                                if (isInWatchlist) "Remove from Watchlist" else "Add to Watchlist",
+                                                color = colors.textPrimary
+                                            )
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                painter = painterResource(LaterboxIcons.Bookmark),
+                                                contentDescription = null,
+                                                tint = colors.textSecondary,
+                                                modifier = Modifier.size(18.dp)
                                             )
                                         },
                                         onClick = {
@@ -285,7 +295,15 @@ fun MoviePosterCard(
                                 }
                                 onAddToCollection?.let { addCol ->
                                     DropdownMenuItem(
-                                        text = { Text("Add to Collection") },
+                                        text = { Text("Add to Collection", color = colors.textPrimary) },
+                                        leadingIcon = {
+                                            Icon(
+                                                painter = painterResource(LaterboxIcons.FolderAdd),
+                                                contentDescription = null,
+                                                tint = colors.textSecondary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        },
                                         onClick = {
                                             menuExpanded = false
                                             addCol(item)
@@ -294,7 +312,15 @@ fun MoviePosterCard(
                                 }
                                 onMarkWatched?.let { mark ->
                                     DropdownMenuItem(
-                                        text = { Text("Mark Watched") },
+                                        text = { Text("Mark Watched", color = colors.textPrimary) },
+                                        leadingIcon = {
+                                            Icon(
+                                                painter = painterResource(LaterboxIcons.Check),
+                                                contentDescription = null,
+                                                tint = colors.textSecondary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        },
                                         onClick = {
                                             menuExpanded = false
                                             mark(item)
@@ -303,7 +329,15 @@ fun MoviePosterCard(
                                 }
                                 onRemoveFromViewed?.let { removeViewed ->
                                     DropdownMenuItem(
-                                        text = { Text("Remove from Viewed") },
+                                        text = { Text("Remove from Viewed", color = colors.statusDanger) },
+                                        leadingIcon = {
+                                            Icon(
+                                                painter = painterResource(LaterboxIcons.Delete),
+                                                contentDescription = null,
+                                                tint = colors.statusDanger,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        },
                                         modifier = Modifier.testTag("poster_remove_viewed_${item.id}"),
                                         onClick = {
                                             menuExpanded = false
@@ -313,7 +347,15 @@ fun MoviePosterCard(
                                 }
                                 onHideTitle?.let { hide ->
                                     DropdownMenuItem(
-                                        text = { Text("Hide Title") },
+                                        text = { Text("Hide Title", color = colors.statusDanger) },
+                                        leadingIcon = {
+                                            Icon(
+                                                painter = painterResource(LaterboxIcons.Close),
+                                                contentDescription = null,
+                                                tint = colors.statusDanger,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        },
                                         onClick = {
                                             menuExpanded = false
                                             hide(item)
@@ -644,11 +686,20 @@ fun ContinueWatchingCard(
                         }
                         DropdownMenu(
                             expanded = menuExpanded,
-                            onDismissRequest = { menuExpanded = false }
+                            onDismissRequest = { menuExpanded = false },
+                            containerColor = colors.surfaceElevated
                         ) {
                             onOpenDetail?.let { openDetail ->
                                 DropdownMenuItem(
-                                    text = { Text("View Details") },
+                                    text = { Text("View Details", color = colors.textPrimary) },
+                                    leadingIcon = {
+                                        Icon(
+                                            painter = painterResource(LaterboxIcons.ArrowUpRight),
+                                            contentDescription = null,
+                                            tint = colors.textSecondary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    },
                                     onClick = {
                                         menuExpanded = false
                                         openDetail()
@@ -657,7 +708,15 @@ fun ContinueWatchingCard(
                             }
                             onRestartFromBeginning?.let { restart ->
                                 DropdownMenuItem(
-                                    text = { Text("Restart from Beginning") },
+                                    text = { Text("Restart from Beginning", color = colors.textPrimary) },
+                                    leadingIcon = {
+                                        Icon(
+                                            painter = painterResource(LaterboxIcons.Refresh),
+                                            contentDescription = null,
+                                            tint = colors.textSecondary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    },
                                     onClick = {
                                         menuExpanded = false
                                         restart()
@@ -666,7 +725,15 @@ fun ContinueWatchingCard(
                             }
                             onMarkWatched?.let { mark ->
                                 DropdownMenuItem(
-                                    text = { Text("Mark Watched") },
+                                    text = { Text("Mark Watched", color = colors.textPrimary) },
+                                    leadingIcon = {
+                                        Icon(
+                                            painter = painterResource(LaterboxIcons.Check),
+                                            contentDescription = null,
+                                            tint = colors.textSecondary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    },
                                     onClick = {
                                         menuExpanded = false
                                         mark()
@@ -675,7 +742,15 @@ fun ContinueWatchingCard(
                             }
                             onRemoveFromContinueWatching?.let { remove ->
                                 DropdownMenuItem(
-                                    text = { Text("Remove from Continue Watching") },
+                                    text = { Text("Remove from Continue Watching", color = colors.statusDanger) },
+                                    leadingIcon = {
+                                        Icon(
+                                            painter = painterResource(LaterboxIcons.Delete),
+                                            contentDescription = null,
+                                            tint = colors.statusDanger,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    },
                                     onClick = {
                                         menuExpanded = false
                                         remove()

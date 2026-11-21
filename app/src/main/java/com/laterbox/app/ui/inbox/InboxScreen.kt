@@ -87,6 +87,7 @@ import com.laterbox.app.ui.components.InboxSkeletonList
 import com.laterbox.app.ui.components.LaterboxIconButton
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.components.LaterboxShapeTokens
+import com.laterbox.app.ui.components.LaterboxTabHeader
 import com.laterbox.app.ui.components.SavedLinkCard
 import com.laterbox.app.ui.onboarding.OnboardingSheet
 import com.laterbox.app.ui.theme.LaterboxTheme
@@ -321,67 +322,35 @@ fun InboxScreen(
                             .fillMaxWidth()
                             .onSizeChanged { headerHeightPx = it.height.toFloat() }
                     ) {
-                        // Header: Menu & Brand / Title on left; Notification Bell & Settings buttons on right
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = spacing.base, vertical = spacing.sm),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                        // Header: Shared LaterboxTabHeader with Menu, Brand, Notification Bell & Settings
+                        LaterboxTabHeader(
+                            title = "Laterbox",
+                            subtitle = "For later, whenever you're ready",
+                            onMenuClick = onMenuClick
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                if (onMenuClick != null) {
-                                    LaterboxIconButton(
-                                        iconRes = LaterboxIcons.Menu,
-                                        contentDescription = "Open navigation menu",
-                                        onClick = onMenuClick
-                                    )
-                                    Spacer(modifier = Modifier.width(spacing.sm))
-                                }
-                                Column {
-                                    Text(
-                                        text = "Laterbox",
-                                        style = typography.displayLarge,
-                                        color = colors.textPrimary
-                                    )
-                                    Text(
-                                        text = "For later, whenever you're ready",
-                                        style = typography.metaText,
-                                        color = colors.textSecondary
-                                    )
-                                }
-                            }
-
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box {
-                                    LaterboxIconButton(
-                                        iconRes = LaterboxIcons.Bell,
-                                        contentDescription = "Notification History",
-                                        onClick = onNotificationHistoryClick
-                                    )
-                                    if (uiState.unreadNotificationCount > 0) {
-                                        Box(
-                                            modifier = Modifier
-                                                .align(Alignment.TopEnd)
-                                                .padding(top = 6.dp, end = 6.dp)
-                                                .size(7.dp)
-                                                .clip(androidx.compose.foundation.shape.CircleShape)
-                                                .background(colors.accentPrimary)
-                                        )
-                                    }
-                                }
-
-                                Spacer(modifier = Modifier.width(spacing.xs))
-
+                            Box {
                                 LaterboxIconButton(
-                                    iconRes = LaterboxIcons.Settings,
-                                    contentDescription = "Settings",
-                                    onClick = onSettingsClick
+                                    iconRes = LaterboxIcons.Bell,
+                                    contentDescription = "Notification History",
+                                    onClick = onNotificationHistoryClick
                                 )
+                                if (uiState.unreadNotificationCount > 0) {
+                                    Box(
+                                        modifier = Modifier
+                                            .align(Alignment.TopEnd)
+                                            .padding(top = 6.dp, end = 6.dp)
+                                            .size(7.dp)
+                                            .clip(androidx.compose.foundation.shape.CircleShape)
+                                            .background(colors.accentPrimary)
+                                    )
+                                }
                             }
+
+                            LaterboxIconButton(
+                                iconRes = LaterboxIcons.Settings,
+                                contentDescription = "Settings",
+                                onClick = onSettingsClick
+                            )
                         }
 
                         // Search Row: [Search Field (weight 1f)] [Date Filter Button] [View Toggle Button]
