@@ -193,12 +193,14 @@ class InboxUiAndChatFlowTest {
 
         composeTestRule.onNodeWithTag("action_approval_card").assertIsDisplayed()
         composeTestRule.onNodeWithText("Library Management").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("composer_add_link_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("approval_toggle_details").performClick()
         composeTestRule.onNodeWithText("Target: Kotlin Talk").assertIsDisplayed()
         composeTestRule.onNodeWithText("Don't allow").performClick()
         composeTestRule.onNodeWithText("Allow once").performClick()
         composeTestRule.onNodeWithText("Always allow Library Management").performClick()
         assertTrue(denied && allowedOnce && alwaysAllowed)
+        composeTestRule.onNodeWithTag("approval_toggle_details").performClick()
         composeTestRule.onNodeWithTag("composer_add_link_button").assertIsDisplayed()
     }
 
