@@ -358,7 +358,7 @@ jobs:
             release_artifacts/*.patch
             release_artifacts/delta-manifest.json
             release_artifacts/checksums.sha256
-          retention-days: 30
+          retention-days: 3
 
       - name: Invalidate Backend Release Cache (Optional)
         if: steps.resolve_target.outputs.dry_run != 'true' && vars.UPDATE_CACHE_INVALIDATE_URL != ''
