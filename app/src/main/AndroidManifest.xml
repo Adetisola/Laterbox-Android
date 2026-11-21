@@ -39,7 +39,6 @@
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:exported="true"
-            android:supportsPictureInPicture="true"
             android:theme="@style/Theme.Laterbox.Splash"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -47,6 +46,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Dedicated Fullscreen Video Player & System Picture-in-Picture Activity -->
+        <activity
+            android:name=".movies.playback.PlayerActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:supportsPictureInPicture="true"
+            android:theme="@style/Theme.Laterbox" />
 
         <!-- Dedicated Translucent Share Sheet Receiver -->
         <activity

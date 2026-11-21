@@ -60,13 +60,16 @@ object LaterboxPipSpec {
         return if (durationMs > 0L) rawTarget.coerceAtMost(durationMs) else rawTarget
     }
 
-    fun shouldEnterPipOnBack(
+    fun shouldEnterPipOnBack(): Boolean = false
+
+    fun shouldEnterPipOnUserLeaveHint(
         isPlaying: Boolean,
         isPipSupported: Boolean,
         isAlreadyInPip: Boolean = false,
         hasModalOrOverlayOpen: Boolean = false,
-        isLocked: Boolean = false
-    ): Boolean = isPlaying && isPipSupported && !isAlreadyInPip && !hasModalOrOverlayOpen && !isLocked
+        isLocked: Boolean = false,
+        isFinishing: Boolean = false
+    ): Boolean = isPlaying && isPipSupported && !isAlreadyInPip && !hasModalOrOverlayOpen && !isLocked && !isFinishing
 
     fun buildPipActionsDescriptor(
         isPlaying: Boolean,
@@ -133,7 +136,8 @@ object LaterboxPipController {
         context: Context,
         isPlaying: Boolean,
         doubleTapSeekSeconds: Int,
-        aspectRatio: Rational = Rational(16, 9)
+        aspectRatio: Rational = Rational(16, 9),
+        autoEnterEnabled: Boolean = false
     ): PictureInPictureParams {
         val clampedAspectRatio = clampPipAspectRatio(aspectRatio)
         val specs = LaterboxPipSpec.buildPipActionsDescriptor(isPlaying, doubleTapSeekSeconds)
@@ -154,10 +158,14 @@ object LaterboxPipController {
                 pendingIntent
             )
         }
-        return PictureInPictureParams.Builder()
+        val builder = PictureInPictureParams.Builder()
             .setAspectRatio(clampedAspectRatio)
             .setActions(actions)
-            .build()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setAutoEnterEnabled(autoEnterEnabled)
+            builder.setSeamlessResizeEnabled(true)
+        }
+        return builder.build()
     }
 
     fun tryEnterPictureInPicture(
@@ -175,7 +183,8 @@ object LaterboxPipController {
                 context = act,
                 isPlaying = isPlaying,
                 doubleTapSeekSeconds = doubleTapSeekSeconds,
-                aspectRatio = aspectRatio
+                aspectRatio = aspectRatio,
+                autoEnterEnabled = isPlaying
             )
             act.enterPictureInPictureMode(params)
         }.onFailure { err ->
@@ -187,7 +196,8 @@ object LaterboxPipController {
         activity: Activity?,
         isPlaying: Boolean,
         doubleTapSeekSeconds: Int,
-        aspectRatio: Rational = Rational(16, 9)
+        aspectRatio: Rational = Rational(16, 9),
+        autoEnterEnabled: Boolean = false
     ) {
         val act = activity ?: return
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -198,11 +208,26 @@ object LaterboxPipController {
                 context = act,
                 isPlaying = isPlaying,
                 doubleTapSeekSeconds = doubleTapSeekSeconds,
-                aspectRatio = aspectRatio
+                aspectRatio = aspectRatio,
+                autoEnterEnabled = autoEnterEnabled
             )
             act.setPictureInPictureParams(params)
         }.onFailure { err ->
             Log.w(TAG, "Failed updating PiP params: ${err.message}")
+        }
+    }
+
+    fun disableAutoEnterPip(activity: Activity?) {
+        val act = activity ?: return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        if (!isPipSupportedAndAllowed(act) || act.isDestroyed) return
+        runCatching {
+            val params = PictureInPictureParams.Builder()
+                .setAutoEnterEnabled(false)
+                .build()
+            act.setPictureInPictureParams(params)
+        }.onFailure { err ->
+            Log.w(TAG, "Failed disabling auto-enter PiP: ${err.message}")
         }
     }
 

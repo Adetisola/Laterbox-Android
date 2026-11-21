@@ -135,4 +135,69 @@ class PlaybackSessionServiceTest {
             assertNull(LaterboxPlaybackBridge.activePlayer)
         }
     }
+
+    @Test
+    fun sharedVideoPlayer_reusesSingleInstanceAcrossMiniPlayerBackAndReopen() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val first = LaterboxPlaybackBridge.obtainOrCreateSharedVideoPlayer(context, 10)
+        val second = LaterboxPlaybackBridge.obtainOrCreateSharedVideoPlayer(context, 15)
+        assertSame(first, second)
+
+        val target = PlaybackSessionTarget.MovieStream("moviebox", "dune_2")
+        var savedCount = 0
+        LaterboxPlaybackBridge.setTargetMetadata(
+            target = target,
+            episodeKey = target.episodeKey,
+            artworkUrl = "https://cdn.example/dune.jpg",
+            onSaveProgress = { _, _ -> savedCount++ }
+        )
+        LaterboxPlaybackBridge.attachPlayer(context, first, title = "Dune: Part Two", subtitle = "HD")
+
+        // Pressing Back retains shared ExoPlayer for mini-player instead of releasing it
+        val entered = LaterboxPlaybackBridge.enterMiniPlayer(context)
+        assertEquals(true, entered)
+        assertEquals(true, LaterboxPlaybackBridge.isRetainedForMiniPlayer)
+        assertNotNull(LaterboxPlaybackBridge.miniPlayerState.value)
+        assertEquals("Dune: Part Two", LaterboxPlaybackBridge.miniPlayerState.value?.title)
+
+        // Simulated PlayerActivity dispose must NOT release the retained shared player
+        LaterboxPlaybackBridge.releasePlayer(context, first)
+        assertSame(first, LaterboxPlaybackBridge.activePlayer)
+        assertSame(first, LaterboxPlaybackBridge.obtainOrCreateSharedVideoPlayer(context, 10))
+
+        // Reopening full-screen clears mini-player bar while keeping exact same ExoPlayer
+        LaterboxPlaybackBridge.exitMiniPlayerToFullscreen()
+        assertEquals(false, LaterboxPlaybackBridge.isRetainedForMiniPlayer)
+        assertNull(LaterboxPlaybackBridge.miniPlayerState.value)
+        assertSame(first, LaterboxPlaybackBridge.activePlayer)
+
+        // Dismissing mini-player releases shared player cleanly
+        LaterboxPlaybackBridge.enterMiniPlayer(context)
+        LaterboxPlaybackBridge.dismissMiniPlayer(context)
+        assertNull(LaterboxPlaybackBridge.activePlayer)
+        assertNull(LaterboxPlaybackBridge.miniPlayerState.value)
+    }
+
+    @Test
+    fun manifestAndActivityOwnership_mainActivityNeverSupportsPipAndPlayerActivityDoes() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val pm = context.packageManager
+        val pkgInfo = pm.getPackageInfo(
+            context.packageName,
+            android.content.pm.PackageManager.GET_ACTIVITIES
+        )
+        val activities = pkgInfo.activities.orEmpty().associateBy { it.name }
+        val mainInfo = activities["com.laterbox.app.MainActivity"]
+        val playerInfo = activities["com.laterbox.app.movies.playback.PlayerActivity"]
+
+        assertNotNull(mainInfo)
+        assertNotNull(playerInfo)
+        val flagSupportsPip = runCatching {
+            android.content.pm.ActivityInfo::class.java
+                .getField("FLAG_SUPPORTS_PICTURE_IN_PICTURE")
+                .getInt(null)
+        }.getOrDefault(0x00400000)
+        assertEquals(0, (mainInfo!!.flags and flagSupportsPip))
+        assertEquals(flagSupportsPip, (playerInfo!!.flags and flagSupportsPip))
+    }
 }

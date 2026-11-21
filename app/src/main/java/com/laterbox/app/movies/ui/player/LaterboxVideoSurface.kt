@@ -31,6 +31,7 @@ fun LaterboxVideoSurface(
     keepScreenOn: Boolean = true,
     useTextureView: Boolean = false,
     subtitleStyle: SubtitleStyleConfig? = null,
+    hideSubtitles: Boolean = false,
     onPlayerViewAttached: ((PlayerView?) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
@@ -59,6 +60,7 @@ fun LaterboxVideoSurface(
                     SubtitleStyleHelper.applyToSubtitleView(subtitleView, subtitleStyle)
                     appliedSubtitleStyle = subtitleStyle
                 }
+                subtitleView?.visibility = if (hideSubtitles) android.view.View.GONE else android.view.View.VISIBLE
                 this.player = player
                 onPlayerViewAttached?.invoke(this)
             }
@@ -77,6 +79,10 @@ fun LaterboxVideoSurface(
             if (subtitleStyle != null && appliedSubtitleStyle != subtitleStyle) {
                 SubtitleStyleHelper.applyToSubtitleView(view.subtitleView, subtitleStyle)
                 appliedSubtitleStyle = subtitleStyle
+            }
+            val desiredSubtitleVis = if (hideSubtitles) android.view.View.GONE else android.view.View.VISIBLE
+            if (view.subtitleView?.visibility != desiredSubtitleVis) {
+                view.subtitleView?.visibility = desiredSubtitleVis
             }
             onPlayerViewAttached?.invoke(view)
         },

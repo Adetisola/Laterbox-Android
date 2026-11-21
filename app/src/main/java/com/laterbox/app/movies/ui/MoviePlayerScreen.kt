@@ -11,6 +11,7 @@ import androidx.activity.compose.BackHandler
 import com.laterbox.app.movies.playback.LaterboxPipController
 import com.laterbox.app.movies.playback.LaterboxPipSpec
 import com.laterbox.app.movies.playback.LocalIsInPictureInPictureMode
+import com.laterbox.app.movies.playback.PlaybackSessionTarget
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -219,6 +220,33 @@ fun MoviePlayerScreen(
             }
             uiState.resolution is PlaybackResolution.Available && uiState.selectedSource != null -> {
                 val currentEpisodeKey = uiState.episodeKey
+                val summary = uiState.summary
+                val streamTarget = remember(
+                    summary?.providerId,
+                    summary?.id,
+                    uiState.activeTitleId,
+                    uiState.seasonNumber,
+                    uiState.episodeNumber
+                ) {
+                    val provId = summary?.providerId?.takeIf { it.isNotBlank() } ?: "moviebox"
+                    val tId = summary?.id?.takeIf { it.isNotBlank() } ?: uiState.activeTitleId
+                    if (tId.isNotBlank()) {
+                        PlaybackSessionTarget.MovieStream(
+                            providerId = provId,
+                            titleId = tId,
+                            seasonNumber = uiState.seasonNumber,
+                            episodeNumber = uiState.episodeNumber
+                        )
+                    } else {
+                        null
+                    }
+                }
+                LaunchedEffect(uiState, streamTarget) {
+                    if (streamTarget != null) {
+                        val cacheKey = "${streamTarget.providerId}:${streamTarget.titleId}:${streamTarget.seasonNumber ?: 0}:${streamTarget.episodeNumber ?: 0}"
+                        LaterboxPlaybackBridge.cachePlayerUiState(cacheKey, uiState)
+                    }
+                }
                 ActiveVideoPlayerContent(
                     resolution = uiState.resolution,
                     selectedSource = uiState.selectedSource,
@@ -239,6 +267,8 @@ fun MoviePlayerScreen(
                     isEnqueuingDownload = uiState.isEnqueuingDownload,
                     downloadStatusMessage = uiState.downloadStatusMessage,
                     isLocalFile = false,
+                    sessionTarget = streamTarget,
+                    artworkUrl = summary?.backdropUrl ?: summary?.posterUrl,
                     simulatePlaybackEndedForTest = simulatePlaybackEndedForTest,
                     onBackClick = onBackClick,
                     onSelectSource = onSelectSource,
@@ -416,6 +446,8 @@ fun LocalVideoPlayerScreen(
             isEnqueuingDownload = false,
             downloadStatusMessage = null,
             isLocalFile = true,
+            sessionTarget = PlaybackSessionTarget.LocalVideo(asset.id),
+            artworkUrl = asset.artworkUrl,
             onBackClick = onBackClick,
             onSelectSource = { _, _ -> },
             onSelectSubtitle = { track, posMs ->
@@ -517,6 +549,8 @@ private fun ActiveVideoPlayerContent(
     isEnqueuingDownload: Boolean,
     downloadStatusMessage: String?,
     isLocalFile: Boolean = false,
+    sessionTarget: PlaybackSessionTarget? = null,
+    artworkUrl: String? = null,
     simulatePlaybackEndedForTest: Boolean = false,
     onBackClick: () -> Unit,
     onSelectSource: (PlaybackSource, Long) -> Unit,
@@ -627,15 +661,11 @@ private fun ActiveVideoPlayerContent(
     val appContext = remember(context) { context.applicationContext }
     var attachedPlayerView by remember { mutableStateOf<PlayerView?>(null) }
 
-    val exoPlayer = remember(playbackEpisodeKey, isLocalFile) {
-        val audioAttributes = PlaybackSessionService.buildConfiguredAudioAttributes()
-        val seekIncrementMs = (playbackPreferences.doubleTapSeekSeconds.coerceIn(5, 30)) * 1000L
-        ExoPlayer.Builder(appContext)
-            .setAudioAttributes(audioAttributes, true)
-            .setHandleAudioBecomingNoisy(true)
-            .setSeekBackIncrementMs(seekIncrementMs)
-            .setSeekForwardIncrementMs(seekIncrementMs)
-            .build()
+    val exoPlayer = remember(appContext) {
+        LaterboxPlaybackBridge.obtainOrCreateSharedVideoPlayer(
+            context = appContext,
+            doubleTapSeekSeconds = playbackPreferences.doubleTapSeekSeconds
+        )
     }
 
     DisposableEffect(selectedSource.url, isLocalFile) {
@@ -649,65 +679,74 @@ private fun ActiveVideoPlayerContent(
         }
     }
 
-    val exitOrEnterPip: () -> Unit = {
+    val hasBlockingModal = showMoreMenu || showQualityDialog || showSubtitleDialog ||
+        showAudioDialog || showSpeedDialog || showDownloadDialog || showSubtitleStyleDialog
+
+    val exitToMiniPlayerOrClose: () -> Unit = {
         val pos = runCatching { exoPlayer.currentPosition.coerceAtLeast(0L) }.getOrDefault(0L)
         val dur = runCatching { exoPlayer.duration.coerceAtLeast(0L) }.getOrDefault(0L)
         latestSaveEpisodeProgress(pos, dur, playbackEpisodeKey)
-
-        val activelyPlaying = runCatching { exoPlayer.isPlaying }.getOrDefault(false) &&
-            playerErrorText == null
-        val pipSupported = LaterboxPipController.isPipSupportedAndAllowed(appContext)
-        val shouldPip = LaterboxPipSpec.shouldEnterPipOnBack(
-            isPlaying = activelyPlaying,
-            isPipSupported = pipSupported,
-            isAlreadyInPip = isInPip,
-            hasModalOrOverlayOpen = showMoreMenu || showQualityDialog || showSubtitleDialog ||
-                showAudioDialog || showSpeedDialog || showDownloadDialog || showSubtitleStyleDialog,
-            isLocked = isLocked
-        )
-        val videoSize = runCatching { exoPlayer.videoSize }.getOrNull()
-        val aspectRatio = if (videoSize != null && videoSize.width > 0 && videoSize.height > 0) {
-            Rational(videoSize.width, videoSize.height)
-        } else {
-            Rational(16, 9)
-        }
-        val enteredPip = if (shouldPip) {
-            forcedLandscape = null
-            showControls = false
-            LaterboxPipController.tryEnterPictureInPicture(
-                activity = activity,
-                isPlaying = true,
-                doubleTapSeekSeconds = playbackPreferences.doubleTapSeekSeconds,
-                aspectRatio = aspectRatio
-            )
+        forcedLandscape = null
+        attachedPlayerView?.player = null
+        val keptMiniPlayer = if (playerErrorText == null && sessionTarget != null) {
+            LaterboxPlaybackBridge.enterMiniPlayer(appContext)
         } else {
             false
         }
-        if (!enteredPip) {
-            forcedLandscape = null
-            attachedPlayerView?.player = null
+        if (!keptMiniPlayer) {
             LaterboxPlaybackBridge.stopAndDetach(appContext)
-            onBackClick()
         }
+        onBackClick()
     }
 
-    LaunchedEffect(activity, isPlaying, playbackPreferences.doubleTapSeekSeconds, isInPip, exoPlayer) {
+    LaunchedEffect(
+        activity,
+        isPlaying,
+        playbackPreferences.doubleTapSeekSeconds,
+        isInPip,
+        hasBlockingModal,
+        isLocked,
+        playerErrorText,
+        exoPlayer
+    ) {
         LaterboxPlaybackBridge.updateDoubleTapSeekSeconds(playbackPreferences.doubleTapSeekSeconds)
-        val videoSize = runCatching { exoPlayer.videoSize }.getOrNull()
-        val aspectRatio = if (videoSize != null && videoSize.width > 0 && videoSize.height > 0) {
-            Rational(videoSize.width, videoSize.height)
-        } else {
-            Rational(16, 9)
+        LaterboxPlaybackBridge.hasPipBlockingModal = hasBlockingModal
+        LaterboxPlaybackBridge.isPlayerLocked = isLocked
+        val isDedicatedPlayerActivity = activity != null &&
+            activity.javaClass.name != "com.laterbox.app.MainActivity"
+        if (isDedicatedPlayerActivity) {
+            val videoSize = runCatching { exoPlayer.videoSize }.getOrNull()
+            val aspectRatio = if (videoSize != null && videoSize.width > 0 && videoSize.height > 0) {
+                Rational(videoSize.width, videoSize.height)
+            } else {
+                Rational(16, 9)
+            }
+            val shouldAutoEnter = LaterboxPipSpec.shouldEnterPipOnUserLeaveHint(
+                isPlaying = isPlaying && playerErrorText == null,
+                isPipSupported = LaterboxPipController.isPipSupportedAndAllowed(appContext),
+                isAlreadyInPip = isInPip,
+                hasModalOrOverlayOpen = hasBlockingModal,
+                isLocked = isLocked,
+                isFinishing = activity?.isFinishing == true
+            )
+            LaterboxPipController.updatePictureInPictureParams(
+                activity = activity,
+                isPlaying = isPlaying,
+                doubleTapSeekSeconds = playbackPreferences.doubleTapSeekSeconds,
+                aspectRatio = aspectRatio,
+                autoEnterEnabled = shouldAutoEnter
+            )
         }
-        LaterboxPipController.updatePictureInPictureParams(
-            activity = activity,
-            isPlaying = isPlaying,
-            doubleTapSeekSeconds = playbackPreferences.doubleTapSeekSeconds,
-            aspectRatio = aspectRatio
-        )
         if (isInPip) {
             showControls = false
         }
+    }
+
+    // Hide/disable text tracks during system PiP while preserving user's selectedSubtitle preference
+    LaunchedEffect(exoPlayer, isInPip, selectedSubtitle?.id) {
+        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, isInPip || selectedSubtitle == null)
+            .build()
     }
 
     BackHandler(enabled = isLocked) {
@@ -723,7 +762,7 @@ private fun ActiveVideoPlayerContent(
             showSpeedDialog -> showSpeedDialog = false
             showDownloadDialog -> showDownloadDialog = false
             showSubtitleStyleDialog -> showSubtitleStyleDialog = false
-            else -> exitOrEnterPip()
+            else -> exitToMiniPlayerOrClose()
         }
     }
 
@@ -773,6 +812,29 @@ private fun ActiveVideoPlayerContent(
         val isEpisodeTransition = lastLoadedEpisodeKey != playbackEpisodeKey
         lastLoadedEpisodeKey = playbackEpisodeKey
         playerErrorText = null
+        LaterboxPlaybackBridge.setTargetMetadata(
+            target = sessionTarget,
+            episodeKey = playbackEpisodeKey,
+            artworkUrl = artworkUrl,
+            onSaveProgress = { pos, dur -> latestSaveEpisodeProgress(pos, dur, playbackEpisodeKey) }
+        )
+        LaterboxPlaybackBridge.exitMiniPlayerToFullscreen()
+
+        if (LaterboxPlaybackBridge.isAlreadyPreparedFor(playbackEpisodeKey, selectedSource.url, selectedSubtitle?.id)) {
+            isBuffering = exoPlayer.playbackState == Player.STATE_BUFFERING
+            isPlaying = exoPlayer.isPlaying
+            isPlaybackEnded = exoPlayer.playbackState == Player.STATE_ENDED
+            clockState.durationMs = exoPlayer.duration.coerceAtLeast(0L)
+            clockState.positionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+            inStreamAudioTracks = extractAudioTracks(exoPlayer.currentTracks)
+            LaterboxPlaybackBridge.updateMetadata(
+                title = resolution.title,
+                subtitle = resolution.subtitleHeading,
+                artworkUrl = artworkUrl
+            )
+            return@LaunchedEffect
+        }
+
         isBuffering = true
         isPlaybackEnded = false
         hasManualAudioOverride = false
@@ -815,7 +877,7 @@ private fun ActiveVideoPlayerContent(
 
             exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon()
                 .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
-                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, selectedSubtitle == null)
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, isInPip || selectedSubtitle == null)
                 .build()
 
             val mediaItem = itemBuilder.build()
@@ -846,9 +908,15 @@ private fun ActiveVideoPlayerContent(
             exoPlayer.setPlaybackSpeed(latestSelectedSpeed)
             exoPlayer.prepare()
             exoPlayer.playWhenReady = true
+            LaterboxPlaybackBridge.markPreparedSource(
+                episodeKey = playbackEpisodeKey,
+                sourceUrl = selectedSource.url,
+                subtitleId = selectedSubtitle?.id
+            )
             LaterboxPlaybackBridge.updateMetadata(
                 title = resolution.title,
-                subtitle = resolution.subtitleHeading
+                subtitle = resolution.subtitleHeading,
+                artworkUrl = artworkUrl
             )
         } catch (err: kotlinx.coroutines.CancellationException) {
             throw err
@@ -927,10 +995,12 @@ private fun ActiveVideoPlayerContent(
             latestSaveEpisodeProgress(pos, dur, snapshotEpisodeKey)
             audioBoostController.release()
             exoPlayer.removeListener(listener)
-            // Detach PlayerView BEFORE releasing MediaSession and ExoPlayer
+            // Detach PlayerView before conditionally releasing ExoPlayer (keep alive if Mini-Player retained it)
             attachedPlayerView?.player = null
             attachedPlayerView = null
-            LaterboxPlaybackBridge.releasePlayer(appContext, exoPlayer)
+            if (!LaterboxPlaybackBridge.isRetainedForMiniPlayer) {
+                LaterboxPlaybackBridge.releasePlayer(appContext, exoPlayer)
+            }
         }
     }
 
@@ -1248,6 +1318,7 @@ private fun ActiveVideoPlayerContent(
             keepScreenOn = isPlaying || isBuffering,
             useTextureView = false,
             subtitleStyle = localSubtitleStyle,
+            hideSubtitles = isInPip,
             onPlayerViewAttached = { attachedPlayerView = it },
             modifier = Modifier.fillMaxSize()
         )
@@ -1318,7 +1389,7 @@ private fun ActiveVideoPlayerContent(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(
-                            onClick = exitOrEnterPip,
+                            onClick = exitToMiniPlayerOrClose,
                             modifier = Modifier.testTag("player_back_button")
                         ) {
                             Icon(

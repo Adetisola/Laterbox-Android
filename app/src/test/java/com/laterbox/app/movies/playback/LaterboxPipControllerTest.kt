@@ -11,56 +11,71 @@ import java.lang.reflect.Proxy
 class LaterboxPipControllerTest {
 
     @Test
-    fun shouldEnterPipOnBack_onlyWhenPlayingSupportedNotLockedAndNoModalOpen() {
+    fun shouldEnterPipOnBack_alwaysReturnsFalseSoBackTransitionsToMiniPlayer() {
+        assertFalse(LaterboxPipSpec.shouldEnterPipOnBack())
+    }
+
+    @Test
+    fun shouldEnterPipOnUserLeaveHint_onlyWhenPlayingSupportedNotLockedNotFinishingAndNoModalOpen() {
         assertTrue(
-            LaterboxPipSpec.shouldEnterPipOnBack(
+            LaterboxPipSpec.shouldEnterPipOnUserLeaveHint(
                 isPlaying = true,
                 isPipSupported = true,
                 isAlreadyInPip = false,
                 hasModalOrOverlayOpen = false,
-                isLocked = false
+                isLocked = false,
+                isFinishing = false
             )
         )
-        // Paused or stopped playback exits normally instead of entering PiP
+        // Paused or stopped playback does not enter PiP
         assertFalse(
-            LaterboxPipSpec.shouldEnterPipOnBack(
+            LaterboxPipSpec.shouldEnterPipOnUserLeaveHint(
                 isPlaying = false,
                 isPipSupported = true,
                 isAlreadyInPip = false,
                 hasModalOrOverlayOpen = false,
-                isLocked = false
+                isLocked = false,
+                isFinishing = false
             )
         )
-        // Unsupported or OS-disabled PiP falls back cleanly to normal exit
+        // Unsupported or OS-disabled PiP falls back cleanly
         assertFalse(
-            LaterboxPipSpec.shouldEnterPipOnBack(
+            LaterboxPipSpec.shouldEnterPipOnUserLeaveHint(
                 isPlaying = true,
                 isPipSupported = false,
                 isAlreadyInPip = false,
                 hasModalOrOverlayOpen = false,
-                isLocked = false
+                isLocked = false,
+                isFinishing = false
             )
         )
-        // Already in PiP or modal open or locked screen should not re-enter PiP
+        // Already in PiP, modal open, locked screen, or finishing (Back) must not enter PiP
         assertFalse(
-            LaterboxPipSpec.shouldEnterPipOnBack(
+            LaterboxPipSpec.shouldEnterPipOnUserLeaveHint(
                 isPlaying = true,
                 isPipSupported = true,
                 isAlreadyInPip = true
             )
         )
         assertFalse(
-            LaterboxPipSpec.shouldEnterPipOnBack(
+            LaterboxPipSpec.shouldEnterPipOnUserLeaveHint(
                 isPlaying = true,
                 isPipSupported = true,
                 hasModalOrOverlayOpen = true
             )
         )
         assertFalse(
-            LaterboxPipSpec.shouldEnterPipOnBack(
+            LaterboxPipSpec.shouldEnterPipOnUserLeaveHint(
                 isPlaying = true,
                 isPipSupported = true,
                 isLocked = true
+            )
+        )
+        assertFalse(
+            LaterboxPipSpec.shouldEnterPipOnUserLeaveHint(
+                isPlaying = true,
+                isPipSupported = true,
+                isFinishing = true
             )
         )
     }

@@ -629,6 +629,7 @@ fun LaterboxApp(
 
         val mainContent: @Composable () -> Unit = {
             val density = LocalDensity.current
+            val miniPlayerState by com.laterbox.app.movies.playback.LaterboxPlaybackBridge.miniPlayerState.collectAsState()
             val isImmersivePlayerRoute = currentRoute == LaterboxDestination.MoviePlayer.route || isLocalVideoViewerActive
             val isImeVisible = WindowInsets.ime.getBottom(density) > WindowInsets.navigationBars.getBottom(density)
             val showHandsetBottomBar = !isWideTablet &&
@@ -1004,8 +1005,9 @@ fun LaterboxApp(
                                             )
                                         }
                                         is ChatAction.OpenMoviePlayer -> {
-                                            navController.navigate(
-                                                LaterboxDestination.MoviePlayer.createRoute(
+                                            context.startActivity(
+                                                com.laterbox.app.movies.playback.PlayerActivity.createStreamIntent(
+                                                    context = context,
                                                     providerId = action.providerId,
                                                     titleId = action.titleId,
                                                     seasonNumber = action.seasonNumber,
@@ -1160,7 +1162,18 @@ fun LaterboxApp(
                                     }
                                 },
                                 onMenuClick = openMenuHandler,
-                                onOpenVideoAsset = { asset -> activeViewerAsset = asset },
+                                onOpenVideoAsset = { asset ->
+                                    if (asset.mediaType == com.laterbox.app.media.domain.model.MediaType.VIDEO) {
+                                        context.startActivity(
+                                            com.laterbox.app.movies.playback.PlayerActivity.createLocalVideoIntent(
+                                                context = context,
+                                                assetId = asset.id
+                                            )
+                                        )
+                                    } else {
+                                        activeViewerAsset = asset
+                                    }
+                                },
                                 onOpenSeries = { series ->
                                     navController.navigate(
                                         LaterboxDestination.DownloadedSeriesDetail.createRoute(series.seriesKey)
@@ -1187,7 +1200,18 @@ fun LaterboxApp(
                                 retryingSubtitleAssetIds = dlState.retryingSubtitleAssetIds,
                                 playbackProgressByAssetId = dlState.playbackProgressByAssetId,
                                 onBackClick = { navController.popBackStack() },
-                                onOpenEpisode = { asset -> activeViewerAsset = asset },
+                                onOpenEpisode = { asset ->
+                                    if (asset.mediaType == com.laterbox.app.media.domain.model.MediaType.VIDEO) {
+                                        context.startActivity(
+                                            com.laterbox.app.movies.playback.PlayerActivity.createLocalVideoIntent(
+                                                context = context,
+                                                assetId = asset.id
+                                            )
+                                        )
+                                    } else {
+                                        activeViewerAsset = asset
+                                    }
+                                },
                                 onExportEpisode = { asset ->
                                     downloadsViewModel.onExportAsset(asset.id) { success ->
                                         android.widget.Toast.makeText(
@@ -1257,8 +1281,9 @@ fun LaterboxApp(
                                     )
                                 },
                                 onOpenPlayer = { providerId, titleId, seasonNumber, episodeNumber ->
-                                    navController.navigate(
-                                        LaterboxDestination.MoviePlayer.createRoute(
+                                    context.startActivity(
+                                        com.laterbox.app.movies.playback.PlayerActivity.createStreamIntent(
+                                            context = context,
                                             providerId = providerId,
                                             titleId = titleId,
                                             seasonNumber = seasonNumber,
@@ -1461,8 +1486,9 @@ fun LaterboxApp(
                                     val targetProvider = resolvedSummary?.providerId ?: providerId
                                     val targetId = resolvedSummary?.id ?: titleId
                                     if (targetProvider.isNotBlank() && targetId.isNotBlank()) {
-                                        navController.navigate(
-                                            LaterboxDestination.MoviePlayer.createRoute(
+                                        context.startActivity(
+                                            com.laterbox.app.movies.playback.PlayerActivity.createStreamIntent(
+                                                context = context,
                                                 providerId = targetProvider,
                                                 titleId = targetId,
                                                 seasonNumber = seasonNum,
@@ -1515,7 +1541,7 @@ fun LaterboxApp(
                             )
                         }
 
-                        // Fullscreen Video Player
+                        // Legacy Fullscreen Video Player route redirects cleanly to dedicated PlayerActivity
                         composable(
                             route = LaterboxDestination.MoviePlayer.route,
                             arguments = listOf(
@@ -1525,10 +1551,6 @@ fun LaterboxApp(
                                 navArgument("episode") { type = NavType.IntType; defaultValue = -1 }
                             )
                         ) { backStackEntry ->
-                            val moviePlayerViewModel: com.laterbox.app.movies.ui.MoviePlayerViewModel = viewModel(
-                                viewModelStoreOwner = backStackEntry,
-                                factory = AppViewModelProvider.Factory
-                            )
                             val providerId = backStackEntry.arguments?.getString("providerId").orEmpty()
                             val titleId = backStackEntry.arguments?.getString("titleId").orEmpty()
                             val rawSeason = backStackEntry.arguments?.getInt("season") ?: -1
@@ -1537,35 +1559,19 @@ fun LaterboxApp(
                             val episodeNum = rawEpisode.takeIf { it > 0 }
 
                             LaunchedEffect(providerId, titleId, seasonNum, episodeNum) {
-                                moviePlayerViewModel.load(providerId, titleId, seasonNum, episodeNum)
-                            }
-                            val playerState by moviePlayerViewModel.uiState.collectAsState()
-                            com.laterbox.app.movies.ui.MoviePlayerScreen(
-                                uiState = playerState,
-                                onBackClick = { navController.popBackStack() },
-                                onRetry = {
-                                    moviePlayerViewModel.load(providerId, titleId, seasonNum, episodeNum, forceReload = true)
-                                },
-                                onSelectSource = moviePlayerViewModel::selectSource,
-                                onSelectSubtitle = moviePlayerViewModel::selectSubtitle,
-                                onSaveProgress = moviePlayerViewModel::saveProgress,
-                                onSaveProgressForEpisode = moviePlayerViewModel::saveProgressForEpisode,
-                                onOpenExternalUrl = { url ->
-                                    BrowserLauncher.openUrl(context, url, colors)
-                                },
-                                onDownloadSource = moviePlayerViewModel::downloadSource,
-                                onDismissDownloadStatus = moviePlayerViewModel::clearDownloadStatus,
-                                onSelectAudioDub = moviePlayerViewModel::selectAudioDub,
-                                onSelectInStreamAudio = moviePlayerViewModel::saveStreamAudioPreference,
-                                onNextEpisode = moviePlayerViewModel::playNextEpisode,
-                                onSubtitleStyleChange = moviePlayerViewModel::updateSubtitleStyle,
-                                onOpenRelatedTitle = { relProvider, relId ->
-                                    navController.navigate(
-                                        LaterboxDestination.MovieDetail.createRoute(relProvider, relId)
+                                if (providerId.isNotBlank() && titleId.isNotBlank()) {
+                                    context.startActivity(
+                                        com.laterbox.app.movies.playback.PlayerActivity.createStreamIntent(
+                                            context = context,
+                                            providerId = providerId,
+                                            titleId = titleId,
+                                            seasonNumber = seasonNum,
+                                            episodeNumber = episodeNum
+                                        )
                                     )
-                                },
-                                introSkipEnabled = introSkipEnabled
-                            )
+                                }
+                                navController.popBackStack()
+                            }
                         }
 
                         // Settings Screen (Landing Hub)
@@ -1742,8 +1748,9 @@ fun LaterboxApp(
                                     )
                                 },
                                 onOpenPlayer = { histProviderId, histTitleId, histSeason, histEp ->
-                                    navController.navigate(
-                                        LaterboxDestination.MoviePlayer.createRoute(
+                                    context.startActivity(
+                                        com.laterbox.app.movies.playback.PlayerActivity.createStreamIntent(
+                                            context = context,
                                             providerId = histProviderId,
                                             titleId = histTitleId,
                                             seasonNumber = histSeason,
@@ -1801,14 +1808,42 @@ fun LaterboxApp(
                         }
                     }
 
-                    // Persistent Bottom Chrome: Inbox Action Dock / Expandable Composer + Handset Bottom Navigation Bar
-                    if (isInboxOverlayVisible || showHandsetBottomBar) {
+                    // Persistent Bottom Chrome: In-App Mini-Player + Inbox Action Dock / Composer + Handset Bottom Navigation Bar
+                    if (miniPlayerState != null || isInboxOverlayVisible || showHandsetBottomBar) {
                         Column(
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
                                 .fillMaxWidth(),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
+                            miniPlayerState?.let { activeMini ->
+                                com.laterbox.app.movies.ui.player.MiniPlayerBar(
+                                    state = activeMini,
+                                    onOpenFullscreen = {
+                                        context.startActivity(
+                                            com.laterbox.app.movies.playback.PlayerActivity.createReopenIntent(context)
+                                        )
+                                    },
+                                    onTogglePlayPause = {
+                                        com.laterbox.app.movies.playback.LaterboxPlaybackBridge.toggleMiniPlayerPlayPause()
+                                    },
+                                    onClose = {
+                                        com.laterbox.app.movies.playback.LaterboxPlaybackBridge.dismissMiniPlayer(context)
+                                    },
+                                    modifier = Modifier
+                                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                                        .let { mod ->
+                                            if (!showHandsetBottomBar && !isInboxOverlayVisible) {
+                                                mod.windowInsetsPadding(
+                                                    WindowInsets.navigationBars.union(WindowInsets.ime)
+                                                        .only(WindowInsetsSides.Bottom)
+                                                )
+                                            } else {
+                                                mod
+                                            }
+                                        }
+                                )
+                            }
                             if (isInboxOverlayVisible) {
                                 Box(
                                     modifier = Modifier
@@ -2290,7 +2325,18 @@ fun LaterboxApp(
                     }
                 )
             }
-            com.laterbox.app.media.domain.model.MediaType.VIDEO, com.laterbox.app.media.domain.model.MediaType.AUDIO -> {
+            com.laterbox.app.media.domain.model.MediaType.VIDEO -> {
+                LaunchedEffect(asset.id) {
+                    context.startActivity(
+                        com.laterbox.app.movies.playback.PlayerActivity.createLocalVideoIntent(
+                            context = context,
+                            assetId = asset.id
+                        )
+                    )
+                    activeViewerAsset = null
+                }
+            }
+            com.laterbox.app.media.domain.model.MediaType.AUDIO -> {
                 val localPlaybackPrefs = remember(preferences) {
                     com.laterbox.app.movies.ui.PlayerPlaybackPreferences(
                         doubleTapSeekSeconds = preferences.moviesDoubleTapSeekSeconds,

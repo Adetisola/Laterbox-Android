@@ -144,6 +144,24 @@ class MoviePlayerViewModel(
         forceReload: Boolean = false
     ) {
         val key = "$providerId:$titleId:${seasonNumber ?: 0}:${episodeNumber ?: 0}"
+        val activeStreamTarget = com.laterbox.app.movies.playback.LaterboxPlaybackBridge.activeTarget
+            as? com.laterbox.app.movies.playback.PlaybackSessionTarget.MovieStream
+        val matchesActiveBridgeSession = activeStreamTarget != null &&
+            com.laterbox.app.movies.playback.LaterboxPlaybackBridge.activePlayer != null &&
+            activeStreamTarget.providerId == providerId &&
+            activeStreamTarget.titleId == titleId &&
+            activeStreamTarget.seasonNumber == seasonNumber &&
+            activeStreamTarget.episodeNumber == episodeNumber
+        if (!forceReload && matchesActiveBridgeSession) {
+            val cached = com.laterbox.app.movies.playback.LaterboxPlaybackBridge
+                .getCachedPlayerUiState<MoviePlayerUiState>(key)
+            if (cached != null && cached.resolution is PlaybackResolution.Available) {
+                loadedKey = key
+                activeProviderId = providerId
+                _uiState.value = cached.copy(playbackPreferences = _uiState.value.playbackPreferences)
+                return
+            }
+        }
         if (!forceReload && loadedKey == key && _uiState.value.resolution != null) return
         loadedKey = key
         activeProviderId = providerId

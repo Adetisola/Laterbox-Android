@@ -124,7 +124,12 @@ fun DownloadsScreen(
                     if (onOpenVideoAsset != null) {
                         onOpenVideoAsset(asset)
                     } else {
-                        activeViewerAsset = asset
+                        context.startActivity(
+                            com.laterbox.app.movies.playback.PlayerActivity.createLocalVideoIntent(
+                                context = context,
+                                assetId = asset.id
+                            )
+                        )
                     }
                 }
                 MediaType.AUDIO -> activeViewerAsset = asset
