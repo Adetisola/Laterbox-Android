@@ -6,7 +6,11 @@ import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.net.Uri
+import android.util.Rational
 import androidx.activity.compose.BackHandler
+import com.laterbox.app.movies.playback.LaterboxPipController
+import com.laterbox.app.movies.playback.LaterboxPipSpec
+import com.laterbox.app.movies.playback.LocalIsInPictureInPictureMode
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -531,6 +535,7 @@ private fun ActiveVideoPlayerContent(
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
     val activity = remember(context) { context.findActivity() }
+    val isInPip = LocalIsInPictureInPictureMode.current
     val viewConfiguration = LocalViewConfiguration.current
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -644,6 +649,67 @@ private fun ActiveVideoPlayerContent(
         }
     }
 
+    val exitOrEnterPip: () -> Unit = {
+        val pos = runCatching { exoPlayer.currentPosition.coerceAtLeast(0L) }.getOrDefault(0L)
+        val dur = runCatching { exoPlayer.duration.coerceAtLeast(0L) }.getOrDefault(0L)
+        latestSaveEpisodeProgress(pos, dur, playbackEpisodeKey)
+
+        val activelyPlaying = runCatching { exoPlayer.isPlaying }.getOrDefault(false) &&
+            playerErrorText == null
+        val pipSupported = LaterboxPipController.isPipSupportedAndAllowed(appContext)
+        val shouldPip = LaterboxPipSpec.shouldEnterPipOnBack(
+            isPlaying = activelyPlaying,
+            isPipSupported = pipSupported,
+            isAlreadyInPip = isInPip,
+            hasModalOrOverlayOpen = showMoreMenu || showQualityDialog || showSubtitleDialog ||
+                showAudioDialog || showSpeedDialog || showDownloadDialog || showSubtitleStyleDialog,
+            isLocked = isLocked
+        )
+        val videoSize = runCatching { exoPlayer.videoSize }.getOrNull()
+        val aspectRatio = if (videoSize != null && videoSize.width > 0 && videoSize.height > 0) {
+            Rational(videoSize.width, videoSize.height)
+        } else {
+            Rational(16, 9)
+        }
+        val enteredPip = if (shouldPip) {
+            forcedLandscape = null
+            showControls = false
+            LaterboxPipController.tryEnterPictureInPicture(
+                activity = activity,
+                isPlaying = true,
+                doubleTapSeekSeconds = playbackPreferences.doubleTapSeekSeconds,
+                aspectRatio = aspectRatio
+            )
+        } else {
+            false
+        }
+        if (!enteredPip) {
+            forcedLandscape = null
+            attachedPlayerView?.player = null
+            LaterboxPlaybackBridge.stopAndDetach(appContext)
+            onBackClick()
+        }
+    }
+
+    LaunchedEffect(activity, isPlaying, playbackPreferences.doubleTapSeekSeconds, isInPip, exoPlayer) {
+        LaterboxPlaybackBridge.updateDoubleTapSeekSeconds(playbackPreferences.doubleTapSeekSeconds)
+        val videoSize = runCatching { exoPlayer.videoSize }.getOrNull()
+        val aspectRatio = if (videoSize != null && videoSize.width > 0 && videoSize.height > 0) {
+            Rational(videoSize.width, videoSize.height)
+        } else {
+            Rational(16, 9)
+        }
+        LaterboxPipController.updatePictureInPictureParams(
+            activity = activity,
+            isPlaying = isPlaying,
+            doubleTapSeekSeconds = playbackPreferences.doubleTapSeekSeconds,
+            aspectRatio = aspectRatio
+        )
+        if (isInPip) {
+            showControls = false
+        }
+    }
+
     BackHandler(enabled = isLocked) {
         showControls = true
     }
@@ -657,14 +723,7 @@ private fun ActiveVideoPlayerContent(
             showSpeedDialog -> showSpeedDialog = false
             showDownloadDialog -> showDownloadDialog = false
             showSubtitleStyleDialog -> showSubtitleStyleDialog = false
-            else -> {
-                val pos = runCatching { exoPlayer.currentPosition.coerceAtLeast(0L) }.getOrDefault(0L)
-                val dur = runCatching { exoPlayer.duration.coerceAtLeast(0L) }.getOrDefault(0L)
-                latestSaveEpisodeProgress(pos, dur, playbackEpisodeKey)
-                attachedPlayerView?.player = null
-                LaterboxPlaybackBridge.stopAndDetach(appContext)
-                onBackClick()
-            }
+            else -> exitOrEnterPip()
         }
     }
 
@@ -683,8 +742,9 @@ private fun ActiveVideoPlayerContent(
     }
 
     // Genuine full-screen mode by default + manual orientation toggle handling
-    LaunchedEffect(forcedLandscape, effectiveIsLandscape, activity) {
+    LaunchedEffect(forcedLandscape, effectiveIsLandscape, activity, isInPip) {
         val act = activity ?: return@LaunchedEffect
+        if (isInPip) return@LaunchedEffect
         val window = act.window
         val controller = WindowCompat.getInsetsController(window, window.decorView)
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -1194,7 +1254,7 @@ private fun ActiveVideoPlayerContent(
 
         // Cinema Controls Overlay
         AnimatedVisibility(
-            visible = showControls && playerErrorText == null,
+            visible = !isInPip && showControls && playerErrorText == null,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.fillMaxSize()
@@ -1258,15 +1318,7 @@ private fun ActiveVideoPlayerContent(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(
-                            onClick = {
-                                latestSaveEpisodeProgress(
-                                    exoPlayer.currentPosition,
-                                    exoPlayer.duration.coerceAtLeast(0L),
-                                    playbackEpisodeKey
-                                )
-                                forcedLandscape = null
-                                onBackClick()
-                            },
+                            onClick = exitOrEnterPip,
                             modifier = Modifier.testTag("player_back_button")
                         ) {
                             Icon(
@@ -1855,7 +1907,7 @@ private fun ActiveVideoPlayerContent(
             }
         }
         AnimatedVisibility(
-            visible = activeSkipWindow != null,
+            visible = !isInPip && activeSkipWindow != null,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier
@@ -1905,7 +1957,7 @@ private fun ActiveVideoPlayerContent(
 
         // TV Series Next-Episode Netflix-Style Preview & Countdown Card
         AnimatedVisibility(
-            visible = showNextEpisodeCard,
+            visible = !isInPip && showNextEpisodeCard,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier

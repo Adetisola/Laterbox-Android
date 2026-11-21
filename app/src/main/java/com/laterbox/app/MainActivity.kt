@@ -1,16 +1,23 @@
 package com.laterbox.app
 
 import android.content.Intent
+import android.content.res.Configuration
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.laterbox.app.data.preferences.ThemeMode
 import com.laterbox.app.data.preferences.UserPreferences
+import com.laterbox.app.movies.playback.LaterboxPipActionReceiver
+import com.laterbox.app.movies.playback.LaterboxPipController
+import com.laterbox.app.movies.playback.LocalIsInPictureInPictureMode
 import com.laterbox.app.ui.navigation.LaterboxApp
 import com.laterbox.app.ui.theme.LaterboxTheme
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,6 +26,9 @@ class MainActivity : ComponentActivity() {
 
     private val openLinkIdState = MutableStateFlow<Long?>(null)
     private val openDestinationState = MutableStateFlow<Pair<String, String?>?>(null)
+    private val isInPictureInPictureModeState = MutableStateFlow(false)
+    private val pipActionReceiver = LaterboxPipActionReceiver(activityProvider = { this })
+    private var isPipReceiverRegistered = false
 
     companion object {
         const val EXTRA_OPEN_LINK_ID = "com.laterbox.app.extra.OPEN_LINK_ID"
@@ -30,6 +40,19 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         val splashScreen = installSplashScreen()
         super.onCreate(savedInstanceState)
+
+        isInPictureInPictureModeState.value =
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode
+
+        if (!isPipReceiverRegistered) {
+            ContextCompat.registerReceiver(
+                this,
+                pipActionReceiver,
+                LaterboxPipController.buildIntentFilter(),
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+            isPipReceiverRegistered = true
+        }
 
         handleIntent(intent)
 
@@ -54,6 +77,7 @@ class MainActivity : ComponentActivity() {
             )
             val openLinkId by openLinkIdState.collectAsState()
             val openDestination by openDestinationState.collectAsState()
+            val isInPipMode by isInPictureInPictureModeState.collectAsState()
 
             val darkTheme = when (preferences.themeMode) {
                 ThemeMode.LIGHT -> false
@@ -64,14 +88,32 @@ class MainActivity : ComponentActivity() {
             val fontScale = preferences.fontSizeScale.scaleFactor
 
             LaterboxTheme(darkTheme = darkTheme, fontScale = fontScale) {
-                LaterboxApp(
-                    initialOpenLinkId = openLinkId,
-                    onClearOpenLinkId = { openLinkIdState.value = null },
-                    initialOpenDestination = openDestination,
-                    onClearOpenDestination = { openDestinationState.value = null }
-                )
+                CompositionLocalProvider(LocalIsInPictureInPictureMode provides isInPipMode) {
+                    LaterboxApp(
+                        initialOpenLinkId = openLinkId,
+                        onClearOpenLinkId = { openLinkIdState.value = null },
+                        initialOpenDestination = openDestination,
+                        onClearOpenDestination = { openDestinationState.value = null }
+                    )
+                }
             }
         }
+    }
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        isInPictureInPictureModeState.value = isInPictureInPictureMode
+    }
+
+    override fun onDestroy() {
+        if (isPipReceiverRegistered) {
+            runCatching { unregisterReceiver(pipActionReceiver) }
+            isPipReceiverRegistered = false
+        }
+        super.onDestroy()
     }
 
     override fun onNewIntent(intent: Intent) {

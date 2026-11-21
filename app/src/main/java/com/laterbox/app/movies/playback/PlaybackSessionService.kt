@@ -47,10 +47,65 @@ object LaterboxPlaybackBridge {
         private set
 
     @Volatile
+    var activeDoubleTapSeekSeconds: Int = 10
+        private set
+
+    @Volatile
     private var attachedService: PlaybackSessionService? = null
 
     @Volatile
     private var serviceStartPending: Boolean = false
+
+    internal fun setActivePlayerForTest(player: Player?) {
+        synchronized(lock) {
+            activePlayer = player
+        }
+    }
+
+    fun updateDoubleTapSeekSeconds(seconds: Int) {
+        activeDoubleTapSeekSeconds = LaterboxPipSpec.normalizeSeekSeconds(seconds)
+    }
+
+    /**
+     * Dispatches a Picture-in-Picture remote control action against the active player session.
+     * Returns whether the active player is now intended to be playing.
+     */
+    fun dispatchPipAction(actionType: PipActionType): Boolean {
+        val player = activePlayer ?: return false
+        val deltaMs = LaterboxPipSpec.resolveSeekDeltaMs(activeDoubleTapSeekSeconds)
+        return when (actionType) {
+            PipActionType.REWIND -> {
+                val target = LaterboxPipSpec.computeSeekTargetMs(
+                    currentPositionMs = player.currentPosition,
+                    durationMs = player.duration,
+                    deltaMs = -deltaMs
+                )
+                player.seekTo(target)
+                player.isPlaying || player.playWhenReady
+            }
+            PipActionType.FORWARD -> {
+                val target = LaterboxPipSpec.computeSeekTargetMs(
+                    currentPositionMs = player.currentPosition,
+                    durationMs = player.duration,
+                    deltaMs = deltaMs
+                )
+                player.seekTo(target)
+                player.isPlaying || player.playWhenReady
+            }
+            PipActionType.PLAY_PAUSE -> {
+                if (player.isPlaying) {
+                    player.pause()
+                    false
+                } else {
+                    if (player.playbackState == Player.STATE_ENDED) {
+                        player.seekTo(0L)
+                    }
+                    player.play()
+                    true
+                }
+            }
+        }
+    }
 
     fun attachPlayer(
         context: Context,
