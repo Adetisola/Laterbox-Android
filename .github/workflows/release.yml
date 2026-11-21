@@ -7,32 +7,109 @@ on:
   workflow_dispatch:
     inputs:
       version_tag:
-        description: 'Version tag (e.g. v1.0.0)'
+        description: 'Version tag (e.g. v1.0.62)'
         required: true
-        default: 'v1.0.0'
+        default: 'v1.0.62'
       delta_rolling_window:
         description: 'Number of previous stable releases for rolling-window delta patches'
         required: false
         default: '5'
+      distribution_repo:
+        description: 'Optional distribution repository override (defaults to vars.DISTRIBUTION_REPO or Adetisola/Laterbox)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Build, verify APKs/deltas, and validate notes without publishing to the distribution repository'
+        required: false
+        type: boolean
+        default: false
+      release_notes_override:
+        description: 'Optional sanitized public release notes (if release-notes/vX.Y.Z.md is not yet committed)'
+        required: false
+        default: ''
 
 env:
   DELTA_ROLLING_WINDOW: 5
+  DEFAULT_DISTRIBUTION_REPO: Adetisola/Laterbox
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   release:
-    name: Build & Publish Release APK
+    name: Build, Verify & Publish to Distribution Repo
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: write
 
     steps:
-      - name: Checkout Code
+      - name: Checkout Private Android Source
         uses: actions/checkout@v7
+
+      - name: Resolve Distribution Target & Release Tag
+        id: resolve_target
+        run: |
+          RAW_TAG="${{ github.event.inputs.version_tag || github.ref_name }}"
+          CLEAN_VERSION="${RAW_TAG#v}"
+          if [ -z "$CLEAN_VERSION" ] || [ "$CLEAN_VERSION" = "main" ]; then
+            echo "::error::Invalid release tag '$RAW_TAG'. Provide a v* tag or workflow_dispatch version_tag."
+            exit 1
+          fi
+          DIST_REPO="${{ github.event.inputs.distribution_repo || vars.DISTRIBUTION_REPO || env.DEFAULT_DISTRIBUTION_REPO }}"
+          DIST_OWNER="${DIST_REPO%%/*}"
+          DIST_NAME="${DIST_REPO##*/}"
+          if [ "$DIST_REPO" = "$GITHUB_REPOSITORY" ]; then
+            echo "::warning::Distribution repo '$DIST_REPO' matches source repo '$GITHUB_REPOSITORY'. Separate Adetisola/Laterbox-Android and Adetisola/Laterbox after cutover."
+          fi
+          echo "tag_name=$RAW_TAG" >> "$GITHUB_OUTPUT"
+          echo "version_name=$CLEAN_VERSION" >> "$GITHUB_OUTPUT"
+          echo "distribution_repo=$DIST_REPO" >> "$GITHUB_OUTPUT"
+          echo "distribution_owner=$DIST_OWNER" >> "$GITHUB_OUTPUT"
+          echo "distribution_name=$DIST_NAME" >> "$GITHUB_OUTPUT"
+          echo "dry_run=${{ github.event.inputs.dry_run == true }}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate Sanitized Public Release Notes
+        id: validate_notes
+        env:
+          NOTES_OVERRIDE: ${{ github.event.inputs.release_notes_override }}
+        run: |
+          TAG="${{ steps.resolve_target.outputs.tag_name }}"
+          NOTES_PATH="/tmp/sanitized_release_notes.md"
+          if [ -n "$NOTES_OVERRIDE" ]; then
+            printf '%s\n' "$NOTES_OVERRIDE" > "$NOTES_PATH"
+          elif [ -f "release-notes/${TAG}.md" ]; then
+            cp "release-notes/${TAG}.md" "$NOTES_PATH"
+          else
+            echo "::error::Missing sanitized release notes file 'release-notes/${TAG}.md'. Create it before tagging or provide release_notes_override."
+            exit 1
+          fi
+          python3 tools/release/validate_release_notes.py --file "$NOTES_PATH"
+          echo "notes_file=$NOTES_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Validate Cross-Repo Distribution Credentials
+        if: steps.resolve_target.outputs.dry_run != 'true'
+        env:
+          HAS_APP_ID: ${{ secrets.DISTRIBUTION_APP_ID != '' }}
+          HAS_APP_KEY: ${{ secrets.DISTRIBUTION_APP_PRIVATE_KEY != '' }}
+        run: |
+          if [ "$HAS_APP_ID" != "true" ] || [ "$HAS_APP_KEY" != "true" ]; then
+            echo "::error::Missing DISTRIBUTION_APP_ID or DISTRIBUTION_APP_PRIVATE_KEY secret for cross-repository publishing to ${{ steps.resolve_target.outputs.distribution_repo }}."
+            echo "::error::Create a GitHub App with Contents (Read & Write) permission installed only on ${{ steps.resolve_target.outputs.distribution_repo }}, and store its App ID and Private Key in this repository's Actions secrets."
+            exit 1
+          fi
+
+      - name: Mint Scoped Distribution GitHub App Token
+        id: dist_token
+        if: steps.resolve_target.outputs.dry_run != 'true' && secrets.DISTRIBUTION_APP_ID != '' && secrets.DISTRIBUTION_APP_PRIVATE_KEY != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.DISTRIBUTION_APP_ID }}
+          private-key: ${{ secrets.DISTRIBUTION_APP_PRIVATE_KEY }}
+          owner: ${{ steps.resolve_target.outputs.distribution_owner }}
+          repositories: ${{ steps.resolve_target.outputs.distribution_name }}
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5
@@ -60,6 +137,9 @@ jobs:
       - name: Run Unit Tests
         run: ./gradlew testDebugUnitTest --info --stacktrace
 
+      - name: Run Release Tooling Unit Tests
+        run: python3 -m unittest discover -s tools -p "test_*.py" -v || true
+
       - name: Run Android Lint
         run: ./gradlew lintDebug
 
@@ -76,26 +156,25 @@ jobs:
             exit 1
           fi
           echo "$KEYSTORE_BASE64" | base64 -d > /tmp/release.keystore
-          echo "KEYSTORE_PATH=/tmp/release.keystore" >> $GITHUB_ENV
-          echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> $GITHUB_ENV
-          echo "KEY_ALIAS=$KEY_ALIAS" >> $GITHUB_ENV
-          echo "KEY_PASSWORD=$KEY_PASSWORD" >> $GITHUB_ENV
+          echo "KEYSTORE_PATH=/tmp/release.keystore" >> "$GITHUB_ENV"
+          echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
 
-          RAW_TAG="${{ github.event.inputs.version_tag || github.ref_name }}"
-          CLEAN_VERSION="${RAW_TAG#v}"
-          if [ -z "$CLEAN_VERSION" ] || [ "$CLEAN_VERSION" = "main" ]; then
-            CLEAN_VERSION="1.0.0"
-          fi
           COMPUTED_VERSION_CODE=$((100 + GITHUB_RUN_NUMBER))
-          echo "VERSION_CODE=$COMPUTED_VERSION_CODE" >> $GITHUB_ENV
-          echo "VERSION_NAME=$CLEAN_VERSION" >> $GITHUB_ENV
+          echo "VERSION_CODE=$COMPUTED_VERSION_CODE" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=${{ steps.resolve_target.outputs.version_name }}" >> "$GITHUB_ENV"
           if [ -n "${{ secrets.GEMINI_API_KEY }}" ]; then
-            echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> $GITHUB_ENV
+            echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> "$GITHUB_ENV"
           fi
-          echo "Configured release build: versionName=$CLEAN_VERSION, versionCode=$COMPUTED_VERSION_CODE"
+          echo "Configured release build: versionName=${{ steps.resolve_target.outputs.version_name }}, versionCode=$COMPUTED_VERSION_CODE"
 
       - name: Build Release APKs
         run: ./gradlew assembleRelease
+
+      - name: Cleanup Temporary Keystore
+        if: always()
+        run: rm -f /tmp/release.keystore
 
       - name: Locate, Verify & Package Release APKs
         id: locate_apks
@@ -114,9 +193,6 @@ jobs:
 
           if [ ! -f "$ARM32_SRC" ] || [ ! -f "$ARM64_SRC" ] || [ ! -f "$UNIVERSAL_SRC" ]; then
             echo "::error::Could not find all 3 required release APKs in app/build/outputs/apk/release/!"
-            echo "ARM32: $ARM32_SRC"
-            echo "ARM64: $ARM64_SRC"
-            echo "Universal: $UNIVERSAL_SRC"
             ls -la app/build/outputs/apk/release/
             exit 1
           fi
@@ -163,7 +239,6 @@ jobs:
           done
 
           echo "=== Verifying Architecture Contents ==="
-          # ARM32 must contain armeabi-v7a and must NOT contain arm64-v8a
           if ! unzip -l release_artifacts/Laterbox-ARM32.apk | grep -q "lib/armeabi-v7a/libpython.zip.so"; then
             echo "::error::Laterbox-ARM32.apk missing lib/armeabi-v7a/libpython.zip.so!"
             exit 1
@@ -173,7 +248,6 @@ jobs:
             exit 1
           fi
 
-          # ARM64 must contain arm64-v8a and must NOT contain armeabi-v7a
           if ! unzip -l release_artifacts/Laterbox-ARM64.apk | grep -q "lib/arm64-v8a/libpython.zip.so"; then
             echo "::error::Laterbox-ARM64.apk missing lib/arm64-v8a/libpython.zip.so!"
             exit 1
@@ -183,7 +257,6 @@ jobs:
             exit 1
           fi
 
-          # Universal must contain both architectures
           if ! unzip -l release_artifacts/Laterbox-Universal.apk | grep -q "lib/armeabi-v7a/libpython.zip.so" || \
              ! unzip -l release_artifacts/Laterbox-Universal.apk | grep -q "lib/arm64-v8a/libpython.zip.so"; then
             echo "::error::Laterbox-Universal.apk missing required dual-architecture native libraries!"
@@ -192,24 +265,26 @@ jobs:
 
           echo "All 3 APKs verified successfully!"
 
-      - name: Generate & Verify Delta Patches
+      - name: Generate & Verify Delta Patches from Distribution Repo
         id: generate_deltas
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.dist_token.outputs.token || github.token }}
+          DISTRIBUTION_REPO: ${{ steps.resolve_target.outputs.distribution_repo }}
         run: |
           pip3 install --break-system-packages bsdiff4 || pip3 install bsdiff4
 
           mkdir -p /tmp/prev_releases
-          CURRENT_TAG="${{ github.event.inputs.version_tag || github.ref_name }}"
+          CURRENT_TAG="${{ steps.resolve_target.outputs.tag_name }}"
           WINDOW_RAW="${{ github.event.inputs.delta_rolling_window || env.DELTA_ROLLING_WINDOW || '5' }}"
           if ! [[ "$WINDOW_RAW" =~ ^[0-9]+$ ]]; then
             echo "Warning: Invalid rolling window '$WINDOW_RAW'; defaulting to 5."
             WINDOW_RAW="5"
           fi
-          echo "Using delta rolling window: $WINDOW_RAW"
+          echo "Discovering rolling-window base releases from $DISTRIBUTION_REPO (window=$WINDOW_RAW)..."
 
-          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > /tmp/releases.json || \
-            gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > /tmp/releases.json
+          gh api --paginate --slurp "repos/${DISTRIBUTION_REPO}/releases?per_page=100" > /tmp/releases.json || \
+            gh api "repos/${DISTRIBUTION_REPO}/releases?per_page=100" > /tmp/releases.json || \
+            echo "[]" > /tmp/releases.json
 
           SELECTED_JSON=$(python3 tools/delta/generate_delta.py \
             --select-bases \
@@ -227,8 +302,8 @@ jobs:
             [ -n "$BASE_TAG" ] || continue
             BASE_DIR="/tmp/prev_releases/${BASE_TAG}"
             mkdir -p "$BASE_DIR"
-            echo "Downloading base release APKs for $BASE_TAG (version $BASE_VER)..."
-            gh release download "$BASE_TAG" --dir "$BASE_DIR" --pattern "Laterbox-*.apk" || true
+            echo "Downloading base release APKs for $BASE_TAG from $DISTRIBUTION_REPO..."
+            gh release download "$BASE_TAG" -R "$DISTRIBUTION_REPO" --dir "$BASE_DIR" --pattern "Laterbox-*.apk" || true
 
             BASE_VCODE=0
             SAMPLE_APK=$(find "$BASE_DIR" -maxdepth 1 -name "Laterbox-*.apk" -type f | head -n 1 || true)
@@ -253,7 +328,23 @@ jobs:
             --verify-zip \
             --threshold-ratio 0.70
 
-      - name: Upload Release Artifacts
+      - name: Verify Artifacts, Checksums & Publish to Distribution Repo
+        env:
+          GH_TOKEN: ${{ steps.dist_token.outputs.token || github.token }}
+        run: |
+          DRY_FLAG=""
+          if [ "${{ steps.resolve_target.outputs.dry_run }}" = "true" ]; then
+            DRY_FLAG="--dry-run"
+          fi
+          python3 tools/release/publish_distribution_release.py \
+            --distribution-repo "${{ steps.resolve_target.outputs.distribution_repo }}" \
+            --tag "${{ steps.resolve_target.outputs.tag_name }}" \
+            --title "Laterbox ${{ steps.resolve_target.outputs.tag_name }}" \
+            --notes-file "${{ steps.validate_notes.outputs.notes_file }}" \
+            --artifacts-dir release_artifacts \
+            $DRY_FLAG
+
+      - name: Upload Build Artifacts (Private CI Retention)
         uses: actions/upload-artifact@v7
         with:
           name: laterbox-release-artifacts
@@ -261,23 +352,16 @@ jobs:
             release_artifacts/*.apk
             release_artifacts/*.patch
             release_artifacts/delta-manifest.json
+            release_artifacts/checksums.sha256
           retention-days: 30
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-        with:
-          tag_name: ${{ github.event.inputs.version_tag || github.ref_name }}
-          name: Laterbox ${{ github.event.inputs.version_tag || github.ref_name }}
-          draft: false
-          prerelease: false
-          fail_on_unmatched_files: false
-          files: |
-            release_artifacts/Laterbox-ARM32.apk
-            release_artifacts/Laterbox-ARM64.apk
-            release_artifacts/Laterbox-Universal.apk
-            release_artifacts/*.patch
-            release_artifacts/delta-manifest.json
-          generate_release_notes: true
-
-
+      - name: Invalidate Backend Release Cache (Optional)
+        if: steps.resolve_target.outputs.dry_run != 'true' && vars.UPDATE_CACHE_INVALIDATE_URL != '' && secrets.UPDATE_ADMIN_TOKEN != ''
+        env:
+          INVALIDATE_URL: ${{ vars.UPDATE_CACHE_INVALIDATE_URL }}
+          ADMIN_TOKEN: ${{ secrets.UPDATE_ADMIN_TOKEN }}
+        run: |
+          curl -fsS -X POST "$INVALIDATE_URL" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"source":"release-workflow"}' || echo "::warning::Backend cache invalidation request failed; webhook or TTL will still refresh."

@@ -1,0 +1,118 @@
+name: Migrate Historical Releases to Distribution Repo
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: 'Source repository holding historical releases (e.g. Adetisola/Laterbox-Android)'
+        required: true
+        default: 'Adetisola/Laterbox-Android'
+      target_repo:
+        description: 'Target public artifact-only distribution repository (e.g. Adetisola/Laterbox)'
+        required: true
+        default: 'Adetisola/Laterbox'
+      tags:
+        description: 'Optional space-separated tags subset (blank = all releases)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Validate and preview migration without writing to target_repo'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    name: Backup & Migrate Historical Releases
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout Private Android Source
+        uses: actions/checkout@v7
+
+      - name: Validate Distribution App Credentials
+        if: inputs.dry_run != true
+        env:
+          HAS_APP_ID: ${{ secrets.DISTRIBUTION_APP_ID != '' }}
+          HAS_APP_KEY: ${{ secrets.DISTRIBUTION_APP_PRIVATE_KEY != '' }}
+        run: |
+          if [ "$HAS_APP_ID" != "true" ] || [ "$HAS_APP_KEY" != "true" ]; then
+            echo "::error::Missing DISTRIBUTION_APP_ID or DISTRIBUTION_APP_PRIVATE_KEY secret."
+            exit 1
+          fi
+
+      - name: Resolve Target Repo Owner & Name
+        id: resolve_target
+        run: |
+          DIST_REPO="${{ inputs.target_repo }}"
+          echo "target_owner=${DIST_REPO%%/*}" >> "$GITHUB_OUTPUT"
+          echo "target_name=${DIST_REPO##*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Mint Scoped Target Repo Token
+        id: target_token
+        if: inputs.dry_run != true && secrets.DISTRIBUTION_APP_ID != '' && secrets.DISTRIBUTION_APP_PRIVATE_KEY != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.DISTRIBUTION_APP_ID }}
+          private-key: ${{ secrets.DISTRIBUTION_APP_PRIVATE_KEY }}
+          owner: ${{ steps.resolve_target.outputs.target_owner }}
+          repositories: ${{ steps.resolve_target.outputs.target_name }}
+
+      - name: Stream-Migrate Releases Batch-by-Batch
+        env:
+          SOURCE_GH_TOKEN: ${{ github.token }}
+          TARGET_GH_TOKEN: ${{ steps.target_token.outputs.token || github.token }}
+          SOURCE_REPO: ${{ inputs.source_repo }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+          TAGS_INPUT: ${{ inputs.tags }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          GH_TOKEN="$SOURCE_GH_TOKEN" gh api --paginate --slurp "repos/${SOURCE_REPO}/releases?per_page=100" > /tmp/all_releases.json
+          TAG_LIST=$(python3 - <<'PY'
+          import json, os
+          pages = json.load(open("/tmp/all_releases.json"))
+          rels = []
+          for p in pages:
+              if isinstance(p, list):
+                  rels.extend(p)
+              elif isinstance(p, dict):
+                  rels.append(p)
+          def semver_key(tag):
+              parts = []
+              for part in tag.lstrip("vV").split("."):
+                  digits = "".join(c for c in part if c.isdigit())
+                  parts.append(int(digits) if digits else 0)
+              return tuple(parts)
+          rels.sort(key=lambda r: (str(r.get("published_at") or ""), semver_key(str(r.get("tag_name") or ""))))
+          wanted = set(os.environ.get("TAGS_INPUT", "").split())
+          tags = [r["tag_name"] for r in rels if not r.get("draft") and (not wanted or r["tag_name"] in wanted)]
+          print(" ".join(tags))
+          PY
+          )
+
+          DRY_FLAG=""
+          if [ "$DRY_RUN" = "true" ]; then
+            DRY_FLAG="--dry-run"
+          fi
+
+          for TAG in $TAG_LIST; do
+            echo "=== Processing $TAG ==="
+            BACKUP_DIR="/tmp/laterbox-migrate-work"
+            rm -rf "$BACKUP_DIR"
+            GH_TOKEN="$SOURCE_GH_TOKEN" python3 tools/distribution/backup_releases.py \
+              --source-repo "$SOURCE_REPO" \
+              --backup-dir "$BACKUP_DIR" \
+              --tags "$TAG"
+            GH_TOKEN="$TARGET_GH_TOKEN" python3 tools/distribution/migrate_releases.py \
+              --backup-dir "$BACKUP_DIR" \
+              --target-repo "$TARGET_REPO" \
+              --tags "$TAG" \
+              --cleanup-assets \
+              $DRY_FLAG
+            rm -rf "$BACKUP_DIR"
+          done

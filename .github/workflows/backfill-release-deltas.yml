@@ -4,29 +4,64 @@ on:
   workflow_dispatch:
     inputs:
       target_tag:
-        description: 'Existing published release tag to backfill (e.g. v1.0.55)'
+        description: 'Existing published release tag in distribution repo to backfill (e.g. v1.0.55)'
         required: true
         default: 'v1.0.55'
       delta_rolling_window:
         description: 'Number of previous stable releases for rolling-window delta patches'
         required: false
         default: '5'
+      distribution_repo:
+        description: 'Optional distribution repository override (defaults to vars.DISTRIBUTION_REPO or Adetisola/Laterbox)'
+        required: false
+        default: ''
+
+env:
+  DEFAULT_DISTRIBUTION_REPO: Adetisola/Laterbox
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.inputs.target_tag }}
   cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
   backfill-deltas:
     name: Backfill Rolling-Window Delta Patches
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    permissions:
-      contents: write
 
     steps:
-      - name: Checkout Code
+      - name: Checkout Private Android Source
         uses: actions/checkout@v4
+
+      - name: Resolve Distribution Target
+        id: resolve_target
+        run: |
+          DIST_REPO="${{ github.event.inputs.distribution_repo || vars.DISTRIBUTION_REPO || env.DEFAULT_DISTRIBUTION_REPO }}"
+          echo "distribution_repo=$DIST_REPO" >> "$GITHUB_OUTPUT"
+          echo "distribution_owner=${DIST_REPO%%/*}" >> "$GITHUB_OUTPUT"
+          echo "distribution_name=${DIST_REPO##*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate Cross-Repo Distribution Credentials
+        env:
+          HAS_APP_ID: ${{ secrets.DISTRIBUTION_APP_ID != '' }}
+          HAS_APP_KEY: ${{ secrets.DISTRIBUTION_APP_PRIVATE_KEY != '' }}
+        run: |
+          if [ "$HAS_APP_ID" != "true" ] || [ "$HAS_APP_KEY" != "true" ]; then
+            echo "::error::Missing DISTRIBUTION_APP_ID or DISTRIBUTION_APP_PRIVATE_KEY secret for cross-repository backfill on ${{ steps.resolve_target.outputs.distribution_repo }}."
+            exit 1
+          fi
+
+      - name: Mint Scoped Distribution GitHub App Token
+        id: dist_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.DISTRIBUTION_APP_ID }}
+          private-key: ${{ secrets.DISTRIBUTION_APP_PRIVATE_KEY }}
+          owner: ${{ steps.resolve_target.outputs.distribution_owner }}
+          repositories: ${{ steps.resolve_target.outputs.distribution_name }}
 
       - name: Install Delta Dependencies
         run: |
@@ -34,7 +69,8 @@ jobs:
 
       - name: Download Existing Target Release & Generate Rolling Patches
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.dist_token.outputs.token }}
+          DISTRIBUTION_REPO: ${{ steps.resolve_target.outputs.distribution_repo }}
           TARGET_TAG: ${{ github.event.inputs.target_tag }}
           WINDOW_RAW: ${{ github.event.inputs.delta_rolling_window }}
         run: |
@@ -45,7 +81,7 @@ jobs:
           fi
 
           mkdir -p /tmp/repair/target /tmp/repair/out /tmp/repair/bases
-          gh release download "$TARGET_TAG" --dir /tmp/repair/target --clobber
+          gh release download "$TARGET_TAG" -R "$DISTRIBUTION_REPO" --dir /tmp/repair/target --clobber
 
           python3 - <<'PY'
           import hashlib, json, os
@@ -75,8 +111,8 @@ jobs:
           fi
           echo "Target release: tag=$TARGET_TAG version=$TARGET_VER versionCode=$TARGET_VCODE"
 
-          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > /tmp/repair/releases.json || \
-            gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > /tmp/repair/releases.json
+          gh api --paginate --slurp "repos/${DISTRIBUTION_REPO}/releases?per_page=100" > /tmp/repair/releases.json || \
+            gh api "repos/${DISTRIBUTION_REPO}/releases?per_page=100" > /tmp/repair/releases.json
 
           SELECTED_JSON=$(python3 tools/delta/generate_delta.py \
             --select-bases \
@@ -92,7 +128,7 @@ jobs:
             BASE_DIR="/tmp/repair/bases/${BASE_TAG}"
             mkdir -p "$BASE_DIR"
             echo "Downloading base release APKs for $BASE_TAG (version $BASE_VER)..."
-            gh release download "$BASE_TAG" --dir "$BASE_DIR" --pattern "Laterbox-*.apk" || true
+            gh release download "$BASE_TAG" -R "$DISTRIBUTION_REPO" --dir "$BASE_DIR" --pattern "Laterbox-*.apk" || true
 
             BASE_VCODE=0
             SAMPLE_APK=$(find "$BASE_DIR" -maxdepth 1 -name "Laterbox-*.apk" -type f | head -n 1 || true)
@@ -120,38 +156,49 @@ jobs:
             --verify-zip \
             --threshold-ratio 0.70
 
-      - name: Validate & Upload New Patches + Manifest (Preserving Existing APKs & Patches)
+      - name: Validate & Upload New Patches, Manifest & Checksums
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.dist_token.outputs.token }}
+          DISTRIBUTION_REPO: ${{ steps.resolve_target.outputs.distribution_repo }}
           TARGET_TAG: ${{ github.event.inputs.target_tag }}
         run: |
           set -euo pipefail
           UPLOAD_FILES=$(python3 - <<'PY'
           import hashlib, json, os
           orig = json.load(open("/tmp/repair/original_digests.json"))
+          target_dir = "/tmp/repair/target"
           out_dir = "/tmp/repair/out"
           manifest = json.load(open(os.path.join(out_dir, "delta-manifest.json")))
           to_upload = [os.path.join(out_dir, "delta-manifest.json")]
+          checksum_rows = []
+          for name in sorted(os.listdir(target_dir)):
+              p = os.path.join(target_dir, name)
+              if os.path.isfile(p) and name.endswith(".apk"):
+                  checksum_rows.append(f"{orig[name]}  {name}")
           for p in manifest["patches"]:
               fname = p["patchFilename"]
               fpath = os.path.join(out_dir, fname)
               assert os.path.isfile(fpath), f"Missing generated patch {fpath}"
               digest = hashlib.sha256(open(fpath, "rb").read()).hexdigest()
               assert digest == p["patchSha256"], f"Digest mismatch for {fname}"
+              checksum_rows.append(f"{digest}  {fname}")
               if fname in orig:
                   assert digest == orig[fname], f"Refusing to alter existing patch {fname}"
               else:
                   to_upload.append(fpath)
+          checksums_path = os.path.join(out_dir, "checksums.sha256")
+          with open(checksums_path, "w", encoding="utf-8") as cf:
+              cf.write("\n".join(sorted(set(checksum_rows), key=lambda r: r.split("  ", 1)[1])) + "\n")
+          to_upload.append(checksums_path)
           print("\n".join(to_upload))
           PY
           )
 
           mapfile -t FILES_ARRAY <<< "$UPLOAD_FILES"
-          echo "Uploading ${#FILES_ARRAY[@]} updated/new release asset(s):"
-          printf '  %s\n' "${FILES_ARRAY[@]}"
-          gh release upload "$TARGET_TAG" "${FILES_ARRAY[@]}" --clobber
+          echo "Uploading ${#FILES_ARRAY[@]} updated/new release asset(s) to $DISTRIBUTION_REPO..."
+          gh release upload "$TARGET_TAG" -R "$DISTRIBUTION_REPO" "${FILES_ARRAY[@]}" --clobber
 
-          gh release view "$TARGET_TAG" --json assets > /tmp/repair/after_assets.json
+          gh release view "$TARGET_TAG" -R "$DISTRIBUTION_REPO" --json assets > /tmp/repair/after_assets.json
           python3 - <<'PY'
           import json
           orig = json.load(open("/tmp/repair/original_digests.json"))
@@ -164,5 +211,5 @@ jobs:
           manifest = json.load(open("/tmp/repair/out/delta-manifest.json"))
           for p in manifest["patches"]:
               assert p["patchFilename"] in by_name, f"Uploaded release missing patch {p['patchFilename']}"
-          print(f"Verified all {len(orig)} preserved assets and all {len(manifest['patches'])} manifest patches on GitHub Release.")
+          print(f"Verified all {len(orig)} preserved assets and all {len(manifest['patches'])} manifest patches on $DISTRIBUTION_REPO.")
           PY
