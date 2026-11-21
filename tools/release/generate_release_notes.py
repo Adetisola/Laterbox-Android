@@ -19,11 +19,12 @@ from typing import Dict, List, Optional, Tuple
 from tools.release.validate_release_notes import validate_release_notes_text
 
 _CONVENTIONAL_RE = re.compile(
-    r"^(?P<kind>[a-zA-Z]+)(?:\([^)]*\))?(?:!)?:\s*(?P<msg>.+)$"
+    r"^(?P<kind>[a-zA-Z]+)(?:\((?P<scope>[^)]*)\))?(?:!)?:\s*(?P<msg>.+)$"
 )
 _TRAILING_TAG_RE = re.compile(r"\s*\(v?\d+\.\d+\.\d+[^)]*\)\s*$")
 _LEADING_MILESTONE_RE = re.compile(r"^(?:Milestone\s+\d+|M\d+)\s*:\s*", re.IGNORECASE)
 _INTERNAL_PREFIXES = ("chore", "ci", "build", "test", "tests", "style", "docs")
+_INTERNAL_SCOPES = {"ci", "test", "tests", "release", "distribution", "deps", "lint"}
 _INTERNAL_IDENTIFIERS_RE = re.compile(
     r"\b[A-Za-z0-9_]+(?:ViewModel|Repository|Activity|Fragment|Dao|Entity|Worker)\b"
     r"|\b[A-Za-z0-9_./-]+\.(?:kt|java|py|kts|yml|yaml)\b"
@@ -91,8 +92,9 @@ def sanitize_commit_subject(subject: str) -> Optional[Tuple[str, str]]:
     match = _CONVENTIONAL_RE.match(text)
     if match:
         kind = match.group("kind").lower()
+        scope = (match.group("scope") or "").strip().lower()
         body = match.group("msg").strip()
-        if kind in _INTERNAL_PREFIXES:
+        if kind in _INTERNAL_PREFIXES or scope in _INTERNAL_SCOPES:
             return None
         if kind == "feat":
             category = "features"
