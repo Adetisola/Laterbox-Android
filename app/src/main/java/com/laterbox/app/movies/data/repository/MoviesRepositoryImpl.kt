@@ -1017,7 +1017,38 @@ class MoviesRepositoryImpl(
         }
 
         if (result.isSuccess) {
-            val episodes = result.getOrThrow()
+            var episodes = result.getOrThrow()
+            if (resolvedProviderId == MovieBoxProvider.PROVIDER_ID &&
+                episodes.isNotEmpty() &&
+                episodes.any { it.stillUrl.isNullOrBlank() }
+            ) {
+                val cachedEntryDetail = moviesDao.getCacheEntry("detail:$resolvedProviderId:$resolvedSeriesId")
+                val cachedImdb = cachedEntryDetail?.let {
+                    withContext(defaultDispatcher) {
+                        MoviesCacheJsonCodec.decodeDetails(it.payloadJson)?.summary?.imdbId
+                    }
+                }
+                val enrichment = runCatching {
+                    activeMovieBox()?.getSeasonEpisodeMetadata(
+                        seriesId = resolvedSeriesId,
+                        seasonNumber = seasonNumber,
+                        imdbId = cachedImdb
+                    ).orEmpty()
+                }.getOrDefault(emptyMap())
+                if (enrichment.isNotEmpty()) {
+                    episodes = episodes.map { ep ->
+                        val patch = enrichment[ep.episodeNumber] ?: return@map ep
+                        val genericTitle = ep.title == "Episode ${ep.episodeNumber}"
+                        ep.copy(
+                            title = if (genericTitle && !patch.title.isNullOrBlank()) patch.title else ep.title,
+                            overview = ep.overview ?: patch.overview,
+                            runtimeMinutes = ep.runtimeMinutes ?: patch.runtimeMinutes,
+                            airDate = ep.airDate ?: patch.airDate,
+                            stillUrl = ep.stillUrl ?: patch.stillUrl
+                        )
+                    }
+                }
+            }
             val encoded = withContext(defaultDispatcher) {
                 MoviesCacheJsonCodec.encodeEpisodes(episodes)
             }

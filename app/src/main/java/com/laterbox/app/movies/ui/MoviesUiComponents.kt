@@ -93,10 +93,34 @@ import com.laterbox.app.movies.domain.model.SearchSuggestion
 import com.laterbox.app.movies.domain.model.SeasonSummary
 import com.laterbox.app.movies.domain.model.SubtitleTrack
 import com.laterbox.app.movies.domain.model.WatchHistoryItem
+import com.laterbox.app.movies.domain.util.DurationFormatter
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.theme.LaterboxTheme
 import kotlinx.coroutines.delay
 import java.util.Locale
+
+@Composable
+fun MovieRatingBadge(
+    rating: Double,
+    modifier: Modifier = Modifier
+) {
+    if (rating <= 0.0 || rating.isNaN()) return
+    val typography = LaterboxTheme.typography
+    Surface(
+        shape = RoundedCornerShape(6.dp),
+        color = Color.Black.copy(alpha = 0.72f),
+        modifier = modifier
+    ) {
+        Text(
+            text = String.format(Locale.US, "★ %.1f", rating),
+            style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+            color = Color(0xFFFFD54F),
+            maxLines = 1,
+            softWrap = false,
+            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+        )
+    }
+}
 
 @Composable
 fun DataSourceBadgeChip(
@@ -220,21 +244,13 @@ fun MoviePosterCard(
             )
 
             // Rating pill (top-left)
-            item.rating?.let { rating ->
-                Surface(
-                    shape = RoundedCornerShape(6.dp),
-                    color = Color.Black.copy(alpha = 0.72f),
+            item.rating?.takeIf { it > 0.0 && !it.isNaN() }?.let { rating ->
+                MovieRatingBadge(
+                    rating = rating,
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .padding(6.dp)
-                ) {
-                    Text(
-                        text = String.format(Locale.US, "★ %.1f", rating),
-                        style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
-                        color = Color(0xFFFFD54F),
-                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
-                    )
-                }
+                )
             }
 
             // Contextual menu (top-right)
@@ -417,43 +433,24 @@ fun MoviePosterCard(
         )
 
         val yearText = item.releaseYear?.toString()
+        val durationText = if (item.kind == MediaKind.MOVIE) {
+            DurationFormatter.formatMinutes(item.durationMinutes)
+        } else {
+            null
+        }
         val primaryGenre = item.genres.firstOrNull()?.takeIf { it.isNotBlank() }
-        if (yearText != null || primaryGenre != null) {
-            Row(
+        val metaParts = listOfNotNull(yearText, durationText, primaryGenre)
+        if (metaParts.isNotEmpty()) {
+            Text(
+                text = metaParts.joinToString(" · "),
+                style = typography.metaText.copy(fontSize = 11.sp, lineHeight = 15.sp),
+                color = colors.textSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 2.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                if (yearText != null) {
-                    Text(
-                        text = yearText,
-                        style = typography.metaText.copy(fontSize = 11.sp, lineHeight = 15.sp),
-                        color = colors.textSecondary,
-                        maxLines = 1,
-                        softWrap = false
-                    )
-                }
-                if (yearText != null && primaryGenre != null) {
-                    Text(
-                        text = " · ",
-                        style = typography.metaText.copy(fontSize = 11.sp, lineHeight = 15.sp),
-                        color = colors.textSecondary,
-                        maxLines = 1,
-                        softWrap = false
-                    )
-                }
-                if (primaryGenre != null) {
-                    Text(
-                        text = primaryGenre,
-                        style = typography.metaText.copy(fontSize = 11.sp, lineHeight = 15.sp),
-                        color = colors.textSecondary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
-                }
-            }
+                    .padding(top = 2.dp)
+            )
         }
 
         if (showSourceStatusBadge) {
@@ -1020,7 +1017,7 @@ fun MoviesHeroCarousel(
                             .fillMaxWidth()
                             .padding(12.dp)
                             .align(Alignment.TopCenter),
-                        horizontalArrangement = Arrangement.End,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Surface(
@@ -1043,6 +1040,12 @@ fun MoviesHeroCarousel(
                                 )
                             }
                         }
+                        item.rating?.takeIf { it > 0.0 && !it.isNaN() }?.let { rating ->
+                            MovieRatingBadge(
+                                rating = rating,
+                                modifier = Modifier.testTag("hero_rating_badge_${item.id}")
+                            )
+                        }
                     }
 
                     Column(
@@ -1055,7 +1058,9 @@ fun MoviesHeroCarousel(
                         val meta = buildList {
                             add(item.kind.label)
                             item.releaseYear?.let { add(it.toString()) }
-                            item.rating?.let { add(String.format(Locale.US, "★ %.1f", it)) }
+                            if (item.kind == MediaKind.MOVIE) {
+                                DurationFormatter.formatMinutes(item.durationMinutes)?.let { add(it) }
+                            }
                             item.genres.firstOrNull()?.let { add(it) }
                         }.joinToString(" · ")
                         Text(

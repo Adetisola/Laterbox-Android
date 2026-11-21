@@ -73,12 +73,23 @@ class MovieBoxProvider(
     override val sourceBadge: DataSourceBadge = DataSourceBadge.LIVE_MOVIEBOX
 
     private val detailPathCache = ConcurrentHashMap<String, String>()
+    private val imdbIdCache = ConcurrentHashMap<String, String>()
     private val titleCache = ConcurrentHashMap<String, String>()
     private val trailerCache = ConcurrentHashMap<String, String>()
     private val trailerHeadersCache = ConcurrentHashMap<String, Map<String, String>>()
     private val episodeSizesCache = ConcurrentHashMap<String, ConcurrentHashMap<Int, Map<Int, Double>>>()
+    private val episodeMetadataCache = ConcurrentHashMap<String, Map<Int, EpisodeMetadataEnrichment>>()
     private val markerWindowCache = ConcurrentHashMap<String, Pair<PlaybackMarkerWindow?, PlaybackMarkerWindow?>>()
     private val searchUpstreamCursor = ConcurrentHashMap<String, Int>()
+
+    data class EpisodeMetadataEnrichment(
+        val episodeNumber: Int,
+        val title: String?,
+        val overview: String?,
+        val runtimeMinutes: Int?,
+        val airDate: String?,
+        val stillUrl: String?
+    )
 
     @Volatile
     private var cachedGenres: List<String> = emptyList()
@@ -736,6 +747,7 @@ class MovieBoxProvider(
                 posterBlurHash = coverBlurHash,
                 backdropBlurHash = stillsBlurHash
             )
+            summary.imdbId?.takeIf { it.isNotBlank() }?.let { imdbIdCache[id] = it }
 
             MediaDetails(
                 summary = summary,
@@ -862,6 +874,48 @@ class MovieBoxProvider(
                 }
             }
         }
+    }
+
+    suspend fun getSeasonEpisodeMetadata(
+        seriesId: String,
+        seasonNumber: Int,
+        imdbId: String? = null
+    ): Map<Int, EpisodeMetadataEnrichment> = withContext(Dispatchers.IO) {
+        val cacheKey = "$seriesId:$seasonNumber"
+        episodeMetadataCache[cacheKey]?.let { return@withContext it }
+
+        val resolvedImdb = imdbId?.takeIf { it.isNotBlank() } ?: imdbIdCache[seriesId]
+        val result = runCatching {
+            val builder = requireBaseHttpUrl().newBuilder()
+                .addPathSegment("episodes")
+                .addPathSegment(seriesId)
+                .addPathSegment("metadata")
+                .addQueryParameter("se", seasonNumber.toString())
+            resolvedImdb?.let { builder.addQueryParameter("imdb_id", it) }
+
+            val body = executeGet(builder.build())
+            val root = JSONObject(body)
+            val arr = root.optJSONArray("episodes") ?: JSONArray()
+            val mapped = linkedMapOf<Int, EpisodeMetadataEnrichment>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val epNum = obj.optInt("episode", 0).takeIf { it > 0 } ?: continue
+                mapped[epNum] = EpisodeMetadataEnrichment(
+                    episodeNumber = epNum,
+                    title = obj.optCleanString("title"),
+                    overview = obj.optCleanString("overview"),
+                    runtimeMinutes = obj.optInt("runtime_minutes", 0).takeIf { it > 0 },
+                    airDate = obj.optCleanString("air_date"),
+                    stillUrl = obj.optCleanString("still_url")
+                )
+            }
+            mapped.toMap()
+        }.getOrDefault(emptyMap())
+
+        if (result.isNotEmpty()) {
+            episodeMetadataCache[cacheKey] = result
+        }
+        result
     }
 
     suspend fun getPersonFilmography(

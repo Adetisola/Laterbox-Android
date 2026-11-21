@@ -59,6 +59,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
@@ -81,6 +82,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -871,8 +873,13 @@ fun MovieDetailScreen(
                                                 val metaParts = buildList {
                                                     add(summary.kind.label)
                                                     summary.releaseYear?.let { add(it.toString()) }
-                                                    summary.durationMinutes?.let { add("${it}m") }
-                                                    summary.rating?.let { add(String.format(Locale.US, "★ %.1f", it)) }
+                                                    if (summary.kind == MediaKind.MOVIE) {
+                                                        com.laterbox.app.movies.domain.util.DurationFormatter
+                                                            .formatMinutes(summary.durationMinutes)
+                                                            ?.let { add(it) }
+                                                    }
+                                                    summary.rating?.takeIf { it > 0.0 && !it.isNaN() }
+                                                        ?.let { add(String.format(Locale.US, "★ %.1f", it)) }
                                                 }
                                                 Text(
                                                     text = metaParts.joinToString(" · "),
@@ -1798,11 +1805,14 @@ fun MovieDetailScreen(
                                         items = visibleEpisodes,
                                         key = { index, ep -> "ep_${index}_${ep.id}_${ep.seasonNumber}_${ep.episodeNumber}" }
                                     ) { _, ep ->
-                                        val isWatched = uiState.seriesProgress?.episodeStates
-                                            ?.get(ep.seasonNumber to ep.episodeNumber)?.isCompleted == true
+                                        val epProgress = uiState.seriesProgress?.episodeStates
+                                            ?.get(ep.seasonNumber to ep.episodeNumber)
+                                        val isWatched = epProgress?.isCompleted == true
                                         val isEpDownloaded = offlineLookup.hasEpisode(summary.providerId, summary.id, ep.seasonNumber, ep.episodeNumber)
                                         EpisodeRowCard(
                                             episode = ep,
+                                            seriesPosterUrl = summary.posterUrl ?: summary.backdropUrl,
+                                            episodeProgress = epProgress,
                                             isWatched = isWatched,
                                             isDownloaded = isEpDownloaded,
                                             onToggleWatched = { onToggleEpisodeWatched(ep) },
@@ -1838,11 +1848,14 @@ fun MovieDetailScreen(
                                 items = visibleEpisodes,
                                 key = { index, ep -> "ep_pre_${index}_${ep.id}_${ep.seasonNumber}_${ep.episodeNumber}" }
                             ) { _, ep ->
-                                val isWatched = uiState.seriesProgress?.episodeStates
-                                    ?.get(ep.seasonNumber to ep.episodeNumber)?.isCompleted == true
+                                val epProgress = uiState.seriesProgress?.episodeStates
+                                    ?.get(ep.seasonNumber to ep.episodeNumber)
+                                val isWatched = epProgress?.isCompleted == true
                                 val isEpDownloaded = offlineLookup.hasEpisode(summary.providerId, summary.id, ep.seasonNumber, ep.episodeNumber)
                                 EpisodeRowCard(
                                     episode = ep,
+                                    seriesPosterUrl = summary.posterUrl ?: summary.backdropUrl,
+                                    episodeProgress = epProgress,
                                     isWatched = isWatched,
                                     isDownloaded = isEpDownloaded,
                                     onToggleWatched = { onToggleEpisodeWatched(ep) },
@@ -2004,17 +2017,36 @@ private fun MetadataPillChip(
     }
 }
 
+internal fun computeEpisodePartialProgressFraction(
+    episodeProgress: com.laterbox.app.movies.domain.model.EpisodeProgressState?,
+    isWatched: Boolean
+): Float? {
+    if (isWatched || episodeProgress == null || episodeProgress.isCompleted) return null
+    if (episodeProgress.positionMs <= 0L || episodeProgress.durationMs <= 0L) return null
+    val raw = episodeProgress.positionMs.toFloat() / episodeProgress.durationMs.toFloat()
+    if (raw >= 0.98f) return null
+    return raw.coerceIn(0.02f, 0.98f)
+}
+
 @Composable
 private fun EpisodeRowCard(
     episode: EpisodeItem,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    seriesPosterUrl: String? = null,
+    episodeProgress: com.laterbox.app.movies.domain.model.EpisodeProgressState? = null,
     isWatched: Boolean = false,
     isDownloaded: Boolean = false,
     onToggleWatched: () -> Unit = {}
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
+    var stillLoadFailed by remember(episode.stillUrl) { mutableStateOf(false) }
+    var fallbackLoadFailed by remember(seriesPosterUrl) { mutableStateOf(false) }
+    val partialProgress = computeEpisodePartialProgressFraction(
+        episodeProgress = episodeProgress,
+        isWatched = isWatched
+    )
 
     Surface(
         modifier = modifier
@@ -2042,19 +2074,51 @@ private fun EpisodeRowCard(
                     .background(colors.surfaceSecondary),
                 contentAlignment = Alignment.Center
             ) {
-                if (!episode.stillUrl.isNullOrBlank()) {
-                    AsyncImage(
-                        model = episode.stillUrl,
-                        contentDescription = episode.title,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } else {
-                    Text(
-                        text = "E${episode.episodeNumber}",
-                        style = typography.titleLarge,
-                        color = colors.textTertiary
-                    )
+                val hasEpisodeStill = !episode.stillUrl.isNullOrBlank() && !stillLoadFailed
+                val hasSeriesFallback = !seriesPosterUrl.isNullOrBlank() && !fallbackLoadFailed
+                when {
+                    hasEpisodeStill -> {
+                        AsyncImage(
+                            model = episode.stillUrl,
+                            contentDescription = episode.title,
+                            contentScale = ContentScale.Crop,
+                            onError = { stillLoadFailed = true },
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .testTag("episode_still_${episode.seasonNumber}_${episode.episodeNumber}")
+                        )
+                    }
+                    hasSeriesFallback -> {
+                        AsyncImage(
+                            model = seriesPosterUrl,
+                            contentDescription = episode.title,
+                            contentScale = ContentScale.Crop,
+                            onError = { fallbackLoadFailed = true },
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .blur(10.dp)
+                                .testTag("episode_blurred_fallback_${episode.seasonNumber}_${episode.episodeNumber}")
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.28f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "E${episode.episodeNumber}",
+                                style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
+                                color = Color.White.copy(alpha = 0.92f)
+                            )
+                        }
+                    }
+                    else -> {
+                        Text(
+                            text = "E${episode.episodeNumber}",
+                            style = typography.titleLarge,
+                            color = colors.textTertiary
+                        )
+                    }
                 }
                 if (isDownloaded) {
                     Surface(
@@ -2072,6 +2136,18 @@ private fun EpisodeRowCard(
                             modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
                         )
                     }
+                }
+                if (partialProgress != null) {
+                    LinearProgressIndicator(
+                        progress = { partialProgress },
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .height(3.dp)
+                            .testTag("episode_progress_${episode.seasonNumber}_${episode.episodeNumber}"),
+                        color = colors.accentPrimary,
+                        trackColor = Color.Black.copy(alpha = 0.45f)
+                    )
                 }
             }
             Column(
