@@ -31,10 +31,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.laterbox.app.data.preferences.ThemeMode
 import com.laterbox.app.data.preferences.UserPreferences
+import com.laterbox.app.diagnostics.LocalLibraryMetrics
 import com.laterbox.app.ui.components.LaterboxIconButton
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.components.LaterboxShapeTokens
 import com.laterbox.app.ui.theme.LaterboxTheme
+import com.laterbox.app.update.AppUpdateInfo
 
 @Composable
 fun SettingsScreen(
@@ -46,11 +48,18 @@ fun SettingsScreen(
     onNavigateToReadingBehavior: () -> Unit,
     onNavigateToMediaDownloads: () -> Unit,
     onNavigateToDataStorage: () -> Unit,
-    onNavigateToAboutPrivacy: () -> Unit,
+    onNavigateToAboutPrivacy: () -> Unit = {},
     onBackClick: () -> Unit,
     modifier: Modifier = Modifier,
     onNavigateToMoviesTv: () -> Unit = {},
-    onNavigateToAppStorage: () -> Unit = {}
+    onNavigateToAppStorage: () -> Unit = {},
+    isCheckingUpdate: Boolean = false,
+    availableUpdateInfo: AppUpdateInfo? = null,
+    onCheckForUpdates: () -> Unit = {},
+    onDismissUpdateDialog: () -> Unit = {},
+    onPostponeUpdate: (String) -> Unit = {},
+    localMetrics: LocalLibraryMetrics? = null,
+    onResetActivityCounters: (() -> Unit)? = null
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -88,7 +97,7 @@ fun SettingsScreen(
                         color = colors.textPrimary
                     )
                     Text(
-                        text = "Preferences, media engine & privacy",
+                        text = "Preferences, media, storage & privacy",
                         style = typography.metaText,
                         color = colors.textSecondary
                     )
@@ -133,7 +142,7 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(spacing.md))
 
-            // Category Navigation Cards
+            // Category Navigation Cards (App Storage merged into Data & Storage; About Laterbox moved inline below)
             SettingsSectionHeader(title = "Categories")
 
             Column(
@@ -152,7 +161,7 @@ fun SettingsScreen(
                 SettingsCategoryRow(
                     iconRes = LaterboxIcons.Sparkles,
                     title = "Reminders & AI",
-                    subtitle = "Calendar schedules, notifications, Google AI Studio",
+                    subtitle = "Calendar schedules, notifications & AI assistant",
                     onClick = onNavigateToRemindersAi
                 )
 
@@ -173,7 +182,7 @@ fun SettingsScreen(
                 SettingsCategoryRow(
                     iconRes = LaterboxIcons.Download,
                     title = "Media & Downloads",
-                    subtitle = "yt-dlp extractor, network policy, warm engine, export storage",
+                    subtitle = "Download tools, network policy, export storage",
                     onClick = onNavigateToMediaDownloads
                 )
 
@@ -188,25 +197,23 @@ fun SettingsScreen(
                 SettingsCategoryRow(
                     iconRes = LaterboxIcons.Folder,
                     title = "Data & Storage",
-                    subtitle = "JSON backup & restore, Android OS auto-backup",
-                    onClick = onNavigateToDataStorage
-                )
-
-                SettingsCategoryRow(
-                    iconRes = LaterboxIcons.Folder,
-                    title = "App Storage",
-                    subtitle = "Cache usage, downloaded media footprint & safe cleanup",
-                    onClick = onNavigateToAppStorage,
-                    modifier = Modifier.testTag("settings_category_app_storage")
-                )
-
-                SettingsCategoryRow(
-                    iconRes = LaterboxIcons.Settings,
-                    title = "About & Privacy",
-                    subtitle = "App version, local insights, licenses, privacy notice",
-                    onClick = onNavigateToAboutPrivacy
+                    subtitle = "Backup, restore, storage usage & safe cache cleanup",
+                    onClick = onNavigateToDataStorage,
+                    modifier = Modifier.testTag("settings_category_data_storage")
                 )
             }
+
+            Spacer(modifier = Modifier.height(spacing.lg))
+
+            AboutLaterboxSection(
+                isCheckingUpdate = isCheckingUpdate,
+                availableUpdateInfo = availableUpdateInfo,
+                onCheckForUpdates = onCheckForUpdates,
+                onDismissUpdateDialog = onDismissUpdateDialog,
+                onPostponeUpdate = onPostponeUpdate,
+                localMetrics = localMetrics,
+                onResetActivityCounters = onResetActivityCounters
+            )
 
             Spacer(modifier = Modifier.height(96.dp))
         }

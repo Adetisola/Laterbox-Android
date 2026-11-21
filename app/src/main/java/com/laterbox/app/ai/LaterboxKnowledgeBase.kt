@@ -17,7 +17,7 @@ object LaterboxKnowledgeBase {
         - {"type":"OPEN_DOWNLOADS","initialTab":0}  (0 = Library, 1 = Queue)
         - {"type":"OPEN_YOUTUBE_TRANSCRIPTS","url":"<optional youtube video or playlist url>","title":"<short label>"} (opens YouTube Transcript extractor sheet read-only; omit url to open manual input)
         - {"type":"OPEN_COLLECTIONS"}
-        - {"type":"OPEN_SETTINGS","route":"settings"} (valid routes: settings, settings/reminders_ai, settings/media_downloads, settings/movies_tv, settings/capture_shortcuts, settings/about_privacy, settings/data_storage)
+        - {"type":"OPEN_SETTINGS","route":"settings"} (valid routes: settings, settings/reminders_ai, settings/media_downloads, settings/movies_tv, settings/capture_shortcuts, settings/data_storage)
         - {"type":"RUN_HEALTH_CHECK"}
         - {"type":"RETRY_INSPECTION","linkId":123,"title":"<short label>"} (only when inspection failed for an exact linkId in context)
         - {"type":"RETRY_DOWNLOAD","taskId":"<exact taskId>","title":"<short label>"} (only when download failed for an exact taskId in context)

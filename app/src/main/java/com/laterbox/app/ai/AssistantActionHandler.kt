@@ -137,7 +137,7 @@ sealed interface ChatAction {
             "settings/media_downloads" -> "Media & Downloads settings"
             "settings/movies_tv" -> "Movies & TV settings"
             "settings/capture_shortcuts" -> "Capture & Shortcuts settings"
-            "settings/about_privacy" -> "About & Privacy settings"
+            "settings/about_privacy" -> "About Laterbox in Settings"
             "settings/data_storage" -> "Data & Storage settings"
             else -> "Open settings"
         }

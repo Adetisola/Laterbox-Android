@@ -973,7 +973,12 @@ fun LaterboxApp(
                                             navigateTopLevel(LaterboxDestination.Collections.route)
                                         }
                                         is ChatAction.OpenSettings -> {
-                                            navController.navigate(action.route)
+                                            val normalizedRoute = when (action.route) {
+                                                "settings/about_privacy" -> LaterboxDestination.Settings.route
+                                                "settings/app_storage" -> LaterboxDestination.SettingsDataStorage.route
+                                                else -> action.route
+                                            }
+                                            navController.navigate(normalizedRoute)
                                         }
                                         is ChatAction.RunHealthCheck -> {
                                             chatViewModel.runAppHealthCheck()
@@ -1565,6 +1570,14 @@ fun LaterboxApp(
 
                         // Settings Screen (Landing Hub)
                         composable(LaterboxDestination.Settings.route) {
+                            val isCheckingUpdate by settingsViewModel.isCheckingUpdate.collectAsState()
+                            val availableUpdateInfo by settingsViewModel.updateCheckResult.collectAsState()
+                            val localMetrics by settingsViewModel.localMetrics.collectAsState()
+
+                            LaunchedEffect(Unit) {
+                                settingsViewModel.refreshLocalMetrics()
+                            }
+
                             SettingsScreen(
                                 preferences = preferences,
                                 onThemeModeChange = settingsViewModel::setThemeMode,
@@ -1575,9 +1588,18 @@ fun LaterboxApp(
                                 onNavigateToMediaDownloads = { navController.navigate(LaterboxDestination.SettingsMediaDownloads.route) },
                                 onNavigateToMoviesTv = { navController.navigate(LaterboxDestination.SettingsMoviesTv.route) },
                                 onNavigateToDataStorage = { navController.navigate(LaterboxDestination.SettingsDataStorage.route) },
-                                onNavigateToAppStorage = { navController.navigate(LaterboxDestination.SettingsAppStorage.route) },
-                                onNavigateToAboutPrivacy = { navController.navigate(LaterboxDestination.SettingsAboutPrivacy.route) },
-                                onBackClick = { navController.popBackStack() }
+                                onBackClick = { navController.popBackStack() },
+                                isCheckingUpdate = isCheckingUpdate,
+                                availableUpdateInfo = availableUpdateInfo,
+                                onCheckForUpdates = {
+                                    settingsViewModel.checkForUpdates { msg ->
+                                        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                onDismissUpdateDialog = settingsViewModel::dismissUpdateDialog,
+                                onPostponeUpdate = settingsViewModel::postponeUpdate,
+                                localMetrics = localMetrics,
+                                onResetActivityCounters = settingsViewModel::resetActivityCounters
                             )
                         }
 
@@ -1739,60 +1761,27 @@ fun LaterboxApp(
                             )
                         }
 
-                        // Settings: Data & Storage
+                        // Settings: Data & Storage (includes App Storage footprint & safe cache cleanup)
                         composable(LaterboxDestination.SettingsDataStorage.route) {
-                            com.laterbox.app.ui.settings.DataStorageSettingsScreen(
-                                preferences = preferences,
-                                onAllowSystemBackupChange = settingsViewModel::setAllowSystemBackup,
-                                onExportBackup = settingsViewModel::exportBackup,
-                                onImportBackup = settingsViewModel::importBackup,
-                                onBackClick = { navController.popBackStack() }
-                            )
-                        }
-
-                        // Settings: App Storage
-                        composable(LaterboxDestination.SettingsAppStorage.route) {
                             val storageReport by settingsViewModel.appStorageReport.collectAsState()
                             val isStorageLoading by settingsViewModel.isStorageLoading.collectAsState()
                             val isClearingSafeCache by settingsViewModel.isClearingSafeCache.collectAsState()
                             val storageFeedback by settingsViewModel.storageFeedbackMessage.collectAsState()
 
-                            com.laterbox.app.ui.settings.AppStorageSettingsScreen(
-                                report = storageReport,
-                                isLoading = isStorageLoading,
-                                isClearingSafeCache = isClearingSafeCache,
-                                feedbackMessage = storageFeedback,
-                                onRefresh = settingsViewModel::refreshAppStorage,
-                                onClearSafeCache = settingsViewModel::clearSafeCaches,
-                                onRunMaintenance = settingsViewModel::runStorageMaintenance,
-                                onDismissFeedback = settingsViewModel::dismissStorageFeedback,
-                                onBackClick = { navController.popBackStack() }
-                            )
-                        }
-
-                        // Settings: About & Privacy
-                        composable(LaterboxDestination.SettingsAboutPrivacy.route) {
-                            val isCheckingUpdate by settingsViewModel.isCheckingUpdate.collectAsState()
-                            val availableUpdateInfo by settingsViewModel.updateCheckResult.collectAsState()
-                            val localMetrics by settingsViewModel.localMetrics.collectAsState()
-
-                            LaunchedEffect(Unit) {
-                                settingsViewModel.refreshLocalMetrics()
-                            }
-
-                            com.laterbox.app.ui.settings.AboutPrivacySettingsScreen(
-                                isCheckingUpdate = isCheckingUpdate,
-                                availableUpdateInfo = availableUpdateInfo,
-                                onCheckForUpdates = {
-                                    settingsViewModel.checkForUpdates { msg ->
-                                        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
-                                    }
-                                },
-                                onDismissUpdateDialog = settingsViewModel::dismissUpdateDialog,
-                                onPostponeUpdate = settingsViewModel::postponeUpdate,
+                            com.laterbox.app.ui.settings.DataStorageSettingsScreen(
+                                preferences = preferences,
+                                onAllowSystemBackupChange = settingsViewModel::setAllowSystemBackup,
+                                onExportBackup = settingsViewModel::exportBackup,
+                                onImportBackup = settingsViewModel::importBackup,
                                 onBackClick = { navController.popBackStack() },
-                                localMetrics = localMetrics,
-                                onResetActivityCounters = settingsViewModel::resetActivityCounters
+                                storageReport = storageReport,
+                                isStorageLoading = isStorageLoading,
+                                isClearingSafeCache = isClearingSafeCache,
+                                storageFeedbackMessage = storageFeedback,
+                                onRefreshStorage = settingsViewModel::refreshAppStorage,
+                                onClearSafeCache = settingsViewModel::clearSafeCaches,
+                                onRunStorageMaintenance = settingsViewModel::runStorageMaintenance,
+                                onDismissStorageFeedback = settingsViewModel::dismissStorageFeedback
                             )
                         }
 

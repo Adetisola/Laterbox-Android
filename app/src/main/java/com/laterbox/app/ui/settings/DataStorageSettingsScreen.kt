@@ -22,10 +22,12 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.laterbox.app.data.backup.BackupRestoreResult
 import com.laterbox.app.data.preferences.UserPreferences
+import com.laterbox.app.storage.AppStorageReport
 import com.laterbox.app.ui.components.LaterboxSecondaryButton
 import com.laterbox.app.ui.theme.LaterboxTheme
 import kotlinx.coroutines.launch
@@ -42,7 +44,15 @@ fun DataStorageSettingsScreen(
     onExportBackup: suspend (OutputStream) -> Result<Int>,
     onImportBackup: suspend (InputStream) -> Result<BackupRestoreResult>,
     onBackClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    storageReport: AppStorageReport? = null,
+    isStorageLoading: Boolean = false,
+    isClearingSafeCache: Boolean = false,
+    storageFeedbackMessage: String? = null,
+    onRefreshStorage: () -> Unit = {},
+    onClearSafeCache: () -> Unit = {},
+    onRunStorageMaintenance: () -> Unit = {},
+    onDismissStorageFeedback: () -> Unit = {}
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -60,13 +70,21 @@ fun DataStorageSettingsScreen(
                         val result = onExportBackup(outputStream)
                         if (result.isSuccess) {
                             val count = result.getOrNull() ?: 0
-                            Toast.makeText(context, "Exported $count items successfully", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Exported $count items", Toast.LENGTH_SHORT).show()
                         } else {
-                            Toast.makeText(context, "Export failed: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                            Toast.makeText(
+                                context,
+                                "Couldn't export backup. Check available space and try again.",
+                                Toast.LENGTH_LONG
+                            ).show()
                         }
                     }
-                } catch (e: Exception) {
-                    Toast.makeText(context, "Export failed: ${e.message}", Toast.LENGTH_LONG).show()
+                } catch (_: Exception) {
+                    Toast.makeText(
+                        context,
+                        "Couldn't export backup to the chosen location.",
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
             }
         }
@@ -83,15 +101,23 @@ fun DataStorageSettingsScreen(
                         if (result.isSuccess) {
                             val stats = result.getOrNull()
                             val msg = stats?.let {
-                                "Restored: ${it.restoredLinksCount} links, ${it.restoredCollectionsCount} collections"
-                            } ?: "Backup restored successfully"
+                                "Restored ${it.restoredLinksCount} links and ${it.restoredCollectionsCount} collections"
+                            } ?: "Backup restored"
                             Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                         } else {
-                            Toast.makeText(context, "Import failed: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                            Toast.makeText(
+                                context,
+                                "Couldn't restore backup. Make sure you chose a valid Laterbox backup file.",
+                                Toast.LENGTH_LONG
+                            ).show()
                         }
                     }
-                } catch (e: Exception) {
-                    Toast.makeText(context, "Import failed: ${e.message}", Toast.LENGTH_LONG).show()
+                } catch (_: Exception) {
+                    Toast.makeText(
+                        context,
+                        "Couldn't read the selected backup file.",
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
             }
         }
@@ -101,6 +127,7 @@ fun DataStorageSettingsScreen(
         modifier = modifier
             .fillMaxSize()
             .background(colors.backgroundPrimary)
+            .testTag("data_storage_settings_screen")
     ) {
         Column(
             modifier = Modifier
@@ -114,16 +141,16 @@ fun DataStorageSettingsScreen(
 
             Spacer(modifier = Modifier.height(spacing.xs))
 
-            SettingsSectionHeader(title = "Data & Storage (Local-First)")
+            SettingsSectionHeader(title = "Backup & Restore")
             SettingsCard {
                 Column(verticalArrangement = Arrangement.spacedBy(spacing.sm)) {
                     Text(
-                        text = "Backup & Restore",
+                        text = "Library Backup",
                         style = typography.uiMedium,
                         color = colors.textPrimary
                     )
                     Text(
-                        text = "Export your entire library as an open JSON file or restore from a previous backup. No proprietary lock-in.",
+                        text = "Export your library as a portable JSON file or restore from a previous backup.",
                         style = typography.bodySecondary.copy(fontSize = 12.sp),
                         color = colors.textSecondary
                     )
@@ -154,7 +181,6 @@ fun DataStorageSettingsScreen(
 
                     SettingsDivider()
 
-                    // System backup toggle
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -162,12 +188,12 @@ fun DataStorageSettingsScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Android OS Auto-Backup",
+                                text = "Device Cloud Auto-Backup",
                                 style = typography.uiMedium,
                                 color = colors.textPrimary
                             )
                             Text(
-                                text = "Allow encrypted system cloud backup for local database",
+                                text = "Allow encrypted device backup for your saved records",
                                 style = typography.bodySecondary.copy(fontSize = 12.sp),
                                 color = colors.textSecondary
                             )
@@ -185,7 +211,20 @@ fun DataStorageSettingsScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(80.dp))
+            Spacer(modifier = Modifier.height(spacing.md))
+
+            AppStorageSectionContent(
+                report = storageReport,
+                isLoading = isStorageLoading,
+                isClearingSafeCache = isClearingSafeCache,
+                feedbackMessage = storageFeedbackMessage,
+                onRefresh = onRefreshStorage,
+                onClearSafeCache = onClearSafeCache,
+                onRunMaintenance = onRunStorageMaintenance,
+                onDismissFeedback = onDismissStorageFeedback
+            )
+
+            Spacer(modifier = Modifier.height(96.dp))
         }
     }
 }

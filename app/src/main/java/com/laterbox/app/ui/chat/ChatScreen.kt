@@ -350,12 +350,12 @@ fun ChatScreen(
                             color = colors.textSecondary
                         )
                         Text(
-                            text = "• Sanitized local status: Inbox/archive counts, downloaded file count, yt-dlp/FFmpeg/QuickJS availability, and recent inspection/download error summaries without private file paths.",
+                            text = "• Basic app status: Inbox/archive counts, downloaded file count, media readiness, and recent error summaries without private file paths.",
                             style = typography.bodySecondary.copy(fontSize = 13.sp),
                             color = colors.textSecondary
                         )
                         Text(
-                            text = "• Never sent: Your Gemini API key, raw SQLite database, device storage paths, or downloaded media files.",
+                            text = "• Never sent: Your API key, local database file, device storage paths, or downloaded media files.",
                             style = typography.bodySecondary.copy(fontSize = 13.sp),
                             color = colors.textPrimary
                         )
