@@ -254,6 +254,9 @@ interface MoviesDao {
     @Query("DELETE FROM movie_watch_history WHERE history_key = :historyKey")
     suspend fun deleteWatchHistoryEntry(historyKey: String)
 
+    @Query("DELETE FROM movie_watch_history WHERE is_trailer = 0 AND (composite_id = :compositeId OR (:canonicalId IS NOT NULL AND canonical_id = :canonicalId))")
+    suspend fun deleteAllWatchHistoryForTitle(compositeId: String, canonicalId: String?)
+
     @Query("DELETE FROM movie_watch_history")
     suspend fun clearWatchHistory()
 

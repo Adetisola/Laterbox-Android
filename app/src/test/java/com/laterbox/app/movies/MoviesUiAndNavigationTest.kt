@@ -460,14 +460,9 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithTag("player_seek_slider").assertIsDisplayed()
         composeTestRule.onNodeWithTag("player_speed_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("player_resize_button").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("player_rotation_lock_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_rotation_lock_button").assertDoesNotExist()
         composeTestRule.onNodeWithTag("player_fullscreen_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("player_rotate_button", useUnmergedTree = true).assertIsDisplayed()
-
-        // Test independent Rotation Lock (does not lock playback controls)
-        composeTestRule.onNodeWithTag("player_rotation_lock_button").performClick()
-        composeTestRule.onNodeWithTag("player_play_pause_button").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("player_rotation_lock_button").performClick()
 
         // Test Playback Controls Lock & Unlock
         composeTestRule.onNodeWithTag("player_lock_button").assertIsDisplayed().performClick()
@@ -1095,7 +1090,7 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithTag("player_controls_overlay").assertIsDisplayed()
         composeTestRule.onNodeWithText("Severance · S1E1").assertIsDisplayed()
         composeTestRule.onNodeWithTag("player_play_pause_button").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("player_rotation_lock_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_rotation_lock_button").assertDoesNotExist()
         composeTestRule.onNodeWithTag("player_rotate_button", useUnmergedTree = true).assertIsDisplayed()
         composeTestRule.onNodeWithTag("player_lock_button").assertIsDisplayed()
         // Remote-only quality and download controls are hidden for local video playback

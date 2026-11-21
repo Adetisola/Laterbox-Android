@@ -1529,6 +1529,128 @@ class MoviesRepositoryImpl(
         )
     }
 
+    override suspend fun markSeriesWatched(
+        item: MovieTitleSummary,
+        seasons: List<SeasonSummary>,
+        episodesBySeason: Map<Int, List<EpisodeItem>>,
+        isRewatch: Boolean
+    ): Int = withContext(ioDispatcher) {
+        val resolved = if (item.canonicalId != null) item else mediaResolver.resolveOrRegister(item)
+        cacheSummaries(listOf(resolved))
+
+        data class EpisodeTarget(
+            val seasonNumber: Int,
+            val episodeNumber: Int,
+            val durationMs: Long
+        )
+
+        val targets = mutableListOf<EpisodeTarget>()
+        val sortedSeasons = seasons.sortedBy { it.seasonNumber }
+        if (sortedSeasons.isNotEmpty()) {
+            for (season in sortedSeasons) {
+                val loaded = episodesBySeason[season.seasonNumber]?.takeIf { it.isNotEmpty() }
+                    ?: runCatching {
+                        getEpisodes(resolved.providerId, resolved.id, season.seasonNumber).getOrNull()
+                    }.getOrNull()?.takeIf { it.isNotEmpty() }
+                if (loaded != null) {
+                    loaded.sortedBy { it.episodeNumber }.forEach { ep ->
+                        targets.add(
+                            EpisodeTarget(
+                                seasonNumber = season.seasonNumber,
+                                episodeNumber = ep.episodeNumber,
+                                durationMs = (ep.runtimeMinutes ?: 45) * 60_000L
+                            )
+                        )
+                    }
+                } else {
+                    val knownNumbers = when {
+                        season.availableEpisodes.isNotEmpty() ->
+                            season.availableEpisodes.filter { it > 0 }.distinct().sorted()
+                        season.episodeCount > 0 ->
+                            (1..season.episodeCount).toList()
+                        else -> emptyList()
+                    }
+                    knownNumbers.forEach { epNum ->
+                        targets.add(
+                            EpisodeTarget(
+                                seasonNumber = season.seasonNumber,
+                                episodeNumber = epNum,
+                                durationMs = 45 * 60_000L
+                            )
+                        )
+                    }
+                }
+            }
+        } else if (episodesBySeason.isNotEmpty()) {
+            for ((seasonNum, eps) in episodesBySeason.toSortedMap()) {
+                eps.sortedBy { it.episodeNumber }.forEach { ep ->
+                    targets.add(
+                        EpisodeTarget(
+                            seasonNumber = seasonNum,
+                            episodeNumber = ep.episodeNumber,
+                            durationMs = (ep.runtimeMinutes ?: 45) * 60_000L
+                        )
+                    )
+                }
+            }
+        }
+
+        if (targets.isEmpty()) return@withContext 0
+
+        val existingList = moviesDao.getHistoryListForTitle(resolved.compositeId, resolved.canonicalId)
+        val existingByEp = existingList.mapNotNull { entry ->
+            val se = entry.seasonNumber ?: return@mapNotNull null
+            val ep = entry.episodeNumber ?: return@mapNotNull null
+            (se to ep) to entry
+        }.toMap()
+        val now = nowMs()
+
+        targets.forEach { target ->
+            val key = buildHistoryKey(resolved.providerId, resolved.id, target.seasonNumber, target.episodeNumber)
+            val existing = existingByEp[target.seasonNumber to target.episodeNumber]
+                ?: moviesDao.getWatchHistoryByKey(key)
+            val effectiveDuration = when {
+                target.durationMs > 0L -> target.durationMs
+                existing != null && existing.durationMs > 0L -> existing.durationMs
+                else -> 45 * 60_000L
+            }
+            val alreadyCompleted = existing?.isCompleted == true
+            val newRewatchCount = when {
+                isRewatch -> (existing?.rewatchCount ?: 0) + 1
+                else -> existing?.rewatchCount ?: 0
+            }
+            if (!isRewatch && alreadyCompleted) {
+                return@forEach
+            }
+            moviesDao.upsertWatchHistory(
+                MovieWatchHistoryEntity(
+                    historyKey = existing?.historyKey ?: key,
+                    compositeId = existing?.compositeId ?: resolved.compositeId,
+                    providerId = resolved.providerId,
+                    titleId = resolved.id,
+                    kind = resolved.kind.wireValue,
+                    title = resolved.title,
+                    episodeLabel = "S${target.seasonNumber} · E${target.episodeNumber}",
+                    seasonNumber = target.seasonNumber,
+                    episodeNumber = target.episodeNumber,
+                    posterUrl = resolved.posterUrl ?: existing?.posterUrl,
+                    backdropUrl = resolved.backdropUrl ?: existing?.backdropUrl,
+                    positionMs = effectiveDuration,
+                    durationMs = effectiveDuration,
+                    lastWatchedAt = now,
+                    canonicalId = resolved.canonicalId ?: existing?.canonicalId,
+                    isTrailer = false,
+                    isCompleted = true,
+                    completedAt = now,
+                    rewatchCount = newRewatchCount,
+                    hiddenFromContinueWatching = false,
+                    isHiddenTitle = false
+                )
+            )
+        }
+        targets.size
+    }
+
     override suspend fun markUnwatched(
         providerId: String,
         titleId: String,
@@ -1536,10 +1658,21 @@ class MoviesRepositoryImpl(
         episodeNumber: Int?
     ) = withContext(ioDispatcher) {
         val (resolvedProviderId, resolvedTitleId) = mediaResolver.resolveConcreteTarget(providerId, titleId, preferPlayable = false)
+        val cid = mediaResolver.resolveCanonicalIdForProvider(providerId, titleId)
+            ?: mediaResolver.resolveCanonicalIdForProvider(resolvedProviderId, resolvedTitleId)
+        if (seasonNumber == null && episodeNumber == null) {
+            val resolvedComposite = "$resolvedProviderId:$resolvedTitleId"
+            val rawComposite = "$providerId:$titleId"
+            moviesDao.deleteAllWatchHistoryForTitle(resolvedComposite, cid)
+            if (rawComposite != resolvedComposite) {
+                moviesDao.deleteAllWatchHistoryForTitle(rawComposite, cid)
+            }
+            return@withContext
+        }
         val key = buildHistoryKey(resolvedProviderId, resolvedTitleId, seasonNumber, episodeNumber)
         val existing = moviesDao.getWatchHistoryByKey(key)
-            ?: mediaResolver.resolveCanonicalIdForProvider(providerId, titleId)?.let { cid ->
-                moviesDao.getWatchHistoryByCanonical(cid, seasonNumber ?: 0, episodeNumber ?: 0)
+            ?: cid?.let {
+                moviesDao.getWatchHistoryByCanonical(it, seasonNumber ?: 0, episodeNumber ?: 0)
             }
         if (existing != null) {
             moviesDao.deleteWatchHistoryEntry(existing.historyKey)

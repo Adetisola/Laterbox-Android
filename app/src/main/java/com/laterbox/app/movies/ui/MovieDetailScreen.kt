@@ -1169,7 +1169,13 @@ fun MovieDetailScreen(
                                     ),
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(18.dp))
-                                        .clickable { onMarkWatched(uiState.isTitleCompleted) }
+                                        .clickable {
+                                            if (uiState.isTitleCompleted) {
+                                                onMarkUnwatched()
+                                            } else {
+                                                onMarkWatched(false)
+                                            }
+                                        }
                                         .testTag("detail_quick_watched_button")
                                 ) {
                                     Row(
@@ -1184,7 +1190,7 @@ fun MovieDetailScreen(
                                             modifier = Modifier.size(14.dp)
                                         )
                                         Text(
-                                            text = if (uiState.isTitleCompleted) "Watched · Rewatch" else "Mark Watched",
+                                            text = if (uiState.isTitleCompleted) "Mark Unwatched" else "Mark Watched",
                                             style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
                                             color = colors.textPrimary
                                         )

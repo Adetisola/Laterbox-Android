@@ -134,6 +134,66 @@ interface MoviesRepository {
         isRewatch: Boolean = false
     ) = Unit
 
+    suspend fun markSeriesWatched(
+        item: MovieTitleSummary,
+        seasons: List<SeasonSummary>,
+        episodesBySeason: Map<Int, List<EpisodeItem>> = emptyMap(),
+        isRewatch: Boolean = false
+    ): Int {
+        var count = 0
+        val sortedSeasons = seasons.sortedBy { it.seasonNumber }
+        if (sortedSeasons.isNotEmpty()) {
+            for (season in sortedSeasons) {
+                val loaded = episodesBySeason[season.seasonNumber]
+                if (!loaded.isNullOrEmpty()) {
+                    for (ep in loaded.sortedBy { it.episodeNumber }) {
+                        markWatched(
+                            item = item,
+                            durationMs = (ep.runtimeMinutes ?: 45) * 60_000L,
+                            seasonNumber = season.seasonNumber,
+                            episodeNumber = ep.episodeNumber,
+                            episodeLabel = "S${season.seasonNumber} · E${ep.episodeNumber}",
+                            isRewatch = isRewatch
+                        )
+                        count++
+                    }
+                } else {
+                    val epNumbers = when {
+                        season.availableEpisodes.isNotEmpty() -> season.availableEpisodes.filter { it > 0 }.distinct().sorted()
+                        season.episodeCount > 0 -> (1..season.episodeCount).toList()
+                        else -> emptyList()
+                    }
+                    for (epNum in epNumbers) {
+                        markWatched(
+                            item = item,
+                            durationMs = 45 * 60_000L,
+                            seasonNumber = season.seasonNumber,
+                            episodeNumber = epNum,
+                            episodeLabel = "S${season.seasonNumber} · E$epNum",
+                            isRewatch = isRewatch
+                        )
+                        count++
+                    }
+                }
+            }
+        } else {
+            for ((seasonNum, eps) in episodesBySeason.toSortedMap()) {
+                for (ep in eps.sortedBy { it.episodeNumber }) {
+                    markWatched(
+                        item = item,
+                        durationMs = (ep.runtimeMinutes ?: 45) * 60_000L,
+                        seasonNumber = seasonNum,
+                        episodeNumber = ep.episodeNumber,
+                        episodeLabel = "S$seasonNum · E${ep.episodeNumber}",
+                        isRewatch = isRewatch
+                    )
+                    count++
+                }
+            }
+        }
+        return count
+    }
+
     suspend fun markUnwatched(
         providerId: String,
         titleId: String,

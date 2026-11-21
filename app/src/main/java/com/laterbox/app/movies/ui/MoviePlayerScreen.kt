@@ -539,7 +539,6 @@ private fun ActiveVideoPlayerContent(
     var showControls by remember { mutableStateOf(true) }
     var isLocked by rememberSaveable { mutableStateOf(false) }
     var forcedLandscape by rememberSaveable { mutableStateOf<Boolean?>(null) }
-    var isRotationLocked by rememberSaveable { mutableStateOf(false) }
     val effectiveIsLandscape = forcedLandscape ?: isLandscape
     var selectedSpeed by rememberSaveable { mutableFloatStateOf(1.0f) }
     var isHolding2x by remember { mutableStateOf(false) }
@@ -683,8 +682,8 @@ private fun ActiveVideoPlayerContent(
         }
     }
 
-    // Genuine full-screen mode by default + orientation and independent rotation lock handling
-    LaunchedEffect(forcedLandscape, isRotationLocked, effectiveIsLandscape, activity) {
+    // Genuine full-screen mode by default + manual orientation toggle handling
+    LaunchedEffect(forcedLandscape, effectiveIsLandscape, activity) {
         val act = activity ?: return@LaunchedEffect
         val window = act.window
         val controller = WindowCompat.getInsetsController(window, window.decorView)
@@ -692,13 +691,6 @@ private fun ActiveVideoPlayerContent(
         controller.hide(WindowInsetsCompat.Type.systemBars())
 
         act.requestedOrientation = when {
-            isRotationLocked -> {
-                if (effectiveIsLandscape) {
-                    ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                } else {
-                    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                }
-            }
             forcedLandscape == true -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
             forcedLandscape == false -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
             else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
@@ -1273,7 +1265,6 @@ private fun ActiveVideoPlayerContent(
                                     playbackEpisodeKey
                                 )
                                 forcedLandscape = null
-                                isRotationLocked = false
                                 onBackClick()
                             },
                             modifier = Modifier.testTag("player_back_button")
@@ -1735,38 +1726,6 @@ private fun ActiveVideoPlayerContent(
                                             style = typography.caption.copy(fontWeight = FontWeight.Bold),
                                             color = colors.onAccentPrimary,
                                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                                        )
-                                    }
-                                }
-
-                                // Independent Rotation Lock Control
-                                Surface(
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = if (isRotationLocked) colors.accentPrimary else Color.White.copy(alpha = 0.16f),
-                                    modifier = Modifier
-                                        .size(34.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .clickable {
-                                            val nextLocked = !isRotationLocked
-                                            isRotationLocked = nextLocked
-                                            if (nextLocked) {
-                                                if (forcedLandscape == null) {
-                                                    forcedLandscape = effectiveIsLandscape
-                                                }
-                                            } else {
-                                                forcedLandscape = null
-                                            }
-                                        }
-                                        .testTag("player_rotation_lock_button")
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            painter = painterResource(
-                                                if (isRotationLocked) LaterboxIcons.Lock else LaterboxIcons.Unlock
-                                            ),
-                                            contentDescription = if (isRotationLocked) "Unlock screen rotation" else "Lock screen rotation",
-                                            tint = Color.White,
-                                            modifier = Modifier.size(18.dp)
                                         )
                                     }
                                 }

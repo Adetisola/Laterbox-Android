@@ -19,6 +19,7 @@ import com.laterbox.app.movies.domain.model.PersonFilmography
 import com.laterbox.app.movies.domain.model.PlaybackResolution
 import com.laterbox.app.movies.domain.model.PlaybackSource
 import com.laterbox.app.movies.domain.model.ProviderLinkRecord
+import com.laterbox.app.movies.domain.model.SeasonSummary
 import com.laterbox.app.movies.domain.model.SeriesPreferences
 import com.laterbox.app.movies.domain.model.SeriesProgressSummary
 import com.laterbox.app.movies.domain.model.ViewingReminderItem
@@ -169,29 +170,41 @@ class MovieDetailViewModel(
             launch {
                 moviesRepository.observeSeriesProgress(providerId, titleId).collect { progress ->
                     val currentDetails = _uiState.value.details
-                    val nextTarget = if (currentDetails != null && currentDetails.summary.kind.isEpisodic) {
-                        val epMap = _uiState.value.selectedSeasonNumber?.let { sn ->
-                            if (_uiState.value.episodes.isNotEmpty()) mapOf(sn to _uiState.value.episodes) else emptyMap()
-                        } ?: emptyMap()
+                    val isEpisodic = currentDetails?.summary?.kind?.isEpisodic == true
+                    val epMap = _uiState.value.selectedSeasonNumber?.let { sn ->
+                        if (_uiState.value.episodes.isNotEmpty()) mapOf(sn to _uiState.value.episodes) else emptyMap()
+                    } ?: emptyMap()
+                    val effectiveSeasons = when {
+                        currentDetails == null || !isEpisodic -> emptyList()
+                        currentDetails.seasons.isNotEmpty() -> currentDetails.seasons
+                        _uiState.value.episodes.isNotEmpty() -> {
+                            _uiState.value.episodes.groupBy { it.seasonNumber }.map { (sn, eps) ->
+                                SeasonSummary(
+                                    seasonNumber = sn,
+                                    episodeCount = eps.size,
+                                    availableEpisodes = eps.map { it.episodeNumber }
+                                )
+                            }
+                        }
+                        else -> emptyList()
+                    }
+                    val nextTarget = if (isEpisodic && effectiveSeasons.isNotEmpty()) {
                         moviesRepository.computeNextUnwatchedEpisode(
-                            currentDetails.summary.providerId,
+                            currentDetails!!.summary.providerId,
                             currentDetails.summary.id,
-                            currentDetails.seasons,
+                            effectiveSeasons,
                             epMap
                         )
                     } else null
-                    val seriesCompleted = currentDetails != null &&
-                        currentDetails.summary.kind.isEpisodic &&
-                        currentDetails.seasons.isNotEmpty() &&
+                    val seriesCompleted = isEpisodic &&
+                        effectiveSeasons.isNotEmpty() &&
                         progress.totalWatchedEpisodes > 0 &&
                         nextTarget == null
                     _uiState.update { current ->
                         current.copy(
                             seriesProgress = progress,
-                            nextUnwatchedTarget = nextTarget ?: current.nextUnwatchedTarget,
-                            isTitleCompleted = if (currentDetails?.summary?.kind == MediaKind.TV_SERIES) {
-                                seriesCompleted
-                            } else current.isTitleCompleted
+                            nextUnwatchedTarget = if (isEpisodic) nextTarget else current.nextUnwatchedTarget,
+                            isTitleCompleted = if (isEpisodic) seriesCompleted else current.isTitleCompleted
                         )
                     }
                 }
@@ -406,34 +419,48 @@ class MovieDetailViewModel(
 
     fun markTitleWatched(isRewatch: Boolean = false) {
         val state = _uiState.value
-        val summary = state.details?.summary ?: return
+        val details = state.details ?: return
+        val summary = details.summary
         viewModelScope.launch {
             if (summary.kind.isEpisodic) {
-                val target = state.nextUnwatchedTarget ?: (
-                    (state.selectedSeasonNumber ?: 1) to (state.episodes.firstOrNull()?.episodeNumber ?: 1)
-                )
-                moviesRepository.markWatched(
-                    item = summary,
-                    durationMs = 0L,
-                    seasonNumber = target.first,
-                    episodeNumber = target.second,
-                    episodeLabel = "S${target.first} · E${target.second}",
-                    isRewatch = isRewatch
-                )
                 val epMap = state.selectedSeasonNumber?.let { sn ->
                     if (state.episodes.isNotEmpty()) mapOf(sn to state.episodes) else emptyMap()
                 } ?: emptyMap()
+                val effectiveSeasons = when {
+                    details.seasons.isNotEmpty() -> details.seasons
+                    state.episodes.isNotEmpty() -> state.episodes.groupBy { it.seasonNumber }.map { (sn, eps) ->
+                        SeasonSummary(
+                            seasonNumber = sn,
+                            episodeCount = eps.size,
+                            availableEpisodes = eps.map { it.episodeNumber }
+                        )
+                    }
+                    else -> emptyList()
+                }
+                val markedCount = moviesRepository.markSeriesWatched(
+                    item = summary,
+                    seasons = effectiveSeasons,
+                    episodesBySeason = epMap,
+                    isRewatch = isRewatch
+                )
+                if (markedCount <= 0) {
+                    _uiState.update {
+                        it.copy(actionFeedbackMessage = "No episode list available to mark watched")
+                    }
+                    return@launch
+                }
                 val nextTarget = moviesRepository.computeNextUnwatchedEpisode(
                     summary.providerId,
                     summary.id,
-                    state.details.seasons,
+                    effectiveSeasons,
                     epMap
                 )
                 _uiState.update {
                     it.copy(
+                        isTitleCompleted = nextTarget == null,
                         nextUnwatchedTarget = nextTarget,
                         savedPositionMs = 0L,
-                        actionFeedbackMessage = "Marked S${target.first}·E${target.second} watched"
+                        actionFeedbackMessage = if (isRewatch) "Logged series rewatch" else "Marked series as watched"
                     )
                 }
             } else {
@@ -455,11 +482,27 @@ class MovieDetailViewModel(
 
     fun markTitleUnwatched() {
         val state = _uiState.value
-        val summary = state.details?.summary ?: return
+        val details = state.details ?: return
+        val summary = details.summary
         viewModelScope.launch {
             moviesRepository.markUnwatched(summary.providerId, summary.id)
-            val nextTarget = if (summary.kind.isEpisodic) {
-                moviesRepository.computeNextUnwatchedEpisode(summary.providerId, summary.id, state.details.seasons)
+            val epMap = state.selectedSeasonNumber?.let { sn ->
+                if (state.episodes.isNotEmpty()) mapOf(sn to state.episodes) else emptyMap()
+            } ?: emptyMap()
+            val effectiveSeasons = when {
+                !summary.kind.isEpisodic -> emptyList()
+                details.seasons.isNotEmpty() -> details.seasons
+                state.episodes.isNotEmpty() -> state.episodes.groupBy { it.seasonNumber }.map { (sn, eps) ->
+                    SeasonSummary(
+                        seasonNumber = sn,
+                        episodeCount = eps.size,
+                        availableEpisodes = eps.map { it.episodeNumber }
+                    )
+                }
+                else -> emptyList()
+            }
+            val nextTarget = if (summary.kind.isEpisodic && effectiveSeasons.isNotEmpty()) {
+                moviesRepository.computeNextUnwatchedEpisode(summary.providerId, summary.id, effectiveSeasons, epMap)
             } else null
             _uiState.update {
                 it.copy(
@@ -551,7 +594,8 @@ class MovieDetailViewModel(
 
     fun toggleEpisodeWatched(episode: EpisodeItem) {
         val state = _uiState.value
-        val summary = state.details?.summary ?: return
+        val details = state.details ?: return
+        val summary = details.summary
         val currentlyCompleted = state.seriesProgress?.episodeStates
             ?.get(episode.seasonNumber to episode.episodeNumber)?.isCompleted == true
         viewModelScope.launch {
@@ -574,13 +618,31 @@ class MovieDetailViewModel(
             val epMap = state.selectedSeasonNumber?.let { sn ->
                 if (state.episodes.isNotEmpty()) mapOf(sn to state.episodes) else emptyMap()
             } ?: emptyMap()
-            val nextTarget = moviesRepository.computeNextUnwatchedEpisode(
-                summary.providerId,
-                summary.id,
-                state.details.seasons,
-                epMap
-            )
-            _uiState.update { it.copy(nextUnwatchedTarget = nextTarget) }
+            val effectiveSeasons = when {
+                details.seasons.isNotEmpty() -> details.seasons
+                state.episodes.isNotEmpty() -> state.episodes.groupBy { it.seasonNumber }.map { (sn, eps) ->
+                    SeasonSummary(
+                        seasonNumber = sn,
+                        episodeCount = eps.size,
+                        availableEpisodes = eps.map { it.episodeNumber }
+                    )
+                }
+                else -> emptyList()
+            }
+            val nextTarget = if (effectiveSeasons.isNotEmpty()) {
+                moviesRepository.computeNextUnwatchedEpisode(
+                    summary.providerId,
+                    summary.id,
+                    effectiveSeasons,
+                    epMap
+                )
+            } else null
+            _uiState.update {
+                it.copy(
+                    nextUnwatchedTarget = nextTarget,
+                    isTitleCompleted = effectiveSeasons.isNotEmpty() && nextTarget == null && !currentlyCompleted
+                )
+            }
         }
     }
 
