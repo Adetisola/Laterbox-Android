@@ -359,11 +359,15 @@ jobs:
           retention-days: 30
 
       - name: Invalidate Backend Release Cache (Optional)
-        if: steps.resolve_target.outputs.dry_run != 'true' && vars.UPDATE_CACHE_INVALIDATE_URL != '' && secrets.UPDATE_ADMIN_TOKEN != ''
+        if: steps.resolve_target.outputs.dry_run != 'true' && vars.UPDATE_CACHE_INVALIDATE_URL != ''
         env:
           INVALIDATE_URL: ${{ vars.UPDATE_CACHE_INVALIDATE_URL }}
           ADMIN_TOKEN: ${{ secrets.UPDATE_ADMIN_TOKEN }}
         run: |
+          if [ -z "$ADMIN_TOKEN" ]; then
+            echo "Skipping backend cache invalidation: UPDATE_ADMIN_TOKEN secret is not set."
+            exit 0
+          fi
           curl -fsS -X POST "$INVALIDATE_URL" \
             -H "Authorization: Bearer $ADMIN_TOKEN" \
             -H "Content-Type: application/json" \
