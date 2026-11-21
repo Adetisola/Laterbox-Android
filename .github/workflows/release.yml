@@ -47,7 +47,9 @@ jobs:
 
     steps:
       - name: Checkout Private Android Source
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Resolve Distribution Target & Release Tag
         id: resolve_target
@@ -71,10 +73,11 @@ jobs:
           echo "distribution_name=$DIST_NAME" >> "$GITHUB_OUTPUT"
           echo "dry_run=${{ github.event.inputs.dry_run == true }}" >> "$GITHUB_OUTPUT"
 
-      - name: Validate Sanitized Public Release Notes
+      - name: Prepare & Validate Sanitized Public Release Notes
         id: validate_notes
         env:
           NOTES_OVERRIDE: ${{ github.event.inputs.release_notes_override }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           TAG="${{ steps.resolve_target.outputs.tag_name }}"
           NOTES_PATH="/tmp/sanitized_release_notes.md"
@@ -83,10 +86,10 @@ jobs:
           elif [ -f "release-notes/${TAG}.md" ]; then
             cp "release-notes/${TAG}.md" "$NOTES_PATH"
           else
-            echo "::error::Missing sanitized release notes file 'release-notes/${TAG}.md'. Create it before tagging or provide release_notes_override."
-            exit 1
+            echo "No release-notes/${TAG}.md found; auto-generating sanitized user-facing release notes..."
+            PYTHONPATH=. python3 tools/release/generate_release_notes.py --repo-dir . --tag "$TAG" --output "$NOTES_PATH"
           fi
-          python3 tools/release/validate_release_notes.py --file "$NOTES_PATH"
+          PYTHONPATH=. python3 tools/release/validate_release_notes.py --file "$NOTES_PATH"
           echo "notes_file=$NOTES_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Validate Cross-Repo Distribution Credentials
