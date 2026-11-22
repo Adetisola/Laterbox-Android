@@ -43,8 +43,10 @@ import com.laterbox.app.movies.domain.model.SeriesProgressSummary
 import com.laterbox.app.movies.domain.model.SubtitleTrack
 import com.laterbox.app.movies.domain.model.ViewingReminderItem
 import com.laterbox.app.movies.domain.model.WatchHistoryItem
+import com.laterbox.app.movies.domain.repository.MovieDurationCoverageStats
 import com.laterbox.app.movies.domain.repository.MoviesRepository
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -59,12 +61,12 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 class MoviesRepositoryImpl(
     private val moviesDao: MoviesDao,
     private val internetArchiveProvider: InternetArchiveMoviesProvider,
     private val tvMazeProvider: TvMazeSeriesProvider,
-    @Suppress("UNUSED_PARAMETER")
     private val tmdbProvider: TmdbOptionalMoviesProvider,
     private val fixtureProvider: DevelopmentMoviesFixtureProvider = DevelopmentMoviesFixtureProvider(),
     private val movieBoxProvider: MovieBoxProvider? = null,
@@ -88,15 +90,46 @@ class MoviesRepositoryImpl(
     @Volatile
     private var hasBackfilledCanonicalState: Boolean = false
 
+    private data class CachedDurationEntry(
+        val minutes: Int?,
+        val recordedAtMs: Long
+    )
+
     private val registeredCanonicalCache = ConcurrentHashMap<String, String>()
     private val summaryMemoryCache = ConcurrentHashMap<String, MovieTitleSummary>()
+    private val durationLookupCache = ConcurrentHashMap<String, CachedDurationEntry>()
+    private val inFlightDurationLookups = ConcurrentHashMap<String, CompletableDeferred<Int?>>()
+    private val totalMoviesObservedCount = AtomicInteger(0)
+    private val initialDurationMoviesCount = AtomicInteger(0)
+    private val enrichedMoviesCount = AtomicInteger(0)
+    private val failedEnrichmentsCount = AtomicInteger(0)
+    private val observedCoverageKeys = ConcurrentHashMap.newKeySet<String>()
 
     private fun cacheSummaries(items: List<MovieTitleSummary>) {
+        val ts = nowMs()
         for (item in items) {
             if (item.providerId.isNotBlank() && item.id.isNotBlank()) {
-                summaryMemoryCache[item.compositeId] = item
+                val existing = summaryMemoryCache[item.compositeId]
+                val bestDuration = item.durationMinutes?.takeIf { it in 1..600 }
+                    ?: existing?.durationMinutes?.takeIf { it in 1..600 }
+                    ?: durationLookupCache[item.compositeId]?.minutes?.takeIf { it in 1..600 }
+                val mergedItem = if (item.kind == MediaKind.MOVIE && bestDuration != item.durationMinutes) {
+                    item.copy(durationMinutes = bestDuration)
+                } else {
+                    item
+                }
+                summaryMemoryCache[item.compositeId] = mergedItem
+                if (item.kind == MediaKind.MOVIE && observedCoverageKeys.add(item.compositeId)) {
+                    totalMoviesObservedCount.incrementAndGet()
+                    if (bestDuration != null) {
+                        initialDurationMoviesCount.incrementAndGet()
+                    }
+                }
+                if (item.kind == MediaKind.MOVIE && bestDuration != null) {
+                    durationLookupCache[item.compositeId] = CachedDurationEntry(bestDuration, ts)
+                }
                 item.canonicalId?.takeIf { it.isNotBlank() }?.let { cid ->
-                    summaryMemoryCache["canonical:$cid"] = item
+                    summaryMemoryCache["canonical:$cid"] = mergedItem
                     registeredCanonicalCache[item.compositeId] = cid
                 }
             }
@@ -108,6 +141,162 @@ class MoviesRepositoryImpl(
             return summaryMemoryCache["canonical:$titleId"]
         }
         return summaryMemoryCache["$providerId:$titleId"]
+    }
+
+    override fun getDurationCoverageStats(): MovieDurationCoverageStats = MovieDurationCoverageStats(
+        totalMoviesObserved = totalMoviesObservedCount.get(),
+        moviesWithInitialDuration = initialDurationMoviesCount.get(),
+        enrichedMovies = enrichedMoviesCount.get(),
+        failedEnrichments = failedEnrichmentsCount.get()
+    )
+
+    override suspend fun enrichMissingMovieDurations(
+        items: List<MovieTitleSummary>,
+        maxItems: Int
+    ): Map<String, Int> = withContext(ioDispatcher) {
+        val cap = maxItems.coerceIn(1, 20)
+        val movieCandidates = items
+            .asSequence()
+            .filter { it.kind == MediaKind.MOVIE && it.id.isNotBlank() && it.providerId.isNotBlank() }
+            .distinctBy { it.compositeId }
+            .toList()
+        if (movieCandidates.isEmpty()) return@withContext emptyMap()
+
+        val ts = nowMs()
+        val resolved = linkedMapOf<String, Int>()
+        val toLookup = mutableListOf<MovieTitleSummary>()
+        val awaitedInFlight = mutableListOf<Pair<MovieTitleSummary, CompletableDeferred<Int?>>>()
+
+        for (item in movieCandidates) {
+            val currentDuration = item.durationMinutes?.takeIf { it in 1..600 }
+                ?: summaryMemoryCache[item.compositeId]?.durationMinutes?.takeIf { it in 1..600 }
+            if (currentDuration != null) {
+                resolved[item.compositeId] = currentDuration
+                continue
+            }
+
+            val cachedLookup = durationLookupCache[item.compositeId]
+            if (cachedLookup != null) {
+                val age = ts - cachedLookup.recordedAtMs
+                if (cachedLookup.minutes != null && age < CACHE_TTL_MS) {
+                    resolved[item.compositeId] = cachedLookup.minutes
+                    applyEnrichedDurationToCache(item, cachedLookup.minutes)
+                    continue
+                }
+                if (cachedLookup.minutes == null && age < DURATION_MISS_COOLDOWN_MS) {
+                    continue
+                }
+            }
+
+            if (toLookup.size + awaitedInFlight.size >= cap) continue
+
+            val existingFlight = inFlightDurationLookups[item.compositeId]
+            if (existingFlight != null) {
+                awaitedInFlight.add(item to existingFlight)
+            } else {
+                val created = CompletableDeferred<Int?>()
+                val racer = inFlightDurationLookups.putIfAbsent(item.compositeId, created)
+                if (racer != null) {
+                    awaitedInFlight.add(item to racer)
+                } else {
+                    toLookup.add(item)
+                }
+            }
+        }
+
+        if (toLookup.isNotEmpty()) {
+            val newlyResolved = linkedMapOf<String, Int>()
+            try {
+                // 1. Batch resolve via Laterbox backend when MovieBox items exist
+                val mb = activeMovieBox()
+                val mbCandidates = toLookup.filter { it.providerId == MovieBoxProvider.PROVIDER_ID }
+                if (mb != null && mbCandidates.isNotEmpty()) {
+                    val batchMap = mb.fetchMovieRuntimesBatch(mbCandidates).getOrNull().orEmpty()
+                    mbCandidates.forEach { cand ->
+                        val mins = batchMap[cand.id]?.takeIf { it in 1..600 }
+                        if (mins != null) {
+                            newlyResolved[cand.compositeId] = mins
+                        }
+                    }
+                }
+
+                // 2. Fallback to strict TMDB / IA details for remaining unresolved movies
+                var iaDetailCount = 0
+                for (cand in toLookup) {
+                    if (cand.compositeId in newlyResolved) continue
+                    val fallbackMins: Int? = tmdbProvider.findMovieRuntimeMinutes(
+                        imdbId = cand.imdbId,
+                        title = cand.title,
+                        releaseYear = cand.releaseYear
+                    ) ?: if (cand.providerId == InternetArchiveMoviesProvider.PROVIDER_ID &&
+                        isInternetArchiveEnabled() &&
+                        iaDetailCount < 4
+                    ) {
+                        iaDetailCount++
+                        internetArchiveProvider.getDetails(cand.id)
+                            .getOrNull()
+                            ?.summary
+                            ?.durationMinutes
+                            ?.takeIf { it in 1..600 }
+                    } else {
+                        null
+                    }
+                    if (fallbackMins != null) {
+                        newlyResolved[cand.compositeId] = fallbackMins
+                    }
+                }
+            } finally {
+                val doneTs = nowMs()
+                for (cand in toLookup) {
+                    val found = newlyResolved[cand.compositeId]
+                    if (found != null) {
+                        durationLookupCache[cand.compositeId] = CachedDurationEntry(found, doneTs)
+                        applyEnrichedDurationToCache(cand, found)
+                        enrichedMoviesCount.incrementAndGet()
+                        resolved[cand.compositeId] = found
+                    } else {
+                        durationLookupCache[cand.compositeId] = CachedDurationEntry(null, doneTs)
+                        failedEnrichmentsCount.incrementAndGet()
+                    }
+                    inFlightDurationLookups.remove(cand.compositeId)?.complete(found)
+                }
+            }
+        }
+
+        for ((item, deferred) in awaitedInFlight) {
+            val found = runCatching { deferred.await() }.getOrNull()
+            if (found != null && found in 1..600) {
+                resolved[item.compositeId] = found
+            }
+        }
+
+        resolved
+    }
+
+    private suspend fun applyEnrichedDurationToCache(item: MovieTitleSummary, minutes: Int) {
+        if (item.kind != MediaKind.MOVIE || minutes !in 1..600) return
+        val existing = summaryMemoryCache[item.compositeId] ?: item
+        val updated = existing.copy(durationMinutes = minutes)
+        summaryMemoryCache[item.compositeId] = updated
+        updated.canonicalId?.takeIf { it.isNotBlank() }?.let { cid ->
+            summaryMemoryCache["canonical:$cid"] = updated
+        }
+
+        val detailKey = "details:${item.providerId}:${item.id}"
+        val cachedEntry = moviesDao.getCacheEntry(detailKey) ?: return
+        val decoded = withContext(defaultDispatcher) {
+            MoviesCacheJsonCodec.decodeDetails(cachedEntry.payloadJson)
+        } ?: return
+        if (decoded.summary.kind == MediaKind.MOVIE &&
+            (decoded.summary.durationMinutes == null || decoded.summary.durationMinutes <= 0)
+        ) {
+            val encoded = withContext(defaultDispatcher) {
+                MoviesCacheJsonCodec.encodeDetails(decoded.copy(summary = decoded.summary.copy(durationMinutes = minutes)))
+            }
+            moviesDao.upsertCacheEntry(
+                cachedEntry.copy(payloadJson = encoded, updatedAt = nowMs())
+            )
+        }
     }
 
     private suspend fun isDebugSampleFixturesEnabled(): Boolean =
@@ -2425,6 +2614,7 @@ class MoviesRepositoryImpl(
     companion object {
         const val CACHE_TTL_MS = 6L * 60 * 60 * 1000L
         const val STALE_RETENTION_MS = 7L * 24 * 60 * 60 * 1000L
+        const val DURATION_MISS_COOLDOWN_MS = 15L * 60 * 1000L
         const val MOVIEBOX_FALLBACK_NOTICE =
             "Main catalogue temporarily unavailable — showing archive & TV guide"
     }

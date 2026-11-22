@@ -22,6 +22,13 @@ import com.laterbox.app.movies.domain.model.ViewingReminderItem
 import com.laterbox.app.movies.domain.model.WatchHistoryItem
 import kotlinx.coroutines.flow.Flow
 
+data class MovieDurationCoverageStats(
+    val totalMoviesObserved: Int = 0,
+    val moviesWithInitialDuration: Int = 0,
+    val enrichedMovies: Int = 0,
+    val failedEnrichments: Int = 0
+)
+
 interface MoviesRepository {
     suspend fun getHomeFeed(forceRefresh: Boolean = false): Result<MoviesHomeFeed>
 
@@ -51,6 +58,13 @@ interface MoviesRepository {
     suspend fun getDetails(providerId: String, titleId: String, forceRefresh: Boolean = false): Result<MediaDetails>
 
     fun getCachedSummary(providerId: String, titleId: String): MovieTitleSummary? = null
+
+    suspend fun enrichMissingMovieDurations(
+        items: List<MovieTitleSummary>,
+        maxItems: Int = 20
+    ): Map<String, Int> = emptyMap()
+
+    fun getDurationCoverageStats(): MovieDurationCoverageStats = MovieDurationCoverageStats()
 
     suspend fun getSeasons(providerId: String, seriesId: String): Result<List<SeasonSummary>>
 

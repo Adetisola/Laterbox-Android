@@ -416,6 +416,7 @@ class InternetArchiveMoviesProvider(
             .addQueryParameter("fl[]", "downloads")
             .addQueryParameter("fl[]", "avg_rating")
             .addQueryParameter("fl[]", "subject")
+            .addQueryParameter("fl[]", "runtime")
             .addQueryParameter("sort[]", sort)
             .addQueryParameter("rows", rows.toString())
             .addQueryParameter("page", page.coerceAtLeast(1).toString())
@@ -441,6 +442,7 @@ class InternetArchiveMoviesProvider(
                 }
                 val genres = parseSubjects(doc.opt("subject"))
                 val cleanDesc = cleanHtmlText(extractStringOrJoin(doc, "description")).take(240).takeIf { it.isNotBlank() }
+                val durationMinutes = parseRuntimeMinutes(extractStringOrFirst(doc, "runtime"))
 
                 add(
                     MovieTitleSummary(
@@ -450,7 +452,7 @@ class InternetArchiveMoviesProvider(
                         title = rawTitle,
                         releaseYear = year,
                         rating = rating,
-                        durationMinutes = null,
+                        durationMinutes = durationMinutes,
                         posterUrl = "$normalizedBaseUrl/services/img/$id",
                         backdropUrl = null,
                         genres = genres,

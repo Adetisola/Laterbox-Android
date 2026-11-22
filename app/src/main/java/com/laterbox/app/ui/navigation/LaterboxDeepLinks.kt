@@ -23,25 +23,32 @@ data class ParsedTitleDeepLink(
  * Canonical builder and hardened parser for verified Laterbox Android App Links.
  *
  * Canonical URLs:
- * - https://laterbox-website.vercel.app/movie/{provider}/{id}
- * - https://laterbox-website.vercel.app/series/{provider}/{id}
+ * - https://laterbox-website.vercel.app/movie/{id} (primary catalogue)
+ * - https://laterbox-website.vercel.app/series/{id} (primary catalogue)
+ * - https://laterbox-website.vercel.app/movie/{provider}/{id} (external providers & legacy routes)
+ * - https://laterbox-website.vercel.app/series/{provider}/{id} (external providers & legacy routes)
  */
 object LaterboxDeepLinks {
 
     const val CANONICAL_SCHEME = "https"
     const val CANONICAL_HOST = "laterbox-website.vercel.app"
     const val CANONICAL_ORIGIN = "$CANONICAL_SCHEME://$CANONICAL_HOST"
+    private const val PRIMARY_PROVIDER = "moviebox"
+    private const val NEUTRAL_ALIAS_PROVIDER = "catalogue"
 
     val ALLOWED_HOSTS: Set<String> = setOf(CANONICAL_HOST)
 
     val ALLOWED_PROVIDERS: Set<String> = setOf(
-        "moviebox",
+        PRIMARY_PROVIDER,
+        NEUTRAL_ALIAS_PROVIDER,
         "ia",
         "tmdb",
         "tvmaze",
         "canonical",
         "fixture"
     )
+
+    private val RESERVED_PROVIDER_SEGMENTS: Set<String> = ALLOWED_PROVIDERS
 
     private val PROVIDER_REGEX = Regex("^[a-zA-Z0-9_-]{1,40}$")
     private val TITLE_ID_REGEX = Regex("^[a-zA-Z0-9._:-]{1,120}$")
@@ -70,9 +77,18 @@ object LaterboxDeepLinks {
     ): String? {
         val cleanProvider = normalizeProvider(providerId) ?: return null
         val cleanTitleId = normalizeTitleId(titleId) ?: return null
-        val encodedProvider = URLEncoder.encode(cleanProvider, StandardCharsets.UTF_8.name())
-            .replace("+", "%20")
         val encodedTitleId = URLEncoder.encode(cleanTitleId, StandardCharsets.UTF_8.name())
+            .replace("+", "%20")
+
+        if (cleanProvider == PRIMARY_PROVIDER) {
+            return if (cleanTitleId.lowercase() in RESERVED_PROVIDER_SEGMENTS) {
+                "$CANONICAL_ORIGIN/${mediaType.pathSegment}/$NEUTRAL_ALIAS_PROVIDER/$encodedTitleId"
+            } else {
+                "$CANONICAL_ORIGIN/${mediaType.pathSegment}/$encodedTitleId"
+            }
+        }
+
+        val encodedProvider = URLEncoder.encode(cleanProvider, StandardCharsets.UTF_8.name())
             .replace("+", "%20")
         return "$CANONICAL_ORIGIN/${mediaType.pathSegment}/$encodedProvider/$encodedTitleId"
     }
@@ -100,29 +116,47 @@ object LaterboxDeepLinks {
         }
 
         val segments = rawPath.split('/').filter { it.isNotEmpty() }
-        if (segments.size != 3) return null
-
-        val mediaType = when (segments[0].lowercase()) {
+        val mediaType = when (segments.firstOrNull()?.lowercase()) {
             DeepLinkMediaType.MOVIE.pathSegment -> DeepLinkMediaType.MOVIE
             DeepLinkMediaType.SERIES.pathSegment -> DeepLinkMediaType.SERIES
             else -> return null
         }
 
-        val decodedProvider = runCatching {
-            URLDecoder.decode(segments[1], StandardCharsets.UTF_8.name())
-        }.getOrNull() ?: return null
-        val decodedTitleId = runCatching {
-            URLDecoder.decode(segments[2], StandardCharsets.UTF_8.name())
-        }.getOrNull() ?: return null
+        return when (segments.size) {
+            2 -> {
+                val decodedTitleId = runCatching {
+                    URLDecoder.decode(segments[1], StandardCharsets.UTF_8.name())
+                }.getOrNull() ?: return null
+                val cleanTitleId = normalizeTitleId(decodedTitleId) ?: return null
+                if (cleanTitleId.lowercase() in RESERVED_PROVIDER_SEGMENTS) return null
 
-        val cleanProvider = normalizeProvider(decodedProvider) ?: return null
-        val cleanTitleId = normalizeTitleId(decodedTitleId) ?: return null
+                ParsedTitleDeepLink(
+                    mediaType = mediaType,
+                    providerId = PRIMARY_PROVIDER,
+                    titleId = cleanTitleId
+                )
+            }
 
-        return ParsedTitleDeepLink(
-            mediaType = mediaType,
-            providerId = cleanProvider,
-            titleId = cleanTitleId
-        )
+            3 -> {
+                val decodedProvider = runCatching {
+                    URLDecoder.decode(segments[1], StandardCharsets.UTF_8.name())
+                }.getOrNull() ?: return null
+                val decodedTitleId = runCatching {
+                    URLDecoder.decode(segments[2], StandardCharsets.UTF_8.name())
+                }.getOrNull() ?: return null
+
+                val cleanProvider = normalizeProvider(decodedProvider) ?: return null
+                val cleanTitleId = normalizeTitleId(decodedTitleId) ?: return null
+
+                ParsedTitleDeepLink(
+                    mediaType = mediaType,
+                    providerId = cleanProvider,
+                    titleId = cleanTitleId
+                )
+            }
+
+            else -> null
+        }
     }
 
     fun toDestinationRoute(parsed: ParsedTitleDeepLink): String {
@@ -144,7 +178,7 @@ object LaterboxDeepLinks {
         if (clean.isEmpty() || clean in INVALID_LITERALS) return null
         if (!PROVIDER_REGEX.matches(clean)) return null
         if (clean !in ALLOWED_PROVIDERS) return null
-        return clean
+        return if (clean == NEUTRAL_ALIAS_PROVIDER) PRIMARY_PROVIDER else clean
     }
 
     private fun normalizeTitleId(raw: String): String? {

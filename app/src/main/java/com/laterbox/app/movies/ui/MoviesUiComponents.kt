@@ -453,13 +453,8 @@ fun MoviePosterCard(
         )
 
         val yearText = item.releaseYear?.toString()
-        val durationText = if (item.kind == MediaKind.MOVIE) {
-            DurationFormatter.formatMinutes(item.durationMinutes)
-        } else {
-            null
-        }
         val primaryGenre = item.genres.firstOrNull()?.takeIf { it.isNotBlank() }
-        val metaParts = listOfNotNull(yearText, durationText, primaryGenre)
+        val metaParts = listOfNotNull(yearText, primaryGenre)
         if (metaParts.isNotEmpty()) {
             Text(
                 text = metaParts.joinToString(" · "),

@@ -11,13 +11,13 @@ class DurationFormatterTest {
 
     @Test
     fun formatMinutes_usesHumanReadableGrammar() {
-        assertEquals("1MIN", DurationFormatter.formatMinutes(1))
-        assertEquals("30MINS", DurationFormatter.formatMinutes(30))
-        assertEquals("1HR", DurationFormatter.formatMinutes(60))
-        assertEquals("1HR 1MIN", DurationFormatter.formatMinutes(61))
-        assertEquals("1HR 30MINS", DurationFormatter.formatMinutes(90))
-        assertEquals("2HRS", DurationFormatter.formatMinutes(120))
-        assertEquals("2HRS 30MINS", DurationFormatter.formatMinutes(150))
+        assertEquals("1min", DurationFormatter.formatMinutes(1))
+        assertEquals("30mins", DurationFormatter.formatMinutes(30))
+        assertEquals("1hr", DurationFormatter.formatMinutes(60))
+        assertEquals("1hr 1min", DurationFormatter.formatMinutes(61))
+        assertEquals("1hr 30mins", DurationFormatter.formatMinutes(90))
+        assertEquals("2hrs", DurationFormatter.formatMinutes(120))
+        assertEquals("2hrs 30mins", DurationFormatter.formatMinutes(150))
     }
 
     @Test

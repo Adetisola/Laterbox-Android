@@ -310,6 +310,36 @@ class MovieDetailViewModel(
                         )
                     }
 
+                    if (details.summary.kind == MediaKind.MOVIE &&
+                        (details.summary.durationMinutes == null || details.summary.durationMinutes <= 0)
+                    ) {
+                        launch {
+                            val resolved = moviesRepository.enrichMissingMovieDurations(
+                                items = listOf(details.summary),
+                                maxItems = 1
+                            )
+                            val enrichedMinutes = resolved[details.summary.compositeId]
+                            if (enrichedMinutes != null &&
+                                enrichedMinutes > 0 &&
+                                loadRequestSeq == requestSeq
+                            ) {
+                                _uiState.update { current ->
+                                    val curDetails = current.details ?: return@update current
+                                    if (curDetails.summary.compositeId != details.summary.compositeId ||
+                                        curDetails.summary.kind != MediaKind.MOVIE
+                                    ) {
+                                        return@update current
+                                    }
+                                    current.copy(
+                                        details = curDetails.copy(
+                                            summary = curDetails.summary.copy(durationMinutes = enrichedMinutes)
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+
                     // Priority 4: Rank related titles off Main
                     launch {
                         val rankedRelated = kotlinx.coroutines.withContext(computeDispatcher) {

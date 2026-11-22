@@ -21,24 +21,55 @@ import org.junit.Test
 class LaterboxDeepLinksAndShareTest {
 
     @Test
-    fun `buildTitleUrl chooses movie or series path cleanly`() {
+    fun `buildTitleUrl generates provider-neutral links for primary catalogue and retains external provider segment`() {
         val movieUrl = LaterboxDeepLinks.buildTitleUrl("moviebox", "12345", MediaKind.MOVIE)
+        val catalogueMovieUrl = LaterboxDeepLinks.buildTitleUrl("catalogue", "12345", MediaKind.MOVIE)
         val seriesUrl = LaterboxDeepLinks.buildTitleUrl("tmdb", "tv-987", MediaKind.TV_SERIES)
         val shortDramaUrl = LaterboxDeepLinks.buildTitleUrl("moviebox", "sd_42", MediaKind.SHORT_DRAMA)
+        val iaMovieUrl = LaterboxDeepLinks.buildTitleUrl("ia", "charade-1963", MediaKind.MOVIE)
 
-        assertEquals("https://laterbox-website.vercel.app/movie/moviebox/12345", movieUrl)
+        assertEquals("https://laterbox-website.vercel.app/movie/12345", movieUrl)
+        assertEquals("https://laterbox-website.vercel.app/movie/12345", catalogueMovieUrl)
         assertEquals("https://laterbox-website.vercel.app/series/tmdb/tv-987", seriesUrl)
-        assertEquals("https://laterbox-website.vercel.app/series/moviebox/sd_42", shortDramaUrl)
+        assertEquals("https://laterbox-website.vercel.app/series/sd_42", shortDramaUrl)
+        assertEquals("https://laterbox-website.vercel.app/movie/ia/charade-1963", iaMovieUrl)
+
+        assertFalse(movieUrl!!.contains("moviebox", ignoreCase = true))
+        assertFalse(shortDramaUrl!!.contains("moviebox", ignoreCase = true))
     }
 
     @Test
-    fun `parseUrl accepts canonical movie and series links and maps to MovieDetail route`() {
-        val parsedMovie = LaterboxDeepLinks.parseUrl("https://laterbox-website.vercel.app/movie/moviebox/tt123456")
-        assertNotNull(parsedMovie)
-        assertEquals(DeepLinkMediaType.MOVIE, parsedMovie?.mediaType)
-        assertEquals("moviebox", parsedMovie?.providerId)
-        assertEquals("tt123456", parsedMovie?.titleId)
-        assertEquals("movies/detail/moviebox/tt123456", LaterboxDeepLinks.toDestinationRoute(parsedMovie!!))
+    fun `parseUrl accepts neutral, legacy moviebox, catalogue alias, and encoded provider links`() {
+        val neutralMovie = LaterboxDeepLinks.parseUrl("https://laterbox-website.vercel.app/movie/tt123456")
+        assertNotNull(neutralMovie)
+        assertEquals(DeepLinkMediaType.MOVIE, neutralMovie?.mediaType)
+        assertEquals("moviebox", neutralMovie?.providerId)
+        assertEquals("tt123456", neutralMovie?.titleId)
+        assertEquals("movies/detail/moviebox/tt123456", LaterboxDeepLinks.toDestinationRoute(neutralMovie!!))
+
+        val neutralSeries = LaterboxDeepLinks.parseUrl("https://laterbox-website.vercel.app/series/sd_42/")
+        assertNotNull(neutralSeries)
+        assertEquals(DeepLinkMediaType.SERIES, neutralSeries?.mediaType)
+        assertEquals("moviebox", neutralSeries?.providerId)
+        assertEquals("sd_42", neutralSeries?.titleId)
+        assertEquals("movies/detail/moviebox/sd_42", LaterboxDeepLinks.toDestinationRoute(neutralSeries!!))
+
+        val legacyMovie = LaterboxDeepLinks.parseUrl("https://laterbox-website.vercel.app/movie/moviebox/tt123456")
+        assertNotNull(legacyMovie)
+        assertEquals("moviebox", legacyMovie?.providerId)
+        assertEquals("tt123456", legacyMovie?.titleId)
+        assertEquals("movies/detail/moviebox/tt123456", LaterboxDeepLinks.toDestinationRoute(legacyMovie!!))
+
+        val catalogueAlias = LaterboxDeepLinks.parseUrl("https://laterbox-website.vercel.app/series/catalogue/show_99")
+        assertNotNull(catalogueAlias)
+        assertEquals(DeepLinkMediaType.SERIES, catalogueAlias?.mediaType)
+        assertEquals("moviebox", catalogueAlias?.providerId)
+        assertEquals("show_99", catalogueAlias?.titleId)
+
+        val encodedNeutral = LaterboxDeepLinks.parseUrl("https://laterbox-website.vercel.app/movie/tt%3A123456")
+        assertNotNull(encodedNeutral)
+        assertEquals("tt:123456", encodedNeutral?.titleId)
+        assertEquals("movies/detail/moviebox/tt%3A123456", LaterboxDeepLinks.toDestinationRoute(encodedNeutral!!))
 
         val parsedSeries = LaterboxDeepLinks.parseUrl("https://laterbox-website.vercel.app/series/TMDB/show_88/")
         assertNotNull(parsedSeries)
@@ -49,15 +80,20 @@ class LaterboxDeepLinksAndShareTest {
     }
 
     @Test
-    fun `parseUrl rejects untrusted hosts, invalid schemes, traversal attempts, and unallowlisted providers`() {
-        assertNull(LaterboxDeepLinks.parseUrl("http://laterbox-website.vercel.app/movie/moviebox/123"))
-        assertNull(LaterboxDeepLinks.parseUrl("https://evil.example.com/movie/moviebox/123"))
-        assertNull(LaterboxDeepLinks.parseUrl("https://user@laterbox-website.vercel.app/movie/moviebox/123"))
-        assertNull(LaterboxDeepLinks.parseUrl("https://laterbox-website.vercel.app:8443/movie/moviebox/123"))
+    fun `parseUrl rejects untrusted hosts, invalid schemes, traversal attempts, bare provider segments, and unallowlisted providers`() {
+        assertNull(LaterboxDeepLinks.parseUrl("http://laterbox-website.vercel.app/movie/123"))
+        assertNull(LaterboxDeepLinks.parseUrl("https://evil.example.com/movie/123"))
+        assertNull(LaterboxDeepLinks.parseUrl("https://user@laterbox-website.vercel.app/movie/123"))
+        assertNull(LaterboxDeepLinks.parseUrl("https://laterbox-website.vercel.app:8443/movie/123"))
         assertNull(LaterboxDeepLinks.parseUrl("https://laterbox-website.vercel.app/movie/unknown_provider/123"))
+        assertNull(LaterboxDeepLinks.parseUrl("https://laterbox-website.vercel.app/movie/moviebox"))
+        assertNull(LaterboxDeepLinks.parseUrl("https://laterbox-website.vercel.app/series/catalogue"))
+        assertNull(LaterboxDeepLinks.parseUrl("https://laterbox-website.vercel.app/movie/..%2Fsecret"))
         assertNull(LaterboxDeepLinks.parseUrl("https://laterbox-website.vercel.app/movie/moviebox/..%2Fsecret"))
-        assertNull(LaterboxDeepLinks.parseUrl("https://laterbox-website.vercel.app/movie/moviebox/0"))
+        assertNull(LaterboxDeepLinks.parseUrl("https://laterbox-website.vercel.app/movie/0"))
+        assertNull(LaterboxDeepLinks.parseUrl("https://laterbox-website.vercel.app/movie/null"))
         assertNull(LaterboxDeepLinks.parseUrl("https://laterbox-website.vercel.app/episode/moviebox/123"))
+        assertNull(LaterboxDeepLinks.parseUrl("https://laterbox-website.vercel.app/unknown/123"))
         assertNull(LaterboxDeepLinks.parseUrl("https://laterbox-website.vercel.app/movie/moviebox/123/extra"))
     }
 
@@ -101,7 +137,7 @@ class LaterboxDeepLinksAndShareTest {
             releaseYear = 2025
         )
         assertEquals(
-            "https://laterbox-website.vercel.app/movie/moviebox/m42",
+            "https://laterbox-website.vercel.app/movie/m42",
             LaterboxShareHelper.resolveTitleShareUrl(summary)
         )
 

@@ -382,6 +382,49 @@ class MoviesHomeViewModel(
                             errorMessage = null
                         )
                     }
+                    val missingHeroMovies = feed.featuredBanners.filter {
+                        it.kind == MediaKind.MOVIE && (it.durationMinutes == null || it.durationMinutes <= 0)
+                    }
+                    if (missingHeroMovies.isNotEmpty()) {
+                        launch {
+                            val resolved = moviesRepository.enrichMissingMovieDurations(
+                                items = missingHeroMovies,
+                                maxItems = 10
+                            )
+                            if (resolved.isNotEmpty()) {
+                                _uiState.update { current ->
+                                    val curFeed = current.feed ?: return@update current
+                                    val updatedFeed = curFeed.copy(
+                                        featuredBanners = curFeed.featuredBanners.map { banner ->
+                                            val mins = resolved[banner.compositeId]
+                                            if (mins != null && banner.kind == MediaKind.MOVIE &&
+                                                (banner.durationMinutes == null || banner.durationMinutes <= 0)
+                                            ) {
+                                                banner.copy(durationMinutes = mins)
+                                            } else {
+                                                banner
+                                            }
+                                        },
+                                        sections = curFeed.sections.map { section ->
+                                            section.copy(
+                                                items = section.items.map { item ->
+                                                    val mins = resolved[item.compositeId]
+                                                    if (mins != null && item.kind == MediaKind.MOVIE &&
+                                                        (item.durationMinutes == null || item.durationMinutes <= 0)
+                                                    ) {
+                                                        item.copy(durationMinutes = mins)
+                                                    } else {
+                                                        item
+                                                    }
+                                                }
+                                            )
+                                        }
+                                    )
+                                    current.copy(feed = updatedFeed)
+                                }
+                            }
+                        }
+                    }
                 },
                 onFailure = { error ->
                     _uiState.update {

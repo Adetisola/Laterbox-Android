@@ -287,4 +287,75 @@ class LaterboxPipControllerTest {
             )
         )
     }
+
+    @Test
+    fun pipLifecycleTracker_stopsPlaybackWhenPipDismissed_butNotWhenExpandedOrReconfigured() {
+        // 1. Direct PiP window close/dismiss -> exited PiP followed by onStop without onResume
+        val dismissTracker = LaterboxPipLifecycleTracker()
+        dismissTracker.onResumed(currentlyInPip = false)
+        dismissTracker.onPipModeChanged(nowInPip = true)
+        assertTrue(dismissTracker.isInPip)
+        assertTrue(dismissTracker.wasInPipSession)
+        dismissTracker.onPipModeChanged(nowInPip = false)
+        assertEquals(
+            PipStopAction.STOP_PLAYBACK_AND_FINISH,
+            dismissTracker.evaluateOnStop(
+                isCurrentlyInPip = false,
+                isChangingConfigurations = false,
+                isRetainedForMiniPlayer = false
+            )
+        )
+
+        // 2. Expand back to fullscreen -> onPipModeChanged(false) -> onResume(false)
+        val expandTracker = LaterboxPipLifecycleTracker()
+        expandTracker.onPipModeChanged(nowInPip = true)
+        expandTracker.onPipModeChanged(nowInPip = false)
+        expandTracker.onResumed(currentlyInPip = false)
+        assertEquals(
+            PipStopAction.NONE,
+            expandTracker.evaluateOnStop(
+                isCurrentlyInPip = false,
+                isChangingConfigurations = false,
+                isRetainedForMiniPlayer = false
+            )
+        )
+
+        // 3. Configuration change during PiP exit must NOT terminate playback
+        val configTracker = LaterboxPipLifecycleTracker()
+        configTracker.onPipModeChanged(nowInPip = true)
+        configTracker.onPipModeChanged(nowInPip = false)
+        assertEquals(
+            PipStopAction.NONE,
+            configTracker.evaluateOnStop(
+                isCurrentlyInPip = false,
+                isChangingConfigurations = true,
+                isRetainedForMiniPlayer = false
+            )
+        )
+
+        // 4. Transition to mini-player keeps playback retained
+        val miniTracker = LaterboxPipLifecycleTracker()
+        miniTracker.onPipModeChanged(nowInPip = true)
+        miniTracker.onTransitionToMiniPlayer()
+        assertEquals(
+            PipStopAction.NONE,
+            miniTracker.evaluateOnStop(
+                isCurrentlyInPip = false,
+                isChangingConfigurations = false,
+                isRetainedForMiniPlayer = true
+            )
+        )
+
+        // 5. Remaining in PiP when screen turns off / onStop called still inside PiP -> NONE
+        val stillInPipTracker = LaterboxPipLifecycleTracker()
+        stillInPipTracker.onPipModeChanged(nowInPip = true)
+        assertEquals(
+            PipStopAction.NONE,
+            stillInPipTracker.evaluateOnStop(
+                isCurrentlyInPip = true,
+                isChangingConfigurations = false,
+                isRetainedForMiniPlayer = false
+            )
+        )
+    }
 }

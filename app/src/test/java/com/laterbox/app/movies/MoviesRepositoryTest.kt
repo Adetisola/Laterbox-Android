@@ -1289,4 +1289,82 @@ class MoviesRepositoryTest {
         val tmdbDetails = tmdbProvider.getDetails("99").getOrThrow()
         assertEquals(135, tmdbDetails.summary.durationMinutes)
     }
+
+    @Test
+    fun enrichMissingMovieDurations_batchesMovieBoxAppliesToMoviesOnlyAndRespectsNegativeCooldown() = runTest {
+        var batchCalls = 0
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path == "/movies/metadata/runtimes" -> {
+                        batchCalls++
+                        val body = request.body.readUtf8()
+                        assertFalse("Series must not be queried for movie duration", body.contains("tv_1"))
+                        MockResponse().setResponseCode(200).setBody(
+                            """{"runtimes":{"mb_1":118},"unresolved":["mb_2"]}"""
+                        )
+                    }
+                    path.startsWith("/detail/mb_1") -> MockResponse().setResponseCode(200).setBody(
+                        """{"subject":{"subjectId":"mb_1","subjectType":1,"title":"Resolved Film","releaseDate":"2022-05-01","description":"Initial miss"}}"""
+                    )
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val client = OkHttpClient()
+        val base = server.url("/").toString().trimEnd('/')
+        val mbProvider = com.laterbox.app.movies.data.provider.MovieBoxProvider(client, baseUrlProvider = { base })
+        val repo = MoviesRepositoryImpl(
+            moviesDao = db.moviesDao(),
+            internetArchiveProvider = InternetArchiveMoviesProvider(client, base),
+            tvMazeProvider = TvMazeSeriesProvider(client, base),
+            tmdbProvider = TmdbOptionalMoviesProvider(client, apiKeyProvider = { "" }, baseUrl = base),
+            movieBoxProvider = mbProvider,
+            useSampleFixturesOnlyProvider = { false },
+            nowMs = { fakeClockMs }
+        )
+
+        // Pre-seed detail cache entry without duration so enrichment patches Room too
+        val seededDetail = repo.getDetails("moviebox", "mb_1").getOrThrow()
+        assertEquals(null, seededDetail.summary.durationMinutes)
+
+        val movieResolved = MovieTitleSummary(
+            id = "mb_1",
+            providerId = "moviebox",
+            kind = MediaKind.MOVIE,
+            title = "Resolved Film",
+            releaseYear = 2022
+        )
+        val movieUnresolved = MovieTitleSummary(
+            id = "mb_2",
+            providerId = "moviebox",
+            kind = MediaKind.MOVIE,
+            title = "Unknown Film",
+            releaseYear = 2021
+        )
+        val seriesItem = MovieTitleSummary(
+            id = "tv_1",
+            providerId = "moviebox",
+            kind = MediaKind.TV_SERIES,
+            title = "Some Series",
+            releaseYear = 2023
+        )
+
+        val firstPass = repo.enrichMissingMovieDurations(listOf(movieResolved, movieUnresolved, seriesItem))
+        assertEquals(118, firstPass["moviebox:mb_1"])
+        assertFalse(firstPass.containsKey("moviebox:mb_2"))
+        assertFalse(firstPass.containsKey("moviebox:tv_1"))
+        assertEquals(1, batchCalls)
+
+        // Cached detail entry in Room must now have the enriched duration
+        val patchedDetail = repo.getDetails("moviebox", "mb_1", forceRefresh = false).getOrThrow()
+        assertEquals(118, patchedDetail.summary.durationMinutes)
+
+        // Re-running within cooldown must NOT issue another network call for mb_1 (hit) or mb_2 (cooldown miss)
+        val secondPass = repo.enrichMissingMovieDurations(listOf(movieResolved, movieUnresolved))
+        assertEquals(118, secondPass["moviebox:mb_1"])
+        assertEquals(1, batchCalls)
+    }
 }

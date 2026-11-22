@@ -104,6 +104,16 @@ object LaterboxPlaybackBridge {
         private set
 
     @Volatile
+    var isInPictureInPicture: Boolean = false
+        private set
+
+    fun setInPictureInPicture(inPip: Boolean) {
+        synchronized(lock) {
+            isInPictureInPicture = inPip
+        }
+    }
+
+    @Volatile
     var hasPipBlockingModal: Boolean = false
 
     @Volatile
@@ -503,8 +513,10 @@ object LaterboxPlaybackBridge {
         val appContext = context.applicationContext
         val serviceToStop: PlaybackSessionService?
         val playerToRelease: ExoPlayer?
+        val secondaryActivePlayer: Player?
         synchronized(lock) {
             playerToRelease = sharedVideoPlayer
+            secondaryActivePlayer = activePlayer?.takeIf { it !== playerToRelease }
             if (playerToRelease != null) {
                 releasedPlayers.add(playerToRelease)
             }
@@ -520,6 +532,7 @@ object LaterboxPlaybackBridge {
             cachedUiStateValue = null
             progressSaver = null
             isRetainedForMiniPlayer = false
+            isInPictureInPicture = false
             hasPipBlockingModal = false
             isPlayerLocked = false
             _miniPlayerState.value = null
@@ -527,9 +540,21 @@ object LaterboxPlaybackBridge {
             serviceStartPending = false
         }
         serviceToStop?.stopPlaybackSession()
+        if (secondaryActivePlayer != null) {
+            runCatching { secondaryActivePlayer.stop() }
+                .onFailure { err -> Log.w(TAG, "Failed stopping active player: ${err.message}") }
+        }
         if (playerToRelease != null) {
+            runCatching {
+                playerToRelease.stop()
+                playerToRelease.clearMediaItems()
+            }.onFailure { err -> Log.w(TAG, "Failed stopping shared video player: ${err.message}") }
             runCatching { playerToRelease.release() }
                 .onFailure { err -> Log.w(TAG, "Failed releasing shared video player: ${err.message}") }
+        }
+        runCatching {
+            appContext.getSystemService(NotificationManager::class.java)
+                ?.cancel(PlaybackSessionService.MEDIA_NOTIFICATION_ID)
         }
         runCatching {
             appContext.stopService(Intent(appContext, PlaybackSessionService::class.java))
@@ -628,7 +653,9 @@ class PlaybackSessionService : MediaSessionService() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         val player = mediaSession?.player
-        if (player == null || !player.playWhenReady || player.playbackState == Player.STATE_ENDED) {
+        if (!LaterboxPlaybackBridge.isInPictureInPicture &&
+            (player == null || !player.playWhenReady || player.playbackState == Player.STATE_ENDED)
+        ) {
             LaterboxPlaybackBridge.persistCurrentProgress()
             stopPlaybackSession()
         }
@@ -649,6 +676,9 @@ class PlaybackSessionService : MediaSessionService() {
     internal fun stopPlaybackSession() {
         releaseSessionInternal()
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+        runCatching {
+            getSystemService(NotificationManager::class.java)?.cancel(MEDIA_NOTIFICATION_ID)
+        }
         stopSelf()
     }
 

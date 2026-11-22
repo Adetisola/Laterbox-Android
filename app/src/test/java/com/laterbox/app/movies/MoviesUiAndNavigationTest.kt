@@ -2389,4 +2389,86 @@ class MoviesUiAndNavigationTest {
         composeTestRule.runOnIdle { showPlayer = false }
         composeTestRule.waitForIdle()
     }
+
+    @Test
+    fun movieDetailAndPosterCard_displayLowercaseMovieDurationBesideTitleOnlyForMovies() {
+        val movieWithDuration = sampleMovie.copy(
+            id = "m_dur",
+            title = "Inception",
+            kind = MediaKind.MOVIE,
+            releaseYear = 2010,
+            durationMinutes = 148
+        )
+        val seriesWithDuration = sampleMovie.copy(
+            id = "s_dur",
+            title = "Severance",
+            kind = MediaKind.TV_SERIES,
+            releaseYear = 2022,
+            durationMinutes = 55
+        )
+        var activeDetails by mutableStateOf(
+            MediaDetails(
+                summary = movieWithDuration,
+                fullDescription = "Mind-bending heist."
+            )
+        )
+        var showPosterCard by mutableStateOf(false)
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                if (showPosterCard) {
+                    MoviesScreen(
+                        uiState = MoviesHomeUiState(
+                            isLoading = false,
+                            feed = MoviesHomeFeed(
+                                featuredBanners = listOf(movieWithDuration),
+                                sections = listOf(
+                                    BrowseSection("sec_1", "Popular", null, SectionStyle.RAIL, listOf(movieWithDuration))
+                                ),
+                                genres = listOf("All")
+                            )
+                        ),
+                        onRefresh = {},
+                        onOpenCatalogue = { _, _ -> },
+                        onOpenDetail = { _, _ -> },
+                        onOpenPlayer = { _, _, _, _ -> },
+                        onToggleWatchlist = {},
+                        onToggleSampleFixtures = {}
+                    )
+                } else {
+                    MovieDetailScreen(
+                        uiState = MovieDetailUiState(
+                            isLoading = false,
+                            details = activeDetails
+                        ),
+                        onBackClick = {},
+                        onRetry = {},
+                        onToggleWatchlist = {},
+                        onPlayClick = { _, _ -> },
+                        onSelectSeason = {},
+                        onOpenRelated = { _, _ -> },
+                        onOpenExternalUrl = {}
+                    )
+                }
+            }
+        }
+
+        // Movie detail shows lowercase duration beside title
+        composeTestRule.onNodeWithText("Inception").assertIsDisplayed()
+        composeTestRule.onNodeWithText("2hrs 28mins").assertIsDisplayed()
+
+        // TV Series must NOT display duration on detail screen
+        composeTestRule.runOnIdle {
+            activeDetails = MediaDetails(summary = seriesWithDuration, fullDescription = "Series")
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Severance").assertIsDisplayed()
+        composeTestRule.onNodeWithText("55mins").assertDoesNotExist()
+
+        // Home screen hero banner keeps lowercase duration, while ordinary poster card omits duration
+        composeTestRule.runOnIdle { showPosterCard = true }
+        composeTestRule.waitForIdle()
+        // Exactly one match exists (on hero banner only); poster card "2010 · Action" omits duration
+        composeTestRule.onNodeWithText("2hrs 28mins", substring = true).assertIsDisplayed()
+    }
 }

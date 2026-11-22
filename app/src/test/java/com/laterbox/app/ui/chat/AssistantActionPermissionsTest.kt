@@ -482,6 +482,92 @@ class AssistantActionPermissionsTest {
         }
     }
 
+    @Test
+    fun multipleReadOnlyUiActions_executeSequentiallyInFifoOrderAndClearOnConversationSwitch() = runTest(mainDispatcher) {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        val server = okhttp3.mockwebserver.MockWebServer()
+        val sseBody = """
+            event: response_complete
+            data: {"fullText":"Sure","displayText":"Sure","actions":[{"type":"OPEN_MOVIES_HOME"},{"type":"OPEN_MOVIE_DETAIL","providerId":"moviebox","titleId":"m100","title":"Inception"}]}
+
+        """.trimIndent()
+        server.enqueue(
+            okhttp3.mockwebserver.MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "text/event-stream")
+                .setBody(sseBody)
+        )
+        server.enqueue(okhttp3.mockwebserver.MockResponse().setResponseCode(200).setBody("""{"accepted":true,"status":"executed"}"""))
+        server.enqueue(okhttp3.mockwebserver.MockResponse().setResponseCode(200).setBody("""{"accepted":true,"status":"executed"}"""))
+        server.start()
+        try {
+            prefs.setAssistantAiDisclosureAccepted(true)
+            val baseUrl = server.url("/").toString().trimEnd('/')
+            val activityRepo = ActivityEventRepository(db.activityEventDao())
+            val backendClient = com.laterbox.app.ai.LaterboxBackendAiClient(
+                baseUrlProvider = { baseUrl },
+                appCheckTokenProvider = { "tok" }
+            )
+            val streamVm = ChatViewModel(
+                chatRepository = chatRepo,
+                userPreferencesRepository = prefs,
+                laterboxContextEngine = LaterboxContextEngine(db, activityRepo, prefs),
+                appHealthChecker = AppHealthChecker(ctx, db, com.laterbox.app.media.data.adapters.ytdlp.YtDlpRuntimeManager(ctx), prefs),
+                linkRepository = linkRepo,
+                mediaRepository = mediaRepo,
+                moviesRepository = RecordingFakeMoviesRepository(),
+                collectionRepository = collectionRepo,
+                reminderScheduler = ReminderScheduler(ctx),
+                backendAiClient = backendClient
+            )
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { streamVm.uiState.collect {} }
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { streamVm.pendingUiActionDispatch.collect {} }
+
+            streamVm.sendMessage("Open movies home then open Inception")
+            awaitCondition(this, timeoutMs = 5_000L) {
+                streamVm.pendingUiActionDispatch.value?.action is ChatAction.OpenMoviesHome
+            }
+
+            val first = streamVm.pendingUiActionDispatch.value!!
+            streamVm.reportUiActionOutcome(
+                requestId = first.requestId,
+                messageId = first.messageId,
+                actionId = first.actionId,
+                action = first.action,
+                executed = true,
+                detail = "Opened Movies & TV"
+            )
+
+            // Second READ_ONLY action must dequeue immediately instead of being dropped!
+            awaitCondition(this, timeoutMs = 5_000L) {
+                streamVm.pendingUiActionDispatch.value?.action is ChatAction.OpenMovieDetail
+            }
+            val second = streamVm.pendingUiActionDispatch.value!!
+            streamVm.reportUiActionOutcome(
+                requestId = second.requestId,
+                messageId = second.messageId,
+                actionId = second.actionId,
+                action = second.action,
+                executed = true,
+                detail = "Opened details for Inception"
+            )
+            awaitCondition(this) { streamVm.pendingUiActionDispatch.value == null }
+
+            val convId = streamVm.uiState.value.activeConversationId!!
+            val assistantMsg = chatRepo.getMessagesSnapshot(convId)
+                .first { it.role == com.laterbox.app.data.repository.ChatRole.ASSISTANT.name && it.actionsJson != null }
+            val tracked = com.laterbox.app.ai.AssistantActionHandler.fromTrackedJsonList(assistantMsg.actionsJson)
+            assertEquals(2, tracked.size)
+            assertTrue(tracked.all { it.status == com.laterbox.app.ai.ChatActionStatus.EXECUTED })
+
+            // Verify switching conversations clears pending UI dispatches cleanly
+            streamVm.startNewChat()
+            assertEquals(null, streamVm.pendingUiActionDispatch.value)
+        } finally {
+            server.shutdown()
+        }
+    }
+
     private class RecordingFakeMediaRepository : MediaRepository {
         val inspectedLinkIds = mutableListOf<Long>()
         val retriedTaskIds = mutableListOf<String>()

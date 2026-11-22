@@ -38,8 +38,11 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -171,7 +174,7 @@ class MovieBoxProvider(
                                             kind = itemKind,
                                             title = title,
                                             releaseYear = parseYear(releaseDateStr, entry.optCleanString("year")),
-                                            durationMinutes = parseDurationMinutes(entry.optLongOrNull("duration")),
+                                            durationMinutes = parseSummaryDurationMinutes(entry),
                                             posterUrl = cover,
                                             backdropUrl = bannerImage,
                                             language = entry.optCleanString("language"),
@@ -360,7 +363,7 @@ class MovieBoxProvider(
                             title = title,
                             releaseYear = parseYear(releaseDateStr, obj.optCleanString("year")),
                             rating = obj.optRating("rating", "imdb_rating"),
-                            durationMinutes = parseDurationMinutes(obj.optLongOrNull("duration")),
+                            durationMinutes = parseSummaryDurationMinutes(obj),
                             posterUrl = cover,
                             backdropUrl = stillsUrl,
                             genres = parseGenres(obj.optCleanString("genre")),
@@ -510,7 +513,7 @@ class MovieBoxProvider(
                             title = title,
                             releaseYear = parseYear(releaseDateStr),
                             rating = obj.optRating("imdb_rating", "rating"),
-                            durationMinutes = parseDurationMinutes(obj.optLongOrNull("duration")),
+                            durationMinutes = parseSummaryDurationMinutes(obj),
                             posterUrl = cover,
                             backdropUrl = stillsUrl,
                             genres = parseGenres(obj.optCleanString("genre")),
@@ -729,7 +732,7 @@ class MovieBoxProvider(
                 title = title,
                 releaseYear = parseYear(releaseDateStr),
                 rating = root.optRating("imdb_rating", "rating"),
-                durationMinutes = parseDurationMinutes(root.optLongOrNull("duration")),
+                durationMinutes = parseSummaryDurationMinutes(root),
                 posterUrl = cover,
                 backdropUrl = stillsUrl,
                 genres = parseGenres(root.optCleanString("genre")),
@@ -1018,7 +1021,7 @@ class MovieBoxProvider(
             title = title,
             releaseYear = parseYear(releaseDateStr, obj.optCleanString("year")),
             rating = obj.optRating("imdb_rating", "rating"),
-            durationMinutes = parseDurationMinutes(obj.optLongOrNull("duration")),
+            durationMinutes = parseSummaryDurationMinutes(obj),
             posterUrl = cover,
             backdropUrl = stillsUrl,
             genres = parseGenres(obj.optCleanString("genre")),
@@ -1027,6 +1030,7 @@ class MovieBoxProvider(
             detailPath = dp,
             sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
             isPlayableHint = true,
+            imdbId = obj.optCleanString("imdbId") ?: obj.optCleanString("imdb_id"),
             releaseDate = releaseDateStr,
             subjectType = subjectType ?: inferSubjectType(kind),
             posterBlurHash = coverBlurHash,
@@ -1243,7 +1247,7 @@ class MovieBoxProvider(
             title = title,
             releaseYear = parseYear(releaseDateStr),
             rating = obj.optRating("imdbRatingValue", "imdb_rating", "rating"),
-            durationMinutes = parseDurationMinutes(obj.optLongOrNull("duration")),
+            durationMinutes = parseSummaryDurationMinutes(obj),
             posterUrl = coverUrl,
             backdropUrl = backdropOverride ?: stillsUrl,
             genres = parseGenres(obj.optCleanString("genre")),
@@ -1297,6 +1301,58 @@ class MovieBoxProvider(
         }
     }
 
+    /**
+     * Resolves verified movie runtimes in minutes from the Laterbox backend batch endpoint.
+     * Strictly applies to MediaKind.MOVIE items; omits series/short dramas and caps batch size at 20.
+     */
+    suspend fun fetchMovieRuntimesBatch(
+        candidates: List<MovieTitleSummary>
+    ): Result<Map<String, Int>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val filtered = candidates
+                .asSequence()
+                .filter { it.kind == MediaKind.MOVIE && it.id.isNotBlank() && it.title.isNotBlank() }
+                .distinctBy { it.id }
+                .take(20)
+                .toList()
+            if (filtered.isEmpty()) return@runCatching emptyMap()
+
+            val itemsArray = JSONArray()
+            filtered.forEach { item ->
+                itemsArray.put(
+                    JSONObject().apply {
+                        put("subject_id", item.id)
+                        put("title", item.title)
+                        item.releaseYear?.let { put("release_year", it) }
+                        item.imdbId?.takeIf { it.isNotBlank() }?.let { put("imdb_id", it) }
+                        put("subject_type", item.subjectType ?: inferSubjectType(item.kind))
+                    }
+                )
+            }
+
+            val payload = JSONObject().apply { put("items", itemsArray) }.toString()
+            val url = requireBaseHttpUrl().newBuilder()
+                .addPathSegment("movies")
+                .addPathSegment("metadata")
+                .addPathSegment("runtimes")
+                .build()
+
+            val raw = executePostJson(url, payload)
+            val root = JSONObject(raw)
+            val runtimesObj = root.optJSONObject("runtimes") ?: return@runCatching emptyMap()
+            buildMap {
+                val keys = runtimesObj.keys()
+                while (keys.hasNext()) {
+                    val subjectId = keys.next()
+                    val mins = runtimesObj.optInt(subjectId, 0)
+                    if (subjectId.isNotBlank() && mins in 1..600) {
+                        put(subjectId, mins)
+                    }
+                }
+            }
+        }
+    }
+
     private suspend fun requireBaseHttpUrl(): HttpUrl {
         val raw = activeBaseUrl()
         if (raw.isBlank()) {
@@ -1314,8 +1370,18 @@ class MovieBoxProvider(
         }
     }
 
-    private suspend fun executeGet(url: HttpUrl): String {
+    private suspend fun executeGet(url: HttpUrl): String =
+        executeJsonRequest(url = url, postJsonBody = null)
+
+    private suspend fun executePostJson(url: HttpUrl, jsonBody: String): String =
+        executeJsonRequest(url = url, postJsonBody = jsonBody)
+
+    private suspend fun executeJsonRequest(
+        url: HttpUrl,
+        postJsonBody: String?
+    ): String {
         val redactedPath = url.encodedPath
+        val methodLabel = if (postJsonBody != null) "POST" else "GET"
         val maxTransientAttempts = 2
         var transientAttempt = 1
         var authRefreshAvailable = true
@@ -1329,7 +1395,12 @@ class MovieBoxProvider(
             val requestBuilder = Request.Builder()
                 .url(url)
                 .header("Accept", "application/json")
-                .get()
+            if (postJsonBody != null) {
+                val mediaType = "application/json; charset=utf-8".toMediaType()
+                requestBuilder.post(postJsonBody.toRequestBody(mediaType))
+            } else {
+                requestBuilder.get()
+            }
 
             if (sentAppCheckToken.isNotBlank()) {
                 requestBuilder.header("X-Firebase-AppCheck", sentAppCheckToken)
@@ -1345,7 +1416,7 @@ class MovieBoxProvider(
                     val body = response.body?.string().orEmpty()
                     if (!response.isSuccessful) {
                         val detail = runCatching { JSONObject(body).optCleanString("detail") }.getOrNull()
-                        safeLogWarn("GET $redactedPath -> HTTP ${response.code} (${elapsedMs}ms)")
+                        safeLogWarn("$methodLabel $redactedPath -> HTTP ${response.code} (${elapsedMs}ms)")
 
                         if (response.code in setOf(401, 403) && authRefreshAvailable) {
                             authRefreshAvailable = false
@@ -1377,14 +1448,14 @@ class MovieBoxProvider(
                     }
 
                     if (body.isBlank()) {
-                        safeLogWarn("GET $redactedPath -> HTTP ${response.code} empty body (${elapsedMs}ms)")
+                        safeLogWarn("$methodLabel $redactedPath -> HTTP ${response.code} empty body (${elapsedMs}ms)")
                         throw MovieBoxApiException(
                             httpCode = response.code,
                             message = "The catalogue service returned an empty response."
                         )
                     }
 
-                    safeLogInfo("GET $redactedPath -> HTTP ${response.code} (${elapsedMs}ms)")
+                    safeLogInfo("$methodLabel $redactedPath -> HTTP ${response.code} (${elapsedMs}ms)")
                     return body
                 }
 
@@ -1401,7 +1472,7 @@ class MovieBoxProvider(
             } catch (e: IOException) {
                 lastError = e
                 val isNonRetryableNetwork = e is UnknownHostException || e is SSLException
-                safeLogWarn("GET $redactedPath -> network error (${e.javaClass.simpleName})")
+                safeLogWarn("$methodLabel $redactedPath -> network error (${e.javaClass.simpleName})")
                 if (!isNonRetryableNetwork && transientAttempt < maxTransientAttempts) {
                     transientAttempt++
                     if (retryDelayMs > 0L) delay(retryDelayMs)
@@ -1512,10 +1583,16 @@ class MovieBoxProvider(
             ?.filter { it.isNotBlank() }
             ?: emptyList()
 
+    private fun parseSummaryDurationMinutes(obj: JSONObject): Int? {
+        val explicitMins = obj.optIntOrNull("runtime_minutes")?.takeIf { it in 1..600 }
+        if (explicitMins != null) return explicitMins
+        return parseDurationMinutes(obj.optLongOrNull("duration"))
+    }
+
     private fun parseDurationMinutes(durationSeconds: Long?): Int? {
         val sec = durationSeconds?.takeIf { it > 0L } ?: return null
         val mins = (sec / 60L).toInt()
-        return if (mins > 0) mins else 1
+        return if (mins > 0 && mins <= 600) mins else if (mins <= 0) 1 else null
     }
 
     private fun parseQualityHeight(label: String): Int {

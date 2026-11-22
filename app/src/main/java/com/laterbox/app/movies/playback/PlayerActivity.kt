@@ -57,14 +57,15 @@ class PlayerActivity : ComponentActivity() {
     private val launchTargetState = MutableStateFlow<PlaybackSessionTarget?>(null)
     private val pipActionReceiver = LaterboxPipActionReceiver(activityProvider = { this })
     private var isPipReceiverRegistered = false
-    private var wasInPipSession = false
+    private val pipLifecycleTracker = LaterboxPipLifecycleTracker()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        isInPictureInPictureModeState.value =
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode
-        wasInPipSession = isInPictureInPictureModeState.value
+        val initialPip = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode
+        isInPictureInPictureModeState.value = initialPip
+        LaterboxPlaybackBridge.setInPictureInPicture(initialPip)
+        pipLifecycleTracker.onPipModeChanged(initialPip)
 
         if (!isPipReceiverRegistered) {
             ContextCompat.registerReceiver(
@@ -245,9 +246,8 @@ class PlayerActivity : ComponentActivity() {
         super.onResume()
         val currentlyInPip = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode
         isInPictureInPictureModeState.value = currentlyInPip
-        if (!currentlyInPip) {
-            wasInPipSession = false
-        }
+        LaterboxPlaybackBridge.setInPictureInPicture(currentlyInPip)
+        pipLifecycleTracker.onResumed(currentlyInPip)
     }
 
     override fun onUserLeaveHint() {
@@ -292,23 +292,26 @@ class PlayerActivity : ComponentActivity() {
     ) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         isInPictureInPictureModeState.value = isInPictureInPictureMode
-        if (isInPictureInPictureMode) {
-            wasInPipSession = true
-        }
+        LaterboxPlaybackBridge.setInPictureInPicture(isInPictureInPictureMode)
+        pipLifecycleTracker.onPipModeChanged(isInPictureInPictureMode)
     }
 
     override fun onStop() {
         super.onStop()
-        // If user closed the PiP floating window directly while backgrounded, pause audio cleanly.
-        if (wasInPipSession &&
-            !isInPictureInPictureMode &&
-            !isChangingConfigurations &&
-            !isFinishing
-        ) {
-            wasInPipSession = false
-            LaterboxPlaybackBridge.activePlayer?.pause()
+        val currentlyInPip = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode
+        val stopAction = pipLifecycleTracker.evaluateOnStop(
+            isCurrentlyInPip = currentlyInPip,
+            isChangingConfigurations = isChangingConfigurations,
+            isRetainedForMiniPlayer = LaterboxPlaybackBridge.isRetainedForMiniPlayer
+        )
+        if (stopAction == PipStopAction.STOP_PLAYBACK_AND_FINISH) {
+            LaterboxPipController.disableAutoEnterPip(this)
+            LaterboxPlaybackBridge.setInPictureInPicture(false)
             LaterboxPlaybackBridge.persistCurrentProgress()
-            LaterboxPlaybackBridge.refreshMiniPlayerProgress(persistProgress = true)
+            LaterboxPlaybackBridge.stopAndDetach(applicationContext)
+            if (!isFinishing) {
+                finish()
+            }
         }
     }
 
@@ -316,6 +319,9 @@ class PlayerActivity : ComponentActivity() {
         if (isPipReceiverRegistered) {
             runCatching { unregisterReceiver(pipActionReceiver) }
             isPipReceiverRegistered = false
+        }
+        if (!isChangingConfigurations) {
+            LaterboxPlaybackBridge.setInPictureInPicture(false)
         }
         if (isFinishing && !isChangingConfigurations && !LaterboxPlaybackBridge.isRetainedForMiniPlayer) {
             LaterboxPlaybackBridge.stopAndDetach(applicationContext)
@@ -325,7 +331,8 @@ class PlayerActivity : ComponentActivity() {
 
     private fun finishToMainWithMiniPlayer() {
         LaterboxPipController.disableAutoEnterPip(this)
-        wasInPipSession = false
+        pipLifecycleTracker.onTransitionToMiniPlayer()
+        LaterboxPlaybackBridge.setInPictureInPicture(false)
         if (isTaskRoot) {
             val mainIntent = Intent(this, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP

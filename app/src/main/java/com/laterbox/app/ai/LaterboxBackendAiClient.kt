@@ -47,6 +47,14 @@ data class ActionResultAck(
     val followUpMessage: String? = null
 )
 
+data class RecentActionReceipt(
+    val actionId: String? = null,
+    val actionType: String,
+    val category: String,
+    val status: String,
+    val detail: String = ""
+)
+
 sealed interface BackendAiStreamEvent {
     data class Started(
         val manifestRevision: String,
@@ -96,7 +104,8 @@ class LaterboxBackendAiClient(
         runtimeContextBlock: String,
         actionSpecBlock: String = LaterboxKnowledgeBase.ALLOWED_ACTION_SPEC,
         grantedCategories: Set<String> = emptySet(),
-        enableWebSearch: Boolean = true
+        enableWebSearch: Boolean = true,
+        recentActionResults: List<RecentActionReceipt> = emptyList()
     ): Flow<BackendAiStreamEvent> = flow {
         val baseUrl = baseUrlProvider().trim().trimEnd('/')
         val parsedBase = baseUrl.toHttpUrlOrNull()
@@ -126,6 +135,20 @@ class LaterboxBackendAiClient(
             }
         }
 
+        val receiptsArray = JSONArray().apply {
+            for (r in recentActionResults.takeLast(10)) {
+                put(
+                    JSONObject().apply {
+                        if (!r.actionId.isNullOrBlank()) put("actionId", r.actionId)
+                        put("actionType", r.actionType)
+                        put("category", r.category)
+                        put("status", r.status)
+                        put("detail", r.detail.take(240))
+                    }
+                )
+            }
+        }
+
         val payload = JSONObject().apply {
             put("conversationId", conversationId)
             put("messages", messagesArray)
@@ -134,6 +157,9 @@ class LaterboxBackendAiClient(
             put("actionSpecBlock", actionSpecBlock.take(8000))
             put("grantedCategories", JSONArray(grantedCategories.toList()))
             put("enableWebSearch", enableWebSearch)
+            if (receiptsArray.length() > 0) {
+                put("recentActionResults", receiptsArray)
+            }
         }.toString()
 
         val activeCall = AtomicReference<Call?>(null)

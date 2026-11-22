@@ -886,21 +886,50 @@ fun MovieDetailScreen(
                                                     .padding(bottom = 4.dp),
                                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                                             ) {
-                                                Text(
-                                                    text = summary.title,
-                                                    style = typography.editorialTitle.copy(fontSize = 22.sp, lineHeight = 26.sp),
-                                                    color = colors.textPrimary,
-                                                    maxLines = 3,
-                                                    overflow = TextOverflow.Ellipsis
-                                                )
+                                                val movieDuration = if (summary.kind == MediaKind.MOVIE) {
+                                                    com.laterbox.app.movies.domain.util.DurationFormatter
+                                                        .formatMinutes(summary.durationMinutes)
+                                                } else {
+                                                    null
+                                                }
+                                                @kotlin.OptIn(ExperimentalLayoutApi::class)
+                                                FlowRow(
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                                ) {
+                                                    Text(
+                                                        text = summary.title,
+                                                        style = typography.editorialTitle.copy(fontSize = 22.sp, lineHeight = 26.sp),
+                                                        color = colors.textPrimary,
+                                                        maxLines = 3,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                        modifier = Modifier.align(Alignment.CenterVertically)
+                                                    )
+                                                    if (movieDuration != null) {
+                                                        Row(
+                                                            verticalAlignment = Alignment.CenterVertically,
+                                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                            modifier = Modifier.align(Alignment.CenterVertically)
+                                                        ) {
+                                                            Box(
+                                                                modifier = Modifier
+                                                                    .width(1.dp)
+                                                                    .height(15.dp)
+                                                                    .background(colors.textSecondary.copy(alpha = 0.35f))
+                                                            )
+                                                            Text(
+                                                                text = movieDuration,
+                                                                style = typography.metaText.copy(fontSize = 14.sp, lineHeight = 20.sp),
+                                                                color = colors.textSecondary,
+                                                                maxLines = 1,
+                                                                softWrap = false
+                                                            )
+                                                        }
+                                                    }
+                                                }
                                                 val metaParts = buildList {
                                                     add(summary.kind.label)
                                                     summary.releaseYear?.let { add(it.toString()) }
-                                                    if (summary.kind == MediaKind.MOVIE) {
-                                                        com.laterbox.app.movies.domain.util.DurationFormatter
-                                                            .formatMinutes(summary.durationMinutes)
-                                                            ?.let { add(it) }
-                                                    }
                                                     summary.rating?.takeIf { it > 0.0 && !it.isNaN() }
                                                         ?.let { add(String.format(Locale.US, "★ %.1f", it)) }
                                                 }

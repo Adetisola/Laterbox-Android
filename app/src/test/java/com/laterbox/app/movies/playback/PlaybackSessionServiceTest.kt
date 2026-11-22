@@ -281,4 +281,45 @@ class PlaybackSessionServiceTest {
             LaterboxPlaybackBridge.stopAndDetach(context)
         }
     }
+
+    @Test
+    fun stopAndDetach_stopsActivePlayerAndClearsPipAndMiniPlayerState() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        var stopCount = 0
+        val proxyPlayer = java.lang.reflect.Proxy.newProxyInstance(
+            androidx.media3.common.Player::class.java.classLoader,
+            arrayOf(androidx.media3.common.Player::class.java)
+        ) { _, method, _ ->
+            when (method.name) {
+                "stop" -> {
+                    stopCount++
+                    Unit
+                }
+                "isPlaying" -> true
+                "getPlayWhenReady" -> true
+                "getPlaybackState" -> androidx.media3.common.Player.STATE_READY
+                "getCurrentPosition" -> 12_000L
+                "getDuration" -> 60_000L
+                else -> null
+            }
+        } as androidx.media3.common.Player
+
+        LaterboxPlaybackBridge.setActivePlayerForTest(proxyPlayer)
+        LaterboxPlaybackBridge.setInPictureInPicture(true)
+        LaterboxPlaybackBridge.setTargetMetadata(
+            target = PlaybackSessionTarget.MovieStream("moviebox", "tt-stop"),
+            episodeKey = "moviebox|tt-stop|0|0",
+            artworkUrl = null,
+            onSaveProgress = { _, _ -> }
+        )
+
+        LaterboxPlaybackBridge.stopAndDetach(context)
+
+        assertTrue(stopCount >= 1)
+        assertFalse(LaterboxPlaybackBridge.isInPictureInPicture)
+        assertFalse(LaterboxPlaybackBridge.isRetainedForMiniPlayer)
+        assertEquals(null, LaterboxPlaybackBridge.activePlayer)
+        assertEquals(null, LaterboxPlaybackBridge.activeTarget)
+        assertEquals(null, LaterboxPlaybackBridge.miniPlayerState.value)
+    }
 }

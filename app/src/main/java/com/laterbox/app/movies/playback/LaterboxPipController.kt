@@ -49,6 +49,64 @@ enum class UserLeaveAction {
     DO_NOTHING
 }
 
+enum class PipStopAction {
+    NONE,
+    STOP_PLAYBACK_AND_FINISH
+}
+
+/**
+ * Pure Kotlin/JVM lifecycle state machine distinguishing PiP window dismissal
+ * (PiP exit followed by onStop without returning to fullscreen onResume) from
+ * expanding PiP back to fullscreen, configuration changes, or transitioning to
+ * the in-app mini-player.
+ */
+class LaterboxPipLifecycleTracker {
+    var isInPip: Boolean = false
+        private set
+    var wasInPipSession: Boolean = false
+        private set
+    var returnedToFullscreenSincePipExit: Boolean = false
+        private set
+
+    fun onPipModeChanged(nowInPip: Boolean) {
+        isInPip = nowInPip
+        if (nowInPip) {
+            wasInPipSession = true
+            returnedToFullscreenSincePipExit = false
+        }
+    }
+
+    fun onResumed(currentlyInPip: Boolean) {
+        isInPip = currentlyInPip
+        if (!currentlyInPip) {
+            wasInPipSession = false
+            returnedToFullscreenSincePipExit = true
+        }
+    }
+
+    fun onTransitionToMiniPlayer() {
+        isInPip = false
+        wasInPipSession = false
+        returnedToFullscreenSincePipExit = false
+    }
+
+    fun evaluateOnStop(
+        isCurrentlyInPip: Boolean,
+        isChangingConfigurations: Boolean,
+        isRetainedForMiniPlayer: Boolean
+    ): PipStopAction {
+        if (isChangingConfigurations || isRetainedForMiniPlayer) {
+            return PipStopAction.NONE
+        }
+        if (wasInPipSession && !isCurrentlyInPip && !returnedToFullscreenSincePipExit) {
+            wasInPipSession = false
+            isInPip = false
+            return PipStopAction.STOP_PLAYBACK_AND_FINISH
+        }
+        return PipStopAction.NONE
+    }
+}
+
 /**
  * Pure Kotlin/JVM specification helper for Laterbox native Picture-in-Picture behavior
  * so PiP decision logic, seek delta clamping, and RemoteAction metadata can be unit-tested cleanly.

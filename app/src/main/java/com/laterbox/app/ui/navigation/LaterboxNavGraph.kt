@@ -978,43 +978,64 @@ fun LaterboxApp(
                                             "settings/app_storage" -> LaterboxDestination.SettingsDataStorage.route
                                             else -> action.route
                                         }
-                                        navController.navigate(normalizedRoute)
-                                        onResult(true, "Opened Settings")
+                                        val isValidSettingsRoute = normalizedRoute == LaterboxDestination.Settings.route ||
+                                            normalizedRoute.startsWith("settings/")
+                                        if (!isValidSettingsRoute) {
+                                            onResult(false, "Unknown settings destination.")
+                                        } else {
+                                            runCatching { navController.navigate(normalizedRoute) }
+                                                .onSuccess { onResult(true, "Opened Settings") }
+                                                .onFailure { err -> onResult(false, "Unable to open Settings: ${err.message}") }
+                                        }
                                     }
                                     is ChatAction.OpenMoviesHome -> {
-                                        navigateTopLevel(LaterboxDestination.Movies.route)
-                                        onResult(true, "Opened Movies & TV")
+                                        runCatching { navigateTopLevel(LaterboxDestination.Movies.route) }
+                                            .onSuccess { onResult(true, "Opened Movies & TV") }
+                                            .onFailure { err -> onResult(false, "Unable to open Movies & TV: ${err.message}") }
                                     }
                                     is ChatAction.SearchMovies -> {
-                                        navController.navigate(
-                                            LaterboxDestination.MoviesCatalogue.createRoute(
-                                                kind = action.kind,
-                                                genre = action.genre,
-                                                query = action.query.takeIf { it.isNotBlank() }
-                                            )
+                                        val route = LaterboxDestination.MoviesCatalogue.createRoute(
+                                            kind = action.kind,
+                                            genre = action.genre,
+                                            query = action.query.takeIf { it.isNotBlank() }
                                         )
-                                        onResult(true, "Opened Movies & TV search for \"${action.query}\"")
+                                        runCatching { navController.navigate(route) }
+                                            .onSuccess { onResult(true, "Opened Movies & TV search for \"${action.query}\"") }
+                                            .onFailure { err -> onResult(false, "Unable to open Movies & TV search: ${err.message}") }
                                     }
                                     is ChatAction.OpenMovieDetail -> {
-                                        navController.navigate(
-                                            LaterboxDestination.MovieDetail.createRoute(
+                                        if (action.providerId.isBlank() || action.titleId.isBlank()) {
+                                            onResult(false, "Missing title reference for this movie or series.")
+                                        } else {
+                                            val route = LaterboxDestination.MovieDetail.createRoute(
                                                 providerId = action.providerId,
                                                 titleId = action.titleId
                                             )
-                                        )
-                                        onResult(true, "Opened details for \"${action.title}\"")
+                                            runCatching { navController.navigate(route) }
+                                                .onSuccess { onResult(true, "Opened details for \"${action.title}\"") }
+                                                .onFailure { err -> onResult(false, "Unable to open title details: ${err.message}") }
+                                        }
                                     }
                                     is ChatAction.OpenMoviePlayer -> {
-                                        context.startActivity(
-                                            com.laterbox.app.movies.playback.PlayerActivity.createStreamIntent(
-                                                context = context,
-                                                providerId = action.providerId,
-                                                titleId = action.titleId,
-                                                seasonNumber = action.seasonNumber,
-                                                episodeNumber = action.episodeNumber
-                                            )
-                                        )
-                                        onResult(true, "Opened player for \"${action.title}\"")
+                                        if (action.providerId.isBlank() || action.titleId.isBlank()) {
+                                            onResult(false, "Missing playback reference for \"${action.title}\".")
+                                        } else {
+                                            runCatching {
+                                                context.startActivity(
+                                                    com.laterbox.app.movies.playback.PlayerActivity.createStreamIntent(
+                                                        context = context,
+                                                        providerId = action.providerId,
+                                                        titleId = action.titleId,
+                                                        seasonNumber = action.seasonNumber,
+                                                        episodeNumber = action.episodeNumber
+                                                    )
+                                                )
+                                            }.onSuccess {
+                                                onResult(true, "Opened player for \"${action.title}\"")
+                                            }.onFailure { err ->
+                                                onResult(false, "Unable to launch player for \"${action.title}\": ${err.message}")
+                                            }
+                                        }
                                     }
                                     else -> onResult(false, "Action requires approval handler")
                                 }
@@ -1022,6 +1043,11 @@ fun LaterboxApp(
 
                             LaunchedEffect(pendingUiActionDispatch?.requestId) {
                                 val dispatch = pendingUiActionDispatch ?: return@LaunchedEffect
+                                if (dispatch.conversationId.isNotBlank() &&
+                                    dispatch.conversationId != chatViewModel.uiState.value.activeConversationId
+                                ) {
+                                    return@LaunchedEffect
+                                }
                                 executeReadOnlyUiAction(dispatch.action) { executed, detail ->
                                     chatViewModel.reportUiActionOutcome(
                                         requestId = dispatch.requestId,

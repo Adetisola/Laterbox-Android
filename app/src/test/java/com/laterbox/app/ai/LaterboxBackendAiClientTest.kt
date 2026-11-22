@@ -186,4 +186,48 @@ class LaterboxBackendAiClientTest {
         assertTrue("Expected cancellation to finish quickly (<5s), took ${elapsedMs}ms", elapsedMs < 5_000)
         assertFalse("Should not emit Error after coroutine cancel", events.any { it is BackendAiStreamEvent.Error })
     }
+
+    @Test
+    fun streamChat_includesRecentActionResultsInRequestBody() = runBlocking {
+        val sseBody = """
+            event: response_complete
+            data: {"fullText":"Done","displayText":"Done","actions":[]}
+
+        """.trimIndent()
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "text/event-stream")
+                .setBody(sseBody)
+        )
+
+        val base = server.url("/").toString().trimEnd('/')
+        val client = LaterboxBackendAiClient(
+            baseUrlProvider = { base },
+            appCheckTokenProvider = { "tok" }
+        )
+
+        val events = client.streamChat(
+            conversationId = "conv-receipts",
+            turns = listOf(GeminiTurn(GeminiRole.USER, "Did that work?")),
+            capabilitySnapshot = CapabilitySnapshot(clientVersionCode = 64),
+            runtimeContextBlock = "",
+            recentActionResults = listOf(
+                RecentActionReceipt(
+                    actionId = "act-1",
+                    actionType = "OPEN_MOVIE_DETAIL",
+                    category = "NAVIGATION_DISCOVERY",
+                    status = "executed",
+                    detail = "Opened details for Dune"
+                )
+            )
+        ).toList()
+
+        assertTrue(events.any { it is BackendAiStreamEvent.Completed })
+        val recorded = server.takeRequest()
+        val bodyStr = recorded.body.readUtf8()
+        assertTrue(bodyStr.contains("recentActionResults"))
+        assertTrue(bodyStr.contains("act-1"))
+        assertTrue(bodyStr.contains("Opened details for Dune"))
+    }
 }

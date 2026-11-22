@@ -271,6 +271,76 @@ class TmdbOptionalMoviesProvider(
             }
         }
 
+    suspend fun findMovieRuntimeMinutes(
+        imdbId: String?,
+        title: String,
+        releaseYear: Int?
+    ): Int? = withContext(Dispatchers.IO) {
+        val key = apiKeyProvider().trim()
+        if (key.isBlank()) return@withContext null
+
+        val cleanImdb = imdbId?.trim()?.takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) }
+        if (cleanImdb != null) {
+            val found = runCatching {
+                val findUrl = "$normalizedBase/find/$cleanImdb".toHttpUrl().newBuilder()
+                    .addQueryParameter("api_key", key)
+                    .addQueryParameter("external_source", "imdb_id")
+                    .build()
+                val obj = JSONObject(executeGet(findUrl.toString()))
+                val results = obj.optJSONArray("movie_results") ?: JSONArray()
+                if (results.length() != 1) return@runCatching null
+                val tmdbId = results.optJSONObject(0)?.optLong("id", 0L)?.takeIf { it > 0L }
+                    ?: return@runCatching null
+                fetchTmdbMovieRuntimeById(key, tmdbId)
+            }.getOrNull()
+            if (found != null) return@withContext found
+        }
+
+        val normalizedQueryTitle = normalizeTitleForMatch(title)
+        val targetYear = releaseYear ?: return@withContext null
+        if (normalizedQueryTitle.isBlank()) return@withContext null
+
+        return@withContext runCatching {
+            val searchUrl = "$normalizedBase/search/movie".toHttpUrl().newBuilder()
+                .addQueryParameter("api_key", key)
+                .addQueryParameter("query", title.trim())
+                .addQueryParameter("year", targetYear.toString())
+                .addQueryParameter("include_adult", "false")
+                .build()
+            val obj = JSONObject(executeGet(searchUrl.toString()))
+            val arr = obj.optJSONArray("results") ?: JSONArray()
+            val exactMatches = mutableListOf<Long>()
+            for (i in 0 until arr.length()) {
+                val item = arr.optJSONObject(i) ?: continue
+                val candidateYear = item.optString("release_date").take(4).toIntOrNull() ?: continue
+                if (candidateYear != targetYear) continue
+                val t1 = normalizeTitleForMatch(item.optString("title"))
+                val t2 = normalizeTitleForMatch(item.optString("original_title"))
+                if (t1 == normalizedQueryTitle || t2 == normalizedQueryTitle) {
+                    val id = item.optLong("id", 0L)
+                    if (id > 0L && id !in exactMatches) exactMatches.add(id)
+                }
+            }
+            if (exactMatches.size != 1) return@runCatching null
+            fetchTmdbMovieRuntimeById(key, exactMatches.first())
+        }.getOrNull()
+    }
+
+    private fun fetchTmdbMovieRuntimeById(apiKey: String, tmdbId: Long): Int? {
+        val url = "$normalizedBase/movie/$tmdbId".toHttpUrl().newBuilder()
+            .addQueryParameter("api_key", apiKey)
+            .build()
+        val detail = JSONObject(executeGet(url.toString()))
+        if (detail.isNull("runtime")) return null
+        return detail.optInt("runtime", 0).takeIf { it in 1..600 }
+    }
+
+    private fun normalizeTitleForMatch(raw: String): String =
+        raw.trim().lowercase()
+            .replace(Regex("""[^a-z0-9\s]"""), " ")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+
     override suspend fun resolvePlaybackSources(
         titleId: String,
         seasonNumber: Int?,
