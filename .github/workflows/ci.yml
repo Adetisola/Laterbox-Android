@@ -32,9 +32,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.m2/repository/org/robolectric/android-all
+            ~/.m2/repository/org/robolectric
             ~/.cache/robolectric
-          key: robolectric-${{ runner.os }}-sdk34
+          key: robolectric-${{ runner.os }}-sdk34-v2
           restore-keys: |
             robolectric-${{ runner.os }}-
 

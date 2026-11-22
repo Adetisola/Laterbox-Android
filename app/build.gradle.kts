@@ -149,6 +149,15 @@ android {
     testOptions {
         unitTests {
             isIncludeAndroidResources = true
+            all {
+                val repoUrl =
+                    System.getProperty("robolectric.dependency.repo.url")
+                        ?.takeIf { value -> value.isNotBlank() }
+                        ?: System.getenv("ROBOLECTRIC_DEPENDENCY_REPO_URL")
+                            ?.takeIf { value -> value.isNotBlank() }
+                        ?: "https://maven-central.storage-download.googleapis.com/maven2"
+                it.systemProperty("robolectric.dependency.repo.url", repoUrl)
+            }
         }
     }
 
