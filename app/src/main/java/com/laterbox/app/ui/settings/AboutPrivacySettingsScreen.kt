@@ -45,7 +45,8 @@ fun AboutPrivacySettingsScreen(
     localMetrics: LocalLibraryMetrics? = null,
     onResetActivityCounters: (() -> Unit)? = null,
     analyticsEnabled: Boolean = true,
-    onAnalyticsEnabledChange: ((Boolean) -> Unit)? = null
+    onAnalyticsEnabledChange: ((Boolean) -> Unit)? = null,
+    onResetAnalyticsInstallId: (() -> Unit)? = null,
 ) {
     val colors = LaterboxTheme.colors
     val spacing = LaterboxTheme.spacing
@@ -76,7 +77,8 @@ fun AboutPrivacySettingsScreen(
                 localMetrics = localMetrics,
                 onResetActivityCounters = onResetActivityCounters,
                 analyticsEnabled = analyticsEnabled,
-                onAnalyticsEnabledChange = onAnalyticsEnabledChange
+                onAnalyticsEnabledChange = onAnalyticsEnabledChange,
+                onResetAnalyticsInstallId = onResetAnalyticsInstallId,
             )
 
             Spacer(modifier = Modifier.height(80.dp))
@@ -95,14 +97,17 @@ fun AboutLaterboxSection(
     onResetActivityCounters: (() -> Unit)? = null,
     analyticsEnabled: Boolean = true,
     onAnalyticsEnabledChange: ((Boolean) -> Unit)? = null,
+    onResetAnalyticsInstallId: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
     val spacing = LaterboxTheme.spacing
 
     var showLicensesDialog by remember { mutableStateOf(false) }
     var showResetMetricsDialog by remember { mutableStateOf(false) }
+    var showPrivacyRightsDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = modifier
@@ -118,7 +123,7 @@ fun AboutLaterboxSection(
                     color = colors.textPrimary
                 )
                 Text(
-                    text = "A calm, local-first space for your saved links, notes, collections, and offline media. Your library stays on your device with no accounts, no ads, and no personal profiling.",
+                    text = "A calm, local-first space for your saved links, notes, collections, and offline media. Your saved library stays on your device with no user accounts, no advertising SDKs, and no third-party ad tracking.",
                     style = typography.bodySecondary,
                     color = colors.textSecondary
                 )
@@ -126,48 +131,55 @@ fun AboutLaterboxSection(
                 Spacer(modifier = Modifier.height(spacing.xs))
 
                 Text(
-                    text = "Privacy & Third-Party Services Notice",
+                    text = "Built-In Product & Reliability Analytics & Third-Party Services",
                     style = typography.uiMedium,
                     color = colors.textPrimary
                 )
                 Text(
-                    text = "• Saved Links & Previews: When you save a link, Laterbox loads page details directly from that website. For public social posts that block standard previews, a public preview lookup service may be used without sending any personal data.\n" +
-                           "• Media & Streaming: Videos, audio, and subtitles you choose to play or download are fetched directly over your connection.\n" +
-                           "• Optional AI Assistant: When you chat with Laterbox Assistant, your prompt and bounded library context are routed through Laterbox's backend to Google Gemini (with optional Google Search grounding for outside facts). Downloaded files and personal identifiers are never sent.\n" +
-                           "• Anonymous Usage Analytics (Opt-Out Anytime): By default, Laterbox sends lightweight anonymous app-usage signals (random install/session IDs, app version, high-level screen/feature counts — never titles, prompts, search queries, filenames, or personal data) to help measure stability and active adoption.",
+                    text = "• Built-In Product Analytics: Laterbox includes built-in, default-enabled operational and usage analytics using a random app-generated installation ID, ephemeral session IDs, app version, high-level screen/feature activity, categorized reliability errors, and performance timings (retained briefly for ~45 days). Laterbox never collects link titles, search queries, AI prompts, downloaded file names, or personal contacts.\n" +
+                           "• Saved Links & Previews: When you save a link, Laterbox loads page details directly from that website, or uses a public preview lookup for social links.\n" +
+                           "• Media & Streaming: Videos, audio, and subtitles you choose to play or download are retrieved over your network connection.\n" +
+                           "• Optional AI Assistant: Prompts and bounded library context you submit to Laterbox Assistant are processed via Laterbox's backend through Google Gemini.",
                     style = typography.bodySecondary,
                     color = colors.textSecondary
                 )
 
-                if (onAnalyticsEnabledChange != null) {
-                    SettingsDivider()
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-                            Text(
-                                text = "Anonymous Usage Analytics",
-                                style = typography.uiMedium,
-                                color = colors.textPrimary
+                Spacer(modifier = Modifier.height(spacing.xs))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(spacing.sm)
+                ) {
+                    LaterboxSecondaryButton(
+                        text = "Privacy Policy",
+                        onClick = {
+                            com.laterbox.app.ui.util.BrowserLauncher.openUrl(
+                                context,
+                                "https://laterbox-website.vercel.app/privacy",
+                                colors,
                             )
-                            Text(
-                                text = "Shares anonymous screen/feature counts and session heartbeats only. Zero titles, queries, or personal info.",
-                                style = typography.metaText,
-                                color = colors.textSecondary
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+                    LaterboxSecondaryButton(
+                        text = "Terms & Conditions",
+                        onClick = {
+                            com.laterbox.app.ui.util.BrowserLauncher.openUrl(
+                                context,
+                                "https://laterbox-website.vercel.app/terms",
+                                colors,
                             )
-                        }
-                        androidx.compose.material3.Switch(
-                            checked = analyticsEnabled,
-                            onCheckedChange = onAnalyticsEnabledChange,
-                            modifier = Modifier.testTag("settings_analytics_toggle"),
-                            colors = androidx.compose.material3.SwitchDefaults.colors(
-                                checkedThumbColor = colors.surfaceElevated,
-                                checkedTrackColor = colors.accentPrimary
-                            )
-                        )
-                    }
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                if (onAnalyticsEnabledChange != null || onResetAnalyticsInstallId != null) {
+                    LaterboxSecondaryButton(
+                        text = "Privacy & Data Rights",
+                        onClick = { showPrivacyRightsDialog = true },
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(spacing.xs))
@@ -194,7 +206,7 @@ fun AboutLaterboxSection(
             SettingsCard {
                 Column(verticalArrangement = Arrangement.spacedBy(spacing.sm)) {
                     Text(
-                        text = "Computed locally on your device. No usage telemetry leaves your phone.",
+                        text = "Library totals, reading progress, and capture counts shown below are calculated locally on your device.",
                         style = typography.bodySecondary,
                         color = colors.textSecondary
                     )
@@ -309,6 +321,91 @@ fun AboutLaterboxSection(
                 ) {
                     Text(
                         text = "Reset",
+                        style = typography.uiMedium,
+                        color = colors.accentPrimary
+                    )
+                }
+            }
+        )
+    }
+
+    // Privacy & Data Rights Dialog (secondary control surface)
+    if (showPrivacyRightsDialog) {
+        AlertDialog(
+            onDismissRequest = { showPrivacyRightsDialog = false },
+            containerColor = colors.surfaceElevated,
+            modifier = Modifier.testTag("settings_analytics_privacy_dialog"),
+            title = {
+                Text(
+                    text = "Privacy & Data Rights",
+                    style = typography.titleSmall,
+                    color = colors.textPrimary
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(spacing.sm)
+                ) {
+                    Text(
+                        text = "Standard product and reliability analytics are built into Laterbox using pseudonymous installation and session identifiers so we can measure stability, troubleshoot crashes, and improve features.",
+                        style = typography.bodySecondary,
+                        color = colors.textSecondary
+                    )
+                    if (onAnalyticsEnabledChange != null) {
+                        SettingsDivider()
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                Text(
+                                    text = "Product & Reliability Analytics",
+                                    style = typography.uiMedium,
+                                    color = colors.textPrimary
+                                )
+                                Text(
+                                    text = if (analyticsEnabled) {
+                                        "Active on this device"
+                                    } else {
+                                        "Paused on this device by your privacy preference"
+                                    },
+                                    style = typography.metaText,
+                                    color = colors.textSecondary
+                                )
+                            }
+                            androidx.compose.material3.Switch(
+                                checked = analyticsEnabled,
+                                onCheckedChange = onAnalyticsEnabledChange,
+                                modifier = Modifier.testTag("settings_analytics_toggle"),
+                                colors = androidx.compose.material3.SwitchDefaults.colors(
+                                    checkedThumbColor = colors.surfaceElevated,
+                                    checkedTrackColor = colors.accentPrimary
+                                )
+                            )
+                        }
+                    }
+                    if (onResetAnalyticsInstallId != null) {
+                        LaterboxSecondaryButton(
+                            text = "Reset Installation Identifier",
+                            onClick = {
+                                onResetAnalyticsInstallId()
+                                android.widget.Toast.makeText(
+                                    context,
+                                    "Installation identifier rotated",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showPrivacyRightsDialog = false }) {
+                    Text(
+                        text = "Done",
                         style = typography.uiMedium,
                         color = colors.accentPrimary
                     )

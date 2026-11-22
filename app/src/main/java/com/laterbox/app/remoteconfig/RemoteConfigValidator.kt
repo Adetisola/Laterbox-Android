@@ -69,10 +69,20 @@ object RemoteConfigValidator {
         )
 
         val vpObj = root.optJSONObject("versionPolicy")
+        val rawEnforcementEnabled = vpObj?.optBoolean("enforcementEnabled", false) ?: false
+        val rawMode = vpObj?.optString("enforcementMode", "")?.trim()?.lowercase().orEmpty()
+        val resolvedMode = when (rawMode) {
+            RemoteVersionPolicy.MODE_ENFORCE -> RemoteVersionPolicy.MODE_ENFORCE
+            RemoteVersionPolicy.MODE_MONITOR -> RemoteVersionPolicy.MODE_MONITOR
+            RemoteVersionPolicy.MODE_DISABLED -> RemoteVersionPolicy.MODE_DISABLED
+            else -> if (rawEnforcementEnabled) RemoteVersionPolicy.MODE_ENFORCE else RemoteVersionPolicy.MODE_DISABLED
+        }
         val versionPolicy = RemoteVersionPolicy(
             minimumSupportedVersionCode = (vpObj?.optInt("minimumSupportedVersionCode", 0) ?: 0).coerceIn(0, 1_000_000),
             recommendedVersionCode = (vpObj?.optInt("recommendedVersionCode", 0) ?: 0).coerceIn(0, 1_000_000),
-            enforcementEnabled = vpObj?.optBoolean("enforcementEnabled", false) ?: false,
+            enforcementEnabled = resolvedMode == RemoteVersionPolicy.MODE_ENFORCE,
+            enforcementMode = resolvedMode,
+            minimumSupportedTag = sanitizePlainText(vpObj?.optString("minimumSupportedTag", "") ?: "", 32),
             recommendedTag = sanitizePlainText(vpObj?.optString("recommendedTag", "") ?: "", 32),
             updateMessage = sanitizePlainText(vpObj?.optString("updateMessage", "") ?: "", 500),
         )
@@ -133,6 +143,10 @@ object RemoteConfigValidator {
 
         val sortedComponents = componentList.sortedBy { it.order }
 
+        val analyticsObj = root.optJSONObject("analytics")
+        val analyticsCollectionEnabled = analyticsObj?.optBoolean("collectionEnabled", true) ?: true
+        val analyticsPausedReason = sanitizePlainText(analyticsObj?.optString("pausedReason", "") ?: "", 240)
+
         return RemoteConfigParseResult.Valid(
             RemoteConfigSnapshot(
                 schemaVersion = schemaVersion,
@@ -148,6 +162,8 @@ object RemoteConfigValidator {
                 announcements = announcementsList,
                 features = featuresMap.toMap(),
                 ui = RemoteUiConfiguration(components = sortedComponents),
+                analyticsCollectionEnabled = analyticsCollectionEnabled,
+                analyticsPausedReason = analyticsPausedReason,
             )
         )
     }
@@ -194,7 +210,9 @@ object RemoteConfigValidator {
         val vp = JSONObject()
         vp.put("minimumSupportedVersionCode", snapshot.versionPolicy.minimumSupportedVersionCode)
         vp.put("recommendedVersionCode", snapshot.versionPolicy.recommendedVersionCode)
-        vp.put("enforcementEnabled", snapshot.versionPolicy.enforcementEnabled)
+        vp.put("enforcementEnabled", snapshot.versionPolicy.isEnforceModeActive)
+        vp.put("enforcementMode", snapshot.versionPolicy.normalizedEnforcementMode)
+        vp.put("minimumSupportedTag", snapshot.versionPolicy.minimumSupportedTag)
         vp.put("recommendedTag", snapshot.versionPolicy.recommendedTag)
         vp.put("updateMessage", snapshot.versionPolicy.updateMessage)
         root.put("versionPolicy", vp)
@@ -240,6 +258,11 @@ object RemoteConfigValidator {
             featuresObj.put(k, v)
         }
         root.put("features", featuresObj)
+
+        val analyticsObj = JSONObject()
+        analyticsObj.put("collectionEnabled", snapshot.analyticsCollectionEnabled)
+        analyticsObj.put("pausedReason", snapshot.analyticsPausedReason)
+        root.put("analytics", analyticsObj)
 
         val compsArr = JSONArray()
         snapshot.ui.components.forEach { comp ->

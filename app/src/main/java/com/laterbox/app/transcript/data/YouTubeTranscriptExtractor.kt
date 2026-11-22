@@ -124,6 +124,9 @@ class YouTubeTranscriptExtractor(
         baseInterVideoDelayMs = playlistInterVideoDelayMs.coerceAtLeast(0L)
     ),
     private val isOnlineServicesPaused: () -> Boolean = { false },
+    private val onTranscriptFeatureUsed: (() -> Unit)? = null,
+    private val onPerformanceMetric: ((String, Int) -> Unit)? = null,
+    private val onErrorObserved: ((String) -> Unit)? = null,
 ) {
     private val tag = "YTTranscriptExtractor"
 
@@ -137,7 +140,9 @@ class YouTubeTranscriptExtractor(
             onProgress(TranscriptExtractionProgress(stage = TranscriptExtractionStage.FAILED, message = msg))
             return@withContext TranscriptExtractionOutcome.Failed(msg)
         }
-        val processRoot = "transcript_${clock()}_${UUID.randomUUID().toString().take(6)}"
+        runCatching { onTranscriptFeatureUsed?.invoke() }
+        val startMs = clock()
+        val processRoot = "transcript_${startMs}_${UUID.randomUUID().toString().take(6)}"
 
         onProgress(
             TranscriptExtractionProgress(
@@ -147,7 +152,7 @@ class YouTubeTranscriptExtractor(
         )
 
         val target = YouTubeUrlParser.parse(rawUrl)
-        when (target) {
+        val outcome = when (target) {
             is YouTubeUrlTarget.Invalid -> {
                 onProgress(
                     TranscriptExtractionProgress(
@@ -200,6 +205,12 @@ class YouTubeTranscriptExtractor(
                 }
             }
         }
+        val elapsedMs = (clock() - startMs).coerceIn(0L, 600_000L).toInt()
+        when (outcome) {
+            is TranscriptExtractionOutcome.Failed -> runCatching { onErrorObserved?.invoke("transcript_extraction_failed") }
+            else -> runCatching { onPerformanceMetric?.invoke("transcript_extract_ms", elapsedMs) }
+        }
+        outcome
     }
 
     /**

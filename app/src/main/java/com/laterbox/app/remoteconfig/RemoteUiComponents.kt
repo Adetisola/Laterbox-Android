@@ -496,14 +496,24 @@ fun RemoteMaintenanceNoticeBanner(
 
 @Composable
 fun RemoteForcedUpdateDialog(
-    versionPolicy: RemoteVersionPolicy,
+    blockState: VersionEnforcementBlockState,
+    isCheckingUpdate: Boolean = false,
     onUpdateNow: () -> Unit,
 ) {
     val colors = LaterboxTheme.colors
-    val tagNote = versionPolicy.recommendedTag.takeIf { it.isNotBlank() }?.let { " ($it)" }.orEmpty()
-    val body = versionPolicy.updateMessage.ifBlank {
-        "This version of Laterbox is no longer supported$tagNote. Please update to continue using Laterbox."
+    val targetLabel = blockState.latestStableTag.takeIf { it.isNotBlank() }
+        ?.let { " ($it)" }
+        ?: blockState.minimumSupportedTag.takeIf { it.isNotBlank() }?.let { " ($it+)" }
+        ?: ""
+    val minLabel = blockState.minimumSupportedTag.takeIf { it.isNotBlank() }
+        ?: blockState.minimumSupportedVersion.takeIf { it.isNotBlank() }?.let { "v$it" }
+        ?: if (blockState.minimumSupportedVersionCode > 0) "build ${blockState.minimumSupportedVersionCode}" else ""
+    val defaultMsg = if (minLabel.isNotBlank()) {
+        "This version of Laterbox is below the minimum supported release ($minLabel). Update to continue using online services."
+    } else {
+        "This version of Laterbox is no longer supported$targetLabel. Please update to continue using online services."
     }
+    val body = blockState.message.ifBlank { defaultMsg }
 
     AlertDialog(
         onDismissRequest = {},
@@ -514,7 +524,7 @@ fun RemoteForcedUpdateDialog(
         containerColor = colors.surfacePrimary,
         title = {
             Text(
-                text = "Update Required$tagNote",
+                text = "Update Required$targetLabel",
                 color = colors.textPrimary,
                 fontWeight = FontWeight.SemiBold,
             )
@@ -528,13 +538,31 @@ fun RemoteForcedUpdateDialog(
         confirmButton = {
             Button(
                 onClick = onUpdateNow,
+                enabled = !isCheckingUpdate,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = colors.accentPrimary,
                     contentColor = androidx.compose.ui.graphics.Color.White,
                 )
             ) {
-                Text("Update Now")
+                Text(if (isCheckingUpdate) "Checking..." else "Update Now")
             }
         }
+    )
+}
+
+@Composable
+fun RemoteForcedUpdateDialog(
+    versionPolicy: RemoteVersionPolicy,
+    onUpdateNow: () -> Unit,
+) {
+    RemoteForcedUpdateDialog(
+        blockState = VersionEnforcementBlockState(
+            minimumSupportedVersionCode = versionPolicy.minimumSupportedVersionCode,
+            minimumSupportedTag = versionPolicy.minimumSupportedTag,
+            latestStableTag = versionPolicy.recommendedTag,
+            message = versionPolicy.updateMessage,
+        ),
+        isCheckingUpdate = false,
+        onUpdateNow = onUpdateNow,
     )
 }

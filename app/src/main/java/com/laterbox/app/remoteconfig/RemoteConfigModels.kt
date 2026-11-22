@@ -68,9 +68,28 @@ data class RemoteVersionPolicy(
     val minimumSupportedVersionCode: Int = 0,
     val recommendedVersionCode: Int = 0,
     val enforcementEnabled: Boolean = false,
+    val enforcementMode: String = "",
+    val minimumSupportedTag: String = "",
     val recommendedTag: String = "",
     val updateMessage: String = "",
-)
+) {
+    val normalizedEnforcementMode: String
+        get() = when (enforcementMode.trim().lowercase()) {
+            MODE_ENFORCE -> MODE_ENFORCE
+            MODE_MONITOR -> MODE_MONITOR
+            MODE_DISABLED -> MODE_DISABLED
+            else -> if (enforcementEnabled) MODE_ENFORCE else MODE_DISABLED
+        }
+
+    val isEnforceModeActive: Boolean
+        get() = normalizedEnforcementMode == MODE_ENFORCE
+
+    companion object {
+        const val MODE_DISABLED = "disabled"
+        const val MODE_MONITOR = "monitor"
+        const val MODE_ENFORCE = "enforce"
+    }
+}
 
 data class RemoteMaintenanceConfig(
     val enabled: Boolean = false,
@@ -162,6 +181,8 @@ data class RemoteConfigSnapshot(
     val announcements: List<RemoteAnnouncementItem> = emptyList(),
     val features: Map<String, Boolean> = RemoteCapabilities.DEFAULT_FEATURES,
     val ui: RemoteUiConfiguration = RemoteUiConfiguration(),
+    val analyticsCollectionEnabled: Boolean = true,
+    val analyticsPausedReason: String = "",
 ) {
     fun isFeatureEnabled(featureKey: String, defaultValue: Boolean = true): Boolean {
         if (featureKey !in RemoteCapabilities.SUPPORTED_FEATURE_KEYS) {

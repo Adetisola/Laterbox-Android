@@ -37,7 +37,8 @@ class MediaRepositoryImpl(
     private val taskDao: DownloadTaskDao,
     private val storageManager: MediaStorageManager = MediaStorageManager(context),
     private val inspectionManager: MediaInspectionManager? = null,
-    private val subtitleDownloadManager: com.laterbox.app.movies.data.download.SubtitleDownloadManager? = null
+    private val subtitleDownloadManager: com.laterbox.app.movies.data.download.SubtitleDownloadManager? = null,
+    private val onDownloadStarted: (() -> Unit)? = null,
 ) : MediaRepository {
 
     override fun getAssetsForLink(linkId: Long): Flow<List<MediaAsset>> {
@@ -203,6 +204,7 @@ class MediaRepositoryImpl(
 
         taskDao.insertTask(taskEntity)
         enqueueWorkManagerTask(taskId, allowCellular = false)
+        runCatching { onDownloadStarted?.invoke() }
         taskId
     }
 

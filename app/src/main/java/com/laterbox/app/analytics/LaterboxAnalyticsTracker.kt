@@ -8,12 +8,15 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -30,7 +33,9 @@ object LaterboxAnalyticsSchema {
         "app_session_ended",
         "screen_viewed",
         "feature_used",
-        "application_version_seen"
+        "application_version_seen",
+        "app_error_observed",
+        "performance_metric",
     )
 
     val ALLOWED_SCREEN_IDS = setOf(
@@ -44,7 +49,7 @@ object LaterboxAnalyticsSchema {
         "notifications",
         "movie_detail",
         "player",
-        "collection_detail"
+        "collection_detail",
     )
 
     val ALLOWED_FEATURE_IDS = setOf(
@@ -56,7 +61,28 @@ object LaterboxAnalyticsSchema {
         "media_share",
         "deep_link_open",
         "pip_playback",
-        "mini_player"
+        "mini_player",
+    )
+
+    val ALLOWED_ERROR_CATEGORIES = setOf(
+        "network_timeout",
+        "http_error",
+        "stream_resolution_failed",
+        "download_failed",
+        "playback_error",
+        "transcript_extraction_failed",
+        "ai_request_failed",
+        "backup_failed",
+        "unexpected_error",
+    )
+
+    val ALLOWED_PERFORMANCE_METRICS = setOf(
+        "app_startup_ms",
+        "media_inspection_ms",
+        "stream_resolve_ms",
+        "transcript_extract_ms",
+        "ai_first_token_ms",
+        "config_fetch_ms",
     )
 
     const val MAX_QUEUE_SIZE = 200
@@ -91,8 +117,12 @@ data class AnalyticsEventRecord(
     val manifestRevision: String,
     val screenId: String? = null,
     val featureId: String? = null,
+    val errorCategory: String? = null,
+    val httpStatus: Int? = null,
+    val metricName: String? = null,
+    val metricValueMs: Int? = null,
     val timestampMs: Long,
-    val isOfflineReplay: Boolean = false
+    val isOfflineReplay: Boolean = false,
 ) {
     fun toJson(overrideOfflineReplay: Boolean = isOfflineReplay): JSONObject = JSONObject().apply {
         put("eventId", eventId)
@@ -104,6 +134,10 @@ data class AnalyticsEventRecord(
         put("manifestRevision", manifestRevision)
         if (screenId != null) put("screenId", screenId)
         if (featureId != null) put("featureId", featureId)
+        if (errorCategory != null) put("errorCategory", errorCategory)
+        if (httpStatus != null) put("httpStatus", httpStatus)
+        if (metricName != null) put("metricName", metricName)
+        if (metricValueMs != null) put("metricValueMs", metricValueMs)
         put("timestampMs", timestampMs)
         put("isOfflineReplay", overrideOfflineReplay)
     }
@@ -123,6 +157,25 @@ data class AnalyticsEventRecord(
             val featureId = obj.optString("featureId", "").trim().takeIf { it.isNotEmpty() }
             if (featureId != null && featureId !in LaterboxAnalyticsSchema.ALLOWED_FEATURE_IDS) return null
 
+            val errorCategory = obj.optString("errorCategory", "").trim().takeIf { it.isNotEmpty() }
+            if (errorCategory != null && errorCategory !in LaterboxAnalyticsSchema.ALLOWED_ERROR_CATEGORIES) return null
+
+            val httpStatus = if (obj.has("httpStatus") && !obj.isNull("httpStatus")) {
+                obj.optInt("httpStatus", -1).takeIf { it in 100..599 } ?: return null
+            } else null
+
+            val metricName = obj.optString("metricName", "").trim().takeIf { it.isNotEmpty() }
+            if (metricName != null && metricName !in LaterboxAnalyticsSchema.ALLOWED_PERFORMANCE_METRICS) return null
+
+            val metricValueMs = if (obj.has("metricValueMs") && !obj.isNull("metricValueMs")) {
+                obj.optInt("metricValueMs", -1).takeIf { it in 0..600_000 } ?: return null
+            } else null
+
+            if (eventType == "screen_viewed" && screenId == null) return null
+            if (eventType == "feature_used" && featureId == null) return null
+            if (eventType == "app_error_observed" && errorCategory == null) return null
+            if (eventType == "performance_metric" && (metricName == null || metricValueMs == null)) return null
+
             val versionCode = obj.optInt("versionCode", 0)
             val versionName = obj.optString("versionName", "").trim()
             val timestampMs = obj.optLong("timestampMs", 0L)
@@ -138,8 +191,12 @@ data class AnalyticsEventRecord(
                 manifestRevision = obj.optString("manifestRevision", ""),
                 screenId = screenId,
                 featureId = featureId,
+                errorCategory = errorCategory,
+                httpStatus = httpStatus,
+                metricName = metricName,
+                metricValueMs = metricValueMs,
                 timestampMs = timestampMs,
-                isOfflineReplay = obj.optBoolean("isOfflineReplay", false)
+                isOfflineReplay = obj.optBoolean("isOfflineReplay", false),
             )
         }
     }
@@ -150,14 +207,24 @@ class LaterboxAnalyticsTracker(
     private val userPreferencesRepository: UserPreferencesRepository,
     private val okHttpClient: OkHttpClient,
     private val baseUrlProvider: suspend () -> String,
-    private val appCheckTokenProvider: suspend (forceRefresh: Boolean) -> String?
+    private val appCheckTokenProvider: suspend (forceRefresh: Boolean) -> String?,
+    private val remoteCollectionEnabledProvider: (() -> Boolean)? = null,
+    private val remoteCollectionFlow: StateFlow<Boolean>? = null,
 ) {
     private val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val queueMutex = Mutex()
+    private val flushMutex = Mutex()
+
+    // Synchronous mirror starts built-in default-enabled unless a historical explicit opt-out is stored
+    @Volatile
+    private var userEnabled: Boolean = !prefs.getBoolean(KEY_USER_OPTED_OUT, false)
 
     @Volatile
-    private var enabled = false
+    private var remoteCollectionEnabled: Boolean = remoteCollectionEnabledProvider?.invoke() ?: true
+
+    @Volatile
+    private var serverPausedUntilMs: Long = 0L
 
     private val initialPrefsReady = kotlinx.coroutines.CompletableDeferred<Unit>()
 
@@ -169,26 +236,50 @@ class LaterboxAnalyticsTracker(
 
     private var heartbeatJob: Job? = null
 
+    private val enabled: Boolean
+        get() = userEnabled &&
+            remoteCollectionEnabled &&
+            (remoteCollectionEnabledProvider?.invoke() ?: true) &&
+            System.currentTimeMillis() >= serverPausedUntilMs
+
+    private sealed interface DispatchResult {
+        data class Accepted(val pausedByServer: Boolean = false) : DispatchResult
+        data object DropPermanent : DispatchResult
+        data object RetryLater : DispatchResult
+    }
+
     init {
         scope.launch {
             try {
                 userPreferencesRepository.userPreferencesFlow.collect { userPrefs ->
-                    val wasEnabled = enabled
-                    enabled = userPrefs.analyticsEnabled
+                    val wasUserEnabled = userEnabled
+                    userEnabled = userPrefs.analyticsEnabled
+                    prefs.edit().putBoolean(KEY_USER_OPTED_OUT, !userEnabled).apply()
                     if (!initialPrefsReady.isCompleted) {
                         initialPrefsReady.complete(Unit)
                     }
-                    if (!enabled && wasEnabled) {
+                    if (!userEnabled && wasUserEnabled) {
                         heartbeatJob?.cancel()
                         heartbeatJob = null
                         clearQueuedEvents()
-                    } else if (!enabled) {
+                    } else if (!userEnabled) {
                         clearQueuedEvents()
                     }
                 }
             } finally {
                 if (!initialPrefsReady.isCompleted) {
                     initialPrefsReady.complete(Unit)
+                }
+            }
+        }
+        if (remoteCollectionFlow != null) {
+            scope.launch {
+                remoteCollectionFlow.collect { allowed ->
+                    remoteCollectionEnabled = allowed
+                    if (!allowed) {
+                        heartbeatJob?.cancel()
+                        heartbeatJob = null
+                    }
                 }
             }
         }
@@ -201,6 +292,17 @@ class LaterboxAnalyticsTracker(
         }
         val fresh = UUID.randomUUID().toString()
         prefs.edit().putString(KEY_INSTALL_ID, fresh).apply()
+        return fresh
+    }
+
+    /**
+     * Generates a fresh pseudonymous installation identifier so users exercising privacy rights can rotate their ID
+     * locally without transmitting any personal information.
+     */
+    fun resetInstallId(): String {
+        val fresh = UUID.randomUUID().toString()
+        prefs.edit().putString(KEY_INSTALL_ID, fresh).apply()
+        scope.launch { clearQueuedEvents() }
         return fresh
     }
 
@@ -224,7 +326,12 @@ class LaterboxAnalyticsTracker(
         scope.launch {
             initialPrefsReady.await()
             if (!enabled) return@launch
-            recordAndDispatchUnlocked("app_session_ended", sessionId = sessionIdSnapshot, flushImmediately = true)
+            withContext(NonCancellable) {
+                val record = createRecord("app_session_ended", sessionId = sessionIdSnapshot)
+                // Enqueue first so abrupt process freeze never loses session-ended signal; immediate dispatch drains it cleanly
+                enqueueOffline(record)
+                flushOfflineQueue()
+            }
         }
     }
 
@@ -257,50 +364,135 @@ class LaterboxAnalyticsTracker(
         }
     }
 
+    fun trackErrorObserved(
+        errorCategory: String,
+        httpStatus: Int? = null,
+        screenId: String? = null,
+        featureId: String? = null,
+    ) {
+        val cleanCat = errorCategory.trim().lowercase()
+        if (cleanCat !in LaterboxAnalyticsSchema.ALLOWED_ERROR_CATEGORIES) return
+        val safeHttp = httpStatus?.takeIf { it in 100..599 }
+        val safeScreen = screenId?.trim()?.lowercase()?.takeIf { it in LaterboxAnalyticsSchema.ALLOWED_SCREEN_IDS }
+        val safeFeature = featureId?.trim()?.lowercase()?.takeIf { it in LaterboxAnalyticsSchema.ALLOWED_FEATURE_IDS }
+        val sessionIdSnapshot = currentSessionId
+        scope.launch {
+            initialPrefsReady.await()
+            if (!enabled) return@launch
+            recordAndDispatchUnlocked(
+                eventType = "app_error_observed",
+                sessionId = sessionIdSnapshot,
+                screenId = safeScreen,
+                featureId = safeFeature,
+                errorCategory = cleanCat,
+                httpStatus = safeHttp,
+            )
+        }
+    }
+
+    fun trackPerformanceMetric(
+        metricName: String,
+        metricValueMs: Int,
+        screenId: String? = null,
+        featureId: String? = null,
+    ) {
+        val cleanMetric = metricName.trim().lowercase()
+        if (cleanMetric !in LaterboxAnalyticsSchema.ALLOWED_PERFORMANCE_METRICS) return
+        val boundedMs = metricValueMs.coerceIn(0, 600_000)
+        val safeScreen = screenId?.trim()?.lowercase()?.takeIf { it in LaterboxAnalyticsSchema.ALLOWED_SCREEN_IDS }
+        val safeFeature = featureId?.trim()?.lowercase()?.takeIf { it in LaterboxAnalyticsSchema.ALLOWED_FEATURE_IDS }
+        val sessionIdSnapshot = currentSessionId
+        scope.launch {
+            initialPrefsReady.await()
+            if (!enabled) return@launch
+            recordAndDispatchUnlocked(
+                eventType = "performance_metric",
+                sessionId = sessionIdSnapshot,
+                screenId = safeScreen,
+                featureId = safeFeature,
+                metricName = cleanMetric,
+                metricValueMs = boundedMs,
+            )
+        }
+    }
+
     private fun startHeartbeatLoop() {
         heartbeatJob?.cancel()
         heartbeatJob = scope.launch {
             initialPrefsReady.await()
-            while (isActive && enabled) {
+            while (isActive && userEnabled) {
                 delay(LaterboxAnalyticsSchema.HEARTBEAT_INTERVAL_MS)
-                if (!enabled) break
-                recordAndDispatchUnlocked("app_session_heartbeat", sessionId = currentSessionId, flushImmediately = true)
+                if (!userEnabled) break
+                if (enabled) {
+                    recordAndDispatchUnlocked("app_session_heartbeat", sessionId = currentSessionId, flushImmediately = true)
+                }
             }
         }
     }
+
+    private fun createRecord(
+        eventType: String,
+        sessionId: String = currentSessionId,
+        screenId: String? = null,
+        featureId: String? = null,
+        errorCategory: String? = null,
+        httpStatus: Int? = null,
+        metricName: String? = null,
+        metricValueMs: Int? = null,
+    ): AnalyticsEventRecord = AnalyticsEventRecord(
+        eventId = UUID.randomUUID().toString(),
+        eventType = eventType,
+        installId = getOrCreateInstallId(),
+        sessionId = sessionId,
+        versionCode = BuildConfig.VERSION_CODE,
+        versionName = BuildConfig.VERSION_NAME,
+        manifestRevision = AppCapabilityRegistry.MANIFEST_REVISION,
+        screenId = screenId,
+        featureId = featureId,
+        errorCategory = errorCategory,
+        httpStatus = httpStatus,
+        metricName = metricName,
+        metricValueMs = metricValueMs,
+        timestampMs = System.currentTimeMillis(),
+        isOfflineReplay = false,
+    )
 
     private suspend fun recordAndDispatchUnlocked(
         eventType: String,
         sessionId: String = currentSessionId,
         screenId: String? = null,
         featureId: String? = null,
-        flushImmediately: Boolean = true
+        errorCategory: String? = null,
+        httpStatus: Int? = null,
+        metricName: String? = null,
+        metricValueMs: Int? = null,
+        flushImmediately: Boolean = true,
     ) {
         if (!enabled) return
         if (eventType !in LaterboxAnalyticsSchema.ALLOWED_EVENT_TYPES) return
-        val record = AnalyticsEventRecord(
-            eventId = UUID.randomUUID().toString(),
+        val record = createRecord(
             eventType = eventType,
-            installId = getOrCreateInstallId(),
             sessionId = sessionId,
-            versionCode = BuildConfig.VERSION_CODE,
-            versionName = BuildConfig.VERSION_NAME,
-            manifestRevision = AppCapabilityRegistry.MANIFEST_REVISION,
             screenId = screenId,
             featureId = featureId,
-            timestampMs = System.currentTimeMillis(),
-            isOfflineReplay = false
+            errorCategory = errorCategory,
+            httpStatus = httpStatus,
+            metricName = metricName,
+            metricValueMs = metricValueMs,
         )
-        val sent = if (flushImmediately) sendBatch(listOf(record), markQueuedAsReplay = false) else false
-        if (!sent) {
+        if (!flushImmediately) {
             enqueueOffline(record)
-        } else {
-            flushOfflineQueue()
+            return
+        }
+        when (sendBatch(listOf(record), markQueuedAsReplay = false)) {
+            is DispatchResult.Accepted -> flushOfflineQueue()
+            DispatchResult.DropPermanent -> Unit
+            DispatchResult.RetryLater -> enqueueOffline(record)
         }
     }
 
     private suspend fun enqueueOffline(record: AnalyticsEventRecord) = queueMutex.withLock {
-        if (!enabled) return@withLock
+        if (!userEnabled) return@withLock
         val list = loadQueueUnlocked().toMutableList()
         list.add(record.copy(isOfflineReplay = true))
         while (list.size > LaterboxAnalyticsSchema.MAX_QUEUE_SIZE) {
@@ -313,17 +505,35 @@ class LaterboxAnalyticsTracker(
         prefs.edit().remove(KEY_OFFLINE_QUEUE).apply()
     }
 
-    private suspend fun flushOfflineQueue() {
-        val batch = queueMutex.withLock {
-            loadQueueUnlocked().take(25)
-        }
-        if (batch.isEmpty()) return
-        val sent = sendBatch(batch, markQueuedAsReplay = true)
-        if (sent) {
-            val sentIds = batch.map { it.eventId }.toSet()
-            queueMutex.withLock {
-                val remaining = loadQueueUnlocked().filterNot { it.eventId in sentIds }
-                saveQueueUnlocked(remaining)
+    private suspend fun flushOfflineQueue() = flushMutex.withLock {
+        if (!enabled) return@withLock
+        while (enabled) {
+            val batch = queueMutex.withLock {
+                loadQueueUnlocked().take(25)
+            }
+            if (batch.isEmpty()) break
+            when (val result = sendBatch(batch, markQueuedAsReplay = true)) {
+                is DispatchResult.Accepted -> {
+                    if (result.pausedByServer) {
+                        // Do not drain queue on server-side pause if we intend to honor pause; server didn't ingest
+                        serverPausedUntilMs = System.currentTimeMillis() + SERVER_PAUSE_BACKOFF_MS
+                        break
+                    }
+                    val sentIds = batch.map { it.eventId }.toSet()
+                    queueMutex.withLock {
+                        val remaining = loadQueueUnlocked().filterNot { it.eventId in sentIds }
+                        saveQueueUnlocked(remaining)
+                    }
+                }
+                DispatchResult.DropPermanent -> {
+                    // Drop malformed/rejected 4xx batch so it never wedges newer analytics behind it
+                    val droppedIds = batch.map { it.eventId }.toSet()
+                    queueMutex.withLock {
+                        val remaining = loadQueueUnlocked().filterNot { it.eventId in droppedIds }
+                        saveQueueUnlocked(remaining)
+                    }
+                }
+                DispatchResult.RetryLater -> break
             }
         }
     }
@@ -351,11 +561,11 @@ class LaterboxAnalyticsTracker(
 
     private suspend fun sendBatch(
         events: List<AnalyticsEventRecord>,
-        markQueuedAsReplay: Boolean
-    ): Boolean {
-        if (events.isEmpty() || !enabled) return false
-        val baseUrl = runCatching { baseUrlProvider() }.getOrNull()?.trim()?.trimEnd('/') ?: return false
-        val parsedBase = baseUrl.toHttpUrlOrNull() ?: return false
+        markQueuedAsReplay: Boolean,
+    ): DispatchResult {
+        if (events.isEmpty() || !enabled) return DispatchResult.RetryLater
+        val baseUrl = runCatching { baseUrlProvider() }.getOrNull()?.trim()?.trimEnd('/') ?: return DispatchResult.RetryLater
+        val parsedBase = baseUrl.toHttpUrlOrNull() ?: return DispatchResult.RetryLater
         val url = parsedBase.newBuilder()
             .addPathSegments("analytics/v1/ingest")
             .build()
@@ -365,30 +575,54 @@ class LaterboxAnalyticsTracker(
         }
         val payload = JSONObject().put("events", eventsArray).toString()
 
-        val token = runCatching { appCheckTokenProvider(false) }.getOrNull()
-        val requestBuilder = Request.Builder()
-            .url(url)
-            .post(payload.toRequestBody(JSON_MEDIA_TYPE))
-            .header("Accept", "application/json")
-            .header("Content-Type", "application/json")
-        if (!token.isNullOrBlank()) {
-            requestBuilder.header("X-Firebase-AppCheck", token)
-        }
-        return try {
-            okHttpClient.newCall(requestBuilder.build()).execute().use { resp ->
-                resp.isSuccessful
+        var token = runCatching { appCheckTokenProvider(false) }.getOrNull()
+        for (attempt in 0..1) {
+            val requestBuilder = Request.Builder()
+                .url(url)
+                .post(payload.toRequestBody(JSON_MEDIA_TYPE))
+                .header("Accept", "application/json")
+                .header("Content-Type", "application/json")
+            if (!token.isNullOrBlank()) {
+                requestBuilder.header("X-Firebase-AppCheck", token)
             }
-        } catch (ce: CancellationException) {
-            throw ce
-        } catch (_: Throwable) {
-            false
+            try {
+                okHttpClient.newCall(requestBuilder.build()).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val raw = runCatching { resp.body?.string().orEmpty() }.getOrDefault("")
+                        val paused = raw.isNotBlank() &&
+                            runCatching { JSONObject(raw).optBoolean("paused", false) }.getOrDefault(false)
+                        if (paused) {
+                            serverPausedUntilMs = System.currentTimeMillis() + SERVER_PAUSE_BACKOFF_MS
+                        }
+                        return DispatchResult.Accepted(pausedByServer = paused)
+                    }
+                    if ((resp.code == 401 || resp.code == 403) && attempt == 0) {
+                        val refreshed = runCatching { appCheckTokenProvider(true) }.getOrNull()
+                        if (!refreshed.isNullOrBlank() && refreshed != token) {
+                            token = refreshed
+                            return@use
+                        }
+                    }
+                    return when {
+                        resp.code == 400 || resp.code == 422 -> DispatchResult.DropPermanent
+                        else -> DispatchResult.RetryLater
+                    }
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Throwable) {
+                return DispatchResult.RetryLater
+            }
         }
+        return DispatchResult.RetryLater
     }
 
     companion object {
         private const val PREFS_NAME = "laterbox_analytics_prefs"
         private const val KEY_INSTALL_ID = "anonymous_install_id"
         private const val KEY_OFFLINE_QUEUE = "offline_event_queue_v1"
+        private const val KEY_USER_OPTED_OUT = "analytics_user_opted_out"
+        private const val SERVER_PAUSE_BACKOFF_MS = 5 * 60_000L
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
 }

@@ -88,7 +88,7 @@ object RemoteConfigLayoutHelper {
         versionPolicy: RemoteVersionPolicy,
         currentVersionCode: Int,
     ): Boolean {
-        return versionPolicy.enforcementEnabled &&
+        return versionPolicy.isEnforceModeActive &&
             versionPolicy.minimumSupportedVersionCode > 0 &&
             currentVersionCode < versionPolicy.minimumSupportedVersionCode
     }

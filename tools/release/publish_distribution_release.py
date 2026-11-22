@@ -79,6 +79,16 @@ def verify_and_collect_artifacts(artifacts_dir: str) -> Dict[str, Any]:
             checksum_rows.append(f"{actual_sha}  {fname}")
 
     files_to_upload.append(manifest_path)
+
+    release_manifest_path = os.path.join(artifacts_dir, "release-manifest.json")
+    if os.path.isfile(release_manifest_path):
+        with open(release_manifest_path, "r", encoding="utf-8") as f:
+            rm = json.load(f)
+        if not isinstance(rm, dict) or not isinstance(rm.get("versionCode"), int) or rm.get("versionCode") <= 0:
+            raise RuntimeError("release-manifest.json must contain positive integer versionCode")
+        files_to_upload.append(release_manifest_path)
+        checksum_rows.append(f"{sha256_file(release_manifest_path)}  release-manifest.json")
+
     checksums_path = os.path.join(artifacts_dir, "checksums.sha256")
     with open(checksums_path, "w", encoding="utf-8") as f:
         f.write("\n".join(sorted(checksum_rows, key=lambda r: r.split("  ", 1)[1])) + "\n")
@@ -89,6 +99,31 @@ def verify_and_collect_artifacts(artifacts_dir: str) -> Dict[str, Any]:
         "checksums_path": checksums_path,
         "manifest": manifest,
     }
+
+
+def write_release_manifest(
+    artifacts_dir: str,
+    *,
+    tag_name: str,
+    version_name: str,
+    version_code: int,
+) -> str:
+    if version_code <= 0:
+        raise ValueError("version_code must be positive")
+    clean_ver = version_name.strip().lstrip("vV")
+    if not clean_ver:
+        raise ValueError("version_name must not be blank")
+    out_path = os.path.join(artifacts_dir, "release-manifest.json")
+    payload = {
+        "schemaVersion": 1,
+        "tagName": tag_name.strip(),
+        "version": clean_ver,
+        "versionCode": int(version_code),
+    }
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+        f.write("\n")
+    return out_path
 
 
 def gh_api_json(path: str, method: str = "GET", fields: Optional[Dict[str, str]] = None) -> Any:
@@ -158,9 +193,19 @@ def publish_release(
     notes_file: str,
     artifacts_dir: str,
     dry_run: bool = False,
+    version_name: str = "",
+    version_code: int = 0,
 ) -> Dict[str, Any]:
     if not os.path.isfile(notes_file):
         raise RuntimeError(f"Missing sanitized release notes file: {notes_file}")
+
+    if version_name.strip() and version_code > 0:
+        write_release_manifest(
+            artifacts_dir,
+            tag_name=tag_name,
+            version_name=version_name,
+            version_code=version_code,
+        )
 
     collected = verify_and_collect_artifacts(artifacts_dir)
     upload_files: List[str] = collected["files"]
@@ -248,6 +293,8 @@ def main() -> int:
     parser.add_argument("--title", required=True)
     parser.add_argument("--notes-file", required=True)
     parser.add_argument("--artifacts-dir", required=True)
+    parser.add_argument("--version-name", default="")
+    parser.add_argument("--version-code", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -258,6 +305,8 @@ def main() -> int:
         notes_file=args.notes_file,
         artifacts_dir=args.artifacts_dir,
         dry_run=args.dry_run,
+        version_name=args.version_name,
+        version_code=args.version_code,
     )
     print(json.dumps(result, indent=2))
     return 0

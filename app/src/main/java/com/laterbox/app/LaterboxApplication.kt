@@ -85,9 +85,11 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
         container.remoteConfigManager.initializeNonBlocking()
 
         // Fast startup state recovery first; defer heavy yt-dlp / FFmpeg / orphan sweep I/O
+        val startupBeginMs = android.os.SystemClock.elapsedRealtime()
         applicationScope.launch {
             try {
                 container.userPreferencesRepository.recordFirstLaunchIfNeeded()
+                container.userPreferencesRepository.ensureAnalyticsPolicyMigrated()
                 container.database.savedLinkDao().resetStuckFetchingLinks()
                 MetadataSyncWorker.enqueue(this@LaterboxApplication)
 
@@ -105,6 +107,8 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
 
                 // Recover any interrupted media downloads quickly
                 container.mediaRepository.recoverInterruptedTasks()
+                val startupElapsedMs = (android.os.SystemClock.elapsedRealtime() - startupBeginMs).coerceIn(0L, 600_000L).toInt()
+                container.analyticsTracker.trackPerformanceMetric("app_startup_ms", startupElapsedMs)
 
                 // Defer heavy binary warmup, file sweep, APK cleanup, and inspection reconciliation
                 // until after first frame has settled

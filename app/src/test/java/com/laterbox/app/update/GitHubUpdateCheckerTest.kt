@@ -640,5 +640,40 @@ class GitHubUpdateCheckerTest {
             server.shutdown()
         }
     }
+
+    @Test
+    fun `backend update check sends X-Laterbox version headers and detects higher versionCode cleanly`() = runBlocking {
+        val server = MockWebServer()
+        try {
+            server.enqueue(
+                MockResponse().setResponseCode(200).setBody(
+                    """
+                    {
+                      "tag_name": "v1.0.66",
+                      "versionCode": 205,
+                      "assets": [{"id": 7, "name": "Laterbox-Universal.apk", "size": 50000000, "download_path": "/updates/laterbox/assets/7/download-url"}]
+                    }
+                    """.trimIndent()
+                )
+            )
+            server.start()
+            val url = GitHubUpdateChecker.buildBackendUpdateUrl(server.url("/").toString())
+            val res = GitHubUpdateChecker.checkForUpdate(
+                currentVersionName = "1.0.66",
+                releasesUrl = url,
+                deviceSupportedAbis = arrayOf("arm64-v8a"),
+                context = null,
+                currentVersionCode = 199,
+            )
+            val req = server.takeRequest()
+            assertEquals("android", req.getHeader("X-Laterbox-Client"))
+            assertEquals("199", req.getHeader("X-Laterbox-Version-Code"))
+            assertTrue(res is UpdateCheckResult.UpdateAvailable)
+            assertEquals(205, (res as UpdateCheckResult.UpdateAvailable).updateInfo.versionCode)
+        } finally {
+            server.shutdown()
+        }
+    }
 }
+
 

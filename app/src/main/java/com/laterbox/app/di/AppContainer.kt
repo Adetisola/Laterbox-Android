@@ -2,6 +2,9 @@ package com.laterbox.app.di
 
 import android.content.Context
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 import com.laterbox.app.ai.LaterboxContextEngine
 import com.laterbox.app.data.backup.BackupManager
 import com.laterbox.app.data.local.LaterboxDatabase
@@ -43,6 +46,7 @@ interface AppContainer {
     val subtitleDownloadManager: com.laterbox.app.movies.data.download.SubtitleDownloadManager
     val appStorageManager: com.laterbox.app.storage.AppStorageManager
     val remoteConfigManager: com.laterbox.app.remoteconfig.RemoteConfigManager
+    val versionGate: com.laterbox.app.remoteconfig.LaterboxVersionGate
     val backendAiClient: com.laterbox.app.ai.LaterboxBackendAiClient
     val analyticsTracker: com.laterbox.app.analytics.LaterboxAnalyticsTracker
     suspend fun resolveBackendBaseUrl(): String
@@ -50,6 +54,15 @@ interface AppContainer {
 }
 
 class DefaultAppContainer(private val context: Context) : AppContainer {
+
+    private val containerScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO
+    )
+
+    @Volatile
+    private var cachedBackendBaseUrl: String = com.laterbox.app.BuildConfig.MOVIEBOX_API_BASE_URL
+        .trim()
+        .trimEnd('/')
 
     override val database: LaterboxDatabase by lazy {
         LaterboxDatabase.getInstance(context)
@@ -65,6 +78,26 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
 
     override val userPreferencesRepository: UserPreferencesRepository by lazy {
         UserPreferencesRepository(context)
+    }
+
+    override val versionGate: com.laterbox.app.remoteconfig.LaterboxVersionGate by lazy {
+        com.laterbox.app.remoteconfig.LaterboxVersionGate(
+            currentVersionCode = com.laterbox.app.BuildConfig.VERSION_CODE,
+            onForceRefreshRequested = {
+                containerScope.launch {
+                    runCatching { remoteConfigManager.refreshNow() }
+                }
+            },
+        )
+    }
+
+    private val clientHeadersInterceptor: com.laterbox.app.remoteconfig.LaterboxClientHeadersInterceptor by lazy {
+        com.laterbox.app.remoteconfig.LaterboxClientHeadersInterceptor(
+            clientVersionCode = com.laterbox.app.BuildConfig.VERSION_CODE,
+            clientVersionName = com.laterbox.app.BuildConfig.VERSION_NAME,
+            backendBaseUrlProvider = { cachedBackendBaseUrl },
+            versionGate = versionGate,
+        )
     }
 
     override val backupManager: BackupManager by lazy {
@@ -101,7 +134,8 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             assetDao = database.downloadedAssetDao(),
             taskDao = database.downloadTaskDao(),
             inspectionManager = mediaInspectionManager,
-            subtitleDownloadManager = subtitleDownloadManager
+            subtitleDownloadManager = subtitleDownloadManager,
+            onDownloadStarted = { analyticsTracker.trackFeatureUsed("media_download") },
         )
     }
 
@@ -231,6 +265,9 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
         com.laterbox.app.transcript.data.YouTubeTranscriptExtractor(
             dataSource = youTubeTranscriptDataSource,
             isOnlineServicesPaused = { remoteConfigManager.currentConfig.maintenance.isOnlineServicesPaused },
+            onTranscriptFeatureUsed = { analyticsTracker.trackFeatureUsed("youtube_transcripts") },
+            onPerformanceMetric = { metric, ms -> analyticsTracker.trackPerformanceMetric(metric, ms) },
+            onErrorObserved = { cat -> analyticsTracker.trackErrorObserved(cat) },
         )
     }
 
@@ -243,6 +280,7 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
 
     private val moviesOkHttpClient: okhttp3.OkHttpClient by lazy {
         sharedOkHttpClient.newBuilder()
+            .addInterceptor(clientHeadersInterceptor)
             .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(35, java.util.concurrent.TimeUnit.SECONDS)
             .writeTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
@@ -325,6 +363,7 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
 
     override val remoteConfigManager: com.laterbox.app.remoteconfig.RemoteConfigManager by lazy {
         val rcOkHttp = sharedOkHttpClient.newBuilder()
+            .addInterceptor(clientHeadersInterceptor)
             .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
             .writeTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
@@ -343,12 +382,14 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             cache = cache,
             client = client,
             clientVersionCode = versionCode,
+            versionGate = versionGate,
         )
         com.laterbox.app.remoteconfig.RemoteConfigManager(repository = repository)
     }
 
     override val backendAiClient: com.laterbox.app.ai.LaterboxBackendAiClient by lazy {
         val aiOkHttp = sharedOkHttpClient.newBuilder()
+            .addInterceptor(clientHeadersInterceptor)
             .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(90, java.util.concurrent.TimeUnit.SECONDS)
             .writeTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
@@ -362,24 +403,36 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
 
     override val analyticsTracker: com.laterbox.app.analytics.LaterboxAnalyticsTracker by lazy {
         val analyticsOkHttp = sharedOkHttpClient.newBuilder()
+            .addInterceptor(clientHeadersInterceptor)
             .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
             .writeTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
             .build()
+        val remoteAnalyticsEnabledFlow = remoteConfigManager.state
+            .map { it.activeConfig.analyticsCollectionEnabled }
+            .stateIn(
+                scope = containerScope,
+                started = kotlinx.coroutines.flow.SharingStarted.Eagerly,
+                initialValue = remoteConfigManager.currentConfig.analyticsCollectionEnabled,
+            )
         com.laterbox.app.analytics.LaterboxAnalyticsTracker(
             appContext = context.applicationContext,
             userPreferencesRepository = userPreferencesRepository,
             okHttpClient = analyticsOkHttp,
             baseUrlProvider = { resolveBackendBaseUrl() },
-            appCheckTokenProvider = { forceRefresh -> getBackendAppCheckToken(forceRefresh) }
+            appCheckTokenProvider = { forceRefresh -> getBackendAppCheckToken(forceRefresh) },
+            remoteCollectionEnabledProvider = { remoteConfigManager.currentConfig.analyticsCollectionEnabled },
+            remoteCollectionFlow = remoteAnalyticsEnabledFlow,
         )
     }
 
     override suspend fun resolveBackendBaseUrl(): String {
-        return userPreferencesRepository.userPreferencesFlow.first().movieBoxApiBaseUrl
+        val resolved = userPreferencesRepository.userPreferencesFlow.first().movieBoxApiBaseUrl
             .ifBlank { com.laterbox.app.BuildConfig.MOVIEBOX_API_BASE_URL }
             .trim()
             .trimEnd('/')
+        cachedBackendBaseUrl = resolved
+        return resolved
     }
 
     override suspend fun getBackendAppCheckToken(forceRefresh: Boolean): String? {

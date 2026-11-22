@@ -365,6 +365,7 @@ class UserPreferencesRepository(
         val SUBTITLE_EDGE_TYPE = intPreferencesKey("subtitle_edge_type")
         val GRANTED_ASSISTANT_CATEGORIES = stringSetPreferencesKey("granted_assistant_categories")
         val ANALYTICS_ENABLED = booleanPreferencesKey("analytics_enabled")
+        val ANALYTICS_POLICY_MIGRATED_V1 = booleanPreferencesKey("analytics_policy_migrated_v1")
     }
 
     val userPreferencesFlow: Flow<UserPreferences> = dataStore.data.map { preferences ->
@@ -1205,6 +1206,22 @@ class UserPreferencesRepository(
     suspend fun setAnalyticsEnabled(enabled: Boolean) {
         dataStore.edit { preferences ->
             preferences[PreferencesKeys.ANALYTICS_ENABLED] = enabled
+            preferences[PreferencesKeys.ANALYTICS_POLICY_MIGRATED_V1] = true
+        }
+    }
+
+    /**
+     * Marks standard built-in analytics policy migration complete idempotently while preserving any prior explicit
+     * user opt-out choice untouched.
+     */
+    suspend fun ensureAnalyticsPolicyMigrated() {
+        dataStore.edit { preferences ->
+            if (preferences[PreferencesKeys.ANALYTICS_POLICY_MIGRATED_V1] != true) {
+                if (!preferences.contains(PreferencesKeys.ANALYTICS_ENABLED)) {
+                    preferences[PreferencesKeys.ANALYTICS_ENABLED] = true
+                }
+                preferences[PreferencesKeys.ANALYTICS_POLICY_MIGRATED_V1] = true
+            }
         }
     }
 }

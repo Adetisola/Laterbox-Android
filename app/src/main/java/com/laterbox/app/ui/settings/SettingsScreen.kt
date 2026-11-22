@@ -60,7 +60,8 @@ fun SettingsScreen(
     onPostponeUpdate: (String) -> Unit = {},
     localMetrics: LocalLibraryMetrics? = null,
     onResetActivityCounters: (() -> Unit)? = null,
-    onAnalyticsEnabledChange: ((Boolean) -> Unit)? = null
+    onAnalyticsEnabledChange: ((Boolean) -> Unit)? = null,
+    onResetAnalyticsInstallId: (() -> Unit)? = null,
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -215,7 +216,8 @@ fun SettingsScreen(
                 localMetrics = localMetrics,
                 onResetActivityCounters = onResetActivityCounters,
                 analyticsEnabled = preferences.analyticsEnabled,
-                onAnalyticsEnabledChange = onAnalyticsEnabledChange
+                onAnalyticsEnabledChange = onAnalyticsEnabledChange,
+                onResetAnalyticsInstallId = onResetAnalyticsInstallId,
             )
 
             Spacer(modifier = Modifier.height(96.dp))

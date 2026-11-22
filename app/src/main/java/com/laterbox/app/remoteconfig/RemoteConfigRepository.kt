@@ -12,6 +12,7 @@ class RemoteConfigRepository(
     private val client: RemoteConfigClient,
     private val clientVersionCode: Int,
     private val clockMs: () -> Long = { System.currentTimeMillis() },
+    private val versionGate: LaterboxVersionGate? = null,
 ) {
     private val refreshMutex = Mutex()
     private val _state = MutableStateFlow(RemoteConfigState())
@@ -76,6 +77,7 @@ class RemoteConfigRepository(
                             fetchedAtEpochMs = fetchedMs,
                         )
                     }
+                    versionGate?.syncWithPublishedConfig(outcome.snapshot)
                     _state.value.copy(
                         activeConfig = outcome.snapshot,
                         isRefreshing = false,
@@ -92,9 +94,11 @@ class RemoteConfigRepository(
                         effectiveConfig.copy(
                             etag = outcome.etag ?: effectiveConfig.etag,
                             fetchedAtEpochMs = now,
+                            source = RemoteConfigSource.NETWORK,
                         )
                     }
                     runCatching { cache.updateFetchTimestamp(now, outcome.etag) }
+                    versionGate?.syncWithPublishedConfig(refreshedSnapshot)
                     _state.value.copy(
                         activeConfig = refreshedSnapshot,
                         isRefreshing = false,

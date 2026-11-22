@@ -64,7 +64,8 @@ fun AppUpdateDialog(
     updateInfo: AppUpdateInfo,
     onDismiss: () -> Unit,
     onPostpone: (version: String) -> Unit,
-    appCheckTokenProvider: (suspend (Boolean) -> String?)? = null
+    appCheckTokenProvider: (suspend (Boolean) -> String?)? = null,
+    dismissible: Boolean = true,
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -264,11 +265,17 @@ fun AppUpdateDialog(
         currentStep == UpdateStep.DOWNLOADING_FULL ||
         currentStep == UpdateStep.VERIFYING
 
-    Dialog(onDismissRequest = {
-        if (!isProcessing) {
-            onDismiss()
-        }
-    }) {
+    Dialog(
+        onDismissRequest = {
+            if (dismissible && !isProcessing) {
+                onDismiss()
+            }
+        },
+        properties = androidx.compose.ui.window.DialogProperties(
+            dismissOnBackPress = dismissible && !isProcessing,
+            dismissOnClickOutside = dismissible && !isProcessing,
+        )
+    ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -407,13 +414,15 @@ fun AppUpdateDialog(
                                         }
                                         .padding(vertical = spacing.xs)
                                     )
-                                LaterboxSecondaryButton(
-                                    text = "Later",
-                                    onClick = {
-                                        onPostpone(updateInfo.versionName)
-                                        onDismiss()
-                                    }
-                                )
+                                if (dismissible) {
+                                    LaterboxSecondaryButton(
+                                        text = "Later",
+                                        onClick = {
+                                            onPostpone(updateInfo.versionName)
+                                            onDismiss()
+                                        }
+                                    )
+                                }
                             }
                         }
                     }

@@ -188,6 +188,12 @@ class SettingsViewModel(
         viewModelScope.launch {
             userPreferencesRepository.setSmartRemindersEnabled(enabled)
             syncReminders()
+            if (enabled) {
+                (appContext?.applicationContext as? com.laterbox.app.LaterboxApplication)
+                    ?.container
+                    ?.analyticsTracker
+                    ?.trackFeatureUsed("smart_reminders")
+            }
         }
     }
 
@@ -376,7 +382,8 @@ class SettingsViewModel(
                     releasesUrl = releasesUrl,
                     context = appContext,
                     appCheckTokenProvider = resolvedAppCheckProvider,
-                    forceRefresh = true
+                    forceRefresh = true,
+                    currentVersionCode = com.laterbox.app.BuildConfig.VERSION_CODE,
                 )
                 when (result) {
                     is com.laterbox.app.update.UpdateCheckResult.UpdateAvailable -> {
@@ -552,6 +559,13 @@ class SettingsViewModel(
         viewModelScope.launch {
             userPreferencesRepository.setAnalyticsEnabled(enabled)
         }
+    }
+
+    fun resetAnalyticsInstallId() {
+        (appContext?.applicationContext as? com.laterbox.app.LaterboxApplication)
+            ?.container
+            ?.analyticsTracker
+            ?.resetInstallId()
     }
 
     fun setSmartNotificationsExtractionFailure(enabled: Boolean) {

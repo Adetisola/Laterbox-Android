@@ -350,6 +350,8 @@ jobs:
             --title "Laterbox ${{ steps.resolve_target.outputs.tag_name }}" \
             --notes-file "${{ steps.validate_notes.outputs.notes_file }}" \
             --artifacts-dir release_artifacts \
+            --version-name "${{ env.VERSION_NAME }}" \
+            --version-code "${{ env.VERSION_CODE }}" \
             $DRY_FLAG
 
       - name: Upload Build Artifacts (Private CI Retention)
@@ -361,6 +363,7 @@ jobs:
             release_artifacts/*.apk
             release_artifacts/*.patch
             release_artifacts/delta-manifest.json
+            release_artifacts/release-manifest.json
             release_artifacts/checksums.sha256
           retention-days: 3
 

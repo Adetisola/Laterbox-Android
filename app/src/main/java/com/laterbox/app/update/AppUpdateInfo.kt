@@ -15,7 +15,8 @@ data class AppUpdateInfo(
     val assetName: String = "",
     val deltaPatch: DeltaPatchInfo? = null,
     val deltaDiagnosticReason: DeltaDiagnosticReason? = null,
-    val deltaDiagnosticDetail: String? = null
+    val deltaDiagnosticDetail: String? = null,
+    val versionCode: Int? = null,
 ) {
     val isDeltaAvailable: Boolean
         get() = deltaPatch != null

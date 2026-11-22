@@ -18,6 +18,7 @@ class LaterboxAnalyticsTrackerTest {
         assertEquals("chat", LaterboxAnalyticsSchema.mapRouteToScreenId("chat?initialPrompt=hi"))
         assertEquals("settings", LaterboxAnalyticsSchema.mapRouteToScreenId("settings/reminders_ai"))
         assertEquals("collection_detail", LaterboxAnalyticsSchema.mapRouteToScreenId("collection/1/Work"))
+        assertEquals("player", LaterboxAnalyticsSchema.mapRouteToScreenId("player"))
         assertNull(LaterboxAnalyticsSchema.mapRouteToScreenId("unknown_route"))
     }
 
@@ -48,5 +49,36 @@ class LaterboxAnalyticsTrackerTest {
         // Reject unallowlisted screenId
         val badJson = replayedJson.put("screenId", "secret_user_title")
         assertNull(AnalyticsEventRecord.fromJson(badJson))
+
+        // Error & performance schemas validate categories/bounds strictly
+        val errEvent = AnalyticsEventRecord(
+            eventId = "ev_err_123456",
+            eventType = "app_error_observed",
+            installId = "inst_12345678",
+            sessionId = "sess_12345678",
+            versionCode = 66,
+            versionName = "1.0.66",
+            manifestRevision = "2026.11.21-v2",
+            errorCategory = "stream_resolution_failed",
+            httpStatus = 502,
+            timestampMs = 1760000000000L,
+        )
+        assertNotNull(AnalyticsEventRecord.fromJson(errEvent.toJson()))
+        assertNull(AnalyticsEventRecord.fromJson(errEvent.toJson().put("errorCategory", "unsafe_free_text")))
+
+        val perfEvent = AnalyticsEventRecord(
+            eventId = "ev_perf_123456",
+            eventType = "performance_metric",
+            installId = "inst_12345678",
+            sessionId = "sess_12345678",
+            versionCode = 66,
+            versionName = "1.0.66",
+            manifestRevision = "2026.11.21-v2",
+            metricName = "config_fetch_ms",
+            metricValueMs = 240,
+            timestampMs = 1760000000000L,
+        )
+        assertNotNull(AnalyticsEventRecord.fromJson(perfEvent.toJson()))
+        assertNull(AnalyticsEventRecord.fromJson(perfEvent.toJson().put("metricValueMs", -5)))
     }
 }

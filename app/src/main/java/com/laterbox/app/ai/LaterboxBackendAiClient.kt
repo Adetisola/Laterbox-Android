@@ -201,14 +201,14 @@ class LaterboxBackendAiClient(
 
             response.use { resp ->
                 if (!resp.isSuccessful) {
-                    val msg = if (resp.code == 401 || resp.code == 403) {
-                        "App verification couldn't be completed for this request. Please try again."
-                    } else {
-                        "Laterbox Assistant is temporarily unavailable (${resp.code})."
+                    val msg = when (resp.code) {
+                        401, 403 -> "App verification couldn't be completed for this request. Please try again."
+                        426 -> "This version of Laterbox is no longer supported. Please update the app to continue using Assistant."
+                        else -> "Laterbox Assistant is temporarily unavailable (${resp.code})."
                     }
                     emit(
                         BackendAiStreamEvent.Error(
-                            code = "HTTP_${resp.code}",
+                            code = if (resp.code == 426) "UNSUPPORTED_APP_VERSION" else "HTTP_${resp.code}",
                             message = msg,
                             retryable = resp.code >= 500 || resp.code == 429
                         )

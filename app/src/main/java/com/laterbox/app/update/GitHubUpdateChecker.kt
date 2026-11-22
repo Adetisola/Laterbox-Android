@@ -281,10 +281,17 @@ object GitHubUpdateChecker {
         context: Context? = null,
         appCheckTokenProvider: (suspend (Boolean) -> String?)? = null,
         forceRefresh: Boolean = false,
-        publicFallbackUrl: String? = UpdateNetworkSupport.PUBLIC_RELEASES_LATEST_URL
+        publicFallbackUrl: String? = UpdateNetworkSupport.PUBLIC_RELEASES_LATEST_URL,
+        currentVersionCode: Int = 0,
     ): UpdateCheckResult {
         val primary = checkForUpdateAt(
-            currentVersionName, releasesUrl, deviceSupportedAbis, context, appCheckTokenProvider, forceRefresh
+            currentVersionName,
+            releasesUrl,
+            deviceSupportedAbis,
+            context,
+            appCheckTokenProvider,
+            forceRefresh,
+            currentVersionCode = currentVersionCode,
         )
         if (primary !is UpdateCheckResult.NetworkError ||
             publicFallbackUrl == null ||
@@ -303,7 +310,13 @@ object GitHubUpdateChecker {
             if (age in 0 until ttl) return cached.body
         }
         val fallback = checkForUpdateAt(
-            currentVersionName, publicFallbackUrl, deviceSupportedAbis, context, null, false
+            currentVersionName,
+            publicFallbackUrl,
+            deviceSupportedAbis,
+            context,
+            null,
+            false,
+            currentVersionCode = currentVersionCode,
         )
         return when (fallback) {
             is UpdateCheckResult.UpdateAvailable, is UpdateCheckResult.UpToDate -> {
@@ -321,7 +334,8 @@ object GitHubUpdateChecker {
         deviceSupportedAbis: Array<String>,
         context: Context?,
         appCheckTokenProvider: (suspend (Boolean) -> String?)?,
-        forceRefresh: Boolean
+        forceRefresh: Boolean,
+        currentVersionCode: Int = 0,
     ): UpdateCheckResult = withContext(Dispatchers.IO) {
         val effectiveUrl = withRefreshQueryIfApplicable(releasesUrl, forceRefresh)
         try {
@@ -342,6 +356,12 @@ object GitHubUpdateChecker {
                         readTimeout = 15_000
                         setRequestProperty("Accept", "application/json")
                         setRequestProperty("User-Agent", "Laterbox-App")
+                        if (isBackendLatestUrl(effectiveUrl)) {
+                            val effectiveVCode = if (currentVersionCode > 0) currentVersionCode else com.laterbox.app.BuildConfig.VERSION_CODE
+                            setRequestProperty("X-Laterbox-Client", "android")
+                            setRequestProperty("X-Laterbox-Version-Code", effectiveVCode.toString())
+                            setRequestProperty("X-Laterbox-Version-Name", com.laterbox.app.BuildConfig.VERSION_NAME)
+                        }
                         if (!appCheckToken.isNullOrBlank()) {
                             setRequestProperty("X-Firebase-AppCheck", appCheckToken)
                         }
@@ -452,9 +472,13 @@ object GitHubUpdateChecker {
                 return@withContext UpdateCheckResult.InvalidRelease("Release metadata is missing tag_name.")
             }
 
+            val resolvedVersionCode = root.optInt("versionCode", 0).takeIf { it > 0 }
+                ?: root.optJSONObject("delta_manifest")?.optInt("targetVersionCode", 0)?.takeIf { it > 0 }
+
             val cleanVersion = AppUpdateInfo.cleanVersion(tagName)
-            val isNewer = AppUpdateInfo.isNewerVersion(cleanVersion, currentVersionName)
-            if (!isNewer) {
+            val isNewerByName = AppUpdateInfo.isNewerVersion(cleanVersion, currentVersionName)
+            val isNewerByCode = currentVersionCode > 0 && resolvedVersionCode != null && resolvedVersionCode > currentVersionCode
+            if (!isNewerByName && !isNewerByCode) {
                 return@withContext UpdateCheckResult.UpToDate(currentVersionName)
             }
 
@@ -552,7 +576,8 @@ object GitHubUpdateChecker {
                 assetName = effectiveAssetName,
                 deltaPatch = deltaPatch,
                 deltaDiagnosticReason = deltaOutcome.reason,
-                deltaDiagnosticDetail = deltaOutcome.detail
+                deltaDiagnosticDetail = deltaOutcome.detail,
+                versionCode = resolvedVersionCode,
             )
 
             UpdateCheckResult.UpdateAvailable(info)

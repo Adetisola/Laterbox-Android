@@ -86,6 +86,7 @@ class PlayerActivity : ComponentActivity() {
 
         enableEdgeToEdge()
         val container = (application as LaterboxApplication).container
+        container.analyticsTracker.trackScreenView("player")
 
         setContent {
             val preferences by container.userPreferencesRepository.userPreferences.collectAsState(
