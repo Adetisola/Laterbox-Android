@@ -157,7 +157,9 @@ class LaterboxAnalyticsTracker(
     private val queueMutex = Mutex()
 
     @Volatile
-    private var enabled = true
+    private var enabled = false
+
+    private val initialPrefsReady = kotlinx.coroutines.CompletableDeferred<Unit>()
 
     @Volatile
     private var currentSessionId: String = UUID.randomUUID().toString()
@@ -169,13 +171,24 @@ class LaterboxAnalyticsTracker(
 
     init {
         scope.launch {
-            userPreferencesRepository.userPreferencesFlow.collect { userPrefs ->
-                val wasEnabled = enabled
-                enabled = userPrefs.analyticsEnabled
-                if (!enabled && wasEnabled) {
-                    heartbeatJob?.cancel()
-                    heartbeatJob = null
-                    clearQueuedEvents()
+            try {
+                userPreferencesRepository.userPreferencesFlow.collect { userPrefs ->
+                    val wasEnabled = enabled
+                    enabled = userPrefs.analyticsEnabled
+                    if (!initialPrefsReady.isCompleted) {
+                        initialPrefsReady.complete(Unit)
+                    }
+                    if (!enabled && wasEnabled) {
+                        heartbeatJob?.cancel()
+                        heartbeatJob = null
+                        clearQueuedEvents()
+                    } else if (!enabled) {
+                        clearQueuedEvents()
+                    }
+                }
+            } finally {
+                if (!initialPrefsReady.isCompleted) {
+                    initialPrefsReady.complete(Unit)
                 }
             }
         }
@@ -192,28 +205,40 @@ class LaterboxAnalyticsTracker(
     }
 
     fun onAppForegrounded() {
-        if (!enabled) return
         currentSessionId = UUID.randomUUID().toString()
         lastTrackedScreenId = null
-        recordAndDispatch("app_session_started")
-        recordAndDispatch("application_version_seen")
-        startHeartbeatLoop()
+        val sessionIdSnapshot = currentSessionId
+        scope.launch {
+            initialPrefsReady.await()
+            if (!enabled) return@launch
+            recordAndDispatchUnlocked("app_session_started", sessionId = sessionIdSnapshot)
+            recordAndDispatchUnlocked("application_version_seen", sessionId = sessionIdSnapshot)
+            startHeartbeatLoop()
+        }
     }
 
     fun onAppBackgrounded() {
         heartbeatJob?.cancel()
         heartbeatJob = null
-        if (!enabled) return
-        recordAndDispatch("app_session_ended", flushImmediately = true)
+        val sessionIdSnapshot = currentSessionId
+        scope.launch {
+            initialPrefsReady.await()
+            if (!enabled) return@launch
+            recordAndDispatchUnlocked("app_session_ended", sessionId = sessionIdSnapshot, flushImmediately = true)
+        }
     }
 
     fun trackScreenView(screenId: String) {
-        if (!enabled) return
         val clean = screenId.trim().lowercase()
         if (clean !in LaterboxAnalyticsSchema.ALLOWED_SCREEN_IDS) return
-        if (lastTrackedScreenId == clean) return
-        lastTrackedScreenId = clean
-        recordAndDispatch("screen_viewed", screenId = clean)
+        val sessionIdSnapshot = currentSessionId
+        scope.launch {
+            initialPrefsReady.await()
+            if (!enabled) return@launch
+            if (lastTrackedScreenId == clean) return@launch
+            lastTrackedScreenId = clean
+            recordAndDispatchUnlocked("screen_viewed", sessionId = sessionIdSnapshot, screenId = clean)
+        }
     }
 
     fun trackScreenRoute(route: String?) {
@@ -222,35 +247,42 @@ class LaterboxAnalyticsTracker(
     }
 
     fun trackFeatureUsed(featureId: String) {
-        if (!enabled) return
         val clean = featureId.trim().lowercase()
         if (clean !in LaterboxAnalyticsSchema.ALLOWED_FEATURE_IDS) return
-        recordAndDispatch("feature_used", featureId = clean)
+        val sessionIdSnapshot = currentSessionId
+        scope.launch {
+            initialPrefsReady.await()
+            if (!enabled) return@launch
+            recordAndDispatchUnlocked("feature_used", sessionId = sessionIdSnapshot, featureId = clean)
+        }
     }
 
     private fun startHeartbeatLoop() {
         heartbeatJob?.cancel()
         heartbeatJob = scope.launch {
+            initialPrefsReady.await()
             while (isActive && enabled) {
                 delay(LaterboxAnalyticsSchema.HEARTBEAT_INTERVAL_MS)
                 if (!enabled) break
-                recordAndDispatch("app_session_heartbeat", flushImmediately = true)
+                recordAndDispatchUnlocked("app_session_heartbeat", sessionId = currentSessionId, flushImmediately = true)
             }
         }
     }
 
-    private fun recordAndDispatch(
+    private suspend fun recordAndDispatchUnlocked(
         eventType: String,
+        sessionId: String = currentSessionId,
         screenId: String? = null,
         featureId: String? = null,
         flushImmediately: Boolean = true
     ) {
+        if (!enabled) return
         if (eventType !in LaterboxAnalyticsSchema.ALLOWED_EVENT_TYPES) return
         val record = AnalyticsEventRecord(
             eventId = UUID.randomUUID().toString(),
             eventType = eventType,
             installId = getOrCreateInstallId(),
-            sessionId = currentSessionId,
+            sessionId = sessionId,
             versionCode = BuildConfig.VERSION_CODE,
             versionName = BuildConfig.VERSION_NAME,
             manifestRevision = AppCapabilityRegistry.MANIFEST_REVISION,
@@ -259,14 +291,11 @@ class LaterboxAnalyticsTracker(
             timestampMs = System.currentTimeMillis(),
             isOfflineReplay = false
         )
-        scope.launch {
-            if (!enabled) return@launch
-            val sent = if (flushImmediately) sendBatch(listOf(record), markQueuedAsReplay = false) else false
-            if (!sent) {
-                enqueueOffline(record)
-            } else {
-                flushOfflineQueue()
-            }
+        val sent = if (flushImmediately) sendBatch(listOf(record), markQueuedAsReplay = false) else false
+        if (!sent) {
+            enqueueOffline(record)
+        } else {
+            flushOfflineQueue()
         }
     }
 

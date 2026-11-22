@@ -2,12 +2,15 @@ package com.laterbox.app.ai
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.Call
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -18,6 +21,7 @@ import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 data class GeneratedTitleResult(
     val title: String,
@@ -27,6 +31,20 @@ data class GeneratedTitleResult(
 data class AiGroundingSource(
     val title: String,
     val url: String
+)
+
+data class ManifestSyncResult(
+    val manifestVersion: Int,
+    val manifestRevision: String,
+    val manifestHash: String,
+    val clientInSync: Boolean,
+    val serverCapabilitiesCount: Int
+)
+
+data class ActionResultAck(
+    val accepted: Boolean,
+    val status: String,
+    val followUpMessage: String? = null
 )
 
 sealed interface BackendAiStreamEvent {
@@ -118,151 +136,180 @@ class LaterboxBackendAiClient(
             put("enableWebSearch", enableWebSearch)
         }.toString()
 
-        var token = runCatching { appCheckTokenProvider(false) }.getOrNull()
-        var response = executeStreamCall(url, payload, token)
-        if (response != null && (response.code == 401 || response.code == 403)) {
-            response.close()
-            val refreshed = runCatching { appCheckTokenProvider(true) }.getOrNull()
-            if (!refreshed.isNullOrBlank() && refreshed != token) {
-                token = refreshed
-                response = executeStreamCall(url, payload, token)
+        val activeCall = AtomicReference<Call?>(null)
+        val watcherJob = kotlinx.coroutines.Job(currentCoroutineContext()[Job])
+        val cancelWatcher = kotlinx.coroutines.CoroutineScope(
+            watcherJob + Dispatchers.Unconfined
+        ).launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+            try {
+                kotlinx.coroutines.awaitCancellation()
+            } finally {
+                activeCall.get()?.cancel()
             }
         }
 
-        if (response == null) {
-            emit(
-                BackendAiStreamEvent.Error(
-                    code = "NETWORK_UNREACHABLE",
-                    message = "Unable to connect right now. Check your internet connection and try again.",
-                    retryable = true
-                )
-            )
-            return@flow
-        }
-
-        response.use { resp ->
-            if (!resp.isSuccessful) {
-                val msg = if (resp.code == 401 || resp.code == 403) {
-                    "App verification couldn't be completed for this request. Please try again."
-                } else {
-                    "Laterbox Assistant is temporarily unavailable (${resp.code})."
+        try {
+            var token = runCatching { appCheckTokenProvider(false) }.getOrNull()
+            var response = executeStreamCall(url, payload, token, activeCall)
+            if (response != null && (response.code == 401 || response.code == 403)) {
+                response.close()
+                val refreshed = runCatching { appCheckTokenProvider(true) }.getOrNull()
+                if (!refreshed.isNullOrBlank() && refreshed != token) {
+                    token = refreshed
+                    response = executeStreamCall(url, payload, token, activeCall)
                 }
-                emit(
-                    BackendAiStreamEvent.Error(
-                        code = "HTTP_${resp.code}",
-                        message = msg,
-                        retryable = resp.code >= 500 || resp.code == 429
-                    )
-                )
-                return@flow
             }
 
-            val body = resp.body
-            if (body == null) {
+            currentCoroutineContext().ensureActive()
+
+            if (response == null) {
                 emit(
                     BackendAiStreamEvent.Error(
-                        code = "EMPTY_BODY",
-                        message = "Empty response from Laterbox Assistant.",
+                        code = "NETWORK_UNREACHABLE",
+                        message = "Unable to connect right now. Check your internet connection and try again.",
                         retryable = true
                     )
                 )
                 return@flow
             }
 
-            BufferedReader(InputStreamReader(body.byteStream(), Charsets.UTF_8)).use { reader ->
-                var currentEvent: String? = null
-                val dataBuffer = StringBuilder()
-
-                fun dispatchBufferedEvent(): BackendAiStreamEvent? {
-                    val ev = currentEvent?.trim()
-                    val dataStr = dataBuffer.toString().trim()
-                    currentEvent = null
-                    dataBuffer.setLength(0)
-                    if (ev.isNullOrEmpty() || dataStr.isEmpty()) return null
-                    val obj = runCatching { JSONObject(dataStr) }.getOrNull() ?: return null
-                    return when (ev) {
-                        "response_start" -> BackendAiStreamEvent.Started(
-                            manifestRevision = obj.optString("manifestRevision", ""),
-                            manifestSynced = obj.optBoolean("manifestSynced", true)
+            response.use { resp ->
+                if (!resp.isSuccessful) {
+                    val msg = if (resp.code == 401 || resp.code == 403) {
+                        "App verification couldn't be completed for this request. Please try again."
+                    } else {
+                        "Laterbox Assistant is temporarily unavailable (${resp.code})."
+                    }
+                    emit(
+                        BackendAiStreamEvent.Error(
+                            code = "HTTP_${resp.code}",
+                            message = msg,
+                            retryable = resp.code >= 500 || resp.code == 429
                         )
-                        "text_delta" -> {
-                            val chunk = obj.optString("chunk", "")
-                            if (chunk.isNotEmpty()) BackendAiStreamEvent.TextDelta(chunk) else null
-                        }
-                        "action_proposed" -> {
-                            val actionObj = obj.optJSONObject("action") ?: return null
-                            val parsedAction = AssistantActionHandler.fromJsonList("[$actionObj]").firstOrNull()
-                                ?: return null
-                            BackendAiStreamEvent.ActionProposed(
-                                action = parsedAction,
-                                category = obj.optString("category", ""),
-                                requiresApproval = obj.optBoolean("requiresApproval", true)
+                    )
+                    return@flow
+                }
+
+                val body = resp.body
+                if (body == null) {
+                    emit(
+                        BackendAiStreamEvent.Error(
+                            code = "EMPTY_BODY",
+                            message = "Empty response from Laterbox Assistant.",
+                            retryable = true
+                        )
+                    )
+                    return@flow
+                }
+
+                BufferedReader(InputStreamReader(body.byteStream(), Charsets.UTF_8)).use { reader ->
+                    var currentEvent: String? = null
+                    val dataBuffer = StringBuilder()
+
+                    fun dispatchBufferedEvent(): BackendAiStreamEvent? {
+                        val ev = currentEvent?.trim()
+                        val dataStr = dataBuffer.toString().trim()
+                        currentEvent = null
+                        dataBuffer.setLength(0)
+                        if (ev.isNullOrEmpty() || dataStr.isEmpty()) return null
+                        val obj = runCatching { JSONObject(dataStr) }.getOrNull() ?: return null
+                        return when (ev) {
+                            "response_start" -> BackendAiStreamEvent.Started(
+                                manifestRevision = obj.optString("manifestRevision", ""),
+                                manifestSynced = obj.optBoolean("manifestSynced", true)
                             )
-                        }
-                        "response_complete" -> {
-                            val fullText = obj.optString("fullText", "")
-                            val displayText = obj.optString("displayText", fullText)
-                            val actionsArr = obj.optJSONArray("actions")
-                            val actions = if (actionsArr != null) {
-                                AssistantActionHandler.fromJsonList(actionsArr.toString())
-                            } else emptyList()
-                            val webGrounded = obj.optBoolean("webGrounded", false)
-                            val sourcesArr = obj.optJSONArray("groundingSources")
-                            val sources = buildList {
-                                if (sourcesArr != null) {
-                                    for (i in 0 until sourcesArr.length()) {
-                                        val sObj = sourcesArr.optJSONObject(i) ?: continue
-                                        val sUrl = sObj.optString("url", "").trim()
-                                        if (sUrl.startsWith("https://")) {
-                                            add(AiGroundingSource(sObj.optString("title", sUrl), sUrl))
+                            "text_delta" -> {
+                                val chunk = obj.optString("chunk", "")
+                                if (chunk.isNotEmpty()) BackendAiStreamEvent.TextDelta(chunk) else null
+                            }
+                            "action_proposed" -> {
+                                val actionObj = obj.optJSONObject("action") ?: return null
+                                val parsedAction = AssistantActionHandler.fromJsonList("[$actionObj]").firstOrNull()
+                                    ?: return null
+                                BackendAiStreamEvent.ActionProposed(
+                                    action = parsedAction,
+                                    category = obj.optString("category", ""),
+                                    requiresApproval = obj.optBoolean("requiresApproval", true)
+                                )
+                            }
+                            "response_complete" -> {
+                                val fullText = obj.optString("fullText", "")
+                                val displayText = obj.optString("displayText", fullText)
+                                val actionsArr = obj.optJSONArray("actions")
+                                val actions = if (actionsArr != null) {
+                                    AssistantActionHandler.fromJsonList(actionsArr.toString())
+                                } else emptyList()
+                                val webGrounded = obj.optBoolean("webGrounded", false)
+                                val sourcesArr = obj.optJSONArray("groundingSources")
+                                val sources = buildList {
+                                    if (sourcesArr != null) {
+                                        for (i in 0 until sourcesArr.length()) {
+                                            val sObj = sourcesArr.optJSONObject(i) ?: continue
+                                            val sUrl = sObj.optString("url", "").trim()
+                                            if (sUrl.startsWith("https://")) {
+                                                add(AiGroundingSource(sObj.optString("title", sUrl), sUrl))
+                                            }
                                         }
                                     }
                                 }
+                                BackendAiStreamEvent.Completed(
+                                    fullText = fullText,
+                                    displayText = displayText,
+                                    actions = actions,
+                                    webGrounded = webGrounded,
+                                    groundingSources = sources
+                                )
                             }
-                            BackendAiStreamEvent.Completed(
-                                fullText = fullText,
-                                displayText = displayText,
-                                actions = actions,
-                                webGrounded = webGrounded,
-                                groundingSources = sources
+                            "response_error" -> BackendAiStreamEvent.Error(
+                                code = obj.optString("code", "ERROR"),
+                                message = obj.optString("message", "Unable to answer right now."),
+                                retryable = obj.optBoolean("retryable", true)
                             )
+                            else -> null
                         }
-                        "response_error" -> BackendAiStreamEvent.Error(
-                            code = obj.optString("code", "ERROR"),
-                            message = obj.optString("message", "Unable to answer right now."),
-                            retryable = obj.optBoolean("retryable", true)
-                        )
-                        else -> null
                     }
-                }
 
-                while (true) {
-                    currentCoroutineContext().ensureActive()
-                    val line = reader.readLine() ?: break
-                    when {
-                        line.isEmpty() -> {
-                            dispatchBufferedEvent()?.let { emit(it) }
-                        }
-                        line.startsWith("event:") -> {
-                            currentEvent = line.substring(6).trim()
-                        }
-                        line.startsWith("data:") -> {
-                            if (dataBuffer.isNotEmpty()) dataBuffer.append('\n')
-                            dataBuffer.append(line.substring(5).trim())
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        val line = try {
+                            reader.readLine()
+                        } catch (t: Throwable) {
+                            currentCoroutineContext().ensureActive()
+                            if (activeCall.get()?.isCanceled() == true) {
+                                throw CancellationException("Stream cancelled", t)
+                            }
+                            throw t
+                        } ?: break
+                        when {
+                            line.isEmpty() -> {
+                                dispatchBufferedEvent()?.let { emit(it) }
+                            }
+                            line.startsWith("event:") -> {
+                                currentEvent = line.substring(6).trim()
+                            }
+                            line.startsWith("data:") -> {
+                                if (dataBuffer.isNotEmpty()) dataBuffer.append('\n')
+                                dataBuffer.append(line.substring(5).trim())
+                            }
                         }
                     }
-                }
-                if (currentEvent != null && dataBuffer.isNotEmpty()) {
-                    dispatchBufferedEvent()?.let { emit(it) }
+                    if (currentEvent != null && dataBuffer.isNotEmpty()) {
+                        dispatchBufferedEvent()?.let { emit(it) }
+                    }
                 }
             }
+        } finally {
+            cancelWatcher.cancel()
+            watcherJob.cancel()
+            activeCall.set(null)
         }
     }.flowOn(Dispatchers.IO)
 
-    private fun executeStreamCall(
+    private suspend fun executeStreamCall(
         url: okhttp3.HttpUrl,
         payload: String,
-        appCheckToken: String?
+        appCheckToken: String?,
+        activeCall: AtomicReference<Call?>
     ): okhttp3.Response? {
         val requestBuilder = Request.Builder()
             .url(url)
@@ -272,11 +319,19 @@ class LaterboxBackendAiClient(
         if (!appCheckToken.isNullOrBlank()) {
             requestBuilder.header("X-Firebase-AppCheck", appCheckToken)
         }
+        val call = okHttpClient.newCall(requestBuilder.build())
+        activeCall.set(call)
         return try {
-            okHttpClient.newCall(requestBuilder.build()).execute()
+            currentCoroutineContext().ensureActive()
+            call.execute()
         } catch (ce: CancellationException) {
+            call.cancel()
             throw ce
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            currentCoroutineContext().ensureActive()
+            if (call.isCanceled()) {
+                throw CancellationException("Stream call cancelled", t)
+            }
             null
         }
     }
@@ -286,22 +341,40 @@ class LaterboxBackendAiClient(
         actionType: String,
         category: String,
         status: String,
-        detail: String = ""
-    ) {
+        detail: String = "",
+        actionId: String? = null
+    ): ActionResultAck? {
         val baseUrl = baseUrlProvider().trim().trimEnd('/')
-        val parsedBase = baseUrl.toHttpUrlOrNull() ?: return
+        val parsedBase = baseUrl.toHttpUrlOrNull() ?: return null
         val url = parsedBase.newBuilder()
             .addPathSegments("ai/v1/chat/action-result")
             .build()
         val payload = JSONObject().apply {
             put("conversationId", conversationId)
+            if (!actionId.isNullOrBlank()) put("actionId", actionId)
             put("actionType", actionType)
             put("category", category)
             put("status", status)
             put("detail", detail.take(500))
         }.toString()
         val token = runCatching { appCheckTokenProvider(false) }.getOrNull()
-        executePostJson(url, payload, token)
+        val firstAttempt = executePostJson(url, payload, token)
+        val finalAttempt = if (firstAttempt.statusCode == 401 || firstAttempt.statusCode == 403) {
+            val refreshed = runCatching { appCheckTokenProvider(true) }.getOrNull()
+            if (!refreshed.isNullOrBlank() && refreshed != token) {
+                executePostJson(url, payload, refreshed)
+            } else {
+                firstAttempt
+            }
+        } else {
+            firstAttempt
+        }
+        val obj = finalAttempt.json ?: return null
+        return ActionResultAck(
+            accepted = obj.optBoolean("accepted", true),
+            status = obj.optString("status", status),
+            followUpMessage = obj.optString("followUpMessage", "").trim().takeIf { it.isNotEmpty() }
+        )
     }
 
     suspend fun generateConversationTitle(
@@ -351,7 +424,7 @@ class LaterboxBackendAiClient(
         )
     }
 
-    suspend fun checkCapabilityManifestSync(): Boolean? = withContext(Dispatchers.IO) {
+    suspend fun fetchCapabilityManifest(): ManifestSyncResult? = withContext(Dispatchers.IO) {
         val baseUrl = baseUrlProvider().trim().trimEnd('/')
         val parsedBase = baseUrl.toHttpUrlOrNull() ?: return@withContext null
         val url = parsedBase.newBuilder()
@@ -372,11 +445,20 @@ class LaterboxBackendAiClient(
                 if (!resp.isSuccessful) return@withContext null
                 val text = resp.body?.string().orEmpty()
                 val obj = JSONObject(text)
-                if (obj.has("clientInSync") && !obj.isNull("clientInSync")) {
+                val serverHash = obj.optString("manifestHash", "").trim()
+                val itemsCount = obj.optJSONArray("items")?.length() ?: 0
+                val inSync = if (obj.has("clientInSync") && !obj.isNull("clientInSync")) {
                     obj.getBoolean("clientInSync")
                 } else {
-                    null
+                    serverHash.isNotEmpty() && serverHash == AppCapabilityRegistry.MANIFEST_HASH
                 }
+                ManifestSyncResult(
+                    manifestVersion = obj.optInt("manifestVersion", 0),
+                    manifestRevision = obj.optString("manifestRevision", ""),
+                    manifestHash = serverHash,
+                    clientInSync = inSync,
+                    serverCapabilitiesCount = itemsCount
+                )
             }
         } catch (ce: CancellationException) {
             throw ce
@@ -384,6 +466,9 @@ class LaterboxBackendAiClient(
             null
         }
     }
+
+    suspend fun checkCapabilityManifestSync(): Boolean? =
+        fetchCapabilityManifest()?.clientInSync
 
     private data class PostJsonOutcome(
         val statusCode: Int,

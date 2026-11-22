@@ -210,6 +210,25 @@ class ChatRepository(
     suspend fun getGrantedActionTypes(conversationId: String): List<String> =
         chatDao.getGrantedActionTypes(conversationId)
 
+    suspend fun updateMessageActionStatus(
+        conversationId: String,
+        messageId: String,
+        actionId: String,
+        status: com.laterbox.app.ai.ChatActionStatus,
+        statusDetail: String? = null
+    ) {
+        val msg = chatDao.getMessagesSnapshot(conversationId).firstOrNull { it.id == messageId } ?: return
+        val updatedJson = com.laterbox.app.ai.AssistantActionHandler.updateTrackedActionStatus(
+            actionsJson = msg.actionsJson,
+            actionId = actionId,
+            status = status,
+            statusDetail = statusDetail
+        )
+        if (updatedJson != msg.actionsJson) {
+            chatDao.upsertMessage(msg.copy(actionsJson = updatedJson))
+        }
+    }
+
     /** Persists a completed assistant message (e.g. an action receipt) without a streaming phase. */
     suspend fun addAssistantMessage(conversationId: String, text: String): ChatMessageEntity {
         val placeholder = createAssistantPlaceholder(conversationId)

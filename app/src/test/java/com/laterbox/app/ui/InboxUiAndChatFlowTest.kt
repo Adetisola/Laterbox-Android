@@ -450,4 +450,70 @@ class InboxUiAndChatFlowTest {
         assertTrue(dockBounds.bottom <= miniBounds.top)
         assertTrue(miniBounds.bottom <= bottomBounds.top)
     }
+
+    @Test
+    fun chatScreen_rendersNonInteractiveStatusChipsForCompletedActions() {
+        val actionsJson = com.laterbox.app.ai.AssistantActionHandler.toTrackedJsonList(
+            listOf(
+                com.laterbox.app.ai.TrackedChatAction(
+                    actionId = "a_done",
+                    action = ChatAction.OpenMoviesHome,
+                    status = com.laterbox.app.ai.ChatActionStatus.EXECUTED
+                ),
+                com.laterbox.app.ai.TrackedChatAction(
+                    actionId = "a_denied",
+                    action = ChatAction.DeleteDownload(taskId = "t1", title = "Clip"),
+                    status = com.laterbox.app.ai.ChatActionStatus.DENIED
+                ),
+                com.laterbox.app.ai.TrackedChatAction(
+                    actionId = "a_prop",
+                    action = ChatAction.SearchLinks("kotlin"),
+                    status = com.laterbox.app.ai.ChatActionStatus.PROPOSED
+                )
+            )
+        )
+        val clicks = mutableListOf<String>()
+        val msg = com.laterbox.app.data.local.entity.ChatMessageEntity(
+            id = "m-status-1",
+            conversationId = "c-status",
+            role = com.laterbox.app.data.repository.ChatRole.ASSISTANT.name,
+            content = "Completed what you asked.",
+            actionsJson = actionsJson,
+            status = com.laterbox.app.data.repository.ChatMessageStatus.COMPLETE.name,
+            createdAt = 100L
+        )
+        composeTestRule.setContent {
+            LaterboxTheme {
+                ChatScreen(
+                    uiState = ChatUiState(
+                        assistantEnabled = true,
+                        aiDisclosureAccepted = true,
+                        messages = listOf(msg)
+                    ),
+                    onMenuClick = {},
+                    onNewChatClick = {},
+                    onRunHealthCheck = {},
+                    onAcceptAiDisclosure = {},
+                    onOpenAiSettings = {},
+                    onComposerTextChange = {},
+                    onSendMessage = {},
+                    onStopStreaming = {},
+                    onRetryMessage = {},
+                    onQuickPromptClick = {},
+                    onActionClick = {},
+                    onConfirmMutatingAction = {},
+                    onDismissMutatingAction = {},
+                    onDismissNotice = {},
+                    onTrackedActionClick = { _, tracked -> clicks.add(tracked.actionId) }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("chat_action_executed_a_done").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("chat_action_denied_a_denied").assertIsDisplayed().performClick()
+        assertEquals(emptyList<String>(), clicks)
+
+        composeTestRule.onNodeWithTag("chat_action_proposed_a_prop").assertIsDisplayed().performClick()
+        assertEquals(listOf("a_prop"), clicks)
+    }
 }

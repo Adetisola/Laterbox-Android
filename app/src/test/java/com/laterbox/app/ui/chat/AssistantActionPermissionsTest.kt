@@ -364,6 +364,124 @@ class AssistantActionPermissionsTest {
         assertFalse(moviesRepo.mutedSeries["tvmaze:66"] ?: true)
     }
 
+    @Test
+    fun backendStream_autoExecutesRiskBasedOnceAndTracksOutOfSyncManifest() = runTest(mainDispatcher) {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        val server = okhttp3.mockwebserver.MockWebServer()
+        server.start()
+        try {
+            val base = server.url("/").toString().trimEnd('/')
+            val sseBody = """
+                event: response_start
+                data: {"manifestRevision":"rev-new","manifestSynced":false}
+
+                event: text_delta
+                data: {"chunk":"Opening Severance now."}
+
+                event: action_proposed
+                data: {"action":{"type":"OPEN_MOVIE_DETAIL","providerId":"tvmaze","titleId":"66","title":"Severance"},"category":"NAVIGATION_DISCOVERY","requiresApproval":false}
+
+                event: action_proposed
+                data: {"action":{"type":"TOGGLE_MOVIE_WATCHLIST","providerId":"tvmaze","titleId":"66","add":true,"title":"Severance"},"category":"LIBRARY_MANAGEMENT","requiresApproval":false}
+
+                event: action_proposed
+                data: {"action":{"type":"DELETE_DOWNLOAD","taskId":"task-9","title":"Old Clip"},"category":"LIBRARY_MANAGEMENT","requiresApproval":true}
+
+                event: response_complete
+                data: {"fullText":"Opening Severance now.","displayText":"Opening Severance now.","actions":[{"type":"OPEN_MOVIE_DETAIL","providerId":"tvmaze","titleId":"66","title":"Severance"},{"type":"TOGGLE_MOVIE_WATCHLIST","providerId":"tvmaze","titleId":"66","add":true,"title":"Severance"},{"type":"DELETE_DOWNLOAD","taskId":"task-9","title":"Old Clip"}],"webGrounded":false,"groundingSources":[]}
+
+            """.trimIndent()
+            server.enqueue(
+                okhttp3.mockwebserver.MockResponse()
+                    .setResponseCode(200)
+                    .setHeader("Content-Type", "text/event-stream")
+                    .setBody(sseBody)
+            )
+            server.enqueue(
+                okhttp3.mockwebserver.MockResponse()
+                    .setResponseCode(200)
+                    .setBody("""{"manifestVersion":2,"manifestRevision":"rev-new","manifestHash":"mismatch","clientInSync":false,"items":[]}""")
+            )
+            // action-result acknowledgements
+            repeat(3) {
+                server.enqueue(
+                    okhttp3.mockwebserver.MockResponse()
+                        .setResponseCode(200)
+                        .setBody("""{"accepted":true,"status":"executed","followUpMessage":"Done"}""")
+                )
+            }
+
+            moviesRepo.seedTitle(
+                MovieTitleSummary(
+                    id = "66",
+                    providerId = "tvmaze",
+                    kind = MediaKind.TV_SERIES,
+                    title = "Severance",
+                    releaseYear = 2022,
+                    sourceBadge = DataSourceBadge.LIVE_TVMAZE
+                )
+            )
+            prefs.setAssistantAiDisclosureAccepted(true)
+            prefs.setAssistantCategoryPermission("LIBRARY_MANAGEMENT", true)
+
+            val activityRepo = ActivityEventRepository(db.activityEventDao())
+            val backendClient = com.laterbox.app.ai.LaterboxBackendAiClient(
+                baseUrlProvider = { base },
+                appCheckTokenProvider = { "app-check" }
+            )
+            val streamVm = ChatViewModel(
+                chatRepository = chatRepo,
+                userPreferencesRepository = prefs,
+                laterboxContextEngine = LaterboxContextEngine(db, activityRepo, prefs),
+                appHealthChecker = AppHealthChecker(ctx, db, com.laterbox.app.media.data.adapters.ytdlp.YtDlpRuntimeManager(ctx), prefs),
+                linkRepository = linkRepo,
+                mediaRepository = mediaRepo,
+                moviesRepository = moviesRepo,
+                collectionRepository = collectionRepo,
+                reminderScheduler = ReminderScheduler(ctx),
+                backendAiClient = backendClient
+            )
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { streamVm.uiState.collect {} }
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { streamVm.pendingUiActionDispatch.collect {} }
+
+            streamVm.sendMessage("Open Severance and add it to my watchlist")
+            awaitCondition(this, timeoutMs = 5_000L) {
+                streamVm.pendingUiActionDispatch.value != null &&
+                    moviesRepo.observeWatchlist().first().any { it.id == "66" } &&
+                    streamVm.uiState.value.pendingMutatingAction is ChatAction.DeleteDownload
+            }
+
+            // Navigation dispatched ONCE, granted watchlist ran ONCE, destructive delete awaits approval
+            val dispatch = streamVm.pendingUiActionDispatch.value!!
+            assertTrue(dispatch.action is ChatAction.OpenMovieDetail)
+            assertEquals(1, moviesRepo.observeWatchlist().first().count { it.id == "66" })
+            assertTrue(streamVm.uiState.value.pendingMutatingAction is ChatAction.DeleteDownload)
+            assertTrue(streamVm.uiState.value.manifestOutOfSync)
+
+            // UI reports navigation outcome -> updates chip status to EXECUTED
+            streamVm.reportUiActionOutcome(
+                requestId = dispatch.requestId,
+                messageId = dispatch.messageId,
+                actionId = dispatch.actionId,
+                action = dispatch.action,
+                executed = true,
+                detail = "Opened details for Severance"
+            )
+            awaitCondition(this) { streamVm.pendingUiActionDispatch.value == null }
+
+            val convId = streamVm.uiState.value.activeConversationId!!
+            val assistantMsg = chatRepo.getMessagesSnapshot(convId)
+                .first { it.role == com.laterbox.app.data.repository.ChatRole.ASSISTANT.name && it.actionsJson != null }
+            val tracked = com.laterbox.app.ai.AssistantActionHandler.fromTrackedJsonList(assistantMsg.actionsJson)
+                .associateBy { it.action.actionName }
+            assertEquals(com.laterbox.app.ai.ChatActionStatus.EXECUTED, tracked.values.first { it.action is ChatAction.OpenMovieDetail }.status)
+            assertEquals(com.laterbox.app.ai.ChatActionStatus.EXECUTED, tracked.values.first { it.action is ChatAction.ToggleMovieWatchlist }.status)
+            assertEquals(com.laterbox.app.ai.ChatActionStatus.AWAITING_APPROVAL, tracked.values.first { it.action is ChatAction.DeleteDownload }.status)
+        } finally {
+            server.shutdown()
+        }
+    }
+
     private class RecordingFakeMediaRepository : MediaRepository {
         val inspectedLinkIds = mutableListOf<Long>()
         val retriedTaskIds = mutableListOf<String>()

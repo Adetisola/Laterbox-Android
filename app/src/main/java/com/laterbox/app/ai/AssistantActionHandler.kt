@@ -54,6 +54,22 @@ enum class AssistantPermissionCategory(
     }
 }
 
+enum class ChatActionStatus {
+    PROPOSED,
+    AUTO_EXECUTING,
+    AWAITING_APPROVAL,
+    EXECUTED,
+    FAILED,
+    DENIED
+}
+
+data class TrackedChatAction(
+    val actionId: String,
+    val action: ChatAction,
+    val status: ChatActionStatus = ChatActionStatus.PROPOSED,
+    val statusDetail: String? = null
+)
+
 sealed interface ChatAction {
     val label: String
 
@@ -413,6 +429,50 @@ object AssistantActionHandler {
         setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
     )
 
+    fun actionSignature(action: ChatAction): String = when (action) {
+        is ChatAction.SearchLinks -> "SEARCH_LINKS|${action.query}"
+        is ChatAction.OpenLinkDetail -> "OPEN_LINK_DETAIL|${action.linkId}"
+        is ChatAction.OpenDownloads -> "OPEN_DOWNLOADS|${action.initialTab}"
+        is ChatAction.OpenYouTubeTranscripts -> "OPEN_YOUTUBE_TRANSCRIPTS|${action.url.orEmpty()}"
+        is ChatAction.OpenCollections -> "OPEN_COLLECTIONS"
+        is ChatAction.OpenSettings -> "OPEN_SETTINGS|${action.route}"
+        is ChatAction.RunHealthCheck -> "RUN_HEALTH_CHECK"
+        is ChatAction.RetryInspection -> "RETRY_INSPECTION|${action.linkId}"
+        is ChatAction.RetryDownload -> "RETRY_DOWNLOAD|${action.taskId}"
+        is ChatAction.RefreshMetadata -> "REFRESH_METADATA|${action.linkId}"
+        is ChatAction.OpenMoviesHome -> "OPEN_MOVIES_HOME"
+        is ChatAction.SearchMovies -> "SEARCH_MOVIES|${action.kind.orEmpty()}|${action.genre.orEmpty()}|${action.query}"
+        is ChatAction.OpenMovieDetail -> "OPEN_MOVIE_DETAIL|${action.providerId}|${action.titleId}"
+        is ChatAction.OpenMoviePlayer -> "OPEN_MOVIE_PLAYER|${action.providerId}|${action.titleId}|${action.seasonNumber ?: 0}|${action.episodeNumber ?: 0}"
+        is ChatAction.ToggleMovieWatchlist -> "TOGGLE_MOVIE_WATCHLIST|${action.providerId}|${action.titleId}|${action.add}"
+        is ChatAction.AddMovieToCollection -> "ADD_MOVIE_TO_COLLECTION|${action.providerId}|${action.titleId}|${action.collectionId ?: action.collectionName.orEmpty()}"
+        is ChatAction.MarkMovieWatched -> "MARK_MOVIE_WATCHED|${action.providerId}|${action.titleId}|${action.seasonNumber ?: 0}|${action.episodeNumber ?: 0}|${action.watched}"
+        is ChatAction.ScheduleMovieReminder -> "SCHEDULE_MOVIE_REMINDER|${action.providerId}|${action.titleId}|${action.triggerAtMillis}"
+        is ChatAction.MuteSeriesReminders -> "MUTE_SERIES_REMINDERS|${action.providerId}|${action.titleId}|${action.muted}"
+        is ChatAction.RenameConversation -> "RENAME_CONVERSATION|${action.conversationId.orEmpty()}|${action.title}"
+        is ChatAction.DeleteConversation -> "DELETE_CONVERSATION|${action.conversationId.orEmpty()}"
+        is ChatAction.DeleteDownload -> "DELETE_DOWNLOAD|${action.taskId.orEmpty()}|${action.assetId.orEmpty()}"
+    }
+
+    fun buildActionId(index: Int, action: ChatAction): String {
+        val hashHex = actionSignature(action).hashCode().toUInt().toString(16)
+        return "act_${index}_$hashHex"
+    }
+
+    fun toTrackedActions(
+        actions: List<ChatAction>,
+        defaultStatus: ChatActionStatus = ChatActionStatus.PROPOSED
+    ): List<TrackedChatAction> = actions
+        .distinctBy { actionSignature(it) }
+        .take(4)
+        .mapIndexed { index, act ->
+            TrackedChatAction(
+                actionId = buildActionId(index, act),
+                action = act,
+                status = defaultStatus
+            )
+        }
+
     fun parseModelResponse(rawText: String): ParsedAssistantResponse {
         val match = ACTION_BLOCK_REGEX.find(rawText)
         if (match == null) {
@@ -431,7 +491,7 @@ object AssistantActionHandler {
         )
     }
 
-    fun fromJsonList(json: String?): List<ChatAction> {
+    fun fromTrackedJsonList(json: String?): List<TrackedChatAction> {
         if (json.isNullOrBlank()) return emptyList()
         return try {
             val cleaned = json.trim()
@@ -440,159 +500,207 @@ object AssistantActionHandler {
                 .removeSuffix("```")
                 .trim()
             val array = JSONArray(cleaned)
-            val result = mutableListOf<ChatAction>()
+            val result = mutableListOf<TrackedChatAction>()
             for (i in 0 until array.length()) {
                 val obj = array.optJSONObject(i) ?: continue
-                parseAllowlistedAction(obj)?.let { result += it }
+                val parsed = parseAllowlistedAction(obj) ?: continue
+                val actionId = obj.optString("actionId", "").trim()
+                    .ifBlank { buildActionId(result.size, parsed) }
+                val rawStatus = obj.optString("status", "").trim().uppercase()
+                val status = ChatActionStatus.entries.firstOrNull { it.name == rawStatus }
+                    ?: ChatActionStatus.PROPOSED
+                val detail = obj.optString("statusDetail", "").trim().takeIf { it.isNotEmpty() }
+                result += TrackedChatAction(
+                    actionId = actionId,
+                    action = parsed,
+                    status = status,
+                    statusDetail = detail
+                )
             }
-            result.distinctBy { it.toString() }.take(4)
+            result.distinctBy { actionSignature(it.action) }.take(4)
         } catch (_: Throwable) {
             emptyList()
         }
     }
 
-    fun toJsonList(actions: List<ChatAction>): String? {
+    fun fromJsonList(json: String?): List<ChatAction> =
+        fromTrackedJsonList(json).map { it.action }
+
+    fun toTrackedJsonList(actions: List<TrackedChatAction>): String? {
         if (actions.isEmpty()) return null
         val array = JSONArray()
-        for (action in actions) {
-            val obj = JSONObject()
-            when (action) {
-                is ChatAction.SearchLinks -> {
-                    obj.put("type", "SEARCH_LINKS")
-                    obj.put("query", action.query)
-                }
-                is ChatAction.OpenLinkDetail -> {
-                    obj.put("type", "OPEN_LINK_DETAIL")
-                    obj.put("linkId", action.linkId)
-                    obj.put("title", action.title)
-                }
-                is ChatAction.OpenDownloads -> {
-                    obj.put("type", "OPEN_DOWNLOADS")
-                    obj.put("initialTab", action.initialTab)
-                }
-                is ChatAction.OpenYouTubeTranscripts -> {
-                    obj.put("type", "OPEN_YOUTUBE_TRANSCRIPTS")
-                    if (!action.url.isNullOrBlank()) obj.put("url", action.url)
-                    if (!action.labelTitle.isNullOrBlank()) obj.put("title", action.labelTitle)
-                }
-                is ChatAction.OpenCollections -> {
-                    obj.put("type", "OPEN_COLLECTIONS")
-                }
-                is ChatAction.OpenSettings -> {
-                    obj.put("type", "OPEN_SETTINGS")
-                    obj.put("route", action.route)
-                }
-                is ChatAction.RunHealthCheck -> {
-                    obj.put("type", "RUN_HEALTH_CHECK")
-                }
-                is ChatAction.RetryInspection -> {
-                    obj.put("type", "RETRY_INSPECTION")
-                    obj.put("linkId", action.linkId)
-                    obj.put("title", action.title)
-                    obj.put("requiresConfirmation", true)
-                }
-                is ChatAction.RetryDownload -> {
-                    obj.put("type", "RETRY_DOWNLOAD")
-                    obj.put("taskId", action.taskId)
-                    obj.put("title", action.title)
-                    obj.put("requiresConfirmation", true)
-                }
-                is ChatAction.RefreshMetadata -> {
-                    obj.put("type", "REFRESH_METADATA")
-                    obj.put("linkId", action.linkId)
-                    obj.put("title", action.title)
-                    obj.put("requiresConfirmation", true)
-                }
-                is ChatAction.OpenMoviesHome -> {
-                    obj.put("type", "OPEN_MOVIES_HOME")
-                }
-                is ChatAction.SearchMovies -> {
-                    obj.put("type", "SEARCH_MOVIES")
-                    obj.put("query", action.query)
-                    if (!action.kind.isNullOrBlank()) obj.put("kind", action.kind)
-                    if (!action.genre.isNullOrBlank()) obj.put("genre", action.genre)
-                }
-                is ChatAction.OpenMovieDetail -> {
-                    obj.put("type", "OPEN_MOVIE_DETAIL")
-                    obj.put("providerId", action.providerId)
-                    obj.put("titleId", action.titleId)
-                    obj.put("title", action.title)
-                }
-                is ChatAction.OpenMoviePlayer -> {
-                    obj.put("type", "OPEN_MOVIE_PLAYER")
-                    obj.put("providerId", action.providerId)
-                    obj.put("titleId", action.titleId)
-                    action.seasonNumber?.let { obj.put("seasonNumber", it) }
-                    action.episodeNumber?.let { obj.put("episodeNumber", it) }
-                    obj.put("title", action.title)
-                }
-                is ChatAction.ToggleMovieWatchlist -> {
-                    obj.put("type", "TOGGLE_MOVIE_WATCHLIST")
-                    obj.put("providerId", action.providerId)
-                    obj.put("titleId", action.titleId)
-                    obj.put("add", action.add)
-                    obj.put("title", action.title)
-                    obj.put("requiresConfirmation", true)
-                }
-                is ChatAction.AddMovieToCollection -> {
-                    obj.put("type", "ADD_MOVIE_TO_COLLECTION")
-                    obj.put("providerId", action.providerId)
-                    obj.put("titleId", action.titleId)
-                    action.collectionId?.let { obj.put("collectionId", it) }
-                    if (!action.collectionName.isNullOrBlank()) obj.put("collectionName", action.collectionName)
-                    obj.put("title", action.title)
-                    obj.put("requiresConfirmation", true)
-                }
-                is ChatAction.MarkMovieWatched -> {
-                    obj.put("type", "MARK_MOVIE_WATCHED")
-                    obj.put("providerId", action.providerId)
-                    obj.put("titleId", action.titleId)
-                    action.seasonNumber?.let { obj.put("seasonNumber", it) }
-                    action.episodeNumber?.let { obj.put("episodeNumber", it) }
-                    obj.put("watched", action.watched)
-                    obj.put("title", action.title)
-                    obj.put("requiresConfirmation", true)
-                }
-                is ChatAction.ScheduleMovieReminder -> {
-                    obj.put("type", "SCHEDULE_MOVIE_REMINDER")
-                    obj.put("providerId", action.providerId)
-                    obj.put("titleId", action.titleId)
-                    obj.put("triggerAtMillis", action.triggerAtMillis)
-                    if (!action.note.isNullOrBlank()) obj.put("note", action.note)
-                    obj.put("title", action.title)
-                    obj.put("requiresConfirmation", true)
-                }
-                is ChatAction.MuteSeriesReminders -> {
-                    obj.put("type", "MUTE_SERIES_REMINDERS")
-                    obj.put("providerId", action.providerId)
-                    obj.put("titleId", action.titleId)
-                    obj.put("muted", action.muted)
-                    obj.put("title", action.title)
-                    obj.put("requiresConfirmation", true)
-                }
-                is ChatAction.RenameConversation -> {
-                    obj.put("type", "RENAME_CONVERSATION")
-                    action.conversationId?.let { obj.put("conversationId", it) }
-                    obj.put("title", action.title)
-                    obj.put("requiresConfirmation", true)
-                }
-                is ChatAction.DeleteConversation -> {
-                    obj.put("type", "DELETE_CONVERSATION")
-                    action.conversationId?.let { obj.put("conversationId", it) }
-                    obj.put("title", action.title)
-                    obj.put("requiresConfirmation", true)
-                }
-                is ChatAction.DeleteDownload -> {
-                    obj.put("type", "DELETE_DOWNLOAD")
-                    action.taskId?.let { obj.put("taskId", it) }
-                    action.assetId?.let { obj.put("assetId", it) }
-                    obj.put("title", action.title)
-                    obj.put("requiresConfirmation", true)
-                }
+        for (tracked in actions) {
+            val obj = actionToJsonObject(tracked.action)
+            obj.put("actionId", tracked.actionId)
+            obj.put("status", tracked.status.name)
+            if (!tracked.statusDetail.isNullOrBlank()) {
+                obj.put("statusDetail", tracked.statusDetail.take(300))
             }
             array.put(obj)
         }
         return array.toString()
+    }
+
+    fun toJsonList(actions: List<ChatAction>): String? {
+        if (actions.isEmpty()) return null
+        return toTrackedJsonList(toTrackedActions(actions))
+    }
+
+    fun updateTrackedActionStatus(
+        actionsJson: String?,
+        actionId: String,
+        status: ChatActionStatus,
+        statusDetail: String? = null
+    ): String? {
+        val current = fromTrackedJsonList(actionsJson)
+        if (current.isEmpty()) return actionsJson
+        val updated = current.map { item ->
+            if (item.actionId == actionId) {
+                item.copy(status = status, statusDetail = statusDetail)
+            } else {
+                item
+            }
+        }
+        return toTrackedJsonList(updated)
+    }
+
+    private fun actionToJsonObject(action: ChatAction): JSONObject {
+        val obj = JSONObject()
+        when (action) {
+            is ChatAction.SearchLinks -> {
+                obj.put("type", "SEARCH_LINKS")
+                obj.put("query", action.query)
+            }
+            is ChatAction.OpenLinkDetail -> {
+                obj.put("type", "OPEN_LINK_DETAIL")
+                obj.put("linkId", action.linkId)
+                obj.put("title", action.title)
+            }
+            is ChatAction.OpenDownloads -> {
+                obj.put("type", "OPEN_DOWNLOADS")
+                obj.put("initialTab", action.initialTab)
+            }
+            is ChatAction.OpenYouTubeTranscripts -> {
+                obj.put("type", "OPEN_YOUTUBE_TRANSCRIPTS")
+                if (!action.url.isNullOrBlank()) obj.put("url", action.url)
+                if (!action.labelTitle.isNullOrBlank()) obj.put("title", action.labelTitle)
+            }
+            is ChatAction.OpenCollections -> {
+                obj.put("type", "OPEN_COLLECTIONS")
+            }
+            is ChatAction.OpenSettings -> {
+                obj.put("type", "OPEN_SETTINGS")
+                obj.put("route", action.route)
+            }
+            is ChatAction.RunHealthCheck -> {
+                obj.put("type", "RUN_HEALTH_CHECK")
+            }
+            is ChatAction.RetryInspection -> {
+                obj.put("type", "RETRY_INSPECTION")
+                obj.put("linkId", action.linkId)
+                obj.put("title", action.title)
+                obj.put("requiresConfirmation", true)
+            }
+            is ChatAction.RetryDownload -> {
+                obj.put("type", "RETRY_DOWNLOAD")
+                obj.put("taskId", action.taskId)
+                obj.put("title", action.title)
+                obj.put("requiresConfirmation", true)
+            }
+            is ChatAction.RefreshMetadata -> {
+                obj.put("type", "REFRESH_METADATA")
+                obj.put("linkId", action.linkId)
+                obj.put("title", action.title)
+                obj.put("requiresConfirmation", true)
+            }
+            is ChatAction.OpenMoviesHome -> {
+                obj.put("type", "OPEN_MOVIES_HOME")
+            }
+            is ChatAction.SearchMovies -> {
+                obj.put("type", "SEARCH_MOVIES")
+                obj.put("query", action.query)
+                if (!action.kind.isNullOrBlank()) obj.put("kind", action.kind)
+                if (!action.genre.isNullOrBlank()) obj.put("genre", action.genre)
+            }
+            is ChatAction.OpenMovieDetail -> {
+                obj.put("type", "OPEN_MOVIE_DETAIL")
+                obj.put("providerId", action.providerId)
+                obj.put("titleId", action.titleId)
+                obj.put("title", action.title)
+            }
+            is ChatAction.OpenMoviePlayer -> {
+                obj.put("type", "OPEN_MOVIE_PLAYER")
+                obj.put("providerId", action.providerId)
+                obj.put("titleId", action.titleId)
+                action.seasonNumber?.let { obj.put("seasonNumber", it) }
+                action.episodeNumber?.let { obj.put("episodeNumber", it) }
+                obj.put("title", action.title)
+            }
+            is ChatAction.ToggleMovieWatchlist -> {
+                obj.put("type", "TOGGLE_MOVIE_WATCHLIST")
+                obj.put("providerId", action.providerId)
+                obj.put("titleId", action.titleId)
+                obj.put("add", action.add)
+                obj.put("title", action.title)
+                obj.put("requiresConfirmation", true)
+            }
+            is ChatAction.AddMovieToCollection -> {
+                obj.put("type", "ADD_MOVIE_TO_COLLECTION")
+                obj.put("providerId", action.providerId)
+                obj.put("titleId", action.titleId)
+                action.collectionId?.let { obj.put("collectionId", it) }
+                if (!action.collectionName.isNullOrBlank()) obj.put("collectionName", action.collectionName)
+                obj.put("title", action.title)
+                obj.put("requiresConfirmation", true)
+            }
+            is ChatAction.MarkMovieWatched -> {
+                obj.put("type", "MARK_MOVIE_WATCHED")
+                obj.put("providerId", action.providerId)
+                obj.put("titleId", action.titleId)
+                action.seasonNumber?.let { obj.put("seasonNumber", it) }
+                action.episodeNumber?.let { obj.put("episodeNumber", it) }
+                obj.put("watched", action.watched)
+                obj.put("title", action.title)
+                obj.put("requiresConfirmation", true)
+            }
+            is ChatAction.ScheduleMovieReminder -> {
+                obj.put("type", "SCHEDULE_MOVIE_REMINDER")
+                obj.put("providerId", action.providerId)
+                obj.put("titleId", action.titleId)
+                obj.put("triggerAtMillis", action.triggerAtMillis)
+                if (!action.note.isNullOrBlank()) obj.put("note", action.note)
+                obj.put("title", action.title)
+                obj.put("requiresConfirmation", true)
+            }
+            is ChatAction.MuteSeriesReminders -> {
+                obj.put("type", "MUTE_SERIES_REMINDERS")
+                obj.put("providerId", action.providerId)
+                obj.put("titleId", action.titleId)
+                obj.put("muted", action.muted)
+                obj.put("title", action.title)
+                obj.put("requiresConfirmation", true)
+            }
+            is ChatAction.RenameConversation -> {
+                obj.put("type", "RENAME_CONVERSATION")
+                action.conversationId?.let { obj.put("conversationId", it) }
+                obj.put("title", action.title)
+                obj.put("requiresConfirmation", true)
+            }
+            is ChatAction.DeleteConversation -> {
+                obj.put("type", "DELETE_CONVERSATION")
+                action.conversationId?.let { obj.put("conversationId", it) }
+                obj.put("title", action.title)
+                obj.put("requiresConfirmation", true)
+            }
+            is ChatAction.DeleteDownload -> {
+                obj.put("type", "DELETE_DOWNLOAD")
+                action.taskId?.let { obj.put("taskId", it) }
+                action.assetId?.let { obj.put("assetId", it) }
+                obj.put("title", action.title)
+                obj.put("requiresConfirmation", true)
+            }
+        }
+        return obj
     }
 
     private fun parseAllowlistedAction(obj: JSONObject): ChatAction? {

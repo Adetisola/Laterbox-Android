@@ -34,6 +34,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
@@ -42,6 +43,14 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.UUID
+
+data class UiActionDispatch(
+    val requestId: String,
+    val messageId: String,
+    val actionId: String,
+    val action: ChatAction
+)
 
 data class ChatUiState(
     val activeConversationId: String? = null,
@@ -58,7 +67,8 @@ data class ChatUiState(
     val latestHealthReport: AppHealthReport? = null,
     val isRunningHealthCheck: Boolean = false,
     val pendingMutatingAction: ChatAction? = null,
-    val statusNotice: String? = null
+    val statusNotice: String? = null,
+    val manifestOutOfSync: Boolean = false
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -86,8 +96,13 @@ class ChatViewModel(
     private val _isRunningHealthCheck = MutableStateFlow(false)
     private val _pendingMutatingAction = MutableStateFlow<ChatAction?>(null)
     private val _statusNotice = MutableStateFlow<String?>(null)
+    private val _manifestOutOfSync = MutableStateFlow(false)
+    private val _pendingUiActionDispatch = MutableStateFlow<UiActionDispatch?>(null)
+    val pendingUiActionDispatch: StateFlow<UiActionDispatch?> = _pendingUiActionDispatch.asStateFlow()
 
     private val executingActionKeys = mutableSetOf<String>()
+    private val processedMessageActionKeys = mutableSetOf<String>()
+    private var pendingMutatingContext: Pair<String, String>? = null
     private var streamingJob: Job? = null
     private var lastHandledInvocationKey: String? = null
     private var pendingConsentConversationId: String? = null
@@ -120,9 +135,10 @@ class ChatViewModel(
         _latestHealthReport,
         _isRunningHealthCheck,
         _pendingMutatingAction,
-        _statusNotice
-    ) { report, running, pendingAction, notice ->
-        AuxState(report, running, pendingAction, notice)
+        _statusNotice,
+        _manifestOutOfSync
+    ) { report, running, pendingAction, notice, manifestOutOfSync ->
+        AuxState(report, running, pendingAction, notice, manifestOutOfSync)
     }
 
     val uiState: StateFlow<ChatUiState> = combine(
@@ -160,7 +176,8 @@ class ChatViewModel(
             latestHealthReport = aux.report,
             isRunningHealthCheck = aux.runningHealthCheck,
             pendingMutatingAction = aux.pendingAction,
-            statusNotice = aux.notice
+            statusNotice = aux.notice,
+            manifestOutOfSync = aux.manifestOutOfSync
         )
     }.stateIn(
         scope = viewModelScope,
@@ -367,18 +384,102 @@ class ChatViewModel(
         }
     }
 
+    fun runAppHealthCheckForAction(messageId: String, actionId: String) {
+        val convId = _activeConversationId.value
+        viewModelScope.launch {
+            if (convId != null) {
+                chatRepository.updateMessageActionStatus(
+                    convId,
+                    messageId,
+                    actionId,
+                    com.laterbox.app.ai.ChatActionStatus.AUTO_EXECUTING
+                )
+            }
+            _isRunningHealthCheck.value = true
+            val ok = try {
+                _latestHealthReport.value = appHealthChecker.runCheck()
+                true
+            } catch (_: Throwable) {
+                false
+            } finally {
+                _isRunningHealthCheck.value = false
+            }
+            if (convId != null) {
+                chatRepository.updateMessageActionStatus(
+                    conversationId = convId,
+                    messageId = messageId,
+                    actionId = actionId,
+                    status = if (ok) com.laterbox.app.ai.ChatActionStatus.EXECUTED else com.laterbox.app.ai.ChatActionStatus.FAILED,
+                    statusDetail = if (ok) "Health check completed" else "Health check failed"
+                )
+            }
+            reportActionOutcome(
+                conversationId = convId,
+                action = ChatAction.RunHealthCheck,
+                status = if (ok) "executed" else "failed",
+                detail = if (ok) "Diagnostics completed" else "Diagnostics failed",
+                actionId = actionId
+            )
+        }
+    }
+
+    fun reportUiActionOutcome(
+        requestId: String?,
+        messageId: String,
+        actionId: String,
+        action: ChatAction,
+        executed: Boolean,
+        detail: String
+    ) {
+        if (requestId != null && _pendingUiActionDispatch.value?.requestId == requestId) {
+            _pendingUiActionDispatch.value = null
+        }
+        val convId = _activeConversationId.value
+        viewModelScope.launch {
+            if (convId != null) {
+                chatRepository.updateMessageActionStatus(
+                    conversationId = convId,
+                    messageId = messageId,
+                    actionId = actionId,
+                    status = if (executed) com.laterbox.app.ai.ChatActionStatus.EXECUTED else com.laterbox.app.ai.ChatActionStatus.FAILED,
+                    statusDetail = detail.takeIf { it.isNotBlank() }
+                )
+            }
+            reportActionOutcome(
+                conversationId = convId,
+                action = action,
+                status = if (executed) "executed" else "failed",
+                detail = detail,
+                actionId = actionId
+            )
+        }
+    }
+
     /**
      * Entry point for state-changing assistant actions. Validates the target first, checks
      * category grants (while ALWAYS confirming irreversible destructive actions), and either
      * executes immediately or surfaces the expandable approval panel.
      */
-    fun requestMutatingActionConfirmation(action: ChatAction) {
+    fun requestMutatingActionConfirmation(
+        action: ChatAction,
+        messageId: String? = null,
+        actionId: String? = null
+    ) {
         if (action.category != ActionCategory.STATE_CHANGING) return
         viewModelScope.launch {
             val convId = _activeConversationId.value
             val problem = validateActionTarget(action)
             if (problem != null) {
-                reportActionOutcome(convId, action, "failed", problem)
+                if (convId != null && messageId != null && actionId != null) {
+                    chatRepository.updateMessageActionStatus(
+                        convId,
+                        messageId,
+                        actionId,
+                        com.laterbox.app.ai.ChatActionStatus.FAILED,
+                        problem
+                    )
+                }
+                reportActionOutcome(convId, action, "failed", problem, actionId)
                 postReceipt(convId, "I couldn't ${action.actionName.lowercase()}: $problem Nothing was changed.")
                 return@launch
             }
@@ -390,8 +491,25 @@ class ChatViewModel(
                     (convId != null && permissionKey != null && chatRepository.isActionAlwaysAllowed(convId, permissionKey)))
 
             if (categoryAllowed) {
-                executeApprovedAction(action, convId)
+                if (convId != null && messageId != null && actionId != null) {
+                    chatRepository.updateMessageActionStatus(
+                        convId,
+                        messageId,
+                        actionId,
+                        com.laterbox.app.ai.ChatActionStatus.AUTO_EXECUTING
+                    )
+                }
+                executeApprovedAction(action, convId, messageId, actionId)
             } else {
+                pendingMutatingContext = if (messageId != null && actionId != null) messageId to actionId else null
+                if (convId != null && messageId != null && actionId != null) {
+                    chatRepository.updateMessageActionStatus(
+                        convId,
+                        messageId,
+                        actionId,
+                        com.laterbox.app.ai.ChatActionStatus.AWAITING_APPROVAL
+                    )
+                }
                 _pendingMutatingAction.value = action
             }
         }
@@ -401,9 +519,20 @@ class ChatViewModel(
     fun dismissMutatingAction() {
         val action = _pendingMutatingAction.value ?: return
         _pendingMutatingAction.value = null
+        val msgCtx = pendingMutatingContext
+        pendingMutatingContext = null
         val convId = _activeConversationId.value
         viewModelScope.launch {
-            reportActionOutcome(convId, action, "denied", "Denied by user")
+            if (convId != null && msgCtx != null) {
+                chatRepository.updateMessageActionStatus(
+                    convId,
+                    msgCtx.first,
+                    msgCtx.second,
+                    com.laterbox.app.ai.ChatActionStatus.DENIED,
+                    "Declined by user"
+                )
+            }
+            reportActionOutcome(convId, action, "denied", "Denied by user", msgCtx?.second)
             postReceipt(
                 convId,
                 "Okay, I won't ${action.actionName.lowercase()}${action.targetLabel?.let { " for \"$it\"" }.orEmpty()}. Nothing was changed."
@@ -415,14 +544,18 @@ class ChatViewModel(
     fun confirmMutatingAction() {
         val action = _pendingMutatingAction.value ?: return
         _pendingMutatingAction.value = null
+        val msgCtx = pendingMutatingContext
+        pendingMutatingContext = null
         val convId = _activeConversationId.value
-        viewModelScope.launch { executeApprovedAction(action, convId) }
+        viewModelScope.launch { executeApprovedAction(action, convId, msgCtx?.first, msgCtx?.second) }
     }
 
     /** "Always allow [Category]": persists category grant in DataStore + conversation DB (blocked for destructive actions). */
     fun alwaysAllowMutatingActionInConversation() {
         val action = _pendingMutatingAction.value ?: return
         _pendingMutatingAction.value = null
+        val msgCtx = pendingMutatingContext
+        pendingMutatingContext = null
         val convId = _activeConversationId.value
         viewModelScope.launch {
             if (!action.isIrreversibleDestructive) {
@@ -430,7 +563,7 @@ class ChatViewModel(
                 val key = action.permissionKey
                 if (convId != null && key != null) chatRepository.grantActionPermission(convId, key)
             }
-            executeApprovedAction(action, convId)
+            executeApprovedAction(action, convId, msgCtx?.first, msgCtx?.second)
         }
     }
 
@@ -438,9 +571,10 @@ class ChatViewModel(
         conversationId: String?,
         action: ChatAction,
         status: String,
-        detail: String
+        detail: String,
+        actionId: String? = null
     ) {
-        if (status == "succeeded") {
+        if (status == "executed") {
             analyticsTracker?.trackFeatureUsed("assistant_action")
         }
         val client = backendAiClient ?: return
@@ -452,7 +586,8 @@ class ChatViewModel(
                     actionType = action.permissionKey ?: action.actionName.uppercase().replace(' ', '_'),
                     category = action.permissionCategory.key,
                     status = status,
-                    detail = detail
+                    detail = detail,
+                    actionId = actionId
                 )
             }
         }
@@ -569,7 +704,12 @@ class ChatViewModel(
         }
     }
 
-    private suspend fun executeApprovedAction(action: ChatAction, conversationId: String?) {
+    private suspend fun executeApprovedAction(
+        action: ChatAction,
+        conversationId: String?,
+        messageId: String? = null,
+        actionId: String? = null
+    ) {
         val dedupeKey = when (action) {
             is ChatAction.RetryInspection -> "RI:${action.linkId}"
             is ChatAction.RefreshMetadata -> "RM:${action.linkId}"
@@ -585,35 +725,49 @@ class ChatViewModel(
             else -> return
         }
         if (!executingActionKeys.add(dedupeKey)) return
+        suspend fun recordTrackedStatus(status: com.laterbox.app.ai.ChatActionStatus, detail: String?) {
+            if (conversationId != null && messageId != null && actionId != null) {
+                chatRepository.updateMessageActionStatus(conversationId, messageId, actionId, status, detail)
+            }
+        }
         try {
             // Independent re-validation: state may have changed while the card was open.
             val problem = validateActionTarget(action)
             if (problem != null) {
-                reportActionOutcome(conversationId, action, "failed", problem)
+                recordTrackedStatus(com.laterbox.app.ai.ChatActionStatus.FAILED, problem)
+                reportActionOutcome(conversationId, action, "failed", problem, actionId)
                 postReceipt(conversationId, "I couldn't ${action.actionName.lowercase()}: $problem Nothing was changed.")
                 return
             }
+            var actionSucceeded = true
             val receipt: String = when (action) {
                 is ChatAction.RetryInspection -> {
                     val link = linkRepository.getLinkById(action.linkId).first()
-                        ?: return postReceipt(conversationId, "That saved link no longer exists. Nothing was changed.")
-                    mediaRepository.startInspection(
-                        linkId = link.id,
-                        url = link.originalUrl,
-                        previewImageUrl = link.previewImageUrl,
-                        forceRefresh = true
-                    )
-                    "Started a fresh media inspection for \"${link.title}\". Check the item for the result."
+                    if (link == null) {
+                        actionSucceeded = false
+                        "That saved link no longer exists. Nothing was changed."
+                    } else {
+                        mediaRepository.startInspection(
+                            linkId = link.id,
+                            url = link.originalUrl,
+                            previewImageUrl = link.previewImageUrl,
+                            forceRefresh = true
+                        )
+                        "Started a fresh media inspection for \"${link.title}\". Check the item for the result."
+                    }
                 }
                 is ChatAction.RefreshMetadata -> {
                     val ok = linkRepository.fetchMetadataNow(action.linkId, isManualRetry = true)
+                    actionSucceeded = ok
                     if (ok) "Refreshed the details for \"${action.title}\"."
                     else "I tried to refresh \"${action.title}\" but it didn't complete (likely a network problem). It will retry later."
                 }
                 is ChatAction.RetryDownload -> {
                     mediaRepository.retryDownload(action.taskId)
                     val after = mediaRepository.getTaskById(action.taskId).first()
-                    if (after != null && after.status != DownloadState.FAILED && after.status != DownloadState.CANCELLED) {
+                    val ok = after != null && after.status != DownloadState.FAILED && after.status != DownloadState.CANCELLED
+                    actionSucceeded = ok
+                    if (ok) {
                         "Re-queued the download \"${action.title}\"."
                     } else {
                         "I tried to re-queue \"${action.title}\" but it is still stopped."
@@ -622,36 +776,48 @@ class ChatViewModel(
                 is ChatAction.ToggleMovieWatchlist -> {
                     val repo = moviesRepository ?: return
                     val summary = resolveMovieSummary(action.providerId, action.titleId)
-                        ?: return postReceipt(conversationId, "I couldn't find \"${action.title}\". Nothing was changed.")
-                    val currentlyIn = repo.observeIsInWatchlist(summary.compositeId).first()
-                    if (currentlyIn == action.add) {
-                        if (action.add) "\"${summary.title}\" is already in your Movies & TV watchlist."
-                        else "\"${summary.title}\" is already removed from your Movies & TV watchlist."
+                    if (summary == null) {
+                        actionSucceeded = false
+                        "I couldn't find \"${action.title}\". Nothing was changed."
                     } else {
-                        val nowIn = repo.toggleWatchlist(summary)
-                        if (nowIn) "Added \"${summary.title}\" to your Movies & TV watchlist."
-                        else "Removed \"${summary.title}\" from your Movies & TV watchlist."
+                        val currentlyIn = repo.observeIsInWatchlist(summary.compositeId).first()
+                        if (currentlyIn == action.add) {
+                            if (action.add) "\"${summary.title}\" is already in your Movies & TV watchlist."
+                            else "\"${summary.title}\" is already removed from your Movies & TV watchlist."
+                        } else {
+                            val nowIn = repo.toggleWatchlist(summary)
+                            if (nowIn) "Added \"${summary.title}\" to your Movies & TV watchlist."
+                            else "Removed \"${summary.title}\" from your Movies & TV watchlist."
+                        }
                     }
                 }
                 is ChatAction.AddMovieToCollection -> {
                     val repo = moviesRepository ?: return
                     val colRepo = collectionRepository ?: return
                     val summary = resolveMovieSummary(action.providerId, action.titleId)
-                        ?: return postReceipt(conversationId, "I couldn't find \"${action.title}\". Nothing was changed.")
-                    val existingById = action.collectionId?.let { colRepo.getCollectionById(it).first() }
-                    val trimmedName = action.collectionName?.trim()?.takeIf { it.isNotBlank() }
-                    val existingByName = if (existingById == null && trimmedName != null) {
-                        colRepo.collectionsWithCounts.firstOrNull().orEmpty()
-                            .firstOrNull { it.collection.name.equals(trimmedName, ignoreCase = true) }
-                            ?.collection
-                    } else null
-                    val targetColId = existingById?.id
-                        ?: existingByName?.id
-                        ?: trimmedName?.let { colRepo.createCollection(it) }
-                        ?: return postReceipt(conversationId, "I couldn't resolve the target collection. Nothing was changed.")
-                    val targetColName = existingById?.name ?: existingByName?.name ?: trimmedName ?: "collection"
-                    repo.addMediaToCollection(summary, targetColId)
-                    "Added \"${summary.title}\" to collection \"$targetColName\"."
+                    if (summary == null) {
+                        actionSucceeded = false
+                        "I couldn't find \"${action.title}\". Nothing was changed."
+                    } else {
+                        val existingById = action.collectionId?.let { colRepo.getCollectionById(it).first() }
+                        val trimmedName = action.collectionName?.trim()?.takeIf { it.isNotBlank() }
+                        val existingByName = if (existingById == null && trimmedName != null) {
+                            colRepo.collectionsWithCounts.firstOrNull().orEmpty()
+                                .firstOrNull { it.collection.name.equals(trimmedName, ignoreCase = true) }
+                                ?.collection
+                        } else null
+                        val targetColId = existingById?.id
+                            ?: existingByName?.id
+                            ?: trimmedName?.let { colRepo.createCollection(it) }
+                        if (targetColId == null) {
+                            actionSucceeded = false
+                            "I couldn't resolve the target collection. Nothing was changed."
+                        } else {
+                            val targetColName = existingById?.name ?: existingByName?.name ?: trimmedName ?: "collection"
+                            repo.addMediaToCollection(summary, targetColId)
+                            "Added \"${summary.title}\" to collection \"$targetColName\"."
+                        }
+                    }
                 }
                 is ChatAction.MarkMovieWatched -> {
                     val repo = moviesRepository ?: return
@@ -660,17 +826,21 @@ class ChatViewModel(
                     } else ""
                     if (action.watched) {
                         val summary = resolveMovieSummary(action.providerId, action.titleId)
-                            ?: return postReceipt(conversationId, "I couldn't find \"${action.title}\". Nothing was changed.")
-                        val episodeLabel = if (action.seasonNumber != null && action.episodeNumber != null) {
-                            "S${action.seasonNumber}E${action.episodeNumber}"
-                        } else null
-                        repo.markWatched(
-                            item = summary,
-                            seasonNumber = action.seasonNumber,
-                            episodeNumber = action.episodeNumber,
-                            episodeLabel = episodeLabel
-                        )
-                        "Marked \"${summary.title}\"$epSuffix as watched in your viewing history."
+                        if (summary == null) {
+                            actionSucceeded = false
+                            "I couldn't find \"${action.title}\". Nothing was changed."
+                        } else {
+                            val episodeLabel = if (action.seasonNumber != null && action.episodeNumber != null) {
+                                "S${action.seasonNumber}E${action.episodeNumber}"
+                            } else null
+                            repo.markWatched(
+                                item = summary,
+                                seasonNumber = action.seasonNumber,
+                                episodeNumber = action.episodeNumber,
+                                episodeLabel = episodeLabel
+                            )
+                            "Marked \"${summary.title}\"$epSuffix as watched in your viewing history."
+                        }
                     } else {
                         repo.markUnwatched(
                             providerId = action.providerId,
@@ -684,46 +854,64 @@ class ChatViewModel(
                 is ChatAction.ScheduleMovieReminder -> {
                     val repo = moviesRepository ?: return
                     val summary = resolveMovieSummary(action.providerId, action.titleId)
-                        ?: return postReceipt(conversationId, "I couldn't find \"${action.title}\". Nothing was changed.")
-                    repo.scheduleViewingReminder(
-                        item = summary,
-                        triggerAtMillis = action.triggerAtMillis,
-                        note = action.note
-                    )
-                    reminderScheduler?.scheduleMovieViewingReminder(
-                        mediaKey = summary.stableMediaKey,
-                        providerId = summary.providerId,
-                        titleId = summary.id,
-                        title = summary.title,
-                        triggerAtMillis = action.triggerAtMillis,
-                        note = action.note
-                    )
-                    val formattedTime = java.text.SimpleDateFormat("MMM d 'at' h:mm a", java.util.Locale.US)
-                        .format(java.util.Date(action.triggerAtMillis))
-                    "Scheduled a viewing reminder for \"${summary.title}\" on $formattedTime."
+                    if (summary == null) {
+                        actionSucceeded = false
+                        "I couldn't find \"${action.title}\". Nothing was changed."
+                    } else {
+                        repo.scheduleViewingReminder(
+                            item = summary,
+                            triggerAtMillis = action.triggerAtMillis,
+                            note = action.note
+                        )
+                        reminderScheduler?.scheduleMovieViewingReminder(
+                            mediaKey = summary.stableMediaKey,
+                            providerId = summary.providerId,
+                            titleId = summary.id,
+                            title = summary.title,
+                            triggerAtMillis = action.triggerAtMillis,
+                            note = action.note
+                        )
+                        val formattedTime = java.text.SimpleDateFormat("MMM d 'at' h:mm a", java.util.Locale.US)
+                            .format(java.util.Date(action.triggerAtMillis))
+                        "Scheduled a viewing reminder for \"${summary.title}\" on $formattedTime."
+                    }
                 }
                 is ChatAction.MuteSeriesReminders -> {
                     val repo = moviesRepository ?: return
                     val summary = resolveMovieSummary(action.providerId, action.titleId)
-                        ?: return postReceipt(conversationId, "I couldn't find \"${action.title}\". Nothing was changed.")
-                    repo.setSeriesRemindersMuted(summary.providerId, summary.id, action.muted)
-                    if (action.muted) "Muted proactive Smart Reminders for \"${summary.title}\"."
-                    else "Unmuted proactive Smart Reminders for \"${summary.title}\"."
+                    if (summary == null) {
+                        actionSucceeded = false
+                        "I couldn't find \"${action.title}\". Nothing was changed."
+                    } else {
+                        repo.setSeriesRemindersMuted(summary.providerId, summary.id, action.muted)
+                        if (action.muted) "Muted proactive Smart Reminders for \"${summary.title}\"."
+                        else "Unmuted proactive Smart Reminders for \"${summary.title}\"."
+                    }
                 }
                 is ChatAction.RenameConversation -> {
                     val targetId = action.conversationId ?: conversationId
-                        ?: return postReceipt(conversationId, "No active conversation to rename.")
-                    val ok = chatRepository.renameConversation(targetId, action.title)
-                    if (ok) "Renamed conversation to \"${action.title}\"."
-                    else "Unable to rename this conversation."
+                    if (targetId == null) {
+                        actionSucceeded = false
+                        "No active conversation to rename."
+                    } else {
+                        val ok = chatRepository.renameConversation(targetId, action.title)
+                        actionSucceeded = ok
+                        if (ok) "Renamed conversation to \"${action.title}\"."
+                        else "Unable to rename this conversation."
+                    }
                 }
                 is ChatAction.DeleteConversation -> {
                     val targetId = action.conversationId ?: conversationId
-                        ?: return postReceipt(conversationId, "No active conversation to delete.")
-                    reportActionOutcome(targetId, action, "executed", "Deleted conversation")
-                    deleteConversation(targetId)
-                    _statusNotice.value = "Deleted conversation \"${action.title}\"."
-                    return
+                    if (targetId == null) {
+                        actionSucceeded = false
+                        "No active conversation to delete."
+                    } else {
+                        recordTrackedStatus(com.laterbox.app.ai.ChatActionStatus.EXECUTED, "Deleted conversation")
+                        reportActionOutcome(targetId, action, "executed", "Deleted conversation", actionId)
+                        deleteConversation(targetId)
+                        _statusNotice.value = "Deleted conversation \"${action.title}\"."
+                        return
+                    }
                 }
                 is ChatAction.DeleteDownload -> {
                     if (!action.assetId.isNullOrBlank()) {
@@ -736,12 +924,24 @@ class ChatViewModel(
                 }
                 else -> return
             }
-            reportActionOutcome(conversationId, action, "executed", receipt)
+            recordTrackedStatus(
+                if (actionSucceeded) com.laterbox.app.ai.ChatActionStatus.EXECUTED else com.laterbox.app.ai.ChatActionStatus.FAILED,
+                receipt
+            )
+            reportActionOutcome(
+                conversationId = conversationId,
+                action = action,
+                status = if (actionSucceeded) "executed" else "failed",
+                detail = receipt,
+                actionId = actionId
+            )
             postReceipt(conversationId, receipt)
         } catch (ce: CancellationException) {
             throw ce
         } catch (t: Throwable) {
-            reportActionOutcome(conversationId, action, "failed", t.message.orEmpty())
+            val errDetail = t.message.orEmpty()
+            recordTrackedStatus(com.laterbox.app.ai.ChatActionStatus.FAILED, errDetail)
+            reportActionOutcome(conversationId, action, "failed", errDetail, actionId)
             postReceipt(conversationId, "That didn't work: ${GeminiClient.redactSecrets(t.message).take(120).ifBlank { "unexpected error" }}.")
         } finally {
             executingActionKeys.remove(dedupeKey)
@@ -826,6 +1026,7 @@ class ChatViewModel(
 
                 var receivedTerminal = false
                 var fallbackToDirectGemini = backendAiClient == null
+                val proposedActionsMap = linkedMapOf<String, ChatAction>()
 
                 if (backendAiClient != null) {
                     var backendNotConfigured = false
@@ -839,31 +1040,53 @@ class ChatViewModel(
                         enableWebSearch = true
                     ).collect { event ->
                         when (event) {
-                            is com.laterbox.app.ai.BackendAiStreamEvent.Started -> Unit
+                            is com.laterbox.app.ai.BackendAiStreamEvent.Started -> {
+                                _manifestOutOfSync.value = !event.manifestSynced
+                                if (!event.manifestSynced) {
+                                    viewModelScope.launch {
+                                        val manifest = runCatching { backendAiClient.fetchCapabilityManifest() }.getOrNull()
+                                        if (manifest != null) {
+                                            _manifestOutOfSync.value = !manifest.clientInSync
+                                        }
+                                    }
+                                }
+                            }
                             is com.laterbox.app.ai.BackendAiStreamEvent.TextDelta -> {
                                 accumulated.append(event.chunk)
                                 _streamingPartialText.value = accumulated.toString()
                             }
-                            is com.laterbox.app.ai.BackendAiStreamEvent.ActionProposed -> Unit
+                            is com.laterbox.app.ai.BackendAiStreamEvent.ActionProposed -> {
+                                val sig = AssistantActionHandler.actionSignature(event.action)
+                                proposedActionsMap.putIfAbsent(sig, event.action)
+                            }
                             is com.laterbox.app.ai.BackendAiStreamEvent.Completed -> {
                                 receivedTerminal = true
                                 val finalDisplay = event.displayText.ifBlank {
                                     AssistantActionHandler.parseModelResponse(event.fullText).displayText
                                 }
                                 val cleanReply = GeminiClient.redactSecrets(finalDisplay, resolvedKey)
-                                val actions = if (event.actions.isNotEmpty()) {
+                                val parsedActions = if (event.actions.isNotEmpty()) {
                                     event.actions
                                 } else {
                                     AssistantActionHandler.parseModelResponse(event.fullText).actions
                                 }
+                                val mergedActions = (proposedActionsMap.values + parsedActions)
+                                    .distinctBy { AssistantActionHandler.actionSignature(it) }
+                                val trackedActions = AssistantActionHandler.toTrackedActions(mergedActions)
                                 chatRepository.updateAssistantMessage(
                                     messageId = placeholder.id,
                                     conversationId = conversationId,
                                     content = cleanReply,
                                     status = ChatMessageStatus.COMPLETE,
-                                    actionsJson = AssistantActionHandler.toJsonList(actions)
+                                    actionsJson = AssistantActionHandler.toTrackedJsonList(trackedActions)
                                 )
                                 launchContextualTitleGeneration(conversationId, latestPrompt, cleanReply)
+                                processMessageActionsAfterCompletion(
+                                    conversationId = conversationId,
+                                    messageId = placeholder.id,
+                                    trackedActions = trackedActions,
+                                    prefs = prefs
+                                )
                             }
                             is com.laterbox.app.ai.BackendAiStreamEvent.Error -> {
                                 if (event.code == "AI_NOT_CONFIGURED" && !resolvedKey.isNullOrBlank()) {
@@ -902,15 +1125,21 @@ class ChatViewModel(
                                 receivedTerminal = true
                                 val parsed = AssistantActionHandler.parseModelResponse(event.fullText)
                                 val cleanReply = GeminiClient.redactSecrets(parsed.displayText, resolvedKey)
-                                val actionsJson = AssistantActionHandler.toJsonList(parsed.actions)
+                                val trackedActions = AssistantActionHandler.toTrackedActions(parsed.actions)
                                 chatRepository.updateAssistantMessage(
                                     messageId = placeholder.id,
                                     conversationId = conversationId,
                                     content = cleanReply,
                                     status = ChatMessageStatus.COMPLETE,
-                                    actionsJson = actionsJson
+                                    actionsJson = AssistantActionHandler.toTrackedJsonList(trackedActions)
                                 )
                                 launchContextualTitleGeneration(conversationId, latestPrompt, cleanReply)
+                                processMessageActionsAfterCompletion(
+                                    conversationId = conversationId,
+                                    messageId = placeholder.id,
+                                    trackedActions = trackedActions,
+                                    prefs = prefs
+                                )
                             }
                             is GeminiStreamEvent.Error -> {
                                 receivedTerminal = true
@@ -930,14 +1159,21 @@ class ChatViewModel(
                 if (!receivedTerminal && accumulated.isNotEmpty()) {
                     val parsed = AssistantActionHandler.parseModelResponse(accumulated.toString())
                     val cleanReply = GeminiClient.redactSecrets(parsed.displayText, resolvedKey)
+                    val trackedActions = AssistantActionHandler.toTrackedActions(parsed.actions)
                     chatRepository.updateAssistantMessage(
                         messageId = placeholder.id,
                         conversationId = conversationId,
                         content = cleanReply,
                         status = ChatMessageStatus.COMPLETE,
-                        actionsJson = AssistantActionHandler.toJsonList(parsed.actions)
+                        actionsJson = AssistantActionHandler.toTrackedJsonList(trackedActions)
                     )
                     launchContextualTitleGeneration(conversationId, latestPrompt, cleanReply)
+                    processMessageActionsAfterCompletion(
+                        conversationId = conversationId,
+                        messageId = placeholder.id,
+                        trackedActions = trackedActions,
+                        prefs = prefs
+                    )
                 }
             } catch (ce: CancellationException) {
                 withContext(NonCancellable) {
@@ -968,6 +1204,78 @@ class ChatViewModel(
         }
     }
 
+    private suspend fun processMessageActionsAfterCompletion(
+        conversationId: String,
+        messageId: String,
+        trackedActions: List<com.laterbox.app.ai.TrackedChatAction>,
+        prefs: com.laterbox.app.data.preferences.UserPreferences
+    ) {
+        if (trackedActions.isEmpty()) return
+        var didDispatchUiAction = false
+        for (tracked in trackedActions) {
+            if (!processedMessageActionKeys.add("$messageId:${tracked.actionId}")) continue
+            val action = tracked.action
+            if (action.category == ActionCategory.READ_ONLY) {
+                if (action is ChatAction.RunHealthCheck) {
+                    runAppHealthCheckForAction(messageId, tracked.actionId)
+                } else if (!didDispatchUiAction) {
+                    didDispatchUiAction = true
+                    chatRepository.updateMessageActionStatus(
+                        conversationId = conversationId,
+                        messageId = messageId,
+                        actionId = tracked.actionId,
+                        status = com.laterbox.app.ai.ChatActionStatus.AUTO_EXECUTING
+                    )
+                    _pendingUiActionDispatch.value = UiActionDispatch(
+                        requestId = UUID.randomUUID().toString(),
+                        messageId = messageId,
+                        actionId = tracked.actionId,
+                        action = action
+                    )
+                }
+            } else {
+                val problem = validateActionTarget(action)
+                if (problem != null) {
+                    chatRepository.updateMessageActionStatus(
+                        conversationId = conversationId,
+                        messageId = messageId,
+                        actionId = tracked.actionId,
+                        status = com.laterbox.app.ai.ChatActionStatus.FAILED,
+                        statusDetail = problem
+                    )
+                    reportActionOutcome(conversationId, action, "failed", problem, tracked.actionId)
+                    postReceipt(conversationId, "I couldn't ${action.actionName.lowercase()}: $problem Nothing was changed.")
+                    continue
+                }
+                val permissionKey = action.permissionKey
+                val categoryAllowed = !action.isIrreversibleDestructive &&
+                    (!action.permissionCategory.requiresApprovalByDefault ||
+                        action.permissionCategory.key in prefs.grantedAssistantActionCategories ||
+                        (permissionKey != null && chatRepository.isActionAlwaysAllowed(conversationId, permissionKey)))
+                if (categoryAllowed) {
+                    chatRepository.updateMessageActionStatus(
+                        conversationId = conversationId,
+                        messageId = messageId,
+                        actionId = tracked.actionId,
+                        status = com.laterbox.app.ai.ChatActionStatus.AUTO_EXECUTING
+                    )
+                    executeApprovedAction(action, conversationId, messageId, tracked.actionId)
+                } else {
+                    chatRepository.updateMessageActionStatus(
+                        conversationId = conversationId,
+                        messageId = messageId,
+                        actionId = tracked.actionId,
+                        status = com.laterbox.app.ai.ChatActionStatus.AWAITING_APPROVAL
+                    )
+                    if (_pendingMutatingAction.value == null) {
+                        pendingMutatingContext = messageId to tracked.actionId
+                        _pendingMutatingAction.value = action
+                    }
+                }
+            }
+        }
+    }
+
     private fun buildTurnsFromSnapshot(messages: List<ChatMessageEntity>): List<GeminiTurn> {
         val recent = messages.takeLast(12)
         return recent.mapNotNull { entity ->
@@ -993,6 +1301,7 @@ class ChatViewModel(
         val report: AppHealthReport?,
         val runningHealthCheck: Boolean,
         val pendingAction: ChatAction?,
-        val notice: String?
+        val notice: String?,
+        val manifestOutOfSync: Boolean = false
     )
 }

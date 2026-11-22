@@ -141,7 +141,11 @@ jobs:
         run: ./gradlew testDebugUnitTest --info --stacktrace
 
       - name: Run Release Tooling Unit Tests
-        run: python3 -m unittest discover -s tools -p "test_*.py" -v || true
+        run: |
+          pip3 install --break-system-packages bsdiff4 || pip3 install bsdiff4
+          python3 -m unittest discover -s tools/release -p "test_*.py" -v
+          python3 -m unittest discover -s tools/distribution -p "test_*.py" -v
+          python3 -m unittest discover -s tools/delta -p "test_*.py" -v
 
       - name: Run Android Lint
         run: ./gradlew lintDebug

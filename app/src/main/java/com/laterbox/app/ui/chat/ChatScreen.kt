@@ -58,6 +58,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.laterbox.app.ai.AssistantActionHandler
 import com.laterbox.app.ai.ChatAction
+import com.laterbox.app.ai.ChatActionStatus
+import com.laterbox.app.ai.TrackedChatAction
 import com.laterbox.app.ai.speech.ComposerSpeechUiState
 import com.laterbox.app.data.local.entity.ChatMessageEntity
 import com.laterbox.app.data.repository.ChatMessageStatus
@@ -107,7 +109,8 @@ fun ChatScreen(
     miniPlayerState: com.laterbox.app.movies.playback.MiniPlayerState? = null,
     onOpenMiniPlayerFullscreen: () -> Unit = {},
     onToggleMiniPlayerPlayPause: () -> Unit = {},
-    onCloseMiniPlayer: () -> Unit = {}
+    onCloseMiniPlayer: () -> Unit = {},
+    onTrackedActionClick: ((messageId: String, tracked: TrackedChatAction) -> Unit)? = null
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -340,6 +343,16 @@ fun ChatScreen(
                 )
             }
 
+            if (uiState.manifestOutOfSync) {
+                LaterboxBanner(
+                    text = "Assistant capabilities changed on the server. Check Settings to keep Laterbox in sync.",
+                    isWarning = true,
+                    actionText = "Settings",
+                    onActionClick = onOpenAiSettings,
+                    modifier = Modifier.padding(horizontal = spacing.base, vertical = spacing.xs)
+                )
+            }
+
             uiState.statusNotice?.let { notice ->
                 LaterboxBanner(
                     text = notice,
@@ -403,6 +416,7 @@ fun ChatScreen(
                                 isStreamingThis = isActiveStreamingBubble,
                                 onRetry = { onRetryMessage(message.id) },
                                 onActionClick = onActionClick,
+                                onTrackedActionClick = onTrackedActionClick,
                                 onMarkdownLinkClick = onMarkdownLinkClick
                             )
                         }
@@ -781,15 +795,16 @@ private fun ChatMessageBubble(
     isStreamingThis: Boolean,
     onRetry: () -> Unit,
     onActionClick: (ChatAction) -> Unit,
-    onMarkdownLinkClick: ((String) -> Unit)?
+    onMarkdownLinkClick: ((String) -> Unit)?,
+    onTrackedActionClick: ((messageId: String, tracked: TrackedChatAction) -> Unit)? = null
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
     val spacing = LaterboxTheme.spacing
     val isUser = message.role == ChatRole.USER.name
 
-    val parsedActions = remember(message.actionsJson) {
-        AssistantActionHandler.fromJsonList(message.actionsJson)
+    val trackedActions = remember(message.actionsJson) {
+        AssistantActionHandler.fromTrackedJsonList(message.actionsJson)
     }
 
     Row(
@@ -878,28 +893,99 @@ private fun ChatMessageBubble(
                 }
             }
 
-            if (!isUser && parsedActions.isNotEmpty() && !isStreamingThis) {
+            if (!isUser && trackedActions.isNotEmpty() && !isStreamingThis) {
                 Spacer(modifier = Modifier.height(6.dp))
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    parsedActions.forEach { action ->
-                        Box(
+                    trackedActions.forEach { tracked ->
+                        val action = tracked.action
+                        val isInteractive = tracked.status == ChatActionStatus.PROPOSED ||
+                            tracked.status == ChatActionStatus.AWAITING_APPROVAL
+                        val chipBg = when (tracked.status) {
+                            ChatActionStatus.PROPOSED,
+                            ChatActionStatus.AWAITING_APPROVAL,
+                            ChatActionStatus.AUTO_EXECUTING -> colors.accentContainer
+                            ChatActionStatus.EXECUTED,
+                            ChatActionStatus.DENIED -> colors.surfaceSecondary
+                            ChatActionStatus.FAILED -> colors.statusDanger.copy(alpha = 0.1f)
+                        }
+                        val chipBorder = when (tracked.status) {
+                            ChatActionStatus.PROPOSED,
+                            ChatActionStatus.AWAITING_APPROVAL -> colors.accentPrimary.copy(alpha = 0.35f)
+                            ChatActionStatus.AUTO_EXECUTING -> colors.accentPrimary.copy(alpha = 0.25f)
+                            ChatActionStatus.EXECUTED,
+                            ChatActionStatus.DENIED -> colors.borderSubtle
+                            ChatActionStatus.FAILED -> colors.statusDanger.copy(alpha = 0.35f)
+                        }
+                        val chipTextColor = when (tracked.status) {
+                            ChatActionStatus.PROPOSED,
+                            ChatActionStatus.AWAITING_APPROVAL,
+                            ChatActionStatus.AUTO_EXECUTING -> colors.accentPrimary
+                            ChatActionStatus.EXECUTED -> colors.textSecondary
+                            ChatActionStatus.DENIED -> colors.textTertiary
+                            ChatActionStatus.FAILED -> colors.statusDanger
+                        }
+                        val chipLabel = when (tracked.status) {
+                            ChatActionStatus.PROPOSED -> action.label
+                            ChatActionStatus.AWAITING_APPROVAL -> "Approve · ${action.label}"
+                            ChatActionStatus.AUTO_EXECUTING -> "Running · ${action.label}"
+                            ChatActionStatus.EXECUTED -> "Done · ${action.label}"
+                            ChatActionStatus.FAILED -> "Failed · ${action.label}"
+                            ChatActionStatus.DENIED -> "Declined · ${action.label}"
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
                             modifier = Modifier
                                 .clip(LaterboxShapeTokens.Chip)
-                                .background(colors.accentContainer)
-                                .border(spacing.hairline, colors.accentPrimary.copy(alpha = 0.35f), LaterboxShapeTokens.Chip)
-                                .clickable(role = Role.Button) { onActionClick(action) }
+                                .background(chipBg)
+                                .border(spacing.hairline, chipBorder, LaterboxShapeTokens.Chip)
+                                .let { base ->
+                                    if (isInteractive) {
+                                        base.clickable(role = Role.Button) {
+                                            if (onTrackedActionClick != null) {
+                                                onTrackedActionClick(message.id, tracked)
+                                            } else {
+                                                onActionClick(action)
+                                            }
+                                        }
+                                    } else {
+                                        base
+                                    }
+                                }
+                                .testTag("chat_action_${tracked.status.name.lowercase()}_${tracked.actionId}")
                                 .padding(horizontal = 10.dp, vertical = 6.dp)
                         ) {
+                            when (tracked.status) {
+                                ChatActionStatus.AUTO_EXECUTING -> CircularProgressIndicator(
+                                    modifier = Modifier.size(11.dp),
+                                    strokeWidth = 1.5.dp,
+                                    color = chipTextColor
+                                )
+                                ChatActionStatus.EXECUTED -> Icon(
+                                    painter = painterResource(id = LaterboxIcons.Check),
+                                    contentDescription = null,
+                                    modifier = Modifier.size(12.dp),
+                                    tint = colors.statusSuccess
+                                )
+                                ChatActionStatus.FAILED,
+                                ChatActionStatus.DENIED -> Icon(
+                                    painter = painterResource(id = LaterboxIcons.Close),
+                                    contentDescription = null,
+                                    modifier = Modifier.size(11.dp),
+                                    tint = chipTextColor
+                                )
+                                else -> Unit
+                            }
                             Text(
-                                text = action.label,
+                                text = chipLabel,
                                 style = typography.metaText.copy(
                                     fontSize = 12.sp,
-                                    fontWeight = FontWeight.Medium
+                                    fontWeight = if (isInteractive) FontWeight.Medium else FontWeight.Normal
                                 ),
-                                color = colors.accentPrimary
+                                color = chipTextColor
                             )
                         }
                     }

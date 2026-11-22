@@ -934,6 +934,106 @@ fun LaterboxApp(
                                 )
                             }
 
+                            val pendingUiActionDispatch by chatViewModel.pendingUiActionDispatch.collectAsState()
+                            val executeReadOnlyUiAction: (ChatAction, (Boolean, String) -> Unit) -> Unit = { action, onResult ->
+                                when (action) {
+                                    is ChatAction.SearchLinks -> {
+                                        inboxViewModel.onSearchQueryChange(action.query)
+                                        navigateTopLevel(LaterboxDestination.Inbox.route)
+                                        onResult(true, "Filtered saved links for \"${action.query}\"")
+                                    }
+                                    is ChatAction.OpenLinkDetail -> {
+                                        coroutineScope.launch {
+                                            val app = context.applicationContext as? LaterboxApplication
+                                            val link = try {
+                                                app?.container?.linkRepository?.getLinkById(action.linkId)?.first()
+                                            } catch (_: Exception) { null }
+                                            if (link != null) {
+                                                openUnifiedDetailSheet(link, DetailSheetTab.DETAILS)
+                                                onResult(true, "Opened details for \"${link.title}\"")
+                                            } else {
+                                                snackbarHostState.showSnackbar("Saved link is no longer in your library.")
+                                                onResult(false, "Saved link is no longer in your library.")
+                                            }
+                                        }
+                                    }
+                                    is ChatAction.OpenDownloads -> {
+                                        downloadsViewModel.onTabSelected(
+                                            if (action.initialTab == 1) DownloadsTab.QUEUE else DownloadsTab.LIBRARY
+                                        )
+                                        navigateTopLevel(LaterboxDestination.Downloads.route)
+                                        onResult(true, "Opened Downloads")
+                                    }
+                                    is ChatAction.OpenYouTubeTranscripts -> {
+                                        youTubeTranscriptViewModel.openFromAssistant(action.url)
+                                        onResult(true, "Opened YouTube Transcripts")
+                                    }
+                                    is ChatAction.OpenCollections -> {
+                                        navigateTopLevel(LaterboxDestination.Collections.route)
+                                        onResult(true, "Opened Collections")
+                                    }
+                                    is ChatAction.OpenSettings -> {
+                                        val normalizedRoute = when (action.route) {
+                                            "settings/about_privacy" -> LaterboxDestination.Settings.route
+                                            "settings/app_storage" -> LaterboxDestination.SettingsDataStorage.route
+                                            else -> action.route
+                                        }
+                                        navController.navigate(normalizedRoute)
+                                        onResult(true, "Opened Settings")
+                                    }
+                                    is ChatAction.OpenMoviesHome -> {
+                                        navigateTopLevel(LaterboxDestination.Movies.route)
+                                        onResult(true, "Opened Movies & TV")
+                                    }
+                                    is ChatAction.SearchMovies -> {
+                                        navController.navigate(
+                                            LaterboxDestination.MoviesCatalogue.createRoute(
+                                                kind = action.kind,
+                                                genre = action.genre,
+                                                query = action.query.takeIf { it.isNotBlank() }
+                                            )
+                                        )
+                                        onResult(true, "Opened Movies & TV search for \"${action.query}\"")
+                                    }
+                                    is ChatAction.OpenMovieDetail -> {
+                                        navController.navigate(
+                                            LaterboxDestination.MovieDetail.createRoute(
+                                                providerId = action.providerId,
+                                                titleId = action.titleId
+                                            )
+                                        )
+                                        onResult(true, "Opened details for \"${action.title}\"")
+                                    }
+                                    is ChatAction.OpenMoviePlayer -> {
+                                        context.startActivity(
+                                            com.laterbox.app.movies.playback.PlayerActivity.createStreamIntent(
+                                                context = context,
+                                                providerId = action.providerId,
+                                                titleId = action.titleId,
+                                                seasonNumber = action.seasonNumber,
+                                                episodeNumber = action.episodeNumber
+                                            )
+                                        )
+                                        onResult(true, "Opened player for \"${action.title}\"")
+                                    }
+                                    else -> onResult(false, "Action requires approval handler")
+                                }
+                            }
+
+                            LaunchedEffect(pendingUiActionDispatch?.requestId) {
+                                val dispatch = pendingUiActionDispatch ?: return@LaunchedEffect
+                                executeReadOnlyUiAction(dispatch.action) { executed, detail ->
+                                    chatViewModel.reportUiActionOutcome(
+                                        requestId = dispatch.requestId,
+                                        messageId = dispatch.messageId,
+                                        actionId = dispatch.actionId,
+                                        action = dispatch.action,
+                                        executed = executed,
+                                        detail = detail
+                                    )
+                                }
+                            }
+
                             ChatScreen(
                                 uiState = chatUiState,
                                 onMenuClick = openMenuHandler,
@@ -948,77 +1048,17 @@ fun LaterboxApp(
                                 onQuickPromptClick = { prompt -> chatViewModel.sendMessage(prompt) },
                                 onActionClick = { action ->
                                     when (action) {
-                                        is ChatAction.SearchLinks -> {
-                                            inboxViewModel.onSearchQueryChange(action.query)
-                                            navigateTopLevel(LaterboxDestination.Inbox.route)
-                                        }
-                                        is ChatAction.OpenLinkDetail -> {
-                                            coroutineScope.launch {
-                                                val app = context.applicationContext as? LaterboxApplication
-                                                val link = try {
-                                                    app?.container?.linkRepository?.getLinkById(action.linkId)?.first()
-                                                } catch (_: Exception) { null }
-                                                if (link != null) {
-                                                    openUnifiedDetailSheet(link, DetailSheetTab.DETAILS)
-                                                } else {
-                                                    snackbarHostState.showSnackbar("Saved link is no longer in your library.")
-                                                }
-                                            }
-                                        }
-                                        is ChatAction.OpenDownloads -> {
-                                            downloadsViewModel.onTabSelected(
-                                                if (action.initialTab == 1) DownloadsTab.QUEUE else DownloadsTab.LIBRARY
-                                            )
-                                            navigateTopLevel(LaterboxDestination.Downloads.route)
-                                        }
-                                        is ChatAction.OpenYouTubeTranscripts -> {
-                                            youTubeTranscriptViewModel.openFromAssistant(action.url)
-                                        }
-                                        is ChatAction.OpenCollections -> {
-                                            navigateTopLevel(LaterboxDestination.Collections.route)
-                                        }
-                                        is ChatAction.OpenSettings -> {
-                                            val normalizedRoute = when (action.route) {
-                                                "settings/about_privacy" -> LaterboxDestination.Settings.route
-                                                "settings/app_storage" -> LaterboxDestination.SettingsDataStorage.route
-                                                else -> action.route
-                                            }
-                                            navController.navigate(normalizedRoute)
-                                        }
-                                        is ChatAction.RunHealthCheck -> {
-                                            chatViewModel.runAppHealthCheck()
-                                        }
-                                        is ChatAction.OpenMoviesHome -> {
-                                            navigateTopLevel(LaterboxDestination.Movies.route)
-                                        }
-                                        is ChatAction.SearchMovies -> {
-                                            navController.navigate(
-                                                LaterboxDestination.MoviesCatalogue.createRoute(
-                                                    kind = action.kind,
-                                                    genre = action.genre,
-                                                    query = action.query.takeIf { it.isNotBlank() }
-                                                )
-                                            )
-                                        }
-                                        is ChatAction.OpenMovieDetail -> {
-                                            navController.navigate(
-                                                LaterboxDestination.MovieDetail.createRoute(
-                                                    providerId = action.providerId,
-                                                    titleId = action.titleId
-                                                )
-                                            )
-                                        }
-                                        is ChatAction.OpenMoviePlayer -> {
-                                            context.startActivity(
-                                                com.laterbox.app.movies.playback.PlayerActivity.createStreamIntent(
-                                                    context = context,
-                                                    providerId = action.providerId,
-                                                    titleId = action.titleId,
-                                                    seasonNumber = action.seasonNumber,
-                                                    episodeNumber = action.episodeNumber
-                                                )
-                                            )
-                                        }
+                                        is ChatAction.RunHealthCheck -> chatViewModel.runAppHealthCheck()
+                                        is ChatAction.SearchLinks,
+                                        is ChatAction.OpenLinkDetail,
+                                        is ChatAction.OpenDownloads,
+                                        is ChatAction.OpenYouTubeTranscripts,
+                                        is ChatAction.OpenCollections,
+                                        is ChatAction.OpenSettings,
+                                        is ChatAction.OpenMoviesHome,
+                                        is ChatAction.SearchMovies,
+                                        is ChatAction.OpenMovieDetail,
+                                        is ChatAction.OpenMoviePlayer -> executeReadOnlyUiAction(action) { _, _ -> }
                                         is ChatAction.RetryInspection,
                                         is ChatAction.RetryDownload,
                                         is ChatAction.RefreshMetadata,
@@ -1031,6 +1071,52 @@ fun LaterboxApp(
                                         is ChatAction.DeleteConversation,
                                         is ChatAction.DeleteDownload -> {
                                             chatViewModel.requestMutatingActionConfirmation(action)
+                                        }
+                                    }
+                                },
+                                onTrackedActionClick = { messageId, tracked ->
+                                    val action = tracked.action
+                                    when (action) {
+                                        is ChatAction.RunHealthCheck -> {
+                                            chatViewModel.runAppHealthCheckForAction(messageId, tracked.actionId)
+                                        }
+                                        is ChatAction.SearchLinks,
+                                        is ChatAction.OpenLinkDetail,
+                                        is ChatAction.OpenDownloads,
+                                        is ChatAction.OpenYouTubeTranscripts,
+                                        is ChatAction.OpenCollections,
+                                        is ChatAction.OpenSettings,
+                                        is ChatAction.OpenMoviesHome,
+                                        is ChatAction.SearchMovies,
+                                        is ChatAction.OpenMovieDetail,
+                                        is ChatAction.OpenMoviePlayer -> {
+                                            executeReadOnlyUiAction(action) { executed, detail ->
+                                                chatViewModel.reportUiActionOutcome(
+                                                    requestId = null,
+                                                    messageId = messageId,
+                                                    actionId = tracked.actionId,
+                                                    action = action,
+                                                    executed = executed,
+                                                    detail = detail
+                                                )
+                                            }
+                                        }
+                                        is ChatAction.RetryInspection,
+                                        is ChatAction.RetryDownload,
+                                        is ChatAction.RefreshMetadata,
+                                        is ChatAction.ToggleMovieWatchlist,
+                                        is ChatAction.AddMovieToCollection,
+                                        is ChatAction.MarkMovieWatched,
+                                        is ChatAction.ScheduleMovieReminder,
+                                        is ChatAction.MuteSeriesReminders,
+                                        is ChatAction.RenameConversation,
+                                        is ChatAction.DeleteConversation,
+                                        is ChatAction.DeleteDownload -> {
+                                            chatViewModel.requestMutatingActionConfirmation(
+                                                action = action,
+                                                messageId = messageId,
+                                                actionId = tracked.actionId
+                                            )
                                         }
                                     }
                                 },
