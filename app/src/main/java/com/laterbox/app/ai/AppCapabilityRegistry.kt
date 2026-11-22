@@ -506,7 +506,16 @@ object RemoteCapabilities {
     const val KEY_PLAYER_INTRO_SKIP = "player_intro_skip_enabled"
     const val KEY_YTDLP_AUTO_UPDATE = "ytdlp_auto_update_enabled"
 
+    const val CAP_MULTI_SURFACE = "multi_surface"
+    const val SURFACE_INBOX = "surface:inbox"
+    const val SURFACE_COLLECTIONS = "surface:collections"
+    const val SURFACE_MOVIES = "surface:movies"
+    const val SURFACE_DOWNLOADS = "surface:downloads"
+    const val SURFACE_ARCHIVE = "surface:archive"
+    const val SURFACE_ASSISTANT = "surface:assistant"
+
     const val UI_ANNOUNCEMENT_BANNER = "ui:announcement_banner"
+    const val UI_FLOATING_NOTICE = "ui:floating_notice"
     const val UI_HERO_CAROUSEL = "ui:hero_carousel"
     const val UI_CONTENT_RAIL = "ui:content_rail"
     const val UI_FEATURED_CALLOUT_CARD = "ui:featured_callout_card"
@@ -555,6 +564,7 @@ object RemoteCapabilities {
         "collections",
         "inbox",
         "archive",
+        "assistant",
         "settings",
     )
 
@@ -568,7 +578,15 @@ object RemoteCapabilities {
         FEATURE_SMART_REMINDERS,
         FEATURE_PLAYER_INTRO_SKIP,
         FEATURE_YTDLP_AUTO_UPDATE,
+        CAP_MULTI_SURFACE,
+        SURFACE_INBOX,
+        SURFACE_COLLECTIONS,
+        SURFACE_MOVIES,
+        SURFACE_DOWNLOADS,
+        SURFACE_ARCHIVE,
+        SURFACE_ASSISTANT,
         UI_ANNOUNCEMENT_BANNER,
+        UI_FLOATING_NOTICE,
         UI_HERO_CAROUSEL,
         UI_CONTENT_RAIL,
         UI_FEATURED_CALLOUT_CARD,

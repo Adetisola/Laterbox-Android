@@ -229,7 +229,8 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
 
     override val youTubeTranscriptExtractor: com.laterbox.app.transcript.data.YouTubeTranscriptExtractor by lazy {
         com.laterbox.app.transcript.data.YouTubeTranscriptExtractor(
-            dataSource = youTubeTranscriptDataSource
+            dataSource = youTubeTranscriptDataSource,
+            isOnlineServicesPaused = { remoteConfigManager.currentConfig.maintenance.isOnlineServicesPaused },
         )
     }
 
@@ -288,14 +289,21 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             downloadPlaybackProgressDao = database.downloadPlaybackProgressDao(),
             isMovieBoxEnabled = {
                 val cfg = remoteConfigManager.currentConfig
-                !cfg.maintenance.enabled &&
+                !cfg.maintenance.isOnlineServicesPaused &&
                     cfg.isFeatureEnabled(com.laterbox.app.ai.RemoteCapabilities.KEY_PROVIDER_MOVIEBOX)
             },
             isInternetArchiveEnabled = {
-                remoteConfigManager.isFeatureEnabled(com.laterbox.app.ai.RemoteCapabilities.KEY_PROVIDER_INTERNET_ARCHIVE)
+                val cfg = remoteConfigManager.currentConfig
+                !cfg.maintenance.isOnlineServicesPaused &&
+                    cfg.isFeatureEnabled(com.laterbox.app.ai.RemoteCapabilities.KEY_PROVIDER_INTERNET_ARCHIVE)
             },
             isTvMazeEnabled = {
-                remoteConfigManager.isFeatureEnabled(com.laterbox.app.ai.RemoteCapabilities.KEY_PROVIDER_TVMAZE)
+                val cfg = remoteConfigManager.currentConfig
+                !cfg.maintenance.isOnlineServicesPaused &&
+                    cfg.isFeatureEnabled(com.laterbox.app.ai.RemoteCapabilities.KEY_PROVIDER_TVMAZE)
+            },
+            isTmdbEnabled = {
+                !remoteConfigManager.currentConfig.maintenance.isOnlineServicesPaused
             }
         )
     }

@@ -66,7 +66,8 @@ object ArticleContentExtractor {
     suspend fun fetchOrLoadCached(
         url: String,
         cacheDir: File?,
-        forceRefresh: Boolean = false
+        forceRefresh: Boolean = false,
+        allowNetwork: Boolean = true,
     ): Result<ExtractedArticle> = withContext(Dispatchers.IO) {
         val normalizedInput = ensureHttpScheme(url)
         if (normalizedInput.equals(STARTER_GUIDE_URL, ignoreCase = true)) {
@@ -81,6 +82,15 @@ object ArticleContentExtractor {
 
         if (!forceRefresh && cached != null && (System.currentTimeMillis() - cached.fetchedAt) <= CACHE_TTL_MS) {
             return@withContext Result.success(cached.copy(fromCache = true))
+        }
+
+        if (!allowNetwork) {
+            if (cached != null) {
+                return@withContext Result.success(cached.copy(fromCache = true))
+            }
+            return@withContext Result.failure(
+                IllegalStateException("Online Reader fetching is paused during maintenance. Cached saved articles remain readable.")
+            )
         }
 
         val liveResult = try {

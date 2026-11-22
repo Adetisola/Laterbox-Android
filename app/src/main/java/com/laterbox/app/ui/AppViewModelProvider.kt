@@ -98,7 +98,12 @@ object AppViewModelProvider {
                 collectionRepository = app.container.collectionRepository,
                 reminderScheduler = app.container.reminderScheduler,
                 backendAiClient = app.container.backendAiClient,
-                analyticsTracker = app.container.analyticsTracker
+                analyticsTracker = app.container.analyticsTracker,
+                isAssistantRemotePaused = {
+                    val rc = app.container.remoteConfigManager.currentConfig
+                    rc.maintenance.isOnlineServicesPaused ||
+                        !rc.isFeatureEnabled(com.laterbox.app.ai.RemoteCapabilities.KEY_AI_ASSISTANT)
+                }
             )
         }
         initializer {

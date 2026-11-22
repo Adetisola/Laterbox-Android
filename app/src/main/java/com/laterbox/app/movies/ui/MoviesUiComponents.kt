@@ -920,11 +920,151 @@ fun MoviesHeroCarousel(
     onPlayClick: (MovieTitleSummary) -> Unit,
     onToggleWatchlist: (MovieTitleSummary) -> Unit,
     modifier: Modifier = Modifier,
-    autoAdvanceIntervalMs: Long = 6_000L
+    autoAdvanceIntervalMs: Long = 6_000L,
+    customSlides: List<com.laterbox.app.remoteconfig.RemoteHeroSlide> = emptyList(),
+    onCustomSlideAction: (String) -> Unit = {},
 ) {
-    if (banners.isEmpty()) return
+    val activeCustomSlides = remember(customSlides) {
+        customSlides.filter { it.enabled }.sortedBy { it.order }
+    }
+    if (activeCustomSlides.isEmpty() && banners.isEmpty()) return
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
+
+    if (activeCustomSlides.isNotEmpty()) {
+        val isMultiCustom = activeCustomSlides.size > 1
+        val customPagerState = rememberPagerState(pageCount = { activeCustomSlides.size })
+        val isCustomDragged by customPagerState.interactionSource.collectIsDraggedAsState()
+        var isCustomLifecycleResumed by remember { mutableStateOf(true) }
+
+        LifecycleResumeEffect(Unit) {
+            isCustomLifecycleResumed = true
+            onPauseOrDispose { isCustomLifecycleResumed = false }
+        }
+
+        LaunchedEffect(
+            activeCustomSlides.size,
+            customPagerState.settledPage,
+            isCustomDragged,
+            isCustomLifecycleResumed,
+            autoAdvanceIntervalMs
+        ) {
+            if (!isMultiCustom || autoAdvanceIntervalMs <= 0L) return@LaunchedEffect
+            if (!isCustomLifecycleResumed || isCustomDragged) return@LaunchedEffect
+            delay(autoAdvanceIntervalMs)
+            if (isMultiCustom && isCustomLifecycleResumed && !isCustomDragged && !customPagerState.isScrollInProgress) {
+                val nextPage = (customPagerState.currentPage + 1) % activeCustomSlides.size
+                customPagerState.animateScrollToPage(
+                    page = nextPage,
+                    animationSpec = tween(durationMillis = 550)
+                )
+            }
+        }
+
+        Column(modifier = modifier.fillMaxWidth()) {
+            HorizontalPager(
+                state = customPagerState,
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                pageSpacing = 12.dp,
+                key = { page -> "custom_hero_${activeCustomSlides[page].id}" },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(16f / 9f)
+                    .heightIn(min = 216.dp, max = 300.dp)
+                    .testTag("movies_hero_custom_pager")
+            ) { page ->
+                val slide = activeCustomSlides[page]
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = colors.surfaceSecondary,
+                    border = BorderStroke(0.75.dp, colors.borderSubtle),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .let { mod ->
+                            if (slide.actionDestination.isNotBlank()) {
+                                mod.clickable { onCustomSlideAction(slide.actionDestination) }
+                            } else mod
+                        }
+                ) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        if (slide.imageUrl.isNotBlank()) {
+                            BackdropArtworkBox(
+                                backdropUrl = slide.imageUrl,
+                                posterUrl = slide.imageUrl,
+                                contentDescription = slide.heading.ifBlank { "Featured Banner" },
+                                blurHash = null,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(
+                                    Brush.verticalGradient(
+                                        colors = listOf(
+                                            Color.Black.copy(alpha = 0.14f),
+                                            Color.Black.copy(alpha = 0.48f),
+                                            Color.Black.copy(alpha = 0.88f)
+                                        )
+                                    )
+                                )
+                        )
+                        if (slide.heading.isNotBlank() || slide.subtitle.isNotBlank() || slide.actionDestination.isNotBlank()) {
+                            Column(
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                if (slide.heading.isNotBlank()) {
+                                    Text(
+                                        text = slide.heading,
+                                        style = typography.editorialTitle.copy(
+                                            fontSize = 22.sp,
+                                            lineHeight = 26.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        ),
+                                        color = Color.White,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                if (slide.subtitle.isNotBlank()) {
+                                    Text(
+                                        text = slide.subtitle,
+                                        style = typography.bodySecondary,
+                                        color = Color.White.copy(alpha = 0.88f),
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                if (slide.actionDestination.isNotBlank()) {
+                                    Button(
+                                        onClick = { onCustomSlideAction(slide.actionDestination) },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = colors.accentPrimary,
+                                            contentColor = colors.onAccentPrimary
+                                        ),
+                                        shape = RoundedCornerShape(10.dp),
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                                        modifier = Modifier.height(36.dp)
+                                    ) {
+                                        Text(
+                                            text = slide.actionLabel.ifBlank { "Explore" },
+                                            style = typography.buttonLabel.copy(fontSize = 12.sp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return
+    }
+
     val isMulti = banners.size > 1
     val virtualPageCount = if (isMulti) banners.size * HERO_VIRTUAL_MULTIPLIER else 1
     val startPage = remember(banners.size) {

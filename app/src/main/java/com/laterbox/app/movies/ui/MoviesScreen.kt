@@ -904,41 +904,6 @@ fun MoviesScreen(
                                     }
                                 }
 
-                                // Remote Maintenance Notice Banner on Movies Hub
-                                if (remoteConfig.maintenance.enabled &&
-                                    remoteConfig.maintenance.mode != com.laterbox.app.remoteconfig.RemoteMaintenanceMode.NONE
-                                ) {
-                                    item(key = "remote_movies_maintenance") {
-                                        com.laterbox.app.remoteconfig.RemoteMaintenanceNoticeBanner(
-                                            maintenance = remoteConfig.maintenance,
-                                            modifier = Modifier.padding(horizontal = 16.dp)
-                                        )
-                                    }
-                                }
-
-                                // Remote Movies-surface Announcements
-                                val moviesAnnouncements = remoteConfig.activeAnnouncementsForSurface(
-                                    surface = com.laterbox.app.remoteconfig.RemoteUiSurface.MOVIES,
-                                    dismissedIds = dismissedAnnouncementIds
-                                )
-                                moviesAnnouncements.forEach { ann ->
-                                    item(key = "remote_movies_ann_${ann.id}") {
-                                        com.laterbox.app.remoteconfig.RemoteAnnouncementBannerCard(
-                                            title = ann.title,
-                                            message = ann.message,
-                                            severity = ann.severity,
-                                            dismissible = ann.dismissible,
-                                            actionLabel = ann.actionLabel,
-                                            actionDestination = ann.actionDestination,
-                                            onActionClick = onRemoteAction,
-                                            onDismissClick = if (ann.dismissible) {
-                                                { onDismissRemoteAnnouncement(ann.id) }
-                                            } else null,
-                                            modifier = Modifier.padding(horizontal = 16.dp)
-                                        )
-                                    }
-                                }
-
                                 // Server-driven allowlisted UI components & ordered rails
                                 val renderSlots = com.laterbox.app.remoteconfig.RemoteConfigLayoutHelper.buildMoviesHomeSlots(
                                     snapshot = remoteConfig,
@@ -946,26 +911,7 @@ fun MoviesScreen(
                                 )
                                 renderSlots.forEach { slot ->
                                     when (slot.kind) {
-                                        com.laterbox.app.remoteconfig.MoviesHomeSlotKind.ANNOUNCEMENT_BANNER -> {
-                                            val comp = slot.component ?: return@forEach
-                                            if (!comp.dismissible || comp.id !in dismissedAnnouncementIds) {
-                                                item(key = slot.key) {
-                                                    com.laterbox.app.remoteconfig.RemoteAnnouncementBannerCard(
-                                                        title = comp.title,
-                                                        message = comp.subtitle,
-                                                        severity = comp.severity,
-                                                        dismissible = comp.dismissible,
-                                                        actionLabel = comp.actionLabel,
-                                                        actionDestination = comp.actionDestination,
-                                                        onActionClick = onRemoteAction,
-                                                        onDismissClick = if (comp.dismissible) {
-                                                            { onDismissRemoteAnnouncement(comp.id) }
-                                                        } else null,
-                                                        modifier = Modifier.padding(horizontal = 16.dp)
-                                                    )
-                                                }
-                                            }
-                                        }
+                                        com.laterbox.app.remoteconfig.MoviesHomeSlotKind.ANNOUNCEMENT_BANNER -> Unit
 
                                         com.laterbox.app.remoteconfig.MoviesHomeSlotKind.FEATURED_CALLOUT_CARD -> {
                                             val comp = slot.component ?: return@forEach
@@ -979,8 +925,9 @@ fun MoviesScreen(
                                         }
 
                                         com.laterbox.app.remoteconfig.MoviesHomeSlotKind.HERO_CAROUSEL -> {
+                                            val heroSlides = slot.component?.slides.orEmpty()
                                             val cappedBanners = visibleBanners.take(slot.maxItems)
-                                            if (cappedBanners.isNotEmpty()) {
+                                            if (heroSlides.any { it.enabled } || cappedBanners.isNotEmpty()) {
                                                 item(key = "hero_carousel") {
                                                     MoviesHeroCarousel(
                                                         banners = cappedBanners,
@@ -991,7 +938,10 @@ fun MoviesScreen(
                                                             val defaultEpisode = if (item.kind.isEpisodic) 1 else null
                                                             onOpenPlayer(item.providerId, item.id, defaultSeason, defaultEpisode)
                                                         },
-                                                        onToggleWatchlist = onToggleWatchlist
+                                                        onToggleWatchlist = onToggleWatchlist,
+                                                        autoAdvanceIntervalMs = (slot.component?.autoAdvanceMs?.toLong() ?: 6_000L),
+                                                        customSlides = heroSlides,
+                                                        onCustomSlideAction = onRemoteAction,
                                                     )
                                                 }
                                             }

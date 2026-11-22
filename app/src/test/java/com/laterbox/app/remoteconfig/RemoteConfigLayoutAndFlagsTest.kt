@@ -9,7 +9,7 @@ import org.junit.Test
 class RemoteConfigLayoutAndFlagsTest {
 
     @Test
-    fun buildMoviesHomeSlots_reordersRails_hidesDisabledRails_andHonorsRecommendationsFlag() {
+    fun buildMoviesHomeSlots_preservesCoreRails_capsFeaturedCardAtOne_andHonorsRecommendationsFlag() {
         val snapshot = RemoteConfigSnapshot.default().copy(
             revision = 12,
             features = RemoteCapabilities.DEFAULT_FEATURES.toMutableMap().apply {
@@ -28,14 +28,14 @@ class RemoteConfigLayoutAndFlagsTest {
                         actionDestination = "downloads",
                     ),
                     RemoteUiComponent(
-                        id = "rail_watchlist_custom",
-                        type = RemoteCapabilities.TYPE_CONTENT_RAIL,
+                        id = "callout_second",
+                        type = RemoteCapabilities.TYPE_FEATURED_CALLOUT_CARD,
                         surface = RemoteUiSurface.MOVIES,
                         visible = true,
-                        order = 15,
-                        railId = "watchlist",
-                        title = "Pinned Queue",
-                        maxItems = 8,
+                        order = 6,
+                        title = "Second Card",
+                        actionLabel = "Open",
+                        actionDestination = "inbox",
                     ),
                     RemoteUiComponent(
                         id = "rail_newest_hidden",
@@ -52,6 +52,16 @@ class RemoteConfigLayoutAndFlagsTest {
                         visible = true,
                         order = 25,
                         maxItems = 4,
+                        autoAdvanceMs = 8000,
+                        slides = listOf(
+                            RemoteHeroSlide(
+                                id = "slide_1",
+                                imageUrl = "https://cdn.example.com/banner.png",
+                                heading = "Featured Spotlight",
+                                enabled = true,
+                                order = 10,
+                            )
+                        ),
                     ),
                 )
             )
@@ -60,20 +70,54 @@ class RemoteConfigLayoutAndFlagsTest {
         val slots = RemoteConfigLayoutHelper.buildMoviesHomeSlots(snapshot)
 
         assertEquals("ui_callout_callout_top", slots[0].key)
-        assertEquals("rail_watchlist", slots[1].key)
-        assertEquals("Pinned Queue", slots[1].customTitle)
-        assertEquals(8, slots[1].maxItems)
-        assertEquals("hero_carousel", slots[2].key)
-        assertEquals(4, slots[2].maxItems)
+        assertFalse(slots.any { it.key == "ui_callout_callout_second" })
+        assertEquals("hero_carousel", slots[1].key)
+        assertEquals(4, slots[1].maxItems)
+        assertEquals(8000, slots[1].component?.autoAdvanceMs)
+        assertEquals(1, slots[1].component?.slides?.size)
 
-        // Hidden newest rail and disabled recommendation rails must not appear
-        assertFalse(slots.any { it.railId == "newest" })
+        // Legacy content_rail cannot hide core rails; recommendations flag still gates personalized shelves
+        assertTrue(slots.any { it.railId == "newest" })
         assertFalse(slots.any { it.railId == "because_you_watched" })
         assertFalse(slots.any { it.railId == "quick_picks" })
-
-        // Unconfigured non-recommendation core rails remain safely available
         assertTrue(slots.any { it.railId == "continue_watching" })
         assertTrue(slots.any { it.railId == "top_rated" })
+    }
+
+    @Test
+    fun maintenanceStrip_andMultiSurfacePrioritySorting_behaveAccurately() {
+        val normalHidden = RemoteMaintenanceConfig(enabled = false, mode = RemoteMaintenanceMode.NONE, message = "All good", showBannerInNormalMode = false)
+        assertFalse(normalHidden.shouldShowStatusStrip)
+        assertFalse(normalHidden.isOnlineServicesPaused)
+
+        val normalShown = normalHidden.copy(showBannerInNormalMode = true)
+        assertTrue(normalShown.shouldShowStatusStrip)
+        assertFalse(normalShown.isOnlineServicesPaused)
+
+        val partial = RemoteMaintenanceConfig(enabled = true, mode = RemoteMaintenanceMode.PARTIAL)
+        assertTrue(partial.shouldShowStatusStrip)
+        assertTrue(partial.isOnlineServicesPaused)
+
+        val snap = RemoteConfigSnapshot.default().copy(
+            announcements = listOf(
+                RemoteAnnouncementItem(
+                    id = "info_first",
+                    message = "Low priority tip",
+                    severity = RemoteAnnouncementSeverity.INFO,
+                    surfaces = listOf(RemoteUiSurface.COLLECTIONS, RemoteUiSurface.DOWNLOADS),
+                ),
+                RemoteAnnouncementItem(
+                    id = "critical_second",
+                    message = "Urgent collections sync note",
+                    severity = RemoteAnnouncementSeverity.CRITICAL,
+                    surfaces = listOf(RemoteUiSurface.COLLECTIONS, RemoteUiSurface.ASSISTANT),
+                ),
+            )
+        )
+        val colNotices = snap.activeAnnouncementsForSurface(RemoteUiSurface.COLLECTIONS)
+        assertEquals(listOf("critical_second", "info_first"), colNotices.map { it.id })
+        assertEquals(listOf("critical_second"), snap.activeAnnouncementsForSurface(RemoteUiSurface.ASSISTANT).map { it.id })
+        assertEquals(listOf("info_first"), snap.activeAnnouncementsForSurface(RemoteUiSurface.DOWNLOADS).map { it.id })
     }
 
     @Test

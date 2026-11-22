@@ -41,11 +41,19 @@ enum class RemoteAnnouncementSeverity(val wireValue: String) {
 
 enum class RemoteUiSurface(val wireValue: String) {
     INBOX("inbox"),
-    MOVIES("movies");
+    COLLECTIONS("collections"),
+    MOVIES("movies"),
+    DOWNLOADS("downloads"),
+    ARCHIVE("archive"),
+    ASSISTANT("assistant");
 
     companion object {
         fun fromWire(raw: String?): RemoteUiSurface = when (raw?.trim()?.lowercase()) {
+            "collections" -> COLLECTIONS
             "movies" -> MOVIES
+            "downloads" -> DOWNLOADS
+            "archive" -> ARCHIVE
+            "assistant" -> ASSISTANT
             else -> INBOX
         }
     }
@@ -70,26 +78,50 @@ data class RemoteMaintenanceConfig(
     val title: String = "",
     val message: String = "",
     val allowLocalOfflineAccess: Boolean = true,
+    val showBannerInNormalMode: Boolean = false,
 ) {
     val isPartialActive: Boolean
         get() = enabled && mode == RemoteMaintenanceMode.PARTIAL
 
     val isFullActive: Boolean
         get() = enabled && mode == RemoteMaintenanceMode.FULL
+
+    val isOnlineServicesPaused: Boolean
+        get() = enabled && (mode == RemoteMaintenanceMode.PARTIAL || mode == RemoteMaintenanceMode.FULL)
+
+    val shouldShowStatusStrip: Boolean
+        get() = (enabled && mode != RemoteMaintenanceMode.NONE) ||
+            (!enabled && showBannerInNormalMode && message.isNotBlank())
 }
 
 data class RemoteAnnouncementItem(
     val id: String,
-    val title: String,
+    val title: String = "",
     val message: String,
     val severity: RemoteAnnouncementSeverity = RemoteAnnouncementSeverity.INFO,
     val surface: RemoteUiSurface = RemoteUiSurface.INBOX,
+    val surfaces: List<RemoteUiSurface> = listOf(surface),
     val dismissible: Boolean = true,
     val actionLabel: String = "",
     val actionDestination: String = "",
     val minVersionCode: Int = 0,
     val maxVersionCode: Int = 0,
     val enabled: Boolean = true,
+) {
+    fun targetsSurface(target: RemoteUiSurface): Boolean {
+        return target in surfaces || (surfaces.isEmpty() && surface == target)
+    }
+}
+
+data class RemoteHeroSlide(
+    val id: String,
+    val imageUrl: String = "",
+    val heading: String = "",
+    val subtitle: String = "",
+    val actionLabel: String = "",
+    val actionDestination: String = "",
+    val enabled: Boolean = true,
+    val order: Int = 0,
 )
 
 data class RemoteUiComponent(
@@ -109,6 +141,7 @@ data class RemoteUiComponent(
     val autoAdvanceMs: Int = 6000,
     val actionLabel: String = "",
     val actionDestination: String = "",
+    val slides: List<RemoteHeroSlide> = emptyList(),
 )
 
 data class RemoteUiConfiguration(
@@ -161,11 +194,19 @@ data class RemoteConfigSnapshot(
         surface: RemoteUiSurface,
         dismissedIds: Set<String> = emptySet(),
     ): List<RemoteAnnouncementItem> {
-        return announcements.filter { item ->
-            item.enabled &&
-                item.surface == surface &&
-                (!item.dismissible || item.id !in dismissedIds)
-        }
+        return announcements
+            .filter { item ->
+                item.enabled &&
+                    item.targetsSurface(surface) &&
+                    (!item.dismissible || item.id !in dismissedIds)
+            }
+            .sortedBy { item ->
+                when (item.severity) {
+                    RemoteAnnouncementSeverity.CRITICAL -> 0
+                    RemoteAnnouncementSeverity.WARNING -> 1
+                    RemoteAnnouncementSeverity.INFO -> 2
+                }
+            }
     }
 
     companion object {

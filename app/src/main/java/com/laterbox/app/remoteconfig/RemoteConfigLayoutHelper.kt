@@ -39,106 +39,46 @@ object RemoteConfigLayoutHelper {
         recommendationsEnabled: Boolean = snapshot.isFeatureEnabled(RemoteCapabilities.KEY_MOVIES_RECOMMENDATIONS),
     ): List<MoviesHomeRenderSlot> {
         val moviesComponents = snapshot.componentsForSurface(RemoteUiSurface.MOVIES)
-
-        if (moviesComponents.isEmpty()) {
-            return defaultMoviesOrder.mapIndexedNotNull { idx, (id, kind) ->
-                if (!recommendationsEnabled && (id == "because_you_watched" || id == "quick_picks")) {
-                    return@mapIndexedNotNull null
-                }
-                MoviesHomeRenderSlot(
-                    key = if (kind == MoviesHomeSlotKind.HERO_CAROUSEL) "hero_carousel" else "rail_$id",
-                    kind = kind,
-                    order = (idx + 1) * 10,
-                    railId = if (kind == MoviesHomeSlotKind.CONTENT_RAIL) id else null,
-                    maxItems = if (kind == MoviesHomeSlotKind.HERO_CAROUSEL) 8 else 15,
-                )
-            }
+        val heroConfig = moviesComponents.firstOrNull { it.type == RemoteCapabilities.TYPE_HERO_CAROUSEL }
+        val featuredConfig = moviesComponents.firstOrNull {
+            it.type == RemoteCapabilities.TYPE_FEATURED_CALLOUT_CARD && it.visible
         }
 
         val slots = mutableListOf<MoviesHomeRenderSlot>()
-        val configuredRails = mutableSetOf<String>()
-        var hasHero = false
-
-        for (comp in moviesComponents) {
-            when (comp.type) {
-                RemoteCapabilities.TYPE_ANNOUNCEMENT_BANNER -> if (comp.visible) {
-                    slots += MoviesHomeRenderSlot(
-                        key = "ui_ann_${comp.id}",
-                        kind = MoviesHomeSlotKind.ANNOUNCEMENT_BANNER,
-                        order = comp.order,
-                        component = comp,
-                    )
-                }
-
-                RemoteCapabilities.TYPE_FEATURED_CALLOUT_CARD -> if (comp.visible) {
-                    slots += MoviesHomeRenderSlot(
-                        key = "ui_callout_${comp.id}",
-                        kind = MoviesHomeSlotKind.FEATURED_CALLOUT_CARD,
-                        order = comp.order,
-                        component = comp,
-                    )
-                }
-
-                RemoteCapabilities.TYPE_HERO_CAROUSEL -> {
-                    hasHero = true
-                    if (comp.visible) {
-                        slots += MoviesHomeRenderSlot(
-                            key = "hero_carousel",
-                            kind = MoviesHomeSlotKind.HERO_CAROUSEL,
-                            order = comp.order,
-                            maxItems = comp.maxItems,
-                            component = comp,
-                        )
-                    }
-                }
-
-                RemoteCapabilities.TYPE_CONTENT_RAIL -> {
-                    val railId = comp.railId ?: continue
-                    if (railId !in RemoteCapabilities.SUPPORTED_RAIL_IDS) continue
-                    configuredRails += railId
-                    if (!comp.visible) continue
-                    if (!recommendationsEnabled && (railId == "because_you_watched" || railId == "quick_picks")) {
-                        continue
-                    }
-                    slots += MoviesHomeRenderSlot(
-                        key = "rail_$railId",
-                        kind = MoviesHomeSlotKind.CONTENT_RAIL,
-                        order = comp.order,
-                        railId = railId,
-                        customTitle = comp.title,
-                        maxItems = comp.maxItems,
-                        component = comp,
-                    )
-                }
-            }
+        val includeHero = heroConfig?.visible ?: true
+        if (includeHero) {
+            slots += MoviesHomeRenderSlot(
+                key = "hero_carousel",
+                kind = MoviesHomeSlotKind.HERO_CAROUSEL,
+                order = heroConfig?.order ?: 10,
+                maxItems = heroConfig?.maxItems ?: 8,
+                component = heroConfig,
+            )
+        }
+        if (featuredConfig != null) {
+            slots += MoviesHomeRenderSlot(
+                key = "ui_callout_${featuredConfig.id}",
+                kind = MoviesHomeSlotKind.FEATURED_CALLOUT_CARD,
+                order = featuredConfig.order,
+                component = featuredConfig,
+            )
         }
 
-        // Preserve unmentioned default rails safely at the tail so core functionality stays accessible
-        var fallbackOrder = 500
+        // Core catalogue rails stay consistently accessible in their native sequence
+        var railOrder = 100
         for ((id, kind) in defaultMoviesOrder) {
-            if (kind == MoviesHomeSlotKind.HERO_CAROUSEL) {
-                if (!hasHero) {
-                    fallbackOrder += 10
-                    slots += MoviesHomeRenderSlot(
-                        key = "hero_carousel",
-                        kind = kind,
-                        order = fallbackOrder,
-                        maxItems = 8,
-                    )
-                }
-            } else if (id !in configuredRails) {
-                if (!recommendationsEnabled && (id == "because_you_watched" || id == "quick_picks")) {
-                    continue
-                }
-                fallbackOrder += 10
-                slots += MoviesHomeRenderSlot(
-                    key = "rail_$id",
-                    kind = MoviesHomeSlotKind.CONTENT_RAIL,
-                    order = fallbackOrder,
-                    railId = id,
-                    maxItems = 15,
-                )
+            if (kind != MoviesHomeSlotKind.CONTENT_RAIL) continue
+            if (!recommendationsEnabled && (id == "because_you_watched" || id == "quick_picks")) {
+                continue
             }
+            railOrder += 10
+            slots += MoviesHomeRenderSlot(
+                key = "rail_$id",
+                kind = MoviesHomeSlotKind.CONTENT_RAIL,
+                order = railOrder,
+                railId = id,
+                maxItems = 15,
+            )
         }
 
         return slots.sortedBy { it.order }

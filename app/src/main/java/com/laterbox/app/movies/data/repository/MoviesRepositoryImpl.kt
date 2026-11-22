@@ -81,7 +81,8 @@ class MoviesRepositoryImpl(
     private val defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val isMovieBoxEnabled: () -> Boolean = { true },
     private val isInternetArchiveEnabled: () -> Boolean = { true },
-    private val isTvMazeEnabled: () -> Boolean = { true }
+    private val isTvMazeEnabled: () -> Boolean = { true },
+    private val isTmdbEnabled: () -> Boolean = { true },
 ) : MoviesRepository {
 
     private fun activeMovieBox(): MovieBoxProvider? =
@@ -224,10 +225,14 @@ class MoviesRepositoryImpl(
                 var iaDetailCount = 0
                 for (cand in toLookup) {
                     if (cand.compositeId in newlyResolved) continue
-                    val fallbackMins: Int? = tmdbProvider.findMovieRuntimeMinutes(
-                        imdbId = cand.imdbId,
-                        title = cand.title,
-                        releaseYear = cand.releaseYear
+                    val fallbackMins: Int? = (
+                        if (isTmdbEnabled()) {
+                            tmdbProvider.findMovieRuntimeMinutes(
+                                imdbId = cand.imdbId,
+                                title = cand.title,
+                                releaseYear = cand.releaseYear
+                            )
+                        } else null
                     ) ?: if (cand.providerId == InternetArchiveMoviesProvider.PROVIDER_ID &&
                         isInternetArchiveEnabled() &&
                         iaDetailCount < 4
@@ -1140,7 +1145,9 @@ class MoviesRepositoryImpl(
             TvMazeSeriesProvider.PROVIDER_ID ->
                 if (isTvMazeEnabled()) tvMazeProvider.getDetails(titleId)
                 else Result.failure(IllegalStateException("TVMaze provider is currently paused."))
-            TmdbOptionalMoviesProvider.PROVIDER_ID -> tmdbProvider.getDetails(titleId)
+            TmdbOptionalMoviesProvider.PROVIDER_ID ->
+                if (isTmdbEnabled()) tmdbProvider.getDetails(titleId)
+                else Result.failure(IllegalStateException("TMDB metadata is currently paused."))
             else -> Result.failure(IllegalArgumentException("Unknown provider '$providerId'"))
         }
 
@@ -1175,7 +1182,9 @@ class MoviesRepositoryImpl(
             TvMazeSeriesProvider.PROVIDER_ID ->
                 if (isTvMazeEnabled()) tvMazeProvider.getSeasons(resolvedSeriesId)
                 else Result.failure(IllegalStateException("TVMaze provider is currently paused."))
-            TmdbOptionalMoviesProvider.PROVIDER_ID -> tmdbProvider.getSeasons(resolvedSeriesId)
+            TmdbOptionalMoviesProvider.PROVIDER_ID ->
+                if (isTmdbEnabled()) tmdbProvider.getSeasons(resolvedSeriesId)
+                else Result.failure(IllegalStateException("TMDB metadata is currently paused."))
             DevelopmentMoviesFixtureProvider.PROVIDER_ID -> fixtureProvider.getSeasons(resolvedSeriesId)
             else -> Result.success(emptyList())
         }
@@ -1217,7 +1226,9 @@ class MoviesRepositoryImpl(
             TvMazeSeriesProvider.PROVIDER_ID ->
                 if (isTvMazeEnabled()) tvMazeProvider.getEpisodes(resolvedSeriesId, seasonNumber)
                 else Result.failure(IllegalStateException("TVMaze provider is currently paused."))
-            TmdbOptionalMoviesProvider.PROVIDER_ID -> tmdbProvider.getEpisodes(resolvedSeriesId, seasonNumber)
+            TmdbOptionalMoviesProvider.PROVIDER_ID ->
+                if (isTmdbEnabled()) tmdbProvider.getEpisodes(resolvedSeriesId, seasonNumber)
+                else Result.failure(IllegalStateException("TMDB metadata is currently paused."))
             else -> Result.success(emptyList())
         }
 
@@ -1390,7 +1401,11 @@ class MoviesRepositoryImpl(
                     Result.failure(IllegalStateException("TVMaze provider is currently paused."))
                 }
             TmdbOptionalMoviesProvider.PROVIDER_ID ->
-                tmdbProvider.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
+                if (isTmdbEnabled()) {
+                    tmdbProvider.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
+                } else {
+                    Result.failure(IllegalStateException("TMDB metadata is currently paused."))
+                }
             DevelopmentMoviesFixtureProvider.PROVIDER_ID ->
                 fixtureProvider.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
             else -> Result.failure(IllegalArgumentException("Unknown provider '$resolvedProviderId'"))

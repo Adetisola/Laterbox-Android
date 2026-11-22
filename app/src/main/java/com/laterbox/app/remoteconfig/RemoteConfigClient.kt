@@ -117,6 +117,10 @@ class RemoteConfigClient(
 
                 val body = response.body?.string().orEmpty()
                 val now = clockMs()
+                val baseOrigin = "${url.scheme}://${url.host}" + if (
+                    (url.scheme == "https" && url.port != 443) ||
+                    (url.scheme == "http" && url.port != 80)
+                ) ":${url.port}" else ""
                 when (
                     val parsed = RemoteConfigValidator.parseAndValidate(
                         rawJson = body,
@@ -126,6 +130,7 @@ class RemoteConfigClient(
                         fetchedAtEpochMs = now,
                         nowEpochMs = now,
                         enforceExpiry = true,
+                        backendBaseUrl = baseOrigin,
                     )
                 ) {
                     is RemoteConfigParseResult.Valid -> RemoteConfigFetchOutcome.Updated(

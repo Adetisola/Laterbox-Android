@@ -68,6 +68,19 @@ class DownloadWorker(
             return Result.success()
         }
 
+        val maintenancePaused = container?.remoteConfigManager?.currentConfig?.maintenance?.isOnlineServicesPaused == true
+        if (maintenancePaused) {
+            val msg = "Online downloads are paused during maintenance. Your saved offline downloads remain playable."
+            taskDao.updateError(
+                id = taskId,
+                status = DownloadState.FAILED.name,
+                errorCode = FailureCode.NETWORK_ERROR.name,
+                errorMessage = msg,
+                retryCount = task.retryCount
+            )
+            return Result.failure()
+        }
+
         // 1. Network policy evaluation
         val prefs = userPrefs.userPreferencesFlow.first()
         val connectivityManager = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager

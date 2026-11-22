@@ -122,7 +122,8 @@ class YouTubeTranscriptExtractor(
     private val playlistInterVideoDelayMs: Long = PlaylistResilienceConfig.DEFAULT_INTER_VIDEO_DELAY_MS,
     private val resilienceConfig: PlaylistResilienceConfig = PlaylistResilienceConfig(
         baseInterVideoDelayMs = playlistInterVideoDelayMs.coerceAtLeast(0L)
-    )
+    ),
+    private val isOnlineServicesPaused: () -> Boolean = { false },
 ) {
     private val tag = "YTTranscriptExtractor"
 
@@ -131,6 +132,11 @@ class YouTubeTranscriptExtractor(
         preference: TranscriptTargetPreference? = null,
         onProgress: suspend (TranscriptExtractionProgress) -> Unit = {}
     ): TranscriptExtractionOutcome = withContext(ioDispatcher) {
+        if (isOnlineServicesPaused()) {
+            val msg = "Transcript extraction is temporarily paused during maintenance."
+            onProgress(TranscriptExtractionProgress(stage = TranscriptExtractionStage.FAILED, message = msg))
+            return@withContext TranscriptExtractionOutcome.Failed(msg)
+        }
         val processRoot = "transcript_${clock()}_${UUID.randomUUID().toString().take(6)}"
 
         onProgress(

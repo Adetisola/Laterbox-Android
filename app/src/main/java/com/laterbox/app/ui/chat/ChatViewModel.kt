@@ -85,7 +85,8 @@ class ChatViewModel(
     private val collectionRepository: CollectionRepository? = null,
     private val reminderScheduler: ReminderScheduler? = null,
     private val backendAiClient: com.laterbox.app.ai.LaterboxBackendAiClient? = null,
-    private val analyticsTracker: com.laterbox.app.analytics.LaterboxAnalyticsTracker? = null
+    private val analyticsTracker: com.laterbox.app.analytics.LaterboxAnalyticsTracker? = null,
+    private val isAssistantRemotePaused: () -> Boolean = { false },
 ) : ViewModel() {
 
     private val _activeConversationId = MutableStateFlow<String?>(null)
@@ -368,6 +369,10 @@ class ChatViewModel(
             _statusNotice.value = "AI Assistant is turned off in Settings → Reminders & AI."
             return
         }
+        if (isAssistantRemotePaused()) {
+            _statusNotice.value = "Laterbox Assistant is temporarily paused during maintenance. Your local links and offline library remain available."
+            return
+        }
         if (!prefs.assistantAiDisclosureAccepted) {
             pendingConsentConversationId = conversationId
             return
@@ -385,6 +390,10 @@ class ChatViewModel(
             val prefs = userPreferencesRepository.userPreferencesFlow.first()
             if (!prefs.assistantEnabled) {
                 _statusNotice.value = "AI Assistant is turned off in Settings → Reminders & AI."
+                return@launch
+            }
+            if (isAssistantRemotePaused()) {
+                _statusNotice.value = "Laterbox Assistant is temporarily paused during maintenance. Your local links and offline library remain available."
                 return@launch
             }
             if (!prefs.assistantAiDisclosureAccepted) {

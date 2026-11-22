@@ -12,6 +12,7 @@ sealed class RemoteConfigParseResult {
 
 object RemoteConfigValidator {
     private val safeIdRegex = Regex("^[A-Za-z0-9_.-]{1,64}$")
+    private val safeAssetPathRegex = Regex("^/config/v1/assets/hero_[a-f0-9]{16,32}$")
     private val unsafeMarkupRegex = Regex("<\\s*script|javascript:|onerror=|onload=", RegexOption.IGNORE_CASE)
 
     fun parseAndValidate(
@@ -22,6 +23,7 @@ object RemoteConfigValidator {
         fetchedAtEpochMs: Long = System.currentTimeMillis(),
         nowEpochMs: Long = fetchedAtEpochMs,
         enforceExpiry: Boolean = true,
+        backendBaseUrl: String = "",
     ): RemoteConfigParseResult {
         if (rawJson.isBlank()) {
             return RemoteConfigParseResult.Rejected("Empty remote configuration payload")
@@ -84,6 +86,7 @@ object RemoteConfigValidator {
             title = sanitizePlainText(maintObj?.optString("title", "") ?: "", 120),
             message = sanitizePlainText(maintObj?.optString("message", "") ?: "", 600),
             allowLocalOfflineAccess = maintObj?.optBoolean("allowLocalOfflineAccess", true) ?: true,
+            showBannerInNormalMode = maintObj?.optBoolean("showBannerInNormalMode", false) ?: false,
         )
 
         // Allowlist-filtered features; unknown keys ignored safely without failure
@@ -120,7 +123,7 @@ object RemoteConfigValidator {
         if (componentsArr != null) {
             for (i in 0 until minOf(componentsArr.length(), 30)) {
                 val item = componentsArr.optJSONObject(i) ?: continue
-                val parsed = parseUiComponent(item, clientVersionCode) ?: continue
+                val parsed = parseUiComponent(item, clientVersionCode, backendBaseUrl) ?: continue
                 if (seenComponentIds.add(parsed.id)) {
                     componentList += parsed
                     if (componentList.size >= 20) break
@@ -159,6 +162,23 @@ object RemoteConfigValidator {
         return false
     }
 
+    private fun parseAndResolveHeroImageUrl(rawUrl: String, backendBaseUrl: String): String {
+        val clean = rawUrl.trim()
+        if (clean.isEmpty() || unsafeMarkupRegex.containsMatchIn(clean)) return ""
+        if (safeAssetPathRegex.matches(clean)) {
+            val base = backendBaseUrl.trim().trimEnd('/')
+            return if (base.startsWith("https://", ignoreCase = true) || base.startsWith("http://", ignoreCase = true)) {
+                "$base$clean"
+            } else {
+                clean
+            }
+        }
+        if (clean.startsWith("https://", ignoreCase = true) && clean.length <= 512) {
+            return clean
+        }
+        return ""
+    }
+
     fun serializeToJson(snapshot: RemoteConfigSnapshot): String {
         val root = JSONObject()
         root.put("schemaVersion", snapshot.schemaVersion)
@@ -185,6 +205,7 @@ object RemoteConfigValidator {
         maint.put("title", snapshot.maintenance.title)
         maint.put("message", snapshot.maintenance.message)
         maint.put("allowLocalOfflineAccess", snapshot.maintenance.allowLocalOfflineAccess)
+        maint.put("showBannerInNormalMode", snapshot.maintenance.showBannerInNormalMode)
         root.put("maintenance", maint)
 
         val announcementsArr = JSONArray()
@@ -196,6 +217,13 @@ object RemoteConfigValidator {
                     put("message", ann.message)
                     put("severity", ann.severity.wireValue)
                     put("surface", ann.surface.wireValue)
+                    put(
+                        "surfaces",
+                        JSONArray().apply {
+                            val effective = ann.surfaces.ifEmpty { listOf(ann.surface) }
+                            effective.forEach { put(it.wireValue) }
+                        }
+                    )
                     put("dismissible", ann.dismissible)
                     put("actionLabel", ann.actionLabel)
                     put("actionDestination", ann.actionDestination)
@@ -233,6 +261,27 @@ object RemoteConfigValidator {
                     put("autoAdvanceMs", comp.autoAdvanceMs)
                     put("actionLabel", comp.actionLabel)
                     put("actionDestination", comp.actionDestination)
+                    if (comp.slides.isNotEmpty()) {
+                        put(
+                            "slides",
+                            JSONArray().apply {
+                                comp.slides.forEach { slide ->
+                                    put(
+                                        JSONObject().apply {
+                                            put("id", slide.id)
+                                            put("imageUrl", slide.imageUrl)
+                                            put("heading", slide.heading)
+                                            put("subtitle", slide.subtitle)
+                                            put("actionLabel", slide.actionLabel)
+                                            put("actionDestination", slide.actionDestination)
+                                            put("enabled", slide.enabled)
+                                            put("order", slide.order)
+                                        }
+                                    )
+                                }
+                            }
+                        )
+                    }
                 }
             )
         }
@@ -255,17 +304,33 @@ object RemoteConfigValidator {
 
         val title = sanitizePlainText(obj.optString("title", ""), 120)
         val message = sanitizePlainText(obj.optString("message", ""), 500)
-        if (title.isBlank() || message.isBlank()) return null
+        if (message.isBlank()) return null
 
         val rawDest = obj.optString("actionDestination", "").trim()
         val safeDest = if (isAllowedDestination(rawDest)) rawDest else ""
+
+        val primarySurface = RemoteUiSurface.fromWire(obj.optString("surface", "inbox"))
+        val surfacesArr = obj.optJSONArray("surfaces")
+        val parsedSurfaces = buildList {
+            if (surfacesArr != null) {
+                for (i in 0 until minOf(surfacesArr.length(), 6)) {
+                    val sRaw = surfacesArr.optString(i, "")
+                    if (sRaw.isNotBlank()) {
+                        val mapped = RemoteUiSurface.fromWire(sRaw)
+                        if (mapped !in this) add(mapped)
+                    }
+                }
+            }
+            if (isEmpty()) add(primarySurface)
+        }
 
         return RemoteAnnouncementItem(
             id = id,
             title = title,
             message = message,
             severity = RemoteAnnouncementSeverity.fromWire(obj.optString("severity", "info")),
-            surface = RemoteUiSurface.fromWire(obj.optString("surface", "inbox")),
+            surface = parsedSurfaces.first(),
+            surfaces = parsedSurfaces,
             dismissible = obj.optBoolean("dismissible", true),
             actionLabel = if (safeDest.isEmpty()) "" else sanitizePlainText(obj.optString("actionLabel", ""), 40),
             actionDestination = safeDest,
@@ -275,7 +340,11 @@ object RemoteConfigValidator {
         )
     }
 
-    private fun parseUiComponent(obj: JSONObject, clientVersionCode: Int): RemoteUiComponent? {
+    private fun parseUiComponent(
+        obj: JSONObject,
+        clientVersionCode: Int,
+        backendBaseUrl: String = "",
+    ): RemoteUiComponent? {
         val id = obj.optString("id", "").trim()
         val type = obj.optString("type", "").trim()
         if (!safeIdRegex.matches(id)) return null
@@ -304,9 +373,39 @@ object RemoteConfigValidator {
         val rawDest = obj.optString("actionDestination", "").trim()
         val safeDest = if (isAllowedDestination(rawDest)) rawDest else ""
 
-        if (type == RemoteCapabilities.TYPE_ANNOUNCEMENT_BANNER && title.isBlank()) return null
+        if (type == RemoteCapabilities.TYPE_ANNOUNCEMENT_BANNER && title.isBlank() && subtitle.isBlank()) return null
         if (type == RemoteCapabilities.TYPE_FEATURED_CALLOUT_CARD && (title.isBlank() || safeDest.isBlank())) {
             return null
+        }
+
+        val slides = mutableListOf<RemoteHeroSlide>()
+        if (type == RemoteCapabilities.TYPE_HERO_CAROUSEL) {
+            val slidesArr = obj.optJSONArray("slides")
+            val seenSlideIds = mutableSetOf<String>()
+            if (slidesArr != null) {
+                for (i in 0 until minOf(slidesArr.length(), 12)) {
+                    val sObj = slidesArr.optJSONObject(i) ?: continue
+                    val slideId = sObj.optString("id", "").trim()
+                    if (!safeIdRegex.matches(slideId) || !seenSlideIds.add(slideId)) continue
+                    val slideEnabled = sObj.optBoolean("enabled", true)
+                    val safeImg = parseAndResolveHeroImageUrl(sObj.optString("imageUrl", ""), backendBaseUrl)
+                    val sHeading = sanitizePlainText(sObj.optString("heading", ""), 120)
+                    if (slideEnabled && safeImg.isBlank() && sHeading.isBlank()) continue
+                    val sDestRaw = sObj.optString("actionDestination", "").trim()
+                    val sSafeDest = if (isAllowedDestination(sDestRaw)) sDestRaw else ""
+                    slides += RemoteHeroSlide(
+                        id = slideId,
+                        imageUrl = safeImg,
+                        heading = sHeading,
+                        subtitle = sanitizePlainText(sObj.optString("subtitle", ""), 240),
+                        actionLabel = if (sSafeDest.isEmpty()) "" else sanitizePlainText(sObj.optString("actionLabel", ""), 40),
+                        actionDestination = sSafeDest,
+                        enabled = slideEnabled,
+                        order = sObj.optInt("order", i * 10).coerceIn(0, 500),
+                    )
+                }
+            }
+            slides.sortBy { it.order }
         }
 
         return RemoteUiComponent(
@@ -326,6 +425,7 @@ object RemoteConfigValidator {
             autoAdvanceMs = obj.optInt("autoAdvanceMs", 6000).coerceIn(2000, 30000),
             actionLabel = if (safeDest.isEmpty()) "" else sanitizePlainText(obj.optString("actionLabel", ""), 40),
             actionDestination = safeDest,
+            slides = slides,
         )
     }
 

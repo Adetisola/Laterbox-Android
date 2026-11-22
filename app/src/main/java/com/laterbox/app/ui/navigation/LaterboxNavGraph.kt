@@ -191,7 +191,7 @@ fun LaterboxApp(
     val recommendationsEnabled = remoteConfig.isFeatureEnabled(com.laterbox.app.ai.RemoteCapabilities.KEY_MOVIES_RECOMMENDATIONS)
     val introSkipEnabled = remoteConfig.isFeatureEnabled(com.laterbox.app.ai.RemoteCapabilities.KEY_PLAYER_INTRO_SKIP)
     val effectiveAssistantEnabled = preferences.assistantEnabled &&
-        !remoteConfig.maintenance.enabled &&
+        !remoteConfig.maintenance.isOnlineServicesPaused &&
         remoteConfig.isFeatureEnabled(com.laterbox.app.ai.RemoteCapabilities.KEY_AI_ASSISTANT)
     var sessionDismissedRecommendedUpdate by rememberSaveable { mutableStateOf(false) }
 
@@ -219,6 +219,12 @@ fun LaterboxApp(
             "archive" -> navController.navigate(LaterboxDestination.Archive.route) {
                 popUpTo(LaterboxDestination.Inbox.route)
                 launchSingleTop = true
+            }
+            "assistant" -> if (effectiveAssistantEnabled) {
+                navController.navigate(LaterboxDestination.Chat.createRoute()) {
+                    popUpTo(LaterboxDestination.Inbox.route)
+                    launchSingleTop = true
+                }
             }
             "settings" -> navController.navigate(LaterboxDestination.Settings.route) {
                 popUpTo(LaterboxDestination.Inbox.route)
@@ -400,7 +406,8 @@ fun LaterboxApp(
         val result = ArticleContentExtractor.fetchOrLoadCached(
             url = link.originalUrl,
             cacheDir = context.cacheDir,
-            forceRefresh = readerRefreshNonce > 0
+            forceRefresh = readerRefreshNonce > 0,
+            allowNetwork = !remoteConfig.maintenance.isOnlineServicesPaused,
         )
         readerUiState = result.fold(
             onSuccess = { article -> ArticleReaderUiState.Loaded(article) },
@@ -684,11 +691,22 @@ fun LaterboxApp(
                     }
                 }
             ) { innerPadding ->
-                Box(
+                Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(top = if (isImmersivePlayerRoute) 0.dp else innerPadding.calculateTopPadding())
                 ) {
+                    if (!isImmersivePlayerRoute && remoteConfig.maintenance.shouldShowStatusStrip) {
+                        com.laterbox.app.remoteconfig.RemoteMaintenanceStatusStrip(
+                            maintenance = remoteConfig.maintenance,
+                            reducedMotion = reducedMotion,
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                    ) {
                     val topLevelRoutes = remember {
                         setOf(
                             LaterboxDestination.Inbox.route,
@@ -1958,16 +1976,52 @@ fun LaterboxApp(
                         }
                     }
 
-                    // Persistent Bottom Chrome: Inbox Action Dock / Composer + In-App Mini-Player + Handset Bottom Navigation Bar
+                    // Persistent Bottom Chrome: Multi-Surface Floating Notice + Inbox Action Dock / Composer + In-App Mini-Player + Handset Bottom Navigation Bar
                     val isChatRoute = currentRoute?.startsWith("chat") == true
                     val showGlobalMiniPlayer = miniPlayerState != null && !isChatRoute
-                    if (showGlobalMiniPlayer || isInboxOverlayVisible || showHandsetBottomBar) {
+                    val currentSurface = when {
+                        currentRoute == LaterboxDestination.Inbox.route -> com.laterbox.app.remoteconfig.RemoteUiSurface.INBOX
+                        currentRoute == LaterboxDestination.Collections.route -> com.laterbox.app.remoteconfig.RemoteUiSurface.COLLECTIONS
+                        currentRoute == LaterboxDestination.Movies.route -> com.laterbox.app.remoteconfig.RemoteUiSurface.MOVIES
+                        currentRoute == LaterboxDestination.Downloads.route -> com.laterbox.app.remoteconfig.RemoteUiSurface.DOWNLOADS
+                        currentRoute == LaterboxDestination.Archive.route -> com.laterbox.app.remoteconfig.RemoteUiSurface.ARCHIVE
+                        isChatRoute -> com.laterbox.app.remoteconfig.RemoteUiSurface.ASSISTANT
+                        else -> null
+                    }
+                    val activeSurfaceNotices = if (currentSurface != null && !isImmersivePlayerRoute && !isImeVisible) {
+                        remoteConfig.activeAnnouncementsForSurface(
+                            surface = currentSurface,
+                            dismissedIds = dismissedAnnouncementIds,
+                        )
+                    } else {
+                        emptyList()
+                    }
+                    if (showGlobalMiniPlayer || isInboxOverlayVisible || showHandsetBottomBar || activeSurfaceNotices.isNotEmpty()) {
                         Column(
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
                                 .fillMaxWidth(),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
+                            if (activeSurfaceNotices.isNotEmpty()) {
+                                val needsNavInsets = !showHandsetBottomBar && !isInboxOverlayVisible && !showGlobalMiniPlayer
+                                com.laterbox.app.remoteconfig.RemoteFloatingNoticeDeck(
+                                    notices = activeSurfaceNotices,
+                                    onActionClick = handleRemoteAction,
+                                    onDismissClick = { id -> remoteConfigManager?.dismissAnnouncement(id) },
+                                    modifier = Modifier
+                                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                                        .let { mod ->
+                                            if (needsNavInsets) {
+                                                mod.windowInsetsPadding(
+                                                    WindowInsets.navigationBars.only(WindowInsetsSides.Bottom)
+                                                )
+                                            } else {
+                                                mod
+                                            }
+                                        }
+                                )
+                            }
                             if (isInboxOverlayVisible) {
                                 Box(
                                     modifier = Modifier
@@ -2153,6 +2207,7 @@ fun LaterboxApp(
                         }
                     }
                 }
+            }
             }
         }
 

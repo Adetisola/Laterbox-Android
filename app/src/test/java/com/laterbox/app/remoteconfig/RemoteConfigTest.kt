@@ -320,4 +320,88 @@ class RemoteConfigTest {
             scope.cancel()
         }
     }
+
+    @Test
+    fun checkpoint3_resolvesHeroSlides_multiSurfaceOptionalTitleNotices_andNormalBannerRoundTrip() {
+        val rawJson = """
+            {
+              "schemaVersion": 1,
+              "revision": 15,
+              "publishedAt": "2026-11-22T01:00:00Z",
+              "expiresAt": null,
+              "general": { "minRefreshIntervalSeconds": 900, "staleCacheMaxAgeSeconds": 86400 },
+              "versionPolicy": { "minimumSupportedVersionCode": 0, "recommendedVersionCode": 0, "enforcementEnabled": false, "recommendedTag": "", "updateMessage": "" },
+              "maintenance": {
+                "enabled": false,
+                "mode": "none",
+                "title": "",
+                "message": "Everything healthy.",
+                "allowLocalOfflineAccess": true,
+                "showBannerInNormalMode": true
+              },
+              "announcements": [
+                {
+                  "id": "ann_multi",
+                  "title": "",
+                  "message": "Collections & Downloads sync tip",
+                  "severity": "warning",
+                  "surface": "collections",
+                  "surfaces": ["collections", "downloads", "assistant"],
+                  "dismissible": true,
+                  "actionLabel": "Open",
+                  "actionDestination": "assistant",
+                  "enabled": true
+                }
+              ],
+              "features": { "movies_tv_enabled": true },
+              "ui": {
+                "components": [
+                  {
+                    "id": "movies_hero_default",
+                    "type": "hero_carousel",
+                    "surface": "movies",
+                    "visible": true,
+                    "order": 10,
+                    "autoAdvanceMs": 7000,
+                    "slides": [
+                      {
+                        "id": "slide_a",
+                        "imageUrl": "/config/v1/assets/hero_1234567890abcdef",
+                        "heading": "Weekend Spotlight",
+                        "subtitle": "Hand-picked films",
+                        "actionLabel": "Open",
+                        "actionDestination": "collections",
+                        "enabled": true,
+                        "order": 1
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+        """.trimIndent()
+
+        val parsed = RemoteConfigValidator.parseAndValidate(
+            rawJson = rawJson,
+            clientVersionCode = 199,
+            source = RemoteConfigSource.NETWORK,
+            backendBaseUrl = "https://laterbox-moviebox-api.vercel.app/",
+        )
+        assertTrue(parsed is RemoteConfigParseResult.Valid)
+        val snap = (parsed as RemoteConfigParseResult.Valid).snapshot
+        assertTrue(snap.maintenance.showBannerInNormalMode)
+        assertTrue(snap.maintenance.shouldShowStatusStrip)
+        assertEquals(listOf(RemoteUiSurface.COLLECTIONS, RemoteUiSurface.DOWNLOADS, RemoteUiSurface.ASSISTANT), snap.announcements[0].surfaces)
+        val slide = snap.ui.components[0].slides[0]
+        assertEquals("https://laterbox-moviebox-api.vercel.app/config/v1/assets/hero_1234567890abcdef", slide.imageUrl)
+
+        // Round-trip through serializeToJson retains slides, normal-mode banner toggle, and multi-surface array
+        val serialized = RemoteConfigValidator.serializeToJson(snap)
+        val reparsed = RemoteConfigValidator.parseAndValidate(serialized, clientVersionCode = 199, source = RemoteConfigSource.CACHE)
+        assertTrue(reparsed is RemoteConfigParseResult.Valid)
+        val cachedSnap = (reparsed as RemoteConfigParseResult.Valid).snapshot
+        assertTrue(cachedSnap.maintenance.showBannerInNormalMode)
+        assertEquals(3, cachedSnap.announcements[0].surfaces.size)
+        assertEquals("https://laterbox-moviebox-api.vercel.app/config/v1/assets/hero_1234567890abcdef", cachedSnap.ui.components[0].slides[0].imageUrl)
+    }
 }
