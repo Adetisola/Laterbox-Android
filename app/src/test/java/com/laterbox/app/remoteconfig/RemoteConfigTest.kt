@@ -404,4 +404,145 @@ class RemoteConfigTest {
         assertEquals(3, cachedSnap.announcements[0].surfaces.size)
         assertEquals("https://laterbox-moviebox-api.vercel.app/config/v1/assets/hero_1234567890abcdef", cachedSnap.ui.components[0].slides[0].imageUrl)
     }
+
+    @Test
+    fun repository_exponentialBackoffOnFailures_andBypassThrottlePropagatesNewRevision() = runBlocking {
+        val dsFile = File(tempFolder.newFolder("rc_backoff_ds"), "test_backoff.preferences_pb")
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            var nowMs = 1_795_200_000_000L
+            val dataStore = PreferenceDataStoreFactory.create(scope = scope) { dsFile }
+            val cache = RemoteConfigCache(dataStore)
+            val client = RemoteConfigClient(
+                okHttpClient = OkHttpClient(),
+                baseUrlProvider = { server.url("/").toString().trimEnd('/') },
+                appCheckTokenProvider = { "token-1" },
+                clientVersionCode = 200,
+                clientVersionName = "1.0.67",
+                clockMs = { nowMs },
+            )
+            val repo = RemoteConfigRepository(cache, client, clientVersionCode = 200, clockMs = { nowMs })
+
+            // Failure 1 -> backoff 10s (does NOT wait 900s!)
+            server.enqueue(MockResponse().setResponseCode(503).setBody("Down"))
+            val f1 = repo.refreshIfNeeded(forceRefresh = false, bypassThrottle = true)
+            assertEquals(1, f1.consecutiveFailures)
+            assertEquals(1, server.requestCount)
+
+            // Before 10s elapsed -> respects backoff
+            nowMs += 5_000L
+            repo.refreshIfNeeded(forceRefresh = false, bypassThrottle = true)
+            assertEquals(1, server.requestCount)
+
+            // At 10s -> retries and fails -> backoff 30s
+            nowMs += 5_000L
+            server.enqueue(MockResponse().setResponseCode(503).setBody("Down"))
+            val f2 = repo.refreshIfNeeded(forceRefresh = false, bypassThrottle = true)
+            assertEquals(2, f2.consecutiveFailures)
+            assertEquals(2, server.requestCount)
+
+            nowMs += 20_000L
+            repo.refreshIfNeeded(forceRefresh = false, bypassThrottle = true)
+            assertEquals(2, server.requestCount)
+
+            // At 30s -> succeeds even though server sent minRefreshIntervalSeconds=900!
+            nowMs += 10_000L
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(200)
+                    .addHeader("ETag", "\"rev-10\"")
+                    .setBody(sampleValidPayload(revision = 10, minRefresh = 900))
+            )
+            val recovered = repo.refreshIfNeeded(forceRefresh = false, bypassThrottle = true)
+            assertEquals(0, recovered.consecutiveFailures)
+            assertEquals(10, recovered.activeConfig.revision)
+            assertEquals(3, server.requestCount)
+
+            // Lifecycle/poll with bypassThrottle=true after 60s sends If-None-Match despite minRefresh=900
+            nowMs += 60_000L
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(200)
+                    .addHeader("ETag", "\"rev-11\"")
+                    .setBody(sampleValidPayload(revision = 11, minRefresh = 900))
+            )
+            val updated = repo.refreshIfNeeded(forceRefresh = false, bypassThrottle = true)
+            assertEquals(11, updated.activeConfig.revision)
+            val condReq = server.takeRequest()
+            val condReq2 = server.takeRequest()
+            val condReq3 = server.takeRequest()
+            val pollReq = server.takeRequest()
+            assertNotNull(condReq)
+            assertNotNull(condReq2)
+            assertNotNull(condReq3)
+            assertEquals("\"rev-10\"", pollReq.getHeader("If-None-Match"))
+            assertNull(pollReq.requestUrl?.queryParameter("refresh"))
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun manager_foregroundPollingStartsOnForegroundAndStopsOnBackground() = runBlocking {
+        val dsFile = File(tempFolder.newFolder("rc_poll_ds"), "test_poll.preferences_pb")
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            var nowMs = 1_795_200_000_000L
+            val dataStore = PreferenceDataStoreFactory.create(scope = scope) { dsFile }
+            val cache = RemoteConfigCache(dataStore)
+            val client = RemoteConfigClient(
+                okHttpClient = OkHttpClient(),
+                baseUrlProvider = { server.url("/").toString().trimEnd('/') },
+                appCheckTokenProvider = { "token-1" },
+                clientVersionCode = 200,
+                clientVersionName = "1.0.67",
+                clockMs = { nowMs },
+            )
+            val repo = RemoteConfigRepository(cache, client, clientVersionCode = 200, clockMs = { nowMs })
+            val manager = RemoteConfigManager(
+                repository = repo,
+                applicationScope = scope,
+                foregroundPollIntervalMs = 40L,
+            )
+
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(200)
+                    .addHeader("ETag", "\"rev-20\"")
+                    .setBody(sampleValidPayload(revision = 20, minRefresh = 60))
+            )
+            server.enqueue(MockResponse().setResponseCode(304).addHeader("ETag", "\"rev-20\""))
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(200)
+                    .addHeader("ETag", "\"rev-21\"")
+                    .setBody(sampleValidPayload(revision = 21, minRefresh = 60))
+            )
+
+            manager.onAppForegrounded()
+            val deadline1 = System.currentTimeMillis() + 3_000L
+            while (manager.currentConfig.revision != 20 && System.currentTimeMillis() < deadline1) {
+                kotlinx.coroutines.delay(25L)
+            }
+            assertEquals(20, manager.currentConfig.revision)
+
+            // Advance simulated clock past 5s dedup so subsequent poll ticks issue network checks
+            val deadline2 = System.currentTimeMillis() + 3_000L
+            while (manager.currentConfig.revision != 21 && System.currentTimeMillis() < deadline2) {
+                nowMs += 10_000L
+                kotlinx.coroutines.delay(50L)
+            }
+            assertEquals(21, manager.currentConfig.revision)
+
+            // Stop polling cleanly on background
+            manager.onAppBackgrounded()
+            kotlinx.coroutines.delay(60L)
+            val countAtBackground = server.requestCount
+            nowMs += 10_000L
+            kotlinx.coroutines.delay(150L)
+            assertEquals(countAtBackground, server.requestCount)
+        } finally {
+            scope.cancel()
+        }
+    }
 }

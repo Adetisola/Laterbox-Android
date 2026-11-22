@@ -213,4 +213,46 @@ class RemoteConfigLayoutAndFlagsTest {
             )
         )
     }
+
+    @Test
+    fun buildCombinedHeroEntries_alwaysPreservesDefaultsAndAppendsEnabledCustomSlides() {
+        val defaults = listOf("Trend-1", "Trend-2", "Trend-3")
+
+        // 1. Empty custom slide list -> preserves all default banners
+        val defaultOnly = RemoteConfigLayoutHelper.buildCombinedHeroEntries(defaults, emptyList())
+        assertEquals(3, defaultOnly.size)
+        assertTrue(defaultOnly.all { it is HeroCarouselEntry.CatalogueBanner })
+        assertEquals(
+            defaults,
+            defaultOnly.map { (it as HeroCarouselEntry.CatalogueBanner).item },
+        )
+
+        // 2. Adding 1 custom slide appends 1 additional slide after defaults
+        val oneCustom = RemoteConfigLayoutHelper.buildCombinedHeroEntries(
+            defaultBanners = defaults,
+            customSlides = listOf(
+                RemoteHeroSlide(id = "c1", heading = "Custom Spotlight", enabled = true, order = 10)
+            ),
+        )
+        assertEquals(4, oneCustom.size)
+        assertEquals("Trend-1", (oneCustom[0] as HeroCarouselEntry.CatalogueBanner).item)
+        assertEquals("Trend-3", (oneCustom[2] as HeroCarouselEntry.CatalogueBanner).item)
+        assertEquals("c1", (oneCustom[3] as HeroCarouselEntry.CustomSlide).slide.id)
+
+        // 3. Adding 3 enabled slides (plus 1 disabled) appends exactly 3 slides sorted by order
+        val threeCustom = RemoteConfigLayoutHelper.buildCombinedHeroEntries(
+            defaultBanners = defaults,
+            customSlides = listOf(
+                RemoteHeroSlide(id = "c3", heading = "Third", enabled = true, order = 30),
+                RemoteHeroSlide(id = "c_disabled", heading = "Hidden", enabled = false, order = 5),
+                RemoteHeroSlide(id = "c1", heading = "First", enabled = true, order = 10),
+                RemoteHeroSlide(id = "c2", heading = "Second", enabled = true, order = 20),
+            ),
+        )
+        assertEquals(6, threeCustom.size)
+        assertEquals(
+            listOf("c1", "c2", "c3"),
+            threeCustom.drop(3).map { (it as HeroCarouselEntry.CustomSlide).slide.id },
+        )
+    }
 }

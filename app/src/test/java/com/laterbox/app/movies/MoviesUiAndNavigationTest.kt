@@ -1792,6 +1792,138 @@ class MoviesUiAndNavigationTest {
     }
 
     @Test
+    fun moviesHeroCarousel_appendsCustomSlidesAfterDefaultBanners_andEmptyListPreservesDefaults() {
+        val banners = listOf(
+            sampleMovie.copy(id = "h1", title = "Trending One"),
+            sampleMovie.copy(id = "h2", title = "Trending Two")
+        )
+        val customSlides = listOf(
+            com.laterbox.app.remoteconfig.RemoteHeroSlide(
+                id = "custom_1",
+                heading = "Custom Spotlight One",
+                subtitle = "Appended highlight",
+                actionLabel = "Open Inbox",
+                actionDestination = "inbox",
+                enabled = true,
+                order = 10,
+            ),
+            com.laterbox.app.remoteconfig.RemoteHeroSlide(
+                id = "custom_hidden",
+                heading = "Disabled Slide",
+                enabled = false,
+                order = 15,
+            ),
+            com.laterbox.app.remoteconfig.RemoteHeroSlide(
+                id = "custom_2",
+                heading = "Custom Spotlight Two",
+                enabled = true,
+                order = 20,
+            ),
+            com.laterbox.app.remoteconfig.RemoteHeroSlide(
+                id = "custom_3",
+                heading = "Custom Spotlight Three",
+                enabled = true,
+                order = 30,
+            ),
+        )
+        var capturedAction: String? = null
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                com.laterbox.app.movies.ui.MoviesHeroCarousel(
+                    banners = banners,
+                    watchlistIds = emptySet(),
+                    onBannerClick = {},
+                    onPlayClick = {},
+                    onToggleWatchlist = {},
+                    autoAdvanceIntervalMs = 0L,
+                    customSlides = customSlides,
+                    onCustomSlideAction = { capturedAction = it },
+                )
+            }
+        }
+
+        // Starts at first default trending slide
+        composeTestRule.onNodeWithTag("movies_hero_pager").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Trending One").assertIsDisplayed()
+
+        // Swipe backwards from first item wraps to the last appended custom slide ("Custom Spotlight Three")
+        composeTestRule.onNodeWithTag("movies_hero_pager").performTouchInput {
+            swipeRight(startX = width * 0.2f, endX = width * 0.9f, durationMillis = 250L)
+        }
+        composeTestRule.mainClock.advanceTimeBy(600L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Custom Spotlight Three").assertIsDisplayed()
+
+        // Swipe forward wraps cleanly back to default "Trending One", then advances through "Trending Two" -> "Custom Spotlight One"
+        composeTestRule.onNodeWithTag("movies_hero_pager").performTouchInput {
+            swipeLeft(startX = width * 0.85f, endX = width * 0.1f, durationMillis = 250L)
+        }
+        composeTestRule.mainClock.advanceTimeBy(600L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Trending One").assertIsDisplayed()
+
+        composeTestRule.onNodeWithTag("movies_hero_pager").performTouchInput {
+            swipeLeft(startX = width * 0.85f, endX = width * 0.1f, durationMillis = 250L)
+        }
+        composeTestRule.mainClock.advanceTimeBy(600L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Trending Two").assertIsDisplayed()
+
+        composeTestRule.onNodeWithTag("movies_hero_pager").performTouchInput {
+            swipeLeft(startX = width * 0.85f, endX = width * 0.1f, durationMillis = 250L)
+        }
+        composeTestRule.mainClock.advanceTimeBy(600L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Custom Spotlight One").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Open Inbox").performClick()
+        assertEquals("inbox", capturedAction)
+    }
+
+    @Test
+    fun moviesHeroCarousel_emptyCustomSlidesPreservesDefaults_andAutoAdvanceAppliesToCombinedCarousel() {
+        val banners = listOf(
+            sampleMovie.copy(id = "d1", title = "Default Spotlight One"),
+        )
+        val customSlide = listOf(
+            com.laterbox.app.remoteconfig.RemoteHeroSlide(
+                id = "c1",
+                heading = "Appended Promo",
+                enabled = true,
+                order = 10,
+            )
+        )
+        val slidesState = androidx.compose.runtime.mutableStateOf(
+            emptyList<com.laterbox.app.remoteconfig.RemoteHeroSlide>()
+        )
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                com.laterbox.app.movies.ui.MoviesHeroCarousel(
+                    banners = banners,
+                    watchlistIds = emptySet(),
+                    onBannerClick = {},
+                    onPlayClick = {},
+                    onToggleWatchlist = {},
+                    autoAdvanceIntervalMs = 250L,
+                    customSlides = slidesState.value,
+                )
+            }
+        }
+
+        // Empty custom slide list -> default banner stays visible without hiding or replacing
+        composeTestRule.onNodeWithTag("movies_hero_pager").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Default Spotlight One").assertIsDisplayed()
+
+        // Append 1 custom slide -> combined carousel now has 2 slides and auto-advances at configured speed
+        slidesState.value = customSlide
+        composeTestRule.waitForIdle()
+        composeTestRule.mainClock.advanceTimeBy(900L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Appended Promo").assertIsDisplayed()
+    }
+
+    @Test
     fun moviePlayerScreen_landscapeShowsInlineButtonsAndCleanHudCopy() {
         val src720 = PlaybackSource("s720", "https://archive.org/720.mp4", "MP4", "720p", 720, providerName = "IA", isAuthorised = true)
         val subEn = SubtitleTrack("sub_en", "English", "en", "English (SRT)", "https://archive.org/en.srt")

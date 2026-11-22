@@ -417,7 +417,6 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             )
         com.laterbox.app.analytics.LaterboxAnalyticsTracker(
             appContext = context.applicationContext,
-            userPreferencesRepository = userPreferencesRepository,
             okHttpClient = analyticsOkHttp,
             baseUrlProvider = { resolveBackendBaseUrl() },
             appCheckTokenProvider = { forceRefresh -> getBackendAppCheckToken(forceRefresh) },

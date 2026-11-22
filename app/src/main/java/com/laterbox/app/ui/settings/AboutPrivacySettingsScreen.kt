@@ -44,8 +44,6 @@ fun AboutPrivacySettingsScreen(
     modifier: Modifier = Modifier,
     localMetrics: LocalLibraryMetrics? = null,
     onResetActivityCounters: (() -> Unit)? = null,
-    analyticsEnabled: Boolean = true,
-    onAnalyticsEnabledChange: ((Boolean) -> Unit)? = null,
     onResetAnalyticsInstallId: (() -> Unit)? = null,
 ) {
     val colors = LaterboxTheme.colors
@@ -76,8 +74,6 @@ fun AboutPrivacySettingsScreen(
                 onPostponeUpdate = onPostponeUpdate,
                 localMetrics = localMetrics,
                 onResetActivityCounters = onResetActivityCounters,
-                analyticsEnabled = analyticsEnabled,
-                onAnalyticsEnabledChange = onAnalyticsEnabledChange,
                 onResetAnalyticsInstallId = onResetAnalyticsInstallId,
             )
 
@@ -95,8 +91,6 @@ fun AboutLaterboxSection(
     onPostponeUpdate: (String) -> Unit,
     localMetrics: LocalLibraryMetrics? = null,
     onResetActivityCounters: (() -> Unit)? = null,
-    analyticsEnabled: Boolean = true,
-    onAnalyticsEnabledChange: ((Boolean) -> Unit)? = null,
     onResetAnalyticsInstallId: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
@@ -136,7 +130,7 @@ fun AboutLaterboxSection(
                     color = colors.textPrimary
                 )
                 Text(
-                    text = "• Built-In Product Analytics: Laterbox includes built-in, default-enabled operational and usage analytics using a random app-generated installation ID, ephemeral session IDs, app version, high-level screen/feature activity, categorized reliability errors, and performance timings (retained briefly for ~45 days). Laterbox never collects link titles, search queries, AI prompts, downloaded file names, or personal contacts.\n" +
+                    text = "• Built-In Product Analytics: Laterbox includes built-in, default-enabled operational and usage analytics using a pseudonymous app-generated installation ID, per-session IDs, app version, high-level screen/feature activity, categorized reliability errors, and performance timings (with a 45-day expiration target for reporting summaries; collection can be paused globally by administrators). Laterbox never collects link titles, search queries, AI prompts, downloaded file names, or personal contacts.\n" +
                            "• Saved Links & Previews: When you save a link, Laterbox loads page details directly from that website, or uses a public preview lookup for social links.\n" +
                            "• Media & Streaming: Videos, audio, and subtitles you choose to play or download are retrieved over your network connection.\n" +
                            "• Optional AI Assistant: Prompts and bounded library context you submit to Laterbox Assistant are processed via Laterbox's backend through Google Gemini.",
@@ -174,13 +168,11 @@ fun AboutLaterboxSection(
                     )
                 }
 
-                if (onAnalyticsEnabledChange != null || onResetAnalyticsInstallId != null) {
-                    LaterboxSecondaryButton(
-                        text = "Privacy & Data Rights",
-                        onClick = { showPrivacyRightsDialog = true },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
+                LaterboxSecondaryButton(
+                    text = "Privacy & Data Rights",
+                    onClick = { showPrivacyRightsDialog = true },
+                    modifier = Modifier.fillMaxWidth()
+                )
 
                 Spacer(modifier = Modifier.height(spacing.xs))
 
@@ -329,7 +321,7 @@ fun AboutLaterboxSection(
         )
     }
 
-    // Privacy & Data Rights Dialog (secondary control surface)
+    // Privacy & Data Rights Dialog
     if (showPrivacyRightsDialog) {
         AlertDialog(
             onDismissRequest = { showPrivacyRightsDialog = false },
@@ -348,45 +340,17 @@ fun AboutLaterboxSection(
                     verticalArrangement = Arrangement.spacedBy(spacing.sm)
                 ) {
                     Text(
-                        text = "Standard product and reliability analytics are built into Laterbox using pseudonymous installation and session identifiers so we can measure stability, troubleshoot crashes, and improve features.",
+                        text = "Built-in product and reliability analytics are enabled by default across Laterbox installations to measure app stability, version adoption, allowlisted screen and feature usage, categorized error types, and performance timings using pseudonymous app-generated installation and session identifiers (not completely anonymous while an installation ID remains unchanged).",
                         style = typography.bodySecondary,
                         color = colors.textSecondary
                     )
-                    if (onAnalyticsEnabledChange != null) {
-                        SettingsDivider()
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-                                Text(
-                                    text = "Product & Reliability Analytics",
-                                    style = typography.uiMedium,
-                                    color = colors.textPrimary
-                                )
-                                Text(
-                                    text = if (analyticsEnabled) {
-                                        "Active on this device"
-                                    } else {
-                                        "Paused on this device by your privacy preference"
-                                    },
-                                    style = typography.metaText,
-                                    color = colors.textSecondary
-                                )
-                            }
-                            androidx.compose.material3.Switch(
-                                checked = analyticsEnabled,
-                                onCheckedChange = onAnalyticsEnabledChange,
-                                modifier = Modifier.testTag("settings_analytics_toggle"),
-                                colors = androidx.compose.material3.SwitchDefaults.colors(
-                                    checkedThumbColor = colors.surfaceElevated,
-                                    checkedTrackColor = colors.accentPrimary
-                                )
-                            )
-                        }
-                    }
+                    Text(
+                        text = "Analytics events never include saved link URLs, webpage titles, notes, search queries, or assistant prompts. Collection can only be paused globally by administrators, and you may rotate your local installation identifier below at any time.",
+                        style = typography.bodySecondary,
+                        color = colors.textSecondary
+                    )
                     if (onResetAnalyticsInstallId != null) {
+                        SettingsDivider()
                         LaterboxSecondaryButton(
                             text = "Reset Installation Identifier",
                             onClick = {

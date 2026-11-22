@@ -62,7 +62,7 @@ object RemoteConfigValidator {
 
         val generalObj = root.optJSONObject("general")
         val general = RemoteGeneralPolicy(
-            minRefreshIntervalSeconds = (generalObj?.optInt("minRefreshIntervalSeconds", 900) ?: 900)
+            minRefreshIntervalSeconds = (generalObj?.optInt("minRefreshIntervalSeconds", 60) ?: 60)
                 .coerceIn(60, 86400),
             staleCacheMaxAgeSeconds = (generalObj?.optInt("staleCacheMaxAgeSeconds", 604800) ?: 604800)
                 .coerceIn(300, 2592000),

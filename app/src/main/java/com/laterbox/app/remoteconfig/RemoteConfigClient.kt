@@ -94,6 +94,7 @@ class RemoteConfigClient(
             .url(url)
             .get()
             .header("Accept", "application/json")
+            .header("Cache-Control", "no-cache")
         if (!appCheckToken.isNullOrBlank()) {
             requestBuilder.header("X-Firebase-AppCheck", appCheckToken)
         }

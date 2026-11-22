@@ -202,8 +202,7 @@ data class UserPreferences(
     val subtitleBackgroundColorArgb: Int = 0xFF000000.toInt(),
     val subtitleBackgroundOpacity: Float = 0.67f,
     val subtitleEdgeType: Int = 2,
-    val grantedAssistantActionCategories: Set<String> = emptySet(),
-    val analyticsEnabled: Boolean = true
+    val grantedAssistantActionCategories: Set<String> = emptySet()
 ) {
     val allowSystemBackup: Boolean get() = includeInBackup
 
@@ -364,8 +363,6 @@ class UserPreferencesRepository(
         val SUBTITLE_BACKGROUND_OPACITY = floatPreferencesKey("subtitle_background_opacity")
         val SUBTITLE_EDGE_TYPE = intPreferencesKey("subtitle_edge_type")
         val GRANTED_ASSISTANT_CATEGORIES = stringSetPreferencesKey("granted_assistant_categories")
-        val ANALYTICS_ENABLED = booleanPreferencesKey("analytics_enabled")
-        val ANALYTICS_POLICY_MIGRATED_V1 = booleanPreferencesKey("analytics_policy_migrated_v1")
     }
 
     val userPreferencesFlow: Flow<UserPreferences> = dataStore.data.map { preferences ->
@@ -589,8 +586,7 @@ class UserPreferencesRepository(
             subtitleBackgroundColorArgb = preferences[PreferencesKeys.SUBTITLE_BACKGROUND_COLOR_ARGB] ?: 0xFF000000.toInt(),
             subtitleBackgroundOpacity = (preferences[PreferencesKeys.SUBTITLE_BACKGROUND_OPACITY] ?: 0.67f).coerceIn(0f, 1f),
             subtitleEdgeType = (preferences[PreferencesKeys.SUBTITLE_EDGE_TYPE] ?: 2).coerceIn(0, 2),
-            grantedAssistantActionCategories = preferences[PreferencesKeys.GRANTED_ASSISTANT_CATEGORIES] ?: emptySet(),
-            analyticsEnabled = preferences[PreferencesKeys.ANALYTICS_ENABLED] ?: true
+            grantedAssistantActionCategories = preferences[PreferencesKeys.GRANTED_ASSISTANT_CATEGORIES] ?: emptySet()
         )
     }
 
@@ -1203,24 +1199,19 @@ class UserPreferencesRepository(
         }
     }
 
-    suspend fun setAnalyticsEnabled(enabled: Boolean) {
-        dataStore.edit { preferences ->
-            preferences[PreferencesKeys.ANALYTICS_ENABLED] = enabled
-            preferences[PreferencesKeys.ANALYTICS_POLICY_MIGRATED_V1] = true
-        }
-    }
-
     /**
-     * Marks standard built-in analytics policy migration complete idempotently while preserving any prior explicit
-     * user opt-out choice untouched.
+     * Idempotently retires legacy individual analytics opt-out DataStore keys from earlier builds without
+     * modifying or resetting any unrelated preferences.
      */
-    suspend fun ensureAnalyticsPolicyMigrated() {
+    suspend fun retireLegacyAnalyticsOptOutPreferences() {
+        val legacyAnalyticsEnabledKey = booleanPreferencesKey("analytics_enabled")
+        val legacyMigratedKey = booleanPreferencesKey("analytics_policy_migrated_v1")
         dataStore.edit { preferences ->
-            if (preferences[PreferencesKeys.ANALYTICS_POLICY_MIGRATED_V1] != true) {
-                if (!preferences.contains(PreferencesKeys.ANALYTICS_ENABLED)) {
-                    preferences[PreferencesKeys.ANALYTICS_ENABLED] = true
-                }
-                preferences[PreferencesKeys.ANALYTICS_POLICY_MIGRATED_V1] = true
+            if (preferences.contains(legacyAnalyticsEnabledKey)) {
+                preferences.remove(legacyAnalyticsEnabledKey)
+            }
+            if (preferences.contains(legacyMigratedKey)) {
+                preferences.remove(legacyMigratedKey)
             }
         }
     }

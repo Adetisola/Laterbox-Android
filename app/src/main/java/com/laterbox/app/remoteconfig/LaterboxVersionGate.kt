@@ -39,26 +39,19 @@ class LaterboxVersionGate(
     val serverBlockState: StateFlow<VersionEnforcementBlockState?> = _serverBlockState.asStateFlow()
 
     fun onHttp426(rawBody: String?, requestPath: String = "") {
-        val parsed = parse426Payload(rawBody, clockMs())
-        if (parsed != null && parsed.minimumSupportedVersionCode > 0 && currentVersionCode >= parsed.minimumSupportedVersionCode) {
+        val parsed = parse426Payload(rawBody, clockMs()) ?: return
+        if (currentVersionCode >= parsed.minimumSupportedVersionCode) {
             return
         }
-        val effective = parsed ?: VersionEnforcementBlockState(
-            minimumSupportedVersionCode = maxOf(currentVersionCode + 1, 1),
-            message = "This version of Laterbox is no longer supported. Please update to continue using online services.",
-            triggeredByServer426 = true,
-            detectedAtEpochMs = clockMs(),
-        )
-        _serverBlockState.value = effective
+        _serverBlockState.value = parsed
         // Refresh remote config asynchronously so UI & features stay synchronized with published policy
         onForceRefreshRequested?.invoke()
     }
 
     fun onSupportedBackendResponse(requestPath: String) {
-        if (!isPolicyEnforcedPath(requestPath)) return
-        if (_serverBlockState.value != null) {
-            _serverBlockState.value = null
-        }
+        // Intentionally do not clear an active server block from arbitrary 2xx endpoints;
+        // clearing happens strictly via authoritative NETWORK published config confirmation.
+        val _ignored = requestPath
     }
 
     fun syncWithPublishedConfig(snapshot: RemoteConfigSnapshot) {
@@ -119,7 +112,8 @@ class LaterboxVersionGate(
             }
             if (serverBlock != null &&
                 serverBlock.triggeredByServer426 &&
-                (serverBlock.minimumSupportedVersionCode <= 0 || currentVersionCode < serverBlock.minimumSupportedVersionCode)
+                serverBlock.minimumSupportedVersionCode > 0 &&
+                currentVersionCode < serverBlock.minimumSupportedVersionCode
             ) {
                 return serverBlock
             }
@@ -134,10 +128,13 @@ class LaterboxVersionGate(
             val root = runCatching { JSONObject(raw) }.getOrNull() ?: return null
             val detail = root.optJSONObject("detail") ?: root
             val code = detail.optString("code", "").trim()
-            if (code.isNotEmpty() && code != "UNSUPPORTED_APP_VERSION") {
+            if (code != "UNSUPPORTED_APP_VERSION") {
                 return null
             }
-            val minCode = detail.optInt("minimumSupportedVersionCode", 0).coerceAtLeast(0)
+            val minCode = detail.optInt("minimumSupportedVersionCode", 0)
+            if (minCode <= 0) {
+                return null
+            }
             val minTag = detail.optString("minimumSupportedTag", "").trim().take(32)
             val minVersion = detail.optString("minimumSupportedVersion", "").trim().take(32)
             val latestTag = detail.optString("latestStableTag", "").trim().take(32)
@@ -149,7 +146,6 @@ class LaterboxVersionGate(
                 VersionEnforcementBlockState.DEFAULT_UPDATE_URL
             }
             val msg = detail.optString("message", "").trim().take(500)
-            if (minCode == 0 && msg.isEmpty() && minTag.isEmpty()) return null
             return VersionEnforcementBlockState(
                 minimumSupportedVersionCode = minCode,
                 minimumSupportedTag = minTag,

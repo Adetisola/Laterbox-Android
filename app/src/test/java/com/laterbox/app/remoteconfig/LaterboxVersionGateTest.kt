@@ -79,10 +79,21 @@ class LaterboxVersionGateTest {
             RemoteConfigLayoutHelper.shouldShowBlockingUpdateDialog(monitorPolicy, 199),
         )
 
-        // 3. Clearing via non-allowlisted 200 clears server block
+        // 3. Arbitrary 200 on non-config endpoint must NOT clear an active 426 block; only authoritative NETWORK config sync clears it
         server.enqueue(MockResponse().setResponseCode(200).setBody("""{"ok":true}"""))
         client.newCall(Request.Builder().url("$backendBase/ai/v1/capabilities/evaluate").build()).execute().close()
         server.takeRequest()
+        assertNotNull(gate.serverBlockState.value)
+
+        val cacheSnapshot = RemoteConfigSnapshot.default().copy(
+            source = RemoteConfigSource.CACHE,
+            versionPolicy = RemoteVersionPolicy(minimumSupportedVersionCode = 0, enforcementMode = RemoteVersionPolicy.MODE_DISABLED),
+        )
+        gate.syncWithPublishedConfig(cacheSnapshot)
+        assertNotNull(gate.serverBlockState.value)
+
+        val networkAllowedSnapshot = cacheSnapshot.copy(source = RemoteConfigSource.NETWORK)
+        gate.syncWithPublishedConfig(networkAllowedSnapshot)
         assertNull(gate.serverBlockState.value)
 
         // 4. Third-party URL must NOT receive Laterbox headers
@@ -98,5 +109,36 @@ class LaterboxVersionGateTest {
         val extReq = server.takeRequest()
         assertNull(extReq.getHeader("X-Laterbox-Client"))
         assertNull(extReq.getHeader("X-Laterbox-Version-Code"))
+    }
+
+    @Test
+    fun malformedAndUnrelated426PayloadsNeverSynthesizeVersionBlock() {
+        var refreshCount = 0
+        val gate = LaterboxVersionGate(
+            currentVersionCode = 199,
+            onForceRefreshRequested = { refreshCount++ },
+        )
+
+        // Malformed / non-JSON proxy 426 must be ignored
+        gate.onHttp426("<html>Upgrade Required</html>")
+        assertNull(gate.serverBlockState.value)
+
+        // Missing required code == UNSUPPORTED_APP_VERSION must be ignored
+        gate.onHttp426("""{"detail":{"minimumSupportedVersionCode":205,"message":"Proxy block"}}""")
+        assertNull(gate.serverBlockState.value)
+
+        // Unrelated code must be ignored
+        gate.onHttp426("""{"detail":{"code":"PROTOCOL_UPGRADE","minimumSupportedVersionCode":205}}""")
+        assertNull(gate.serverBlockState.value)
+
+        // minimumSupportedVersionCode <= 0 must be ignored
+        gate.onHttp426("""{"detail":{"code":"UNSUPPORTED_APP_VERSION","minimumSupportedVersionCode":0,"message":"Bad"}}""")
+        assertNull(gate.serverBlockState.value)
+        assertEquals(0, refreshCount)
+
+        // Already supported currentVersionCode >= minCode must be ignored
+        gate.onHttp426("""{"detail":{"code":"UNSUPPORTED_APP_VERSION","minimumSupportedVersionCode":199}}""")
+        assertNull(gate.serverBlockState.value)
+        assertEquals(0, refreshCount)
     }
 }

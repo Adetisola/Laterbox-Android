@@ -60,7 +60,7 @@ enum class RemoteUiSurface(val wireValue: String) {
 }
 
 data class RemoteGeneralPolicy(
-    val minRefreshIntervalSeconds: Int = 900,
+    val minRefreshIntervalSeconds: Int = 60,
     val staleCacheMaxAgeSeconds: Int = 604800,
 )
 
@@ -255,4 +255,6 @@ data class RemoteConfigState(
     val lastFetchAttemptEpochMs: Long = 0L,
     val lastSuccessfulFetchEpochMs: Long = 0L,
     val lastError: String? = null,
+    val consecutiveFailures: Int = 0,
+    val nextRetryAtEpochMs: Long = 0L,
 )

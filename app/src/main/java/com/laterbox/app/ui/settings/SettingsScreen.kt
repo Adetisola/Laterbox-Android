@@ -60,7 +60,6 @@ fun SettingsScreen(
     onPostponeUpdate: (String) -> Unit = {},
     localMetrics: LocalLibraryMetrics? = null,
     onResetActivityCounters: (() -> Unit)? = null,
-    onAnalyticsEnabledChange: ((Boolean) -> Unit)? = null,
     onResetAnalyticsInstallId: (() -> Unit)? = null,
 ) {
     val colors = LaterboxTheme.colors
@@ -215,8 +214,6 @@ fun SettingsScreen(
                 onPostponeUpdate = onPostponeUpdate,
                 localMetrics = localMetrics,
                 onResetActivityCounters = onResetActivityCounters,
-                analyticsEnabled = preferences.analyticsEnabled,
-                onAnalyticsEnabledChange = onAnalyticsEnabledChange,
                 onResetAnalyticsInstallId = onResetAnalyticsInstallId,
             )
 

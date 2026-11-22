@@ -924,153 +924,24 @@ fun MoviesHeroCarousel(
     customSlides: List<com.laterbox.app.remoteconfig.RemoteHeroSlide> = emptyList(),
     onCustomSlideAction: (String) -> Unit = {},
 ) {
-    val activeCustomSlides = remember(customSlides) {
-        customSlides.filter { it.enabled }.sortedBy { it.order }
+    val combinedEntries = remember(banners, customSlides) {
+        com.laterbox.app.remoteconfig.RemoteConfigLayoutHelper.buildCombinedHeroEntries(
+            defaultBanners = banners,
+            customSlides = customSlides,
+            keyForBanner = { _, item -> item.compositeId },
+        )
     }
-    if (activeCustomSlides.isEmpty() && banners.isEmpty()) return
+    if (combinedEntries.isEmpty()) return
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
 
-    if (activeCustomSlides.isNotEmpty()) {
-        val isMultiCustom = activeCustomSlides.size > 1
-        val customPagerState = rememberPagerState(pageCount = { activeCustomSlides.size })
-        val isCustomDragged by customPagerState.interactionSource.collectIsDraggedAsState()
-        var isCustomLifecycleResumed by remember { mutableStateOf(true) }
-
-        LifecycleResumeEffect(Unit) {
-            isCustomLifecycleResumed = true
-            onPauseOrDispose { isCustomLifecycleResumed = false }
-        }
-
-        LaunchedEffect(
-            activeCustomSlides.size,
-            customPagerState.settledPage,
-            isCustomDragged,
-            isCustomLifecycleResumed,
-            autoAdvanceIntervalMs
-        ) {
-            if (!isMultiCustom || autoAdvanceIntervalMs <= 0L) return@LaunchedEffect
-            if (!isCustomLifecycleResumed || isCustomDragged) return@LaunchedEffect
-            delay(autoAdvanceIntervalMs)
-            if (isMultiCustom && isCustomLifecycleResumed && !isCustomDragged && !customPagerState.isScrollInProgress) {
-                val nextPage = (customPagerState.currentPage + 1) % activeCustomSlides.size
-                customPagerState.animateScrollToPage(
-                    page = nextPage,
-                    animationSpec = tween(durationMillis = 550)
-                )
-            }
-        }
-
-        Column(modifier = modifier.fillMaxWidth()) {
-            HorizontalPager(
-                state = customPagerState,
-                contentPadding = PaddingValues(horizontal = 16.dp),
-                pageSpacing = 12.dp,
-                key = { page -> "custom_hero_${activeCustomSlides[page].id}" },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(16f / 9f)
-                    .heightIn(min = 216.dp, max = 300.dp)
-                    .testTag("movies_hero_custom_pager")
-            ) { page ->
-                val slide = activeCustomSlides[page]
-                Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = colors.surfaceSecondary,
-                    border = BorderStroke(0.75.dp, colors.borderSubtle),
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .let { mod ->
-                            if (slide.actionDestination.isNotBlank()) {
-                                mod.clickable { onCustomSlideAction(slide.actionDestination) }
-                            } else mod
-                        }
-                ) {
-                    Box(modifier = Modifier.fillMaxSize()) {
-                        if (slide.imageUrl.isNotBlank()) {
-                            BackdropArtworkBox(
-                                backdropUrl = slide.imageUrl,
-                                posterUrl = slide.imageUrl,
-                                contentDescription = slide.heading.ifBlank { "Featured Banner" },
-                                blurHash = null,
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        }
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(
-                                    Brush.verticalGradient(
-                                        colors = listOf(
-                                            Color.Black.copy(alpha = 0.14f),
-                                            Color.Black.copy(alpha = 0.48f),
-                                            Color.Black.copy(alpha = 0.88f)
-                                        )
-                                    )
-                                )
-                        )
-                        if (slide.heading.isNotBlank() || slide.subtitle.isNotBlank() || slide.actionDestination.isNotBlank()) {
-                            Column(
-                                modifier = Modifier
-                                    .align(Alignment.BottomStart)
-                                    .fillMaxWidth()
-                                    .padding(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                if (slide.heading.isNotBlank()) {
-                                    Text(
-                                        text = slide.heading,
-                                        style = typography.editorialTitle.copy(
-                                            fontSize = 22.sp,
-                                            lineHeight = 26.sp,
-                                            fontWeight = FontWeight.SemiBold
-                                        ),
-                                        color = Color.White,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                                if (slide.subtitle.isNotBlank()) {
-                                    Text(
-                                        text = slide.subtitle,
-                                        style = typography.bodySecondary,
-                                        color = Color.White.copy(alpha = 0.88f),
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                                if (slide.actionDestination.isNotBlank()) {
-                                    Button(
-                                        onClick = { onCustomSlideAction(slide.actionDestination) },
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = colors.accentPrimary,
-                                            contentColor = colors.onAccentPrimary
-                                        ),
-                                        shape = RoundedCornerShape(10.dp),
-                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                                        modifier = Modifier.height(36.dp)
-                                    ) {
-                                        Text(
-                                            text = slide.actionLabel.ifBlank { "Explore" },
-                                            style = typography.buttonLabel.copy(fontSize = 12.sp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        return
-    }
-
-    val isMulti = banners.size > 1
-    val virtualPageCount = if (isMulti) banners.size * HERO_VIRTUAL_MULTIPLIER else 1
-    val startPage = remember(banners.size) {
+    val totalCount = combinedEntries.size
+    val isMulti = totalCount > 1
+    val virtualPageCount = if (isMulti) totalCount * HERO_VIRTUAL_MULTIPLIER else 1
+    val startPage = remember(totalCount) {
         if (isMulti) {
             val mid = virtualPageCount / 2
-            mid - (mid % banners.size)
+            mid - (mid % totalCount)
         } else {
             0
         }
@@ -1090,7 +961,7 @@ fun MoviesHeroCarousel(
     }
 
     LaunchedEffect(
-        banners.size,
+        totalCount,
         pagerState.settledPage,
         isDragged,
         isLifecycleResumed,
@@ -1100,9 +971,9 @@ fun MoviesHeroCarousel(
         // Quietly re-center if the user ever swipes near either virtual boundary.
         val settled = pagerState.settledPage
         if (!isDragged && !pagerState.isScrollInProgress &&
-            (settled < banners.size * 10 || settled > virtualPageCount - banners.size * 10)
+            (settled < totalCount * 10 || settled > virtualPageCount - totalCount * 10)
         ) {
-            val mapped = virtualIndexToBannerIndex(settled, banners.size)
+            val mapped = virtualIndexToBannerIndex(settled, totalCount)
             pagerState.scrollToPage(startPage + mapped)
         }
         if (autoAdvanceIntervalMs <= 0L) return@LaunchedEffect
@@ -1123,8 +994,8 @@ fun MoviesHeroCarousel(
             contentPadding = PaddingValues(horizontal = 16.dp),
             pageSpacing = 12.dp,
             key = { page ->
-                val idx = virtualIndexToBannerIndex(page, banners.size)
-                "${banners[idx].compositeId}_$page"
+                val idx = virtualIndexToBannerIndex(page, totalCount)
+                "${combinedEntries[idx].stableKey}_$page"
             },
             modifier = Modifier
                 .fillMaxWidth()
@@ -1132,149 +1003,244 @@ fun MoviesHeroCarousel(
                 .heightIn(min = 216.dp, max = 300.dp)
                 .testTag("movies_hero_pager")
         ) { page ->
-            val bannerIdx = virtualIndexToBannerIndex(page, banners.size)
-            val item = banners[bannerIdx]
-            val isSaved = item.compositeId in watchlistIds
-
-            Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = colors.surfaceSecondary,
-                border = BorderStroke(0.75.dp, colors.borderSubtle),
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clickable { onBannerClick(item) }
-            ) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    BackdropArtworkBox(
-                        backdropUrl = item.backdropUrl,
-                        posterUrl = item.posterUrl,
-                        contentDescription = item.title,
-                        blurHash = item.backdropBlurHash ?: item.posterBlurHash,
-                        modifier = Modifier.fillMaxSize()
-                    )
-
-                    Box(
+            val entryIdx = virtualIndexToBannerIndex(page, totalCount)
+            when (val entry = combinedEntries[entryIdx]) {
+                is com.laterbox.app.remoteconfig.HeroCarouselEntry.CustomSlide -> {
+                    val slide = entry.slide
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = colors.surfaceSecondary,
+                        border = BorderStroke(0.75.dp, colors.borderSubtle),
                         modifier = Modifier
                             .fillMaxSize()
-                            .background(
-                                Brush.verticalGradient(
-                                    colors = listOf(
-                                        Color.Black.copy(alpha = 0.24f),
-                                        Color.Black.copy(alpha = 0.58f),
-                                        Color.Black.copy(alpha = 0.92f)
-                                    )
-                                )
-                            )
-                    )
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(12.dp)
-                            .align(Alignment.TopCenter),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-                        verticalAlignment = Alignment.CenterVertically
+                            .testTag("hero_custom_slide_${slide.id}")
+                            .let { mod ->
+                                if (slide.actionDestination.isNotBlank()) {
+                                    mod.clickable { onCustomSlideAction(slide.actionDestination) }
+                                } else mod
+                            }
                     ) {
-                        Surface(
-                            shape = CircleShape,
-                            color = Color.Black.copy(alpha = 0.52f)
-                        ) {
-                            IconButton(
-                                onClick = { onToggleWatchlist(item) },
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .testTag("hero_bookmark_${item.id}")
-                            ) {
-                                Icon(
-                                    painter = painterResource(
-                                        if (isSaved) LaterboxIcons.Check else LaterboxIcons.Bookmark
-                                    ),
-                                    contentDescription = if (isSaved) "In Watchlist" else "Add to Watchlist",
-                                    tint = if (isSaved) colors.accentPrimary else Color.White,
-                                    modifier = Modifier.size(18.dp)
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            if (slide.imageUrl.isNotBlank()) {
+                                BackdropArtworkBox(
+                                    backdropUrl = slide.imageUrl,
+                                    posterUrl = slide.imageUrl,
+                                    contentDescription = slide.heading.ifBlank { "Featured Banner" },
+                                    blurHash = null,
+                                    modifier = Modifier.fillMaxSize()
                                 )
                             }
-                        }
-                        item.rating?.takeIf { it > 0.0 && !it.isNaN() }?.let { rating ->
-                            MovieRatingBadge(
-                                rating = rating,
-                                modifier = Modifier.testTag("hero_rating_badge_${item.id}")
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(
+                                        Brush.verticalGradient(
+                                            colors = listOf(
+                                                Color.Black.copy(alpha = 0.14f),
+                                                Color.Black.copy(alpha = 0.48f),
+                                                Color.Black.copy(alpha = 0.88f)
+                                            )
+                                        )
+                                    )
                             )
+                            if (slide.heading.isNotBlank() || slide.subtitle.isNotBlank() || slide.actionDestination.isNotBlank()) {
+                                Column(
+                                    modifier = Modifier
+                                        .align(Alignment.BottomStart)
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    if (slide.heading.isNotBlank()) {
+                                        Text(
+                                            text = slide.heading,
+                                            style = typography.editorialTitle.copy(
+                                                fontSize = 22.sp,
+                                                lineHeight = 26.sp,
+                                                fontWeight = FontWeight.SemiBold
+                                            ),
+                                            color = Color.White,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    if (slide.subtitle.isNotBlank()) {
+                                        Text(
+                                            text = slide.subtitle,
+                                            style = typography.bodySecondary,
+                                            color = Color.White.copy(alpha = 0.88f),
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    if (slide.actionDestination.isNotBlank()) {
+                                        Button(
+                                            onClick = { onCustomSlideAction(slide.actionDestination) },
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = colors.accentPrimary,
+                                                contentColor = colors.onAccentPrimary
+                                            ),
+                                            shape = RoundedCornerShape(10.dp),
+                                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                                            modifier = Modifier.height(36.dp)
+                                        ) {
+                                            Text(
+                                                text = slide.actionLabel.ifBlank { "Explore" },
+                                                style = typography.buttonLabel.copy(fontSize = 12.sp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
+                }
 
-                    Column(
+                is com.laterbox.app.remoteconfig.HeroCarouselEntry.CatalogueBanner -> {
+                    val item = entry.item
+                    val isSaved = item.compositeId in watchlistIds
+
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = colors.surfaceSecondary,
+                        border = BorderStroke(0.75.dp, colors.borderSubtle),
                         modifier = Modifier
-                            .align(Alignment.BottomStart)
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                            .fillMaxSize()
+                            .clickable { onBannerClick(item) }
                     ) {
-                        val meta = buildList {
-                            add(item.kind.label)
-                            item.releaseYear?.let { add(it.toString()) }
-                            if (item.kind == MediaKind.MOVIE) {
-                                DurationFormatter.formatMinutes(item.durationMinutes)?.let { add(it) }
-                            }
-                            item.genres.firstOrNull()?.let { add(it) }
-                        }.joinToString(" · ")
-                        Text(
-                            text = meta,
-                            style = typography.caption.copy(fontWeight = FontWeight.Medium),
-                            color = Color.White.copy(alpha = 0.82f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = item.title,
-                            style = typography.editorialTitle.copy(
-                                fontSize = 22.sp,
-                                lineHeight = 26.sp,
-                                fontWeight = FontWeight.SemiBold
-                            ),
-                            color = Color.White,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = {
-                                    if (item.isPlayableHint) onPlayClick(item) else onBannerClick(item)
-                                },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = colors.accentPrimary,
-                                    contentColor = colors.onAccentPrimary
-                                ),
-                                shape = RoundedCornerShape(10.dp),
-                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                                modifier = Modifier.height(36.dp)
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            BackdropArtworkBox(
+                                backdropUrl = item.backdropUrl,
+                                posterUrl = item.posterUrl,
+                                contentDescription = item.title,
+                                blurHash = item.backdropBlurHash ?: item.posterBlurHash,
+                                modifier = Modifier.fillMaxSize()
+                            )
+
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(
+                                        Brush.verticalGradient(
+                                            colors = listOf(
+                                                Color.Black.copy(alpha = 0.24f),
+                                                Color.Black.copy(alpha = 0.58f),
+                                                Color.Black.copy(alpha = 0.92f)
+                                            )
+                                        )
+                                    )
+                            )
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp)
+                                    .align(Alignment.TopCenter),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Icon(
-                                    painter = painterResource(
-                                        if (item.isPlayableHint) LaterboxIcons.Play else LaterboxIcons.Movies
+                                Surface(
+                                    shape = CircleShape,
+                                    color = Color.Black.copy(alpha = 0.52f)
+                                ) {
+                                    IconButton(
+                                        onClick = { onToggleWatchlist(item) },
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .testTag("hero_bookmark_${item.id}")
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(
+                                                if (isSaved) LaterboxIcons.Check else LaterboxIcons.Bookmark
+                                            ),
+                                            contentDescription = if (isSaved) "In Watchlist" else "Add to Watchlist",
+                                            tint = if (isSaved) colors.accentPrimary else Color.White,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                                item.rating?.takeIf { it > 0.0 && !it.isNaN() }?.let { rating ->
+                                    MovieRatingBadge(
+                                        rating = rating,
+                                        modifier = Modifier.testTag("hero_rating_badge_${item.id}")
+                                    )
+                                }
+                            }
+
+                            Column(
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                val meta = buildList {
+                                    add(item.kind.label)
+                                    item.releaseYear?.let { add(it.toString()) }
+                                    if (item.kind == MediaKind.MOVIE) {
+                                        DurationFormatter.formatMinutes(item.durationMinutes)?.let { add(it) }
+                                    }
+                                    item.genres.firstOrNull()?.let { add(it) }
+                                }.joinToString(" · ")
+                                Text(
+                                    text = meta,
+                                    style = typography.caption.copy(fontWeight = FontWeight.Medium),
+                                    color = Color.White.copy(alpha = 0.82f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = item.title,
+                                    style = typography.editorialTitle.copy(
+                                        fontSize = 22.sp,
+                                        lineHeight = 26.sp,
+                                        fontWeight = FontWeight.SemiBold
                                     ),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(14.dp)
+                                    color = Color.White,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
                                 )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = if (item.isPlayableHint) "Watch now" else "Open details",
-                                    style = typography.buttonLabel.copy(fontSize = 12.sp)
-                                )
-                            }
-                            OutlinedButton(
-                                onClick = { onBannerClick(item) },
-                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.5f)),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                                shape = RoundedCornerShape(10.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                                modifier = Modifier.height(36.dp)
-                            ) {
-                                Text(
-                                    text = "Details",
-                                    style = typography.buttonLabel.copy(fontSize = 12.sp)
-                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(
+                                        onClick = {
+                                            if (item.isPlayableHint) onPlayClick(item) else onBannerClick(item)
+                                        },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = colors.accentPrimary,
+                                            contentColor = colors.onAccentPrimary
+                                        ),
+                                        shape = RoundedCornerShape(10.dp),
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                                        modifier = Modifier.height(36.dp)
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(
+                                                if (item.isPlayableHint) LaterboxIcons.Play else LaterboxIcons.Movies
+                                            ),
+                                            contentDescription = null,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = if (item.isPlayableHint) "Watch now" else "Open details",
+                                            style = typography.buttonLabel.copy(fontSize = 12.sp)
+                                        )
+                                    }
+                                    OutlinedButton(
+                                        onClick = { onBannerClick(item) },
+                                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.5f)),
+                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                                        shape = RoundedCornerShape(10.dp),
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                        modifier = Modifier.height(36.dp)
+                                    ) {
+                                        Text(
+                                            text = "Details",
+                                            style = typography.buttonLabel.copy(fontSize = 12.sp)
+                                        )
+                                    }
+                                }
                             }
                         }
                     }

@@ -3,7 +3,6 @@ package com.laterbox.app.analytics
 import android.content.Context
 import com.laterbox.app.BuildConfig
 import com.laterbox.app.ai.AppCapabilityRegistry
-import com.laterbox.app.data.preferences.UserPreferencesRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -204,29 +203,28 @@ data class AnalyticsEventRecord(
 
 class LaterboxAnalyticsTracker(
     appContext: Context,
-    private val userPreferencesRepository: UserPreferencesRepository,
     private val okHttpClient: OkHttpClient,
     private val baseUrlProvider: suspend () -> String,
     private val appCheckTokenProvider: suspend (forceRefresh: Boolean) -> String?,
     private val remoteCollectionEnabledProvider: (() -> Boolean)? = null,
     private val remoteCollectionFlow: StateFlow<Boolean>? = null,
+    private val heartbeatIntervalMs: Long = LaterboxAnalyticsSchema.HEARTBEAT_INTERVAL_MS,
 ) {
     private val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val queueMutex = Mutex()
     private val flushMutex = Mutex()
-
-    // Synchronous mirror starts built-in default-enabled unless a historical explicit opt-out is stored
-    @Volatile
-    private var userEnabled: Boolean = !prefs.getBoolean(KEY_USER_OPTED_OUT, false)
+    private val heartbeatLock = Any()
 
     @Volatile
-    private var remoteCollectionEnabled: Boolean = remoteCollectionEnabledProvider?.invoke() ?: true
+    private var remoteCollectionEnabled: Boolean =
+        remoteCollectionFlow?.value ?: remoteCollectionEnabledProvider?.invoke() ?: true
 
     @Volatile
     private var serverPausedUntilMs: Long = 0L
 
-    private val initialPrefsReady = kotlinx.coroutines.CompletableDeferred<Unit>()
+    @Volatile
+    private var isForegrounded: Boolean = false
 
     @Volatile
     private var currentSessionId: String = UUID.randomUUID().toString()
@@ -237,8 +235,7 @@ class LaterboxAnalyticsTracker(
     private var heartbeatJob: Job? = null
 
     private val enabled: Boolean
-        get() = userEnabled &&
-            remoteCollectionEnabled &&
+        get() = remoteCollectionEnabled &&
             (remoteCollectionEnabledProvider?.invoke() ?: true) &&
             System.currentTimeMillis() >= serverPausedUntilMs
 
@@ -249,36 +246,25 @@ class LaterboxAnalyticsTracker(
     }
 
     init {
-        scope.launch {
-            try {
-                userPreferencesRepository.userPreferencesFlow.collect { userPrefs ->
-                    val wasUserEnabled = userEnabled
-                    userEnabled = userPrefs.analyticsEnabled
-                    prefs.edit().putBoolean(KEY_USER_OPTED_OUT, !userEnabled).apply()
-                    if (!initialPrefsReady.isCompleted) {
-                        initialPrefsReady.complete(Unit)
-                    }
-                    if (!userEnabled && wasUserEnabled) {
-                        heartbeatJob?.cancel()
-                        heartbeatJob = null
-                        clearQueuedEvents()
-                    } else if (!userEnabled) {
-                        clearQueuedEvents()
-                    }
-                }
-            } finally {
-                if (!initialPrefsReady.isCompleted) {
-                    initialPrefsReady.complete(Unit)
-                }
-            }
+        // Idempotently retire any historical per-device opt-out flag without modifying KEY_INSTALL_ID or offline queue.
+        if (prefs.contains(LEGACY_KEY_USER_OPTED_OUT)) {
+            prefs.edit().remove(LEGACY_KEY_USER_OPTED_OUT).apply()
         }
         if (remoteCollectionFlow != null) {
             scope.launch {
                 remoteCollectionFlow.collect { allowed ->
+                    val wasAllowed = remoteCollectionEnabled
                     remoteCollectionEnabled = allowed
                     if (!allowed) {
-                        heartbeatJob?.cancel()
-                        heartbeatJob = null
+                        cancelHeartbeatLoop()
+                    } else if (!wasAllowed) {
+                        serverPausedUntilMs = 0L
+                        if (enabled) {
+                            if (isForegrounded) {
+                                startHeartbeatLoop()
+                            }
+                            flushOfflineQueue()
+                        }
                     }
                 }
             }
@@ -307,24 +293,25 @@ class LaterboxAnalyticsTracker(
     }
 
     fun onAppForegrounded() {
+        isForegrounded = true
         currentSessionId = UUID.randomUUID().toString()
         lastTrackedScreenId = null
         val sessionIdSnapshot = currentSessionId
         scope.launch {
-            initialPrefsReady.await()
             if (!enabled) return@launch
             recordAndDispatchUnlocked("app_session_started", sessionId = sessionIdSnapshot)
             recordAndDispatchUnlocked("application_version_seen", sessionId = sessionIdSnapshot)
-            startHeartbeatLoop()
+            if (isForegrounded && enabled) {
+                startHeartbeatLoop()
+            }
         }
     }
 
     fun onAppBackgrounded() {
-        heartbeatJob?.cancel()
-        heartbeatJob = null
+        isForegrounded = false
+        cancelHeartbeatLoop()
         val sessionIdSnapshot = currentSessionId
         scope.launch {
-            initialPrefsReady.await()
             if (!enabled) return@launch
             withContext(NonCancellable) {
                 val record = createRecord("app_session_ended", sessionId = sessionIdSnapshot)
@@ -340,7 +327,6 @@ class LaterboxAnalyticsTracker(
         if (clean !in LaterboxAnalyticsSchema.ALLOWED_SCREEN_IDS) return
         val sessionIdSnapshot = currentSessionId
         scope.launch {
-            initialPrefsReady.await()
             if (!enabled) return@launch
             if (lastTrackedScreenId == clean) return@launch
             lastTrackedScreenId = clean
@@ -358,7 +344,6 @@ class LaterboxAnalyticsTracker(
         if (clean !in LaterboxAnalyticsSchema.ALLOWED_FEATURE_IDS) return
         val sessionIdSnapshot = currentSessionId
         scope.launch {
-            initialPrefsReady.await()
             if (!enabled) return@launch
             recordAndDispatchUnlocked("feature_used", sessionId = sessionIdSnapshot, featureId = clean)
         }
@@ -377,7 +362,6 @@ class LaterboxAnalyticsTracker(
         val safeFeature = featureId?.trim()?.lowercase()?.takeIf { it in LaterboxAnalyticsSchema.ALLOWED_FEATURE_IDS }
         val sessionIdSnapshot = currentSessionId
         scope.launch {
-            initialPrefsReady.await()
             if (!enabled) return@launch
             recordAndDispatchUnlocked(
                 eventType = "app_error_observed",
@@ -403,7 +387,6 @@ class LaterboxAnalyticsTracker(
         val safeFeature = featureId?.trim()?.lowercase()?.takeIf { it in LaterboxAnalyticsSchema.ALLOWED_FEATURE_IDS }
         val sessionIdSnapshot = currentSessionId
         scope.launch {
-            initialPrefsReady.await()
             if (!enabled) return@launch
             recordAndDispatchUnlocked(
                 eventType = "performance_metric",
@@ -417,16 +400,27 @@ class LaterboxAnalyticsTracker(
     }
 
     private fun startHeartbeatLoop() {
-        heartbeatJob?.cancel()
-        heartbeatJob = scope.launch {
-            initialPrefsReady.await()
-            while (isActive && userEnabled) {
-                delay(LaterboxAnalyticsSchema.HEARTBEAT_INTERVAL_MS)
-                if (!userEnabled) break
-                if (enabled) {
-                    recordAndDispatchUnlocked("app_session_heartbeat", sessionId = currentSessionId, flushImmediately = true)
+        synchronized(heartbeatLock) {
+            if (heartbeatJob?.isActive == true || !isForegrounded) {
+                return
+            }
+            val intervalMs = heartbeatIntervalMs.coerceAtLeast(10L)
+            heartbeatJob = scope.launch {
+                while (isActive && isForegrounded) {
+                    delay(intervalMs)
+                    if (!isForegrounded) break
+                    if (enabled) {
+                        recordAndDispatchUnlocked("app_session_heartbeat", sessionId = currentSessionId, flushImmediately = true)
+                    }
                 }
             }
+        }
+    }
+
+    private fun cancelHeartbeatLoop() {
+        synchronized(heartbeatLock) {
+            heartbeatJob?.cancel()
+            heartbeatJob = null
         }
     }
 
@@ -492,7 +486,7 @@ class LaterboxAnalyticsTracker(
     }
 
     private suspend fun enqueueOffline(record: AnalyticsEventRecord) = queueMutex.withLock {
-        if (!userEnabled) return@withLock
+        if (!remoteCollectionEnabled || !(remoteCollectionEnabledProvider?.invoke() ?: true)) return@withLock
         val list = loadQueueUnlocked().toMutableList()
         list.add(record.copy(isOfflineReplay = true))
         while (list.size > LaterboxAnalyticsSchema.MAX_QUEUE_SIZE) {
@@ -514,15 +508,14 @@ class LaterboxAnalyticsTracker(
             if (batch.isEmpty()) break
             when (val result = sendBatch(batch, markQueuedAsReplay = true)) {
                 is DispatchResult.Accepted -> {
-                    if (result.pausedByServer) {
-                        // Do not drain queue on server-side pause if we intend to honor pause; server didn't ingest
-                        serverPausedUntilMs = System.currentTimeMillis() + SERVER_PAUSE_BACKOFF_MS
-                        break
-                    }
                     val sentIds = batch.map { it.eventId }.toSet()
                     queueMutex.withLock {
                         val remaining = loadQueueUnlocked().filterNot { it.eventId in sentIds }
                         saveQueueUnlocked(remaining)
+                    }
+                    if (result.pausedByServer) {
+                        serverPausedUntilMs = System.currentTimeMillis() + SERVER_PAUSE_BACKOFF_MS
+                        break
                     }
                 }
                 DispatchResult.DropPermanent -> {
@@ -621,7 +614,7 @@ class LaterboxAnalyticsTracker(
         private const val PREFS_NAME = "laterbox_analytics_prefs"
         private const val KEY_INSTALL_ID = "anonymous_install_id"
         private const val KEY_OFFLINE_QUEUE = "offline_event_queue_v1"
-        private const val KEY_USER_OPTED_OUT = "analytics_user_opted_out"
+        private const val LEGACY_KEY_USER_OPTED_OUT = "analytics_user_opted_out"
         private const val SERVER_PAUSE_BACKOFF_MS = 5 * 60_000L
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }

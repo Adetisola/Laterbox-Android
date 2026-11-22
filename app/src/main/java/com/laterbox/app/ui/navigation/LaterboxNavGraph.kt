@@ -1761,7 +1761,6 @@ fun LaterboxApp(
                                 onPostponeUpdate = settingsViewModel::postponeUpdate,
                                 localMetrics = localMetrics,
                                 onResetActivityCounters = settingsViewModel::resetActivityCounters,
-                                onAnalyticsEnabledChange = settingsViewModel::setAnalyticsEnabled,
                                 onResetAnalyticsInstallId = settingsViewModel::resetAnalyticsInstallId,
                             )
                         }

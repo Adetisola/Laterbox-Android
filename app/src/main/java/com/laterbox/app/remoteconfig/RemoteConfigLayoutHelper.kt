@@ -19,7 +19,42 @@ data class MoviesHomeRenderSlot(
     val component: RemoteUiComponent? = null,
 )
 
+sealed class HeroCarouselEntry<out T> {
+    abstract val stableKey: String
+
+    data class CatalogueBanner<T>(
+        val item: T,
+        override val stableKey: String,
+    ) : HeroCarouselEntry<T>()
+
+    data class CustomSlide(
+        val slide: RemoteHeroSlide,
+    ) : HeroCarouselEntry<Nothing>() {
+        override val stableKey: String = "custom_hero_${slide.id}"
+    }
+}
+
 object RemoteConfigLayoutHelper {
+
+    fun <T> buildCombinedHeroEntries(
+        defaultBanners: List<T>,
+        customSlides: List<RemoteHeroSlide>,
+        keyForBanner: (index: Int, item: T) -> String = { index, _ -> "default_hero_$index" },
+    ): List<HeroCarouselEntry<T>> {
+        val defaultEntries = defaultBanners.mapIndexed { index, item ->
+            HeroCarouselEntry.CatalogueBanner(
+                item = item,
+                stableKey = keyForBanner(index, item),
+            )
+        }
+        val customEntries = customSlides
+            .asSequence()
+            .filter { it.enabled }
+            .sortedBy { it.order }
+            .map { HeroCarouselEntry.CustomSlide(it) }
+            .toList()
+        return defaultEntries + customEntries
+    }
 
     private val defaultMoviesOrder: List<Pair<String, MoviesHomeSlotKind>> = listOf(
         "hero_carousel" to MoviesHomeSlotKind.HERO_CAROUSEL,

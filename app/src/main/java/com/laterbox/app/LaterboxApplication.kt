@@ -89,7 +89,7 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
         applicationScope.launch {
             try {
                 container.userPreferencesRepository.recordFirstLaunchIfNeeded()
-                container.userPreferencesRepository.ensureAnalyticsPolicyMigrated()
+                container.userPreferencesRepository.retireLegacyAnalyticsOptOutPreferences()
                 container.database.savedLinkDao().resetStuckFetchingLinks()
                 MetadataSyncWorker.enqueue(this@LaterboxApplication)
 
@@ -178,6 +178,7 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
                 val wasForeground = startedActivities > 0
                 startedActivities = (startedActivities - 1).coerceAtLeast(0)
                 if (wasForeground && startedActivities == 0) {
+                    container.remoteConfigManager.onAppBackgrounded()
                     container.analyticsTracker.onAppBackgrounded()
                 }
             }

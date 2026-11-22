@@ -555,12 +555,6 @@ class SettingsViewModel(
         }
     }
 
-    fun setAnalyticsEnabled(enabled: Boolean) {
-        viewModelScope.launch {
-            userPreferencesRepository.setAnalyticsEnabled(enabled)
-        }
-    }
-
     fun resetAnalyticsInstallId() {
         (appContext?.applicationContext as? com.laterbox.app.LaterboxApplication)
             ?.container

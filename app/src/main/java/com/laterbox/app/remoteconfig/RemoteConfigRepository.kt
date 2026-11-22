@@ -41,7 +41,10 @@ class RemoteConfigRepository(
         return cached
     }
 
-    suspend fun refreshIfNeeded(forceRefresh: Boolean = false): RemoteConfigState {
+    suspend fun refreshIfNeeded(
+        forceRefresh: Boolean = false,
+        bypassThrottle: Boolean = false,
+    ): RemoteConfigState {
         return refreshMutex.withLock {
             val now = clockMs()
             val currentState = _state.value
@@ -53,17 +56,28 @@ class RemoteConfigRepository(
             } else {
                 currentConfig
             }
+            val latestState = _state.value
 
-            val minIntervalMs = effectiveConfig.general.minRefreshIntervalSeconds.coerceAtLeast(60) * 1000L
-            val lastAttempt = maxOf(
-                _state.value.lastFetchAttemptEpochMs,
-                runCatching { cache.readLastAttemptEpochMs() }.getOrDefault(0L),
-            )
-            if (!forceRefresh && lastAttempt > 0L && (now - lastAttempt) < minIntervalMs) {
-                return@withLock _state.value
+            if (!forceRefresh) {
+                // Respect failure backoff window (10s -> 30s -> 60s) without blocking 900s on transient errors
+                if (latestState.consecutiveFailures > 0) {
+                    if (now < latestState.nextRetryAtEpochMs) {
+                        return@withLock latestState
+                    }
+                } else {
+                    val lastSuccessMs = latestState.lastSuccessfulFetchEpochMs
+                    val effectiveMinIntervalMs = if (bypassThrottle) {
+                        MIN_BYPASS_DEDUP_MS
+                    } else {
+                        effectiveConfig.general.minRefreshIntervalSeconds.coerceIn(60, 86400) * 1000L
+                    }
+                    if (lastSuccessMs > 0L && (now - lastSuccessMs) < effectiveMinIntervalMs) {
+                        return@withLock latestState
+                    }
+                }
             }
 
-            _state.value = _state.value.copy(isRefreshing = true)
+            _state.value = latestState.copy(isRefreshing = true)
             runCatching { cache.recordFetchAttempt(now) }
 
             val cachedEtag = runCatching { cache.readEtag() }.getOrNull() ?: effectiveConfig.etag
@@ -82,8 +96,10 @@ class RemoteConfigRepository(
                         activeConfig = outcome.snapshot,
                         isRefreshing = false,
                         lastFetchAttemptEpochMs = now,
-                        lastSuccessfulFetchEpochMs = fetchedMs,
+                        lastSuccessfulFetchEpochMs = now,
                         lastError = null,
+                        consecutiveFailures = 0,
+                        nextRetryAtEpochMs = 0L,
                     )
                 }
 
@@ -105,6 +121,8 @@ class RemoteConfigRepository(
                         lastFetchAttemptEpochMs = now,
                         lastSuccessfulFetchEpochMs = now,
                         lastError = null,
+                        consecutiveFailures = 0,
+                        nextRetryAtEpochMs = 0L,
                     )
                 }
 
@@ -117,11 +135,15 @@ class RemoteConfigRepository(
                     } else {
                         effectiveConfig
                     }
+                    val failures = latestState.consecutiveFailures + 1
+                    val backoffMs = FAILURE_BACKOFF_MS.getOrElse(failures - 1) { FAILURE_BACKOFF_MS.last() }
                     _state.value.copy(
                         activeConfig = retained,
                         isRefreshing = false,
                         lastFetchAttemptEpochMs = now,
                         lastError = outcome.message,
+                        consecutiveFailures = failures,
+                        nextRetryAtEpochMs = now + backoffMs,
                     )
                 }
             }
@@ -132,5 +154,10 @@ class RemoteConfigRepository(
 
     suspend fun dismissAnnouncement(id: String) {
         cache.dismissAnnouncement(id)
+    }
+
+    companion object {
+        private const val MIN_BYPASS_DEDUP_MS = 5_000L
+        private val FAILURE_BACKOFF_MS = longArrayOf(10_000L, 30_000L, 60_000L)
     }
 }
