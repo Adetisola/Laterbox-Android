@@ -242,6 +242,11 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        pipLifecycleTracker.onStarted()
+    }
+
     override fun onResume() {
         super.onResume()
         val currentlyInPip = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode
@@ -293,7 +298,14 @@ class PlayerActivity : ComponentActivity() {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         isInPictureInPictureModeState.value = isInPictureInPictureMode
         LaterboxPlaybackBridge.setInPictureInPicture(isInPictureInPictureMode)
-        pipLifecycleTracker.onPipModeChanged(isInPictureInPictureMode)
+        val pipAction = pipLifecycleTracker.evaluateOnPipModeChanged(
+            nowInPip = isInPictureInPictureMode,
+            isChangingConfigurations = isChangingConfigurations,
+            isRetainedForMiniPlayer = LaterboxPlaybackBridge.isRetainedForMiniPlayer
+        )
+        if (pipAction == PipStopAction.STOP_PLAYBACK_AND_FINISH) {
+            stopPlaybackAndFinishFromPipDismissal()
+        }
     }
 
     override fun onStop() {
@@ -305,13 +317,17 @@ class PlayerActivity : ComponentActivity() {
             isRetainedForMiniPlayer = LaterboxPlaybackBridge.isRetainedForMiniPlayer
         )
         if (stopAction == PipStopAction.STOP_PLAYBACK_AND_FINISH) {
-            LaterboxPipController.disableAutoEnterPip(this)
-            LaterboxPlaybackBridge.setInPictureInPicture(false)
-            LaterboxPlaybackBridge.persistCurrentProgress()
-            LaterboxPlaybackBridge.stopAndDetach(applicationContext)
-            if (!isFinishing) {
-                finish()
-            }
+            stopPlaybackAndFinishFromPipDismissal()
+        }
+    }
+
+    private fun stopPlaybackAndFinishFromPipDismissal() {
+        LaterboxPipController.disableAutoEnterPip(this)
+        LaterboxPlaybackBridge.setInPictureInPicture(false)
+        LaterboxPlaybackBridge.persistCurrentProgress()
+        LaterboxPlaybackBridge.stopAndDetach(applicationContext)
+        if (!isFinishing) {
+            finish()
         }
     }
 

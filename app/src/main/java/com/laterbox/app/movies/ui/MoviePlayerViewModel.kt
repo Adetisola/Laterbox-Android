@@ -56,6 +56,7 @@ data class MoviePlayerUiState(
     val seasonNumber: Int? = null,
     val episodeNumber: Int? = null,
     val episodeLabel: String? = null,
+    val episodeArtworkUrl: String? = null,
     val nextEpisodePreview: NextEpisodePreview? = null,
     val relatedTitles: List<MovieTitleSummary> = emptyList(),
     val playbackPreferences: PlayerPlaybackPreferences = PlayerPlaybackPreferences(),
@@ -248,17 +249,40 @@ class MoviePlayerViewModel(
                                 "S${seasonNumber} · E${episodeNumber}"
                             } else null
 
+                            val currentSeasonEpisodes = if (seasonNumber != null && episodeNumber != null) {
+                                moviesRepository.getEpisodes(
+                                    providerId = summary.providerId,
+                                    seriesId = summary.id,
+                                    seasonNumber = seasonNumber
+                                ).getOrNull().orEmpty()
+                            } else {
+                                emptyList()
+                            }
+                            val currentEpArtworkUrl = if (episodeNumber != null) {
+                                currentSeasonEpisodes
+                                    .firstOrNull { it.episodeNumber == episodeNumber }
+                                    ?.stillUrl
+                                    ?.takeIf { it.isNotBlank() }
+                            } else {
+                                null
+                            }
+
                             val nextTarget = computeNextEpisodeTarget(
                                 seasonNumber = seasonNumber,
                                 episodeNumber = episodeNumber,
                                 seasons = details?.seasons.orEmpty()
                             )
                             val nextPreview = if (nextTarget != null) {
-                                val nextEpItem = moviesRepository.getEpisodes(
-                                    providerId = summary.providerId,
-                                    seriesId = summary.id,
-                                    seasonNumber = nextTarget.first
-                                ).getOrNull()?.firstOrNull { it.episodeNumber == nextTarget.second }
+                                val nextSeasonEpisodes = if (nextTarget.first == seasonNumber && currentSeasonEpisodes.isNotEmpty()) {
+                                    currentSeasonEpisodes
+                                } else {
+                                    moviesRepository.getEpisodes(
+                                        providerId = summary.providerId,
+                                        seriesId = summary.id,
+                                        seasonNumber = nextTarget.first
+                                    ).getOrNull().orEmpty()
+                                }
+                                val nextEpItem = nextSeasonEpisodes.firstOrNull { it.episodeNumber == nextTarget.second }
                                 NextEpisodePreview(
                                     seasonNumber = nextTarget.first,
                                     episodeNumber = nextTarget.second,
@@ -285,6 +309,7 @@ class MoviePlayerViewModel(
                                     availableDubs = details?.audioDubs.orEmpty(),
                                     seasons = details?.seasons.orEmpty(),
                                     episodeLabel = epLabel,
+                                    episodeArtworkUrl = currentEpArtworkUrl,
                                     nextEpisodePreview = nextPreview,
                                     relatedTitles = details?.relatedTitles.orEmpty().take(8),
                                     preferredAudioLanguage = seriesPrefs?.preferredAudioLanguage,

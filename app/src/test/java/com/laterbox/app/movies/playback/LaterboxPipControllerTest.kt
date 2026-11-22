@@ -357,5 +357,88 @@ class LaterboxPipControllerTest {
                 isRetainedForMiniPlayer = false
             )
         )
+
+        // 6. Reversed dismissal callback order (Android 12-15 race): onStop(stillInPip=true) then onPipModeChanged(false) -> STOP_PLAYBACK_AND_FINISH
+        val reversedDismissTracker = LaterboxPipLifecycleTracker()
+        reversedDismissTracker.onStarted()
+        reversedDismissTracker.onResumed(currentlyInPip = false)
+        reversedDismissTracker.onPipModeChanged(nowInPip = true)
+        assertEquals(
+            PipStopAction.NONE,
+            reversedDismissTracker.evaluateOnStop(
+                isCurrentlyInPip = true,
+                isChangingConfigurations = false,
+                isRetainedForMiniPlayer = false
+            )
+        )
+        assertEquals(
+            PipStopAction.STOP_PLAYBACK_AND_FINISH,
+            reversedDismissTracker.evaluateOnPipModeChanged(
+                nowInPip = false,
+                isChangingConfigurations = false,
+                isRetainedForMiniPlayer = false
+            )
+        )
+
+        // 7. Screen off in PiP then waking screen (onStart) then expanding to fullscreen must NOT stop playback
+        val wakeAndExpandTracker = LaterboxPipLifecycleTracker()
+        wakeAndExpandTracker.onPipModeChanged(nowInPip = true)
+        assertEquals(
+            PipStopAction.NONE,
+            wakeAndExpandTracker.evaluateOnStop(
+                isCurrentlyInPip = true,
+                isChangingConfigurations = false,
+                isRetainedForMiniPlayer = false
+            )
+        )
+        wakeAndExpandTracker.onStarted()
+        assertEquals(
+            PipStopAction.NONE,
+            wakeAndExpandTracker.evaluateOnPipModeChanged(
+                nowInPip = false,
+                isChangingConfigurations = false,
+                isRetainedForMiniPlayer = false
+            )
+        )
+        wakeAndExpandTracker.onResumed(currentlyInPip = false)
+        assertEquals(
+            PipStopAction.NONE,
+            wakeAndExpandTracker.evaluateOnStop(
+                isCurrentlyInPip = false,
+                isChangingConfigurations = false,
+                isRetainedForMiniPlayer = false
+            )
+        )
+
+        // 8. Multi-cycle PiP: enter PiP -> expand to fullscreen -> re-enter PiP -> dismiss PiP (reversed order) -> STOP
+        val reenterTracker = LaterboxPipLifecycleTracker()
+        reenterTracker.onPipModeChanged(nowInPip = true)
+        reenterTracker.onStarted()
+        assertEquals(
+            PipStopAction.NONE,
+            reenterTracker.evaluateOnPipModeChanged(
+                nowInPip = false,
+                isChangingConfigurations = false,
+                isRetainedForMiniPlayer = false
+            )
+        )
+        reenterTracker.onResumed(currentlyInPip = false)
+        reenterTracker.onPipModeChanged(nowInPip = true)
+        assertEquals(
+            PipStopAction.NONE,
+            reenterTracker.evaluateOnStop(
+                isCurrentlyInPip = true,
+                isChangingConfigurations = false,
+                isRetainedForMiniPlayer = false
+            )
+        )
+        assertEquals(
+            PipStopAction.STOP_PLAYBACK_AND_FINISH,
+            reenterTracker.evaluateOnPipModeChanged(
+                nowInPip = false,
+                isChangingConfigurations = false,
+                isRetainedForMiniPlayer = false
+            )
+        )
     }
 }

@@ -322,4 +322,64 @@ class PlaybackSessionServiceTest {
         assertEquals(null, LaterboxPlaybackBridge.activeTarget)
         assertEquals(null, LaterboxPlaybackBridge.miniPlayerState.value)
     }
+
+    @Test
+    fun artworkHelper_populatesMediaMetadataForStreamsAndLocalThumbnails_withBrandedFallback() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        LaterboxPlaybackArtworkHelper.clearCacheForTest()
+
+        // 1. Online movie / episode artwork URI populates MediaMetadata
+        val streamMeta = LaterboxPlaybackArtworkHelper.buildPlaybackMediaMetadata(
+            title = "Severance",
+            subtitle = "S1 · E1",
+            artworkUrl = "https://cdn.example.com/posters/severance-s1e1.jpg",
+        )
+        assertEquals("Severance", streamMeta.title?.toString())
+        assertEquals("S1 · E1", streamMeta.subtitle?.toString())
+        assertEquals("https://cdn.example.com/posters/severance-s1e1.jpg", streamMeta.artworkUri?.toString())
+
+        // 2. Local asset relative thumbnailPath resolves cleanly when file exists
+        val thumbDir = java.io.File(context.filesDir, "media_thumbnails").apply { mkdirs() }
+        val thumbFile = java.io.File(thumbDir, "local-asset-1.jpg")
+        val pngBytes = LaterboxPlaybackArtworkHelper.renderBrandedFallbackArtworkPng(context)
+        thumbFile.writeBytes(pngBytes)
+        try {
+            val resolvedUri = LaterboxPlaybackArtworkHelper.resolveLocalThumbnailUri(
+                context = context,
+                artworkUrl = null,
+                thumbnailPath = "media_thumbnails/local-asset-1.jpg",
+            )
+            assertNotNull(resolvedUri)
+            assertTrue(resolvedUri!!.startsWith("file://"))
+
+            val localMeta = LaterboxPlaybackArtworkHelper.buildPlaybackMediaMetadata(
+                title = "Offline Clip",
+                artworkUrl = resolvedUri,
+            )
+            val bitmapLoader = LaterboxPlaybackBitmapLoader(context)
+            val loadedBitmap = bitmapLoader.loadBitmapFromMetadata(localMeta).get()
+            assertNotNull(loadedBitmap)
+            assertTrue(loadedBitmap.width > 0 && loadedBitmap.height > 0)
+
+            // 3. Missing / unparseable artwork still yields a branded fallback bitmap rather than failing
+            val emptyMeta = LaterboxPlaybackArtworkHelper.buildPlaybackMediaMetadata(
+                title = "No Art Clip",
+                artworkUrl = null,
+            )
+            assertNull(emptyMeta.artworkUri)
+            val fallbackBitmap = bitmapLoader.loadBitmapFromMetadata(emptyMeta).get()
+            assertNotNull(fallbackBitmap)
+            assertTrue(fallbackBitmap.width > 0 && fallbackBitmap.height > 0)
+
+            val missingFileMeta = LaterboxPlaybackArtworkHelper.buildPlaybackMediaMetadata(
+                title = "Broken File Clip",
+                artworkUrl = "file://${context.filesDir.absolutePath}/does-not-exist-art.jpg",
+            )
+            val brokenFallbackBitmap = bitmapLoader.loadBitmapFromMetadata(missingFileMeta).get()
+            assertNotNull(brokenFallbackBitmap)
+            assertTrue(brokenFallbackBitmap.width > 0 && brokenFallbackBitmap.height > 0)
+        } finally {
+            thumbFile.delete()
+        }
+    }
 }

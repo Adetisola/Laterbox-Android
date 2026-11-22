@@ -67,17 +67,25 @@ class LaterboxPipLifecycleTracker {
         private set
     var returnedToFullscreenSincePipExit: Boolean = false
         private set
+    var isActivityStopped: Boolean = false
+        private set
+
+    fun onStarted() {
+        isActivityStopped = false
+    }
 
     fun onPipModeChanged(nowInPip: Boolean) {
         isInPip = nowInPip
         if (nowInPip) {
             wasInPipSession = true
             returnedToFullscreenSincePipExit = false
+            isActivityStopped = false
         }
     }
 
     fun onResumed(currentlyInPip: Boolean) {
         isInPip = currentlyInPip
+        isActivityStopped = false
         if (!currentlyInPip) {
             wasInPipSession = false
             returnedToFullscreenSincePipExit = true
@@ -88,6 +96,24 @@ class LaterboxPipLifecycleTracker {
         isInPip = false
         wasInPipSession = false
         returnedToFullscreenSincePipExit = false
+        isActivityStopped = false
+    }
+
+    fun evaluateOnPipModeChanged(
+        nowInPip: Boolean,
+        isChangingConfigurations: Boolean,
+        isRetainedForMiniPlayer: Boolean
+    ): PipStopAction {
+        onPipModeChanged(nowInPip)
+        if (isChangingConfigurations || isRetainedForMiniPlayer) {
+            return PipStopAction.NONE
+        }
+        if (!nowInPip && isActivityStopped && wasInPipSession && !returnedToFullscreenSincePipExit) {
+            wasInPipSession = false
+            isInPip = false
+            return PipStopAction.STOP_PLAYBACK_AND_FINISH
+        }
+        return PipStopAction.NONE
     }
 
     fun evaluateOnStop(
@@ -95,6 +121,7 @@ class LaterboxPipLifecycleTracker {
         isChangingConfigurations: Boolean,
         isRetainedForMiniPlayer: Boolean
     ): PipStopAction {
+        isActivityStopped = true
         if (isChangingConfigurations || isRetainedForMiniPlayer) {
             return PipStopAction.NONE
         }

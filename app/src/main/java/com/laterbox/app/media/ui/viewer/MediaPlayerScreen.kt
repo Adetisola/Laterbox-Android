@@ -72,6 +72,14 @@ fun MediaPlayerScreen(
         onDismiss()
     }
 
+    val audioArtworkUrl = remember(asset.id, asset.artworkUrl, asset.thumbnailPath) {
+        com.laterbox.app.movies.playback.LaterboxPlaybackArtworkHelper.resolveLocalThumbnailUri(
+            context = appContext,
+            artworkUrl = asset.artworkUrl,
+            thumbnailPath = asset.thumbnailPath
+        )
+    }
+
     val exoPlayer = remember(asset.id) {
         val audioAttributes = AudioAttributes.Builder()
             .setUsage(C.USAGE_MEDIA)
@@ -82,11 +90,13 @@ fun MediaPlayerScreen(
             .setHandleAudioBecomingNoisy(true)
             .build()
             .apply {
-                val metadata = MediaMetadata.Builder()
-                    .setTitle(asset.title ?: "Audio Playback")
-                    .setArtist(asset.artist)
-                    .setAlbumTitle(asset.album)
-                    .build()
+                val metadata = com.laterbox.app.movies.playback.LaterboxPlaybackArtworkHelper.buildPlaybackMediaMetadata(
+                    title = asset.title ?: "Audio Playback",
+                    subtitle = asset.artist,
+                    artist = asset.artist,
+                    album = asset.album,
+                    artworkUrl = audioArtworkUrl
+                )
                 val mediaItem = MediaItem.Builder()
                     .setUri(Uri.fromFile(file))
                     .setMediaMetadata(metadata)
@@ -103,6 +113,11 @@ fun MediaPlayerScreen(
             player = exoPlayer,
             title = asset.title ?: "Audio Playback",
             subtitle = asset.artist
+        )
+        LaterboxPlaybackBridge.updateMetadata(
+            title = asset.title ?: "Audio Playback",
+            subtitle = asset.artist,
+            artworkUrl = audioArtworkUrl
         )
         onDispose {
             attachedPlayerView.value?.player = null

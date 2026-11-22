@@ -7,6 +7,12 @@ import android.app.PendingIntent
 import android.app.TaskStackBuilder
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.RectF
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -14,21 +20,34 @@ import android.util.Log
 import androidx.annotation.OptIn
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.drawable.DrawableCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
+import androidx.media3.common.util.BitmapLoader
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.ByteArrayDataSource
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSourceBitmapLoader
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.CacheBitmapLoader
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import com.google.common.util.concurrent.ListenableFuture
 import com.laterbox.app.MainActivity
 import com.laterbox.app.R
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.io.ByteArrayOutputStream
+import java.io.File
 import java.util.Collections
 import java.util.IdentityHashMap
+import java.util.concurrent.TimeUnit
 
 sealed interface PlaybackSessionTarget {
     val episodeKey: String
@@ -624,7 +643,7 @@ class PlaybackSessionService : MediaSessionService() {
                 .setChannelName(R.string.playback_notification_channel_name)
                 .build()
                 .apply {
-                    setSmallIcon(R.mipmap.ic_launcher)
+                    setSmallIcon(R.drawable.ic_stat_laterbox)
                 }
         )
         LaterboxPlaybackBridge.onServiceBound(this)
@@ -695,6 +714,7 @@ class PlaybackSessionService : MediaSessionService() {
 
         val session = MediaSession.Builder(this, player)
             .setSessionActivity(pendingIntent)
+            .setBitmapLoader(LaterboxPlaybackBitmapLoader(this))
             .build()
         addSession(session)
         mediaSession = session
@@ -755,7 +775,7 @@ class PlaybackSessionService : MediaSessionService() {
     private fun buildMinimalStoppingNotification(): Notification {
         ensurePlaybackNotificationChannel()
         return NotificationCompat.Builder(this, MEDIA_CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_stat_laterbox)
             .setContentTitle(getString(R.string.app_name))
             .setOngoing(false)
             .setSilent(true)
@@ -772,5 +792,245 @@ class PlaybackSessionService : MediaSessionService() {
                 .setUsage(C.USAGE_MEDIA)
                 .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
                 .build()
+    }
+}
+
+object LaterboxPlaybackArtworkHelper {
+    private const val TAG = "LaterboxArtworkHelper"
+    internal val FALLBACK_ARTWORK_URI: Uri = Uri.parse("laterbox://playback-artwork/fallback")
+    private const val MAX_ARTWORK_BYTES = 6 * 1024 * 1024
+    private const val CACHE_CAPACITY = 24
+
+    private val artworkClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(6, TimeUnit.SECONDS)
+            .readTimeout(8, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .build()
+    }
+
+    private val byteCache = object : LinkedHashMap<String, ByteArray>(CACHE_CAPACITY, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ByteArray>?): Boolean {
+            return size > CACHE_CAPACITY
+        }
+    }
+
+    @Volatile
+    private var cachedFallbackPng: ByteArray? = null
+
+    fun resolveLocalThumbnailUri(
+        context: Context,
+        artworkUrl: String?,
+        thumbnailPath: String?,
+    ): String? {
+        val localFileUri = thumbnailPath
+            ?.takeIf { it.isNotBlank() }
+            ?.let { raw ->
+                val file = File(raw)
+                val target = if (file.isAbsolute) file else File(context.filesDir, raw)
+                if (target.exists() && target.length() > 0L) {
+                    Uri.fromFile(target).toString()
+                } else {
+                    null
+                }
+            }
+        val cleanRemote = artworkUrl?.takeIf { it.isNotBlank() }
+        if (cleanRemote != null && !cleanRemote.startsWith("http", ignoreCase = true)) {
+            return cleanRemote
+        }
+        return localFileUri ?: cleanRemote
+    }
+
+    fun buildPlaybackMediaMetadata(
+        title: String?,
+        subtitle: String? = null,
+        artist: String? = null,
+        album: String? = null,
+        artworkUrl: String? = null,
+    ): MediaMetadata {
+        val builder = MediaMetadata.Builder()
+            .setIsPlayable(true)
+        title?.takeIf { it.isNotBlank() }?.let {
+            builder.setTitle(it)
+            builder.setDisplayTitle(it)
+        }
+        subtitle?.takeIf { it.isNotBlank() }?.let { builder.setSubtitle(it) }
+        artist?.takeIf { it.isNotBlank() }?.let { builder.setArtist(it) }
+        album?.takeIf { it.isNotBlank() }?.let { builder.setAlbumTitle(it) }
+        val parsedUri = parseSafeArtworkUri(artworkUrl)
+        if (parsedUri != null) {
+            builder.setArtworkUri(parsedUri)
+        }
+        return builder.build()
+    }
+
+    internal fun parseSafeArtworkUri(raw: String?): Uri? {
+        val trimmed = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val parsed = runCatching { Uri.parse(trimmed) }.getOrNull() ?: return null
+        val scheme = parsed.scheme?.lowercase()
+        return when (scheme) {
+            "http", "https", "file", "content", "android.resource" -> parsed
+            null -> Uri.fromFile(File(trimmed))
+            else -> null
+        }
+    }
+
+    fun loadArtworkOrFallbackPng(context: Context, uri: Uri): ByteArray {
+        val key = uri.toString()
+        if (uri == FALLBACK_ARTWORK_URI || key.isBlank()) {
+            return renderBrandedFallbackArtworkPng(context)
+        }
+        synchronized(byteCache) {
+            byteCache[key]?.let { return it }
+        }
+        val fetched = runCatching { fetchRawArtworkBytes(context, uri) }.getOrNull()
+        val valid = fetched?.takeIf { isDecodableImage(it) }
+        if (valid != null) {
+            synchronized(byteCache) {
+                byteCache[key] = valid
+            }
+            return valid
+        }
+        return renderBrandedFallbackArtworkPng(context)
+    }
+
+    private fun fetchRawArtworkBytes(context: Context, uri: Uri): ByteArray? {
+        return when (uri.scheme?.lowercase()) {
+            "http", "https" -> {
+                val req = Request.Builder()
+                    .url(uri.toString())
+                    .header("User-Agent", "Laterbox-Android/1.0")
+                    .build()
+                artworkClient.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) return null
+                    val body = resp.body ?: return null
+                    val len = body.contentLength()
+                    if (len > MAX_ARTWORK_BYTES) return null
+                    val bytes = body.bytes()
+                    if (bytes.size > MAX_ARTWORK_BYTES) null else bytes
+                }
+            }
+            "file" -> {
+                val path = uri.path ?: return null
+                val file = File(path)
+                if (file.exists() && file.length() in 1L..MAX_ARTWORK_BYTES.toLong()) {
+                    file.readBytes()
+                } else {
+                    null
+                }
+            }
+            "content", "android.resource" -> {
+                context.contentResolver.openInputStream(uri)?.use { stream ->
+                    val buffer = ByteArrayOutputStream()
+                    val chunk = ByteArray(8192)
+                    var total = 0
+                    while (true) {
+                        val read = stream.read(chunk)
+                        if (read <= 0) break
+                        total += read
+                        if (total > MAX_ARTWORK_BYTES) return null
+                        buffer.write(chunk, 0, read)
+                    }
+                    buffer.toByteArray()
+                }
+            }
+            else -> null
+        }
+    }
+
+    private fun isDecodableImage(bytes: ByteArray): Boolean {
+        if (bytes.isEmpty()) return false
+        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+        return opts.outWidth > 0 && opts.outHeight > 0
+    }
+
+    fun renderBrandedFallbackArtworkPng(context: Context): ByteArray {
+        cachedFallbackPng?.let { return it }
+        val size = 256
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        try {
+            val canvas = Canvas(bitmap)
+            canvas.drawColor(0xFF141519.toInt())
+
+            val cardPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = 0xFF1E2028.toInt()
+            }
+            canvas.drawRoundRect(RectF(20f, 20f, size - 20f, size - 20f), 36f, 36f, cardPaint)
+
+            val accentPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = 0xFFE5484D.toInt()
+                style = Paint.Style.STROKE
+                strokeWidth = 6f
+            }
+            canvas.drawRoundRect(RectF(20f, 20f, size - 20f, size - 20f), 36f, 36f, accentPaint)
+
+            val drawable = runCatching {
+                ContextCompat.getDrawable(context, R.drawable.ic_stat_laterbox)
+            }.getOrNull()
+            if (drawable != null) {
+                val wrapped = DrawableCompat.wrap(drawable.mutate())
+                DrawableCompat.setTint(wrapped, 0xFFFFFFFF.toInt())
+                wrapped.setBounds(68, 68, size - 68, size - 68)
+                wrapped.draw(canvas)
+            } else {
+                val fallbackBadge = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = 0xFFFFFFFF.toInt()
+                }
+                canvas.drawRoundRect(RectF(88f, 88f, size - 88f, size - 88f), 18f, 18f, fallbackBadge)
+            }
+
+            val out = ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            val png = out.toByteArray()
+            cachedFallbackPng = png
+            return png
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
+    internal fun clearCacheForTest() {
+        synchronized(byteCache) {
+            byteCache.clear()
+        }
+        cachedFallbackPng = null
+    }
+}
+
+@OptIn(UnstableApi::class)
+internal class LaterboxPlaybackBitmapLoader(
+    context: Context,
+) : BitmapLoader {
+    private val appContext = context.applicationContext
+    private val delegate = CacheBitmapLoader(
+        DataSourceBitmapLoader(
+            DataSourceBitmapLoader.DEFAULT_EXECUTOR_SERVICE.get(),
+            DataSource.Factory {
+                ByteArrayDataSource { uri ->
+                    LaterboxPlaybackArtworkHelper.loadArtworkOrFallbackPng(appContext, uri)
+                }
+            }
+        )
+    )
+
+    override fun supportsMimeType(mimeType: String): Boolean =
+        delegate.supportsMimeType(mimeType)
+
+    override fun decodeBitmap(data: ByteArray): ListenableFuture<Bitmap> =
+        delegate.decodeBitmap(data)
+
+    override fun loadBitmap(uri: Uri): ListenableFuture<Bitmap> =
+        delegate.loadBitmap(uri)
+
+    override fun loadBitmapFromMetadata(metadata: MediaMetadata): ListenableFuture<Bitmap> {
+        val rawData = metadata.artworkData
+        if (rawData != null && rawData.isNotEmpty()) {
+            return decodeBitmap(rawData)
+        }
+        val uri = metadata.artworkUri
+            ?: LaterboxPlaybackArtworkHelper.parseSafeArtworkUri(LaterboxPlaybackBridge.activeArtworkUrl)
+            ?: LaterboxPlaybackArtworkHelper.FALLBACK_ARTWORK_URI
+        return loadBitmap(uri)
     }
 }

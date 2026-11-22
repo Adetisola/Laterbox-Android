@@ -270,7 +270,7 @@ fun MoviePlayerScreen(
                     downloadStatusMessage = uiState.downloadStatusMessage,
                     isLocalFile = false,
                     sessionTarget = streamTarget,
-                    artworkUrl = summary?.backdropUrl ?: summary?.posterUrl,
+                    artworkUrl = uiState.episodeArtworkUrl ?: summary?.backdropUrl ?: summary?.posterUrl,
                     simulatePlaybackEndedForTest = simulatePlaybackEndedForTest,
                     onBackClick = onBackClick,
                     onTryEnterPipOnBack = onTryEnterPipOnBack,
@@ -451,7 +451,11 @@ fun LocalVideoPlayerScreen(
             downloadStatusMessage = null,
             isLocalFile = true,
             sessionTarget = PlaybackSessionTarget.LocalVideo(asset.id),
-            artworkUrl = asset.artworkUrl,
+            artworkUrl = com.laterbox.app.movies.playback.LaterboxPlaybackArtworkHelper.resolveLocalThumbnailUri(
+                context = context,
+                artworkUrl = asset.artworkUrl,
+                thumbnailPath = asset.thumbnailPath,
+            ),
             onBackClick = onBackClick,
             onTryEnterPipOnBack = onTryEnterPipOnBack,
             onSelectSource = { _, _ -> },
@@ -864,12 +868,11 @@ private fun ActiveVideoPlayerContent(
         isPlaybackEnded = false
         hasManualAudioOverride = false
         try {
-            val metadata = MediaMetadata.Builder()
-                .setTitle(resolution.title)
-                .setDisplayTitle(resolution.title)
-                .setSubtitle(resolution.subtitleHeading)
-                .setIsPlayable(true)
-                .build()
+            val metadata = com.laterbox.app.movies.playback.LaterboxPlaybackArtworkHelper.buildPlaybackMediaMetadata(
+                title = resolution.title,
+                subtitle = resolution.subtitleHeading,
+                artworkUrl = artworkUrl,
+            )
             val itemBuilder = MediaItem.Builder()
                 .setUri(Uri.parse(selectedSource.url))
                 .setMediaMetadata(metadata)
