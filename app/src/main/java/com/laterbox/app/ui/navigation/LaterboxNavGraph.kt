@@ -892,32 +892,6 @@ fun LaterboxApp(
                                 },
                                 remoteConfig = remoteConfig,
                                 dismissedAnnouncementIds = dismissedAnnouncementIds,
-                                showRecommendedUpdateBanner = com.laterbox.app.remoteconfig.RemoteConfigLayoutHelper.shouldShowRecommendedUpdateBanner(
-                                    versionPolicy = remoteConfig.versionPolicy,
-                                    currentVersionCode = com.laterbox.app.BuildConfig.VERSION_CODE,
-                                    dismissedInSession = sessionDismissedRecommendedUpdate
-                                ),
-                                onDismissRecommendedUpdate = { sessionDismissedRecommendedUpdate = true },
-                                onTriggerUpdateCheck = {
-                                    coroutineScope.launch {
-                                        val app = context.applicationContext as? LaterboxApplication
-                                        if (app != null) {
-                                            val baseUrl = app.container.resolveBackendBaseUrl()
-                                            val res = GitHubUpdateChecker.checkForUpdate(
-                                                currentVersionName = com.laterbox.app.BuildConfig.VERSION_NAME,
-                                                releasesUrl = GitHubUpdateChecker.buildBackendUpdateUrl(baseUrl, forceRefresh = true),
-                                                context = context.applicationContext,
-                                                appCheckTokenProvider = { force -> app.container.getBackendAppCheckToken(force) },
-                                                forceRefresh = true
-                                            )
-                                            if (res is com.laterbox.app.update.UpdateCheckResult.UpdateAvailable) {
-                                                appUpdateInfoToPrompt = res.updateInfo
-                                            } else {
-                                                BrowserLauncher.openUrl(context, "https://laterbox-website.vercel.app", colors)
-                                            }
-                                        }
-                                    }
-                                },
                                 onRemoteAction = handleRemoteAction,
                                 onDismissRemoteAnnouncement = { id -> remoteConfigManager?.dismissAnnouncement(id) }
                             )
@@ -1996,31 +1970,74 @@ fun LaterboxApp(
                     } else {
                         emptyList()
                     }
-                    if (showGlobalMiniPlayer || isInboxOverlayVisible || showHandsetBottomBar || activeSurfaceNotices.isNotEmpty()) {
+                    val floatingOverlayChoice = if (!isImmersivePlayerRoute && !isImeVisible) {
+                        com.laterbox.app.remoteconfig.RemoteConfigLayoutHelper.selectBottomFloatingOverlay(
+                            versionPolicy = remoteConfig.versionPolicy,
+                            currentVersionCode = com.laterbox.app.BuildConfig.VERSION_CODE,
+                            dismissedUpdateInSession = sessionDismissedRecommendedUpdate,
+                            activeSurfaceNotices = activeSurfaceNotices,
+                        )
+                    } else {
+                        com.laterbox.app.remoteconfig.RemoteConfigLayoutHelper.BottomFloatingOverlayChoice.NONE
+                    }
+                    if (showGlobalMiniPlayer || isInboxOverlayVisible || showHandsetBottomBar || floatingOverlayChoice != com.laterbox.app.remoteconfig.RemoteConfigLayoutHelper.BottomFloatingOverlayChoice.NONE) {
                         Column(
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
                                 .fillMaxWidth(),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            if (activeSurfaceNotices.isNotEmpty()) {
-                                val needsNavInsets = !showHandsetBottomBar && !isInboxOverlayVisible && !showGlobalMiniPlayer
-                                com.laterbox.app.remoteconfig.RemoteFloatingNoticeDeck(
-                                    notices = activeSurfaceNotices,
-                                    onActionClick = handleRemoteAction,
-                                    onDismissClick = { id -> remoteConfigManager?.dismissAnnouncement(id) },
-                                    modifier = Modifier
-                                        .padding(horizontal = 16.dp, vertical = 6.dp)
-                                        .let { mod ->
-                                            if (needsNavInsets) {
-                                                mod.windowInsetsPadding(
-                                                    WindowInsets.navigationBars.only(WindowInsetsSides.Bottom)
-                                                )
-                                            } else {
-                                                mod
+                            val needsNavInsets = !showHandsetBottomBar && !isInboxOverlayVisible && !showGlobalMiniPlayer
+                            val floatingOverlayModifier = Modifier
+                                .padding(horizontal = 16.dp, vertical = 6.dp)
+                                .let { mod ->
+                                    if (needsNavInsets) {
+                                        mod.windowInsetsPadding(
+                                            WindowInsets.navigationBars.only(WindowInsetsSides.Bottom)
+                                        )
+                                    } else {
+                                        mod
+                                    }
+                                }
+                            when (floatingOverlayChoice) {
+                                com.laterbox.app.remoteconfig.RemoteConfigLayoutHelper.BottomFloatingOverlayChoice.NOTICE_DECK -> {
+                                    com.laterbox.app.remoteconfig.RemoteFloatingNoticeDeck(
+                                        notices = activeSurfaceNotices,
+                                        onActionClick = handleRemoteAction,
+                                        onDismissClick = { id -> remoteConfigManager?.dismissAnnouncement(id) },
+                                        modifier = floatingOverlayModifier,
+                                    )
+                                }
+                                com.laterbox.app.remoteconfig.RemoteConfigLayoutHelper.BottomFloatingOverlayChoice.RECOMMENDED_UPDATE -> {
+                                    com.laterbox.app.remoteconfig.RemoteFloatingUpdateCard(
+                                        versionPolicy = remoteConfig.versionPolicy,
+                                        onUpdateClick = {
+                                            coroutineScope.launch {
+                                                val app = context.applicationContext as? LaterboxApplication
+                                                if (app != null) {
+                                                    val baseUrl = app.container.resolveBackendBaseUrl()
+                                                    val res = GitHubUpdateChecker.checkForUpdate(
+                                                        currentVersionName = com.laterbox.app.BuildConfig.VERSION_NAME,
+                                                        releasesUrl = GitHubUpdateChecker.buildBackendUpdateUrl(baseUrl, forceRefresh = true),
+                                                        context = context.applicationContext,
+                                                        appCheckTokenProvider = { force -> app.container.getBackendAppCheckToken(force) },
+                                                        forceRefresh = true
+                                                    )
+                                                    if (res is com.laterbox.app.update.UpdateCheckResult.UpdateAvailable) {
+                                                        appUpdateInfoToPrompt = res.updateInfo
+                                                    } else {
+                                                        BrowserLauncher.openUrl(context, "https://laterbox-website.vercel.app", colors)
+                                                    }
+                                                } else {
+                                                    BrowserLauncher.openUrl(context, "https://laterbox-website.vercel.app", colors)
+                                                }
                                             }
-                                        }
-                                )
+                                        },
+                                        onDismissClick = { sessionDismissedRecommendedUpdate = true },
+                                        modifier = floatingOverlayModifier,
+                                    )
+                                }
+                                com.laterbox.app.remoteconfig.RemoteConfigLayoutHelper.BottomFloatingOverlayChoice.NONE -> Unit
                             }
                             if (isInboxOverlayVisible) {
                                 Box(

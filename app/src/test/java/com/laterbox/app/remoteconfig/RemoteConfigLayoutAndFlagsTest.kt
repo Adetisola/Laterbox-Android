@@ -141,4 +141,76 @@ class RemoteConfigLayoutAndFlagsTest {
         assertFalse(RemoteConfigLayoutHelper.shouldShowBlockingUpdateDialog(advisoryPolicy, 66))
         assertFalse(RemoteConfigLayoutHelper.shouldShowRecommendedUpdateBanner(advisoryPolicy, 66, dismissedInSession = false))
     }
+
+    @Test
+    fun floatingOverlayPriority_respectsHierarchy_blocking_criticalWarning_recommendedUpdate_infoNotice() {
+        val updatePolicy = RemoteVersionPolicy(
+            minimumSupportedVersionCode = 190,
+            recommendedVersionCode = 198,
+            enforcementEnabled = true,
+            recommendedTag = "v1.0.65",
+        )
+        val infoNotice = RemoteAnnouncementItem(
+            id = "info_tip",
+            message = "Try collections",
+            severity = RemoteAnnouncementSeverity.INFO,
+            surfaces = listOf(RemoteUiSurface.INBOX),
+        )
+        val warningNotice = RemoteAnnouncementItem(
+            id = "warn_sync",
+            message = "Sync degraded",
+            severity = RemoteAnnouncementSeverity.WARNING,
+            surfaces = listOf(RemoteUiSurface.INBOX),
+        )
+        val criticalNotice = RemoteAnnouncementItem(
+            id = "crit_outage",
+            message = "Service issue",
+            severity = RemoteAnnouncementSeverity.CRITICAL,
+            surfaces = listOf(RemoteUiSurface.INBOX),
+        )
+
+        // 1. Blocking dialog suppresses all bottom floating overlays
+        assertEquals(
+            RemoteConfigLayoutHelper.BottomFloatingOverlayChoice.NONE,
+            RemoteConfigLayoutHelper.selectBottomFloatingOverlay(
+                versionPolicy = updatePolicy,
+                currentVersionCode = 185,
+                dismissedUpdateInSession = false,
+                activeSurfaceNotices = listOf(criticalNotice, infoNotice),
+            )
+        )
+
+        // 2. Critical or Warning notice outranks Recommended Update
+        assertEquals(
+            RemoteConfigLayoutHelper.BottomFloatingOverlayChoice.NOTICE_DECK,
+            RemoteConfigLayoutHelper.selectBottomFloatingOverlay(
+                versionPolicy = updatePolicy,
+                currentVersionCode = 195,
+                dismissedUpdateInSession = false,
+                activeSurfaceNotices = listOf(warningNotice, infoNotice),
+            )
+        )
+
+        // 3. Recommended Update outranks Info notice until dismissed in session
+        assertEquals(
+            RemoteConfigLayoutHelper.BottomFloatingOverlayChoice.RECOMMENDED_UPDATE,
+            RemoteConfigLayoutHelper.selectBottomFloatingOverlay(
+                versionPolicy = updatePolicy,
+                currentVersionCode = 195,
+                dismissedUpdateInSession = false,
+                activeSurfaceNotices = listOf(infoNotice),
+            )
+        )
+
+        // 4. Once Recommended Update is dismissed, Info notice renders
+        assertEquals(
+            RemoteConfigLayoutHelper.BottomFloatingOverlayChoice.NOTICE_DECK,
+            RemoteConfigLayoutHelper.selectBottomFloatingOverlay(
+                versionPolicy = updatePolicy,
+                currentVersionCode = 195,
+                dismissedUpdateInSession = true,
+                activeSurfaceNotices = listOf(infoNotice),
+            )
+        )
+    }
 }

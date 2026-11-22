@@ -102,4 +102,39 @@ object RemoteConfigLayoutHelper {
         if (shouldShowBlockingUpdateDialog(versionPolicy, currentVersionCode)) return false
         return versionPolicy.recommendedVersionCode > currentVersionCode
     }
+
+    enum class BottomFloatingOverlayChoice {
+        NONE,
+        NOTICE_DECK,
+        RECOMMENDED_UPDATE,
+    }
+
+    /**
+     * Enforces UI notification priority hierarchy:
+     * Blocking Dialog > Maintenance Status Strip > Critical/Warning Notice > Recommended Update > Info Notice.
+     */
+    fun selectBottomFloatingOverlay(
+        versionPolicy: RemoteVersionPolicy,
+        currentVersionCode: Int,
+        dismissedUpdateInSession: Boolean,
+        activeSurfaceNotices: List<RemoteAnnouncementItem>,
+    ): BottomFloatingOverlayChoice {
+        if (shouldShowBlockingUpdateDialog(versionPolicy, currentVersionCode)) {
+            return BottomFloatingOverlayChoice.NONE
+        }
+        val hasHighSeverityNotice = activeSurfaceNotices.any { notice ->
+            notice.severity == RemoteAnnouncementSeverity.CRITICAL ||
+                notice.severity == RemoteAnnouncementSeverity.WARNING
+        }
+        if (hasHighSeverityNotice) {
+            return BottomFloatingOverlayChoice.NOTICE_DECK
+        }
+        if (shouldShowRecommendedUpdateBanner(versionPolicy, currentVersionCode, dismissedUpdateInSession)) {
+            return BottomFloatingOverlayChoice.RECOMMENDED_UPDATE
+        }
+        if (activeSurfaceNotices.isNotEmpty()) {
+            return BottomFloatingOverlayChoice.NOTICE_DECK
+        }
+        return BottomFloatingOverlayChoice.NONE
+    }
 }

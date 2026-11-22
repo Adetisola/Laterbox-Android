@@ -377,6 +377,94 @@ fun RemoteFloatingNoticeDeck(
 }
 
 @Composable
+fun RemoteFloatingUpdateCard(
+    versionPolicy: RemoteVersionPolicy,
+    onUpdateClick: () -> Unit,
+    onDismissClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = LaterboxTheme.colors
+    val typography = LaterboxTheme.typography
+    val tag = versionPolicy.recommendedTag.takeIf { it.isNotBlank() }
+    val title = if (tag != null) "Update Available ($tag)" else "Update Available"
+    val body = versionPolicy.updateMessage.ifBlank {
+        "A newer version of Laterbox is available with improvements and fixes."
+    }
+
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = colors.surfaceElevated,
+        border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.42f)),
+        shadowElevation = 6.dp,
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("remote_floating_update_card")
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                androidx.compose.material3.Icon(
+                    painter = androidx.compose.ui.res.painterResource(id = LaterboxIcons.Sparkles),
+                    contentDescription = "Update available",
+                    tint = colors.accentPrimary,
+                    modifier = Modifier.size(16.dp)
+                )
+                Text(
+                    text = title,
+                    style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                    color = colors.accentPrimary,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+                androidx.compose.material3.IconButton(
+                    onClick = onDismissClick,
+                    modifier = Modifier
+                        .size(28.dp)
+                        .testTag("remote_floating_update_dismiss")
+                ) {
+                    androidx.compose.material3.Icon(
+                        painter = androidx.compose.ui.res.painterResource(id = LaterboxIcons.Close),
+                        contentDescription = "Dismiss update notice",
+                        tint = colors.textSecondary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+            Text(
+                text = body,
+                style = typography.bodySecondary,
+                color = colors.textPrimary,
+                maxLines = 3,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(
+                    onClick = onUpdateClick,
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                    modifier = Modifier.height(30.dp)
+                ) {
+                    Text(
+                        text = "Update",
+                        style = typography.buttonLabel,
+                        color = colors.accentPrimary,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun RemoteMaintenanceNoticeBanner(
     maintenance: RemoteMaintenanceConfig,
     modifier: Modifier = Modifier,

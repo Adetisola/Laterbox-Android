@@ -145,9 +145,6 @@ fun InboxScreen(
     bottomComposerHeightPx: Int = 0,
     remoteConfig: com.laterbox.app.remoteconfig.RemoteConfigSnapshot = com.laterbox.app.remoteconfig.RemoteConfigSnapshot.default(),
     dismissedAnnouncementIds: Set<String> = emptySet(),
-    showRecommendedUpdateBanner: Boolean = false,
-    onDismissRecommendedUpdate: () -> Unit = {},
-    onTriggerUpdateCheck: () -> Unit = {},
     onRemoteAction: (String) -> Unit = {},
     onDismissRemoteAnnouncement: (String) -> Unit = {},
     modifier: Modifier = Modifier
@@ -732,27 +729,6 @@ fun InboxScreen(
                                 bottom = listBottomClearance
                             )
                         ) {
-                            if (showRecommendedUpdateBanner) {
-                                item(key = "remote_recommended_update_banner") {
-                                    val tag = remoteConfig.versionPolicy.recommendedTag.takeIf { it.isNotBlank() }
-                                    val title = if (tag != null) "Update Available ($tag)" else "Update Available"
-                                    val body = remoteConfig.versionPolicy.updateMessage.ifBlank {
-                                        "A newer version of Laterbox is available with improvements and fixes."
-                                    }
-                                    com.laterbox.app.remoteconfig.RemoteAnnouncementBannerCard(
-                                        title = title,
-                                        message = body,
-                                        severity = com.laterbox.app.remoteconfig.RemoteAnnouncementSeverity.INFO,
-                                        dismissible = true,
-                                        actionLabel = "Update",
-                                        actionDestination = "update_check",
-                                        onActionClick = { onTriggerUpdateCheck() },
-                                        onDismissClick = onDismissRecommendedUpdate,
-                                        modifier = Modifier.padding(top = 6.dp, bottom = 8.dp)
-                                    )
-                                }
-                            }
-
                             val inboxComponents = remoteConfig.componentsForSurface(
                                 com.laterbox.app.remoteconfig.RemoteUiSurface.INBOX
                             ).filter { it.visible }
