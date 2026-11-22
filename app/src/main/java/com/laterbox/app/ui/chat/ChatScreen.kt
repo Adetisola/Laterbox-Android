@@ -17,12 +17,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -99,7 +103,11 @@ fun ChatScreen(
     onDismissAudioConsent: () -> Unit = {},
     onMarkdownLinkClick: ((String) -> Unit)? = null,
     onRenameConversation: (String) -> Unit = {},
-    onDeleteConversation: () -> Unit = {}
+    onDeleteConversation: () -> Unit = {},
+    miniPlayerState: com.laterbox.app.movies.playback.MiniPlayerState? = null,
+    onOpenMiniPlayerFullscreen: () -> Unit = {},
+    onToggleMiniPlayerPlayPause: () -> Unit = {},
+    onCloseMiniPlayer: () -> Unit = {}
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -400,6 +408,27 @@ fun ChatScreen(
                         }
                     }
                 }
+            }
+
+            miniPlayerState?.let { activeMini ->
+                com.laterbox.app.movies.ui.player.MiniPlayerBar(
+                    state = activeMini,
+                    onOpenFullscreen = onOpenMiniPlayerFullscreen,
+                    onTogglePlayPause = onToggleMiniPlayerPlayPause,
+                    onClose = onCloseMiniPlayer,
+                    modifier = Modifier
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                        .let { mod ->
+                            if (!uiState.assistantEnabled) {
+                                mod.windowInsetsPadding(
+                                    WindowInsets.navigationBars.union(WindowInsets.ime)
+                                        .only(WindowInsetsSides.Bottom)
+                                )
+                            } else {
+                                mod
+                            }
+                        }
+                )
             }
 
             // Docked Floating Composer anchored calmly at the bottom

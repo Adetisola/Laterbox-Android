@@ -361,4 +361,93 @@ class InboxUiAndChatFlowTest {
 
         assertEquals(10, listState.firstVisibleItemIndex)
     }
+
+    @Test
+    fun chatScreen_placesMiniPlayerAboveFloatingComposer() {
+        composeTestRule.setContent {
+            LaterboxTheme {
+                ChatScreen(
+                    uiState = ChatUiState(
+                        assistantEnabled = true,
+                        aiDisclosureAccepted = true
+                    ),
+                    onMenuClick = {},
+                    onNewChatClick = {},
+                    onRunHealthCheck = {},
+                    onAcceptAiDisclosure = {},
+                    onOpenAiSettings = {},
+                    onComposerTextChange = {},
+                    onSendMessage = {},
+                    onStopStreaming = {},
+                    onRetryMessage = {},
+                    onQuickPromptClick = {},
+                    onActionClick = {},
+                    onConfirmMutatingAction = {},
+                    onDismissMutatingAction = {},
+                    onDismissNotice = {},
+                    miniPlayerState = com.laterbox.app.movies.playback.MiniPlayerState(
+                        target = com.laterbox.app.movies.playback.PlaybackSessionTarget.MovieStream("moviebox", "tt-1"),
+                        episodeKey = "moviebox|tt-1|0|0",
+                        title = "Active Feature",
+                        subtitle = "2024",
+                        artworkUrl = null,
+                        isPlaying = true,
+                        isBuffering = false,
+                        positionMs = 15_000L,
+                        durationMs = 90_000L
+                    )
+                )
+            }
+        }
+
+        val miniBounds = composeTestRule.onNodeWithTag("in_app_mini_player").getUnclippedBoundsInRoot()
+        val composerBounds = composeTestRule.onNodeWithTag("floating_chat_composer").getUnclippedBoundsInRoot()
+        assertTrue(
+            "Expected MiniPlayer (${miniBounds.bottom}) to render above FloatingChatComposer (${composerBounds.top})",
+            miniBounds.bottom <= composerBounds.top
+        )
+    }
+
+    @Test
+    fun bottomChrome_placesQuickActionsAboveMiniPlayerAndBottomBar() {
+        composeTestRule.setContent {
+            LaterboxTheme {
+                androidx.compose.foundation.layout.Column {
+                    com.laterbox.app.ui.components.InboxActionDock(
+                        assistantEnabled = true,
+                        onAskClick = {},
+                        onSaveClick = {}
+                    )
+                    com.laterbox.app.movies.ui.player.MiniPlayerBar(
+                        state = com.laterbox.app.movies.playback.MiniPlayerState(
+                            target = com.laterbox.app.movies.playback.PlaybackSessionTarget.MovieStream("moviebox", "tt-2"),
+                            episodeKey = "moviebox|tt-2|0|0",
+                            title = "Paused Movie",
+                            subtitle = null,
+                            artworkUrl = null,
+                            isPlaying = false,
+                            isBuffering = false,
+                            positionMs = 10_000L,
+                            durationMs = 60_000L
+                        ),
+                        onOpenFullscreen = {},
+                        onTogglePlayPause = {},
+                        onClose = {}
+                    )
+                    com.laterbox.app.ui.components.LaterboxBottomBar(
+                        currentDestination = com.laterbox.app.ui.components.BottomBarDestination.INBOX,
+                        downloadsBadgeCount = 0,
+                        showMoviesTab = true,
+                        onDestinationSelected = {}
+                    )
+                }
+            }
+        }
+
+        val dockBounds = composeTestRule.onNodeWithTag("inbox_action_dock").getUnclippedBoundsInRoot()
+        val miniBounds = composeTestRule.onNodeWithTag("in_app_mini_player").getUnclippedBoundsInRoot()
+        val bottomBounds = composeTestRule.onNodeWithTag("laterbox_bottom_bar").getUnclippedBoundsInRoot()
+        assertTrue(dockBounds.bottom <= miniBounds.top)
+        assertTrue(miniBounds.bottom <= bottomBounds.top)
+    }
 }

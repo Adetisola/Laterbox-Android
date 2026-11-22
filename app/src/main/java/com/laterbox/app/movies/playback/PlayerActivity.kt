@@ -124,6 +124,7 @@ class PlayerActivity : ComponentActivity() {
                             MoviePlayerScreen(
                                 uiState = playerState,
                                 onBackClick = { finishToMainWithMiniPlayer() },
+                                onTryEnterPipOnBack = { enterNativePipFromPlayer() },
                                 onRetry = {
                                     moviePlayerViewModel.load(
                                         providerId = activeTarget.providerId,
@@ -215,6 +216,7 @@ class PlayerActivity : ComponentActivity() {
                                 LocalVideoPlayerScreen(
                                     asset = asset,
                                     onBackClick = { finishToMainWithMiniPlayer() },
+                                    onTryEnterPipOnBack = { enterNativePipFromPlayer() },
                                     playbackPreferences = localPrefs,
                                     onSubtitleStyleChange = { style ->
                                         lifecycleScope.launch {
@@ -239,6 +241,15 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        val currentlyInPip = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode
+        isInPictureInPictureModeState.value = currentlyInPip
+        if (!currentlyInPip) {
+            wasInPipSession = false
+        }
+    }
+
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
@@ -251,20 +262,28 @@ class PlayerActivity : ComponentActivity() {
                 isFinishing = isFinishing
             )
         ) {
-            val player = LaterboxPlaybackBridge.activePlayer
-            val videoSize = runCatching { player?.videoSize }.getOrNull()
-            val aspectRatio = if (videoSize != null && videoSize.width > 0 && videoSize.height > 0) {
-                Rational(videoSize.width, videoSize.height)
-            } else {
-                Rational(16, 9)
-            }
-            LaterboxPipController.tryEnterPictureInPicture(
-                activity = this,
-                isPlaying = true,
-                doubleTapSeekSeconds = LaterboxPlaybackBridge.activeDoubleTapSeekSeconds,
-                aspectRatio = aspectRatio
-            )
+            enterNativePipFromPlayer()
         }
+    }
+
+    private fun enterNativePipFromPlayer(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
+        if (isFinishing || isDestroyed || isChangingConfigurations || isInPictureInPictureMode) {
+            return false
+        }
+        val player = LaterboxPlaybackBridge.activePlayer
+        val videoSize = runCatching { player?.videoSize }.getOrNull()
+        val aspectRatio = if (videoSize != null && videoSize.width > 0 && videoSize.height > 0) {
+            Rational(videoSize.width, videoSize.height)
+        } else {
+            Rational(16, 9)
+        }
+        return LaterboxPipController.tryEnterPictureInPicture(
+            activity = this,
+            isPlaying = true,
+            doubleTapSeekSeconds = LaterboxPlaybackBridge.activeDoubleTapSeekSeconds,
+            aspectRatio = aspectRatio
+        )
     }
 
     override fun onPictureInPictureModeChanged(

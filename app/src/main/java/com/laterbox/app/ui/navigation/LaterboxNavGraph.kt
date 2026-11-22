@@ -1056,6 +1056,26 @@ fun LaterboxApp(
                                 onDeleteConversation = {
                                     val convId = chatUiState.activeConversationId ?: return@ChatScreen
                                     chatViewModel.deleteConversation(convId)
+                                },
+                                miniPlayerState = miniPlayerState,
+                                onOpenMiniPlayerFullscreen = {
+                                    (context.applicationContext as? LaterboxApplication)
+                                        ?.container
+                                        ?.analyticsTracker
+                                        ?.trackFeatureUsed("mini_player")
+                                    context.startActivity(
+                                        com.laterbox.app.movies.playback.PlayerActivity.createReopenIntent(context)
+                                    )
+                                },
+                                onToggleMiniPlayerPlayPause = {
+                                    (context.applicationContext as? LaterboxApplication)
+                                        ?.container
+                                        ?.analyticsTracker
+                                        ?.trackFeatureUsed("mini_player")
+                                    com.laterbox.app.movies.playback.LaterboxPlaybackBridge.toggleMiniPlayerPlayPause()
+                                },
+                                onCloseMiniPlayer = {
+                                    com.laterbox.app.movies.playback.LaterboxPlaybackBridge.dismissMiniPlayer(context)
                                 }
                             )
                         }
@@ -1826,50 +1846,16 @@ fun LaterboxApp(
                         }
                     }
 
-                    // Persistent Bottom Chrome: In-App Mini-Player + Inbox Action Dock / Composer + Handset Bottom Navigation Bar
-                    if (miniPlayerState != null || isInboxOverlayVisible || showHandsetBottomBar) {
+                    // Persistent Bottom Chrome: Inbox Action Dock / Composer + In-App Mini-Player + Handset Bottom Navigation Bar
+                    val isChatRoute = currentRoute?.startsWith("chat") == true
+                    val showGlobalMiniPlayer = miniPlayerState != null && !isChatRoute
+                    if (showGlobalMiniPlayer || isInboxOverlayVisible || showHandsetBottomBar) {
                         Column(
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
                                 .fillMaxWidth(),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            miniPlayerState?.let { activeMini ->
-                                com.laterbox.app.movies.ui.player.MiniPlayerBar(
-                                    state = activeMini,
-                                    onOpenFullscreen = {
-                                        (context.applicationContext as? LaterboxApplication)
-                                            ?.container
-                                            ?.analyticsTracker
-                                            ?.trackFeatureUsed("mini_player")
-                                        context.startActivity(
-                                            com.laterbox.app.movies.playback.PlayerActivity.createReopenIntent(context)
-                                        )
-                                    },
-                                    onTogglePlayPause = {
-                                        (context.applicationContext as? LaterboxApplication)
-                                            ?.container
-                                            ?.analyticsTracker
-                                            ?.trackFeatureUsed("mini_player")
-                                        com.laterbox.app.movies.playback.LaterboxPlaybackBridge.toggleMiniPlayerPlayPause()
-                                    },
-                                    onClose = {
-                                        com.laterbox.app.movies.playback.LaterboxPlaybackBridge.dismissMiniPlayer(context)
-                                    },
-                                    modifier = Modifier
-                                        .padding(horizontal = 12.dp, vertical = 6.dp)
-                                        .let { mod ->
-                                            if (!showHandsetBottomBar && !isInboxOverlayVisible) {
-                                                mod.windowInsetsPadding(
-                                                    WindowInsets.navigationBars.union(WindowInsets.ime)
-                                                        .only(WindowInsetsSides.Bottom)
-                                                )
-                                            } else {
-                                                mod
-                                            }
-                                        }
-                                )
-                            }
                             if (isInboxOverlayVisible) {
                                 Box(
                                     modifier = Modifier
@@ -1976,6 +1962,44 @@ fun LaterboxApp(
                                             primaryButtonTestTag = activeTabDockSpec.primaryButtonTestTag
                                         )
                                     }
+                                }
+                            }
+                            if (!isChatRoute) {
+                                miniPlayerState?.let { activeMini ->
+                                    com.laterbox.app.movies.ui.player.MiniPlayerBar(
+                                        state = activeMini,
+                                        onOpenFullscreen = {
+                                            (context.applicationContext as? LaterboxApplication)
+                                                ?.container
+                                                ?.analyticsTracker
+                                                ?.trackFeatureUsed("mini_player")
+                                            context.startActivity(
+                                                com.laterbox.app.movies.playback.PlayerActivity.createReopenIntent(context)
+                                            )
+                                        },
+                                        onTogglePlayPause = {
+                                            (context.applicationContext as? LaterboxApplication)
+                                                ?.container
+                                                ?.analyticsTracker
+                                                ?.trackFeatureUsed("mini_player")
+                                            com.laterbox.app.movies.playback.LaterboxPlaybackBridge.toggleMiniPlayerPlayPause()
+                                        },
+                                        onClose = {
+                                            com.laterbox.app.movies.playback.LaterboxPlaybackBridge.dismissMiniPlayer(context)
+                                        },
+                                        modifier = Modifier
+                                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                                            .let { mod ->
+                                                if (!showHandsetBottomBar) {
+                                                    mod.windowInsetsPadding(
+                                                        WindowInsets.navigationBars.union(WindowInsets.ime)
+                                                            .only(WindowInsetsSides.Bottom)
+                                                    )
+                                                } else {
+                                                    mod
+                                                }
+                                            }
+                                    )
                                 }
                             }
 

@@ -7,9 +7,11 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.test.core.app.ApplicationProvider
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
@@ -199,5 +201,84 @@ class PlaybackSessionServiceTest {
         }.getOrDefault(0x00400000)
         assertEquals(0, (mainInfo!!.flags and flagSupportsPip))
         assertEquals(flagSupportsPip, (playerInfo!!.flags and flagSupportsPip))
+    }
+
+    @Test
+    fun bridgeResolveBackTransition_honorsLivePlayState() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        var isPlaying = true
+        var playWhenReady = true
+        var playbackState = androidx.media3.common.Player.STATE_READY
+        val proxyPlayer = java.lang.reflect.Proxy.newProxyInstance(
+            androidx.media3.common.Player::class.java.classLoader,
+            arrayOf(androidx.media3.common.Player::class.java)
+        ) { _, method, _ ->
+            when (method.name) {
+                "isPlaying" -> isPlaying
+                "getPlayWhenReady" -> playWhenReady
+                "getPlaybackState" -> playbackState
+                "getCurrentPosition" -> 12_000L
+                "getDuration" -> 60_000L
+                else -> when (method.returnType) {
+                    Boolean::class.javaPrimitiveType -> false
+                    Int::class.javaPrimitiveType -> 0
+                    Long::class.javaPrimitiveType -> 0L
+                    else -> null
+                }
+            }
+        } as androidx.media3.common.Player
+
+        LaterboxPlaybackBridge.setActivePlayerForTest(proxyPlayer)
+        LaterboxPlaybackBridge.hasPipBlockingModal = false
+        LaterboxPlaybackBridge.isPlayerLocked = false
+        LaterboxPlaybackBridge.setTargetMetadata(
+            target = PlaybackSessionTarget.MovieStream("moviebox", "tt-pip"),
+            episodeKey = "moviebox|tt-pip|0|0",
+            artworkUrl = null,
+            onSaveProgress = { _, _ -> }
+        )
+        try {
+            assertTrue(LaterboxPlaybackBridge.isActivePlaybackNow(hasError = false))
+
+            // Buffering with playWhenReady=true remains active playback
+            isPlaying = false
+            playbackState = androidx.media3.common.Player.STATE_BUFFERING
+            assertTrue(LaterboxPlaybackBridge.isActivePlaybackNow(hasError = false))
+
+            // Paused -> not active playback, Back returns Mini-Player
+            playWhenReady = false
+            playbackState = androidx.media3.common.Player.STATE_READY
+            assertFalse(LaterboxPlaybackBridge.isActivePlaybackNow(hasError = false))
+            assertEquals(
+                PlayerBackAction.ENTER_MINI_PLAYER,
+                LaterboxPlaybackBridge.resolveBackTransition(
+                    context = context,
+                    isAlreadyInPip = false,
+                    isFinishing = false,
+                    hasError = false
+                )
+            )
+            assertFalse(
+                LaterboxPlaybackBridge.canEnterPipOnUserLeave(
+                    context = context,
+                    isAlreadyInPip = false,
+                    isFinishing = false,
+                    hasError = false
+                )
+            )
+
+            // Playback error -> STOP_AND_CLOSE
+            assertEquals(
+                PlayerBackAction.STOP_AND_CLOSE,
+                LaterboxPlaybackBridge.resolveBackTransition(
+                    context = context,
+                    isAlreadyInPip = false,
+                    isFinishing = false,
+                    hasError = true
+                )
+            )
+        } finally {
+            LaterboxPlaybackBridge.stopAndDetach(context)
+        }
     }
 }

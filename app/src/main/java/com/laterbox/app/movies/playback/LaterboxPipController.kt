@@ -38,11 +38,27 @@ data class PipActionSpec(
     @DrawableRes val iconRes: Int
 )
 
+enum class PlayerBackAction {
+    ENTER_NATIVE_PIP,
+    ENTER_MINI_PLAYER,
+    STOP_AND_CLOSE
+}
+
+enum class UserLeaveAction {
+    ENTER_NATIVE_PIP,
+    DO_NOTHING
+}
+
 /**
  * Pure Kotlin/JVM specification helper for Laterbox native Picture-in-Picture behavior
  * so PiP decision logic, seek delta clamping, and RemoteAction metadata can be unit-tested cleanly.
  */
 object LaterboxPipSpec {
+
+    private const val STATE_IDLE = 1
+    private const val STATE_BUFFERING = 2
+    private const val STATE_READY = 3
+    private const val STATE_ENDED = 4
 
     fun normalizeSeekSeconds(doubleTapSeekSeconds: Int): Int =
         doubleTapSeekSeconds.coerceIn(5, 30)
@@ -60,7 +76,58 @@ object LaterboxPipSpec {
         return if (durationMs > 0L) rawTarget.coerceAtMost(durationMs) else rawTarget
     }
 
-    fun shouldEnterPipOnBack(): Boolean = false
+    /**
+     * Classifies whether the player currently has active playback intent.
+     * Temporarily buffering streams with playWhenReady=true count as active playback;
+     * explicitly paused, IDLE, ENDED, or failed playback never count as active playback.
+     */
+    fun isIntendedActivePlayback(
+        isPlaying: Boolean,
+        playWhenReady: Boolean,
+        playbackState: Int,
+        hasError: Boolean = false
+    ): Boolean {
+        if (hasError || playbackState == STATE_IDLE || playbackState == STATE_ENDED) return false
+        if (isPlaying) return true
+        return playWhenReady && (playbackState == STATE_BUFFERING || playbackState == STATE_READY)
+    }
+
+    fun shouldEnterPipOnBack(
+        isActivePlayback: Boolean = false,
+        isPipSupported: Boolean = false,
+        isAlreadyInPip: Boolean = false,
+        hasModalOrOverlayOpen: Boolean = false,
+        isLocked: Boolean = false,
+        isFinishing: Boolean = false
+    ): Boolean = isActivePlayback && isPipSupported && !isAlreadyInPip && !hasModalOrOverlayOpen && !isLocked && !isFinishing
+
+    fun resolveBackAction(
+        isActivePlayback: Boolean,
+        isPipSupported: Boolean,
+        isAlreadyInPip: Boolean = false,
+        hasModalOrOverlayOpen: Boolean = false,
+        isLocked: Boolean = false,
+        isFinishing: Boolean = false,
+        hasSessionTarget: Boolean = true,
+        hasPlayerError: Boolean = false
+    ): PlayerBackAction {
+        if (shouldEnterPipOnBack(
+                isActivePlayback = isActivePlayback,
+                isPipSupported = isPipSupported,
+                isAlreadyInPip = isAlreadyInPip,
+                hasModalOrOverlayOpen = hasModalOrOverlayOpen,
+                isLocked = isLocked,
+                isFinishing = isFinishing
+            )
+        ) {
+            return PlayerBackAction.ENTER_NATIVE_PIP
+        }
+        return if (hasSessionTarget && !hasPlayerError) {
+            PlayerBackAction.ENTER_MINI_PLAYER
+        } else {
+            PlayerBackAction.STOP_AND_CLOSE
+        }
+    }
 
     fun shouldEnterPipOnUserLeaveHint(
         isPlaying: Boolean,
@@ -70,6 +137,28 @@ object LaterboxPipSpec {
         isLocked: Boolean = false,
         isFinishing: Boolean = false
     ): Boolean = isPlaying && isPipSupported && !isAlreadyInPip && !hasModalOrOverlayOpen && !isLocked && !isFinishing
+
+    fun resolveUserLeaveAction(
+        isActivePlayback: Boolean,
+        isPipSupported: Boolean,
+        isAlreadyInPip: Boolean = false,
+        hasModalOrOverlayOpen: Boolean = false,
+        isLocked: Boolean = false,
+        isFinishing: Boolean = false
+    ): UserLeaveAction =
+        if (shouldEnterPipOnUserLeaveHint(
+                isPlaying = isActivePlayback,
+                isPipSupported = isPipSupported,
+                isAlreadyInPip = isAlreadyInPip,
+                hasModalOrOverlayOpen = hasModalOrOverlayOpen,
+                isLocked = isLocked,
+                isFinishing = isFinishing
+            )
+        ) {
+            UserLeaveAction.ENTER_NATIVE_PIP
+        } else {
+            UserLeaveAction.DO_NOTHING
+        }
 
     fun buildPipActionsDescriptor(
         isPlaying: Boolean,

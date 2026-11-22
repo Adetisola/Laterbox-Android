@@ -1203,4 +1203,90 @@ class MoviesRepositoryTest {
         )
         assertEquals(420_000L, repo.getSavedPositionMs("moviebox", "dune_2"))
     }
+
+    @Test
+    fun movieDuration_preservedFromSummaryCacheWhenDetailsOmitsIt_andMappedFromTmdbRuntime() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path == "/home" -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "code": 0,
+                          "data": {
+                            "operatingList": [
+                              {
+                                "type": "SUBJECTS_MOVIE",
+                                "title": "Featured",
+                                "subjects": [
+                                  {
+                                    "subjectId": "dur_1",
+                                    "subjectType": 1,
+                                    "title": "Two Hour Movie",
+                                    "releaseDate": "2024-01-10",
+                                    "duration": 7200,
+                                    "cover": {"url": "https://cdn.example/dur1.jpg"},
+                                    "detailPath": "two-hour-movie"
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/detail") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "subject": {
+                            "subjectId": "dur_1",
+                            "subjectType": 1,
+                            "title": "Two Hour Movie",
+                            "releaseDate": "2024-01-10",
+                            "description": "Details payload omits duration."
+                          },
+                          "seasons": []
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/movie/99") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "id": 99,
+                          "title": "TMDB Timed Film",
+                          "release_date": "2023-07-19",
+                          "runtime": 135,
+                          "overview": "Runtime in minutes from TMDB."
+                        }
+                        """.trimIndent()
+                    )
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val client = OkHttpClient()
+        val base = server.url("/").toString().trimEnd('/')
+        val mbProvider = com.laterbox.app.movies.data.provider.MovieBoxProvider(client, baseUrlProvider = { base })
+        val tmdbProvider = TmdbOptionalMoviesProvider(client, apiKeyProvider = { "tmdb-key" }, baseUrl = base)
+        val repo = MoviesRepositoryImpl(
+            moviesDao = db.moviesDao(),
+            internetArchiveProvider = InternetArchiveMoviesProvider(client, base),
+            tvMazeProvider = TvMazeSeriesProvider(client, base),
+            tmdbProvider = tmdbProvider,
+            movieBoxProvider = mbProvider,
+            useSampleFixturesOnlyProvider = { false },
+            nowMs = { fakeClockMs }
+        )
+
+        val feed = repo.getHomeFeed(forceRefresh = true).getOrThrow()
+        assertEquals(120, feed.featuredBanners.first { it.id == "dur_1" }.durationMinutes)
+
+        val details = repo.getDetails("moviebox", "dur_1").getOrThrow()
+        assertEquals(120, details.summary.durationMinutes)
+
+        val tmdbDetails = tmdbProvider.getDetails("99").getOrThrow()
+        assertEquals(135, tmdbDetails.summary.durationMinutes)
+    }
 }

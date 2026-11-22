@@ -165,7 +165,7 @@ object AppCapabilityRegistry {
             id = "movies.pip_and_mini_player",
             section = "Movies & TV",
             title = "Picture-in-Picture & Mini-Player",
-            description = "Pressing Home during playback enters system Picture-in-Picture; pressing Back transitions smoothly into an in-app mini-player.",
+            description = "Pressing Home or Back during active playback enters system Picture-in-Picture; pressing Back after pausing playback returns to Laterbox with its in-app mini-player.",
             defaultStatus = CapabilityAvailability.SUPPORTED,
             minVersionCode = 62,
             remoteFeatureKey = "movies_tv_enabled"

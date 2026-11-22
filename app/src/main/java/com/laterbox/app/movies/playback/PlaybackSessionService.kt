@@ -294,22 +294,52 @@ object LaterboxPlaybackBridge {
         }
     }
 
+    fun isActivePlaybackNow(hasError: Boolean = false): Boolean {
+        val player = activePlayer ?: return false
+        return runCatching {
+            LaterboxPipSpec.isIntendedActivePlayback(
+                isPlaying = player.isPlaying,
+                playWhenReady = player.playWhenReady,
+                playbackState = player.playbackState,
+                hasError = hasError
+            )
+        }.getOrDefault(false)
+    }
+
+    fun resolveBackTransition(
+        context: Context,
+        isAlreadyInPip: Boolean,
+        isFinishing: Boolean,
+        hasError: Boolean = false
+    ): PlayerBackAction {
+        val pipSupported = LaterboxPipController.isPipSupportedAndAllowed(context.applicationContext)
+        return LaterboxPipSpec.resolveBackAction(
+            isActivePlayback = isActivePlaybackNow(hasError = hasError),
+            isPipSupported = pipSupported,
+            isAlreadyInPip = isAlreadyInPip,
+            hasModalOrOverlayOpen = hasPipBlockingModal,
+            isLocked = isPlayerLocked,
+            isFinishing = isFinishing,
+            hasSessionTarget = activePlayer != null && activeTarget != null,
+            hasPlayerError = hasError
+        )
+    }
+
     fun canEnterPipOnUserLeave(
         context: Context,
         isAlreadyInPip: Boolean,
-        isFinishing: Boolean
+        isFinishing: Boolean,
+        hasError: Boolean = false
     ): Boolean {
-        val player = activePlayer ?: return false
-        val activelyPlaying = runCatching { player.isPlaying }.getOrDefault(false)
         val pipSupported = LaterboxPipController.isPipSupportedAndAllowed(context.applicationContext)
-        return LaterboxPipSpec.shouldEnterPipOnUserLeaveHint(
-            isPlaying = activelyPlaying,
+        return LaterboxPipSpec.resolveUserLeaveAction(
+            isActivePlayback = isActivePlaybackNow(hasError = hasError),
             isPipSupported = pipSupported,
             isAlreadyInPip = isAlreadyInPip,
             hasModalOrOverlayOpen = hasPipBlockingModal,
             isLocked = isPlayerLocked,
             isFinishing = isFinishing
-        )
+        ) == UserLeaveAction.ENTER_NATIVE_PIP
     }
 
     private fun updateMiniPlayerSnapshot(player: Player, target: PlaybackSessionTarget) {

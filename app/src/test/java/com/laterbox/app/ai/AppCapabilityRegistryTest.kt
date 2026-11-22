@@ -11,7 +11,7 @@ class AppCapabilityRegistryTest {
         assertEquals(2, AppCapabilityRegistry.MANIFEST_VERSION)
         assertEquals("2026.11.21-v2", AppCapabilityRegistry.MANIFEST_REVISION)
         assertEquals(
-            "a46b4edd0cb5bf822c633913d6986e732179b0b88db3255638c202a6220c1eed",
+            "6ed39aead335cfd17c4e8525a4d7bcb16fc00fd6750ffbca1b51ca4d04ff9edc",
             AppCapabilityRegistry.MANIFEST_HASH
         )
         assertTrue(AppCapabilityRegistry.productManifestItems.size >= 10)

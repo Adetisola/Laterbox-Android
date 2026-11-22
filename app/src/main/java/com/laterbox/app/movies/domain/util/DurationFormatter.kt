@@ -12,10 +12,10 @@ object DurationFormatter {
         val remainingMinutes = minutes % 60
         val parts = buildList {
             if (hours > 0) {
-                add(if (hours == 1) "1 hour" else "$hours hours")
+                add(if (hours == 1) "1HR" else "${hours}HRS")
             }
             if (remainingMinutes > 0) {
-                add(if (remainingMinutes == 1) "1 minute" else "$remainingMinutes minutes")
+                add(if (remainingMinutes == 1) "1MIN" else "${remainingMinutes}MINS")
             }
         }
         return parts.joinToString(" ").takeIf { it.isNotBlank() }

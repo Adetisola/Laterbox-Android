@@ -12,6 +12,7 @@ import com.laterbox.app.movies.playback.LaterboxPipController
 import com.laterbox.app.movies.playback.LaterboxPipSpec
 import com.laterbox.app.movies.playback.LocalIsInPictureInPictureMode
 import com.laterbox.app.movies.playback.PlaybackSessionTarget
+import com.laterbox.app.movies.playback.PlayerBackAction
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -164,6 +165,7 @@ fun MoviePlayerScreen(
     onSubtitleStyleChange: (SubtitleStyleConfig) -> Unit = {},
     onOpenRelatedTitle: (providerId: String, titleId: String) -> Unit = { _, _ -> },
     onSaveProgressForEpisode: ((positionMs: Long, durationMs: Long, expectedEpisodeKey: String) -> Unit)? = null,
+    onTryEnterPipOnBack: () -> Boolean = { false },
     introSkipEnabled: Boolean = true,
     modifier: Modifier = Modifier,
     @androidx.annotation.VisibleForTesting simulatePlaybackEndedForTest: Boolean = false
@@ -271,6 +273,7 @@ fun MoviePlayerScreen(
                     artworkUrl = summary?.backdropUrl ?: summary?.posterUrl,
                     simulatePlaybackEndedForTest = simulatePlaybackEndedForTest,
                     onBackClick = onBackClick,
+                    onTryEnterPipOnBack = onTryEnterPipOnBack,
                     onSelectSource = onSelectSource,
                     onSelectSubtitle = onSelectSubtitle,
                     onSelectAudioDub = onSelectAudioDub,
@@ -316,6 +319,7 @@ fun MoviePlayerScreen(
 fun LocalVideoPlayerScreen(
     asset: com.laterbox.app.media.domain.model.MediaAsset,
     onBackClick: () -> Unit,
+    onTryEnterPipOnBack: () -> Boolean = { false },
     playbackPreferences: PlayerPlaybackPreferences = PlayerPlaybackPreferences(),
     onSubtitleStyleChange: (SubtitleStyleConfig) -> Unit = {},
     offlineSubtitles: List<SubtitleTrack>? = null,
@@ -449,6 +453,7 @@ fun LocalVideoPlayerScreen(
             sessionTarget = PlaybackSessionTarget.LocalVideo(asset.id),
             artworkUrl = asset.artworkUrl,
             onBackClick = onBackClick,
+            onTryEnterPipOnBack = onTryEnterPipOnBack,
             onSelectSource = { _, _ -> },
             onSelectSubtitle = { track, posMs ->
                 savedPositionMs = posMs.coerceAtLeast(0L)
@@ -553,6 +558,7 @@ private fun ActiveVideoPlayerContent(
     artworkUrl: String? = null,
     simulatePlaybackEndedForTest: Boolean = false,
     onBackClick: () -> Unit,
+    onTryEnterPipOnBack: () -> Boolean = { false },
     onSelectSource: (PlaybackSource, Long) -> Unit,
     onSelectSubtitle: (SubtitleTrack?, Long) -> Unit,
     onSelectAudioDub: (AudioDubInfo, Long) -> Unit,
@@ -686,17 +692,30 @@ private fun ActiveVideoPlayerContent(
         val pos = runCatching { exoPlayer.currentPosition.coerceAtLeast(0L) }.getOrDefault(0L)
         val dur = runCatching { exoPlayer.duration.coerceAtLeast(0L) }.getOrDefault(0L)
         latestSaveEpisodeProgress(pos, dur, playbackEpisodeKey)
-        forcedLandscape = null
-        attachedPlayerView?.player = null
-        val keptMiniPlayer = if (playerErrorText == null && sessionTarget != null) {
-            LaterboxPlaybackBridge.enterMiniPlayer(appContext)
+        LaterboxPlaybackBridge.hasPipBlockingModal = hasBlockingModal
+        LaterboxPlaybackBridge.isPlayerLocked = isLocked
+        val backAction = LaterboxPlaybackBridge.resolveBackTransition(
+            context = appContext,
+            isAlreadyInPip = isInPip,
+            isFinishing = activity?.isFinishing == true,
+            hasError = playerErrorText != null
+        )
+        if (backAction == PlayerBackAction.ENTER_NATIVE_PIP && onTryEnterPipOnBack()) {
+            // Stay alive in native Picture-in-Picture while playback continues.
+            showControls = false
         } else {
-            false
+            forcedLandscape = null
+            attachedPlayerView?.player = null
+            val keptMiniPlayer = if (backAction == PlayerBackAction.ENTER_MINI_PLAYER && sessionTarget != null) {
+                LaterboxPlaybackBridge.enterMiniPlayer(appContext)
+            } else {
+                false
+            }
+            if (!keptMiniPlayer) {
+                LaterboxPlaybackBridge.stopAndDetach(appContext)
+            }
+            onBackClick()
         }
-        if (!keptMiniPlayer) {
-            LaterboxPlaybackBridge.stopAndDetach(appContext)
-        }
-        onBackClick()
     }
 
     LaunchedEffect(
@@ -721,8 +740,14 @@ private fun ActiveVideoPlayerContent(
             } else {
                 Rational(16, 9)
             }
+            val activeNow = LaterboxPipSpec.isIntendedActivePlayback(
+                isPlaying = isPlaying,
+                playWhenReady = runCatching { exoPlayer.playWhenReady }.getOrDefault(isPlaying),
+                playbackState = runCatching { exoPlayer.playbackState }.getOrDefault(androidx.media3.common.Player.STATE_IDLE),
+                hasError = playerErrorText != null
+            )
             val shouldAutoEnter = LaterboxPipSpec.shouldEnterPipOnUserLeaveHint(
-                isPlaying = isPlaying && playerErrorText == null,
+                isPlaying = activeNow,
                 isPipSupported = LaterboxPipController.isPipSupportedAndAllowed(appContext),
                 isAlreadyInPip = isInPip,
                 hasModalOrOverlayOpen = hasBlockingModal,

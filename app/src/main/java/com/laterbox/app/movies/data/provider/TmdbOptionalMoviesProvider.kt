@@ -315,6 +315,11 @@ class TmdbOptionalMoviesProvider(
         val dateStr = obj.optString("release_date").ifBlank { obj.optString("first_air_date") }
         val year = dateStr.take(4).toIntOrNull()
         val rating = if (obj.isNull("vote_average")) null else obj.optDouble("vote_average", 0.0).takeIf { it > 0.0 }
+        val runtimeMinutes = if (kind == MediaKind.MOVIE && !obj.isNull("runtime")) {
+            obj.optInt("runtime", 0).takeIf { it > 0 }
+        } else {
+            null
+        }
         val posterPath = obj.optString("poster_path").takeIf { it.isNotBlank() && it != "null" }
         val backdropPath = obj.optString("backdrop_path").takeIf { it.isNotBlank() && it != "null" }
         val genreIdsArr = obj.optJSONArray("genre_ids")
@@ -331,6 +336,7 @@ class TmdbOptionalMoviesProvider(
             title = title,
             releaseYear = year,
             rating = rating,
+            durationMinutes = runtimeMinutes,
             posterUrl = posterPath?.let { "$imageBaseUrl/w500$it" },
             backdropUrl = backdropPath?.let { "$imageBaseUrl/w780$it" },
             genres = genres,

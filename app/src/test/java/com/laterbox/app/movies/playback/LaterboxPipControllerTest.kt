@@ -199,4 +199,92 @@ class LaterboxPipControllerTest {
             LaterboxPlaybackBridge.setActivePlayerForTest(null)
         }
     }
+
+    @Test
+    fun pipSpec_backAndUserLeaveTransitions_differentiateActiveVsPausedPlayback() {
+        // Active playing -> native PiP on Back and Home/Recents
+        assertTrue(LaterboxPipSpec.isIntendedActivePlayback(isPlaying = true, playWhenReady = true, playbackState = Player.STATE_READY))
+        assertEquals(
+            PlayerBackAction.ENTER_NATIVE_PIP,
+            LaterboxPipSpec.resolveBackAction(
+                isActivePlayback = true,
+                isPipSupported = true,
+                isAlreadyInPip = false,
+                hasModalOrOverlayOpen = false,
+                isLocked = false,
+                isFinishing = false,
+                hasSessionTarget = true
+            )
+        )
+        assertEquals(
+            UserLeaveAction.ENTER_NATIVE_PIP,
+            LaterboxPipSpec.resolveUserLeaveAction(
+                isActivePlayback = true,
+                isPipSupported = true,
+                isAlreadyInPip = false,
+                hasModalOrOverlayOpen = false,
+                isLocked = false,
+                isFinishing = false
+            )
+        )
+
+        // Buffering with playWhenReady=true counts as active intended playback
+        assertTrue(LaterboxPipSpec.isIntendedActivePlayback(isPlaying = false, playWhenReady = true, playbackState = Player.STATE_BUFFERING))
+
+        // Paused playback -> in-app Mini-Player on Back, STAY_IN_PLAYER on Home
+        assertFalse(LaterboxPipSpec.isIntendedActivePlayback(isPlaying = false, playWhenReady = false, playbackState = Player.STATE_READY))
+        assertEquals(
+            PlayerBackAction.ENTER_MINI_PLAYER,
+            LaterboxPipSpec.resolveBackAction(
+                isActivePlayback = false,
+                isPipSupported = true,
+                isAlreadyInPip = false,
+                hasModalOrOverlayOpen = false,
+                isLocked = false,
+                isFinishing = false,
+                hasSessionTarget = true
+            )
+        )
+        assertEquals(
+            UserLeaveAction.DO_NOTHING,
+            LaterboxPipSpec.resolveUserLeaveAction(
+                isActivePlayback = false,
+                isPipSupported = true,
+                isAlreadyInPip = false,
+                hasModalOrOverlayOpen = false,
+                isLocked = false,
+                isFinishing = false
+            )
+        )
+
+        // Active playback when device doesn't support PiP -> graceful Mini-Player on Back
+        assertEquals(
+            PlayerBackAction.ENTER_MINI_PLAYER,
+            LaterboxPipSpec.resolveBackAction(
+                isActivePlayback = true,
+                isPipSupported = false,
+                isAlreadyInPip = false,
+                hasModalOrOverlayOpen = false,
+                isLocked = false,
+                isFinishing = false,
+                hasSessionTarget = true
+            )
+        )
+
+        // Player error or ended with no session stops and closes
+        assertFalse(LaterboxPipSpec.isIntendedActivePlayback(isPlaying = true, playWhenReady = true, playbackState = Player.STATE_READY, hasError = true))
+        assertEquals(
+            PlayerBackAction.STOP_AND_CLOSE,
+            LaterboxPipSpec.resolveBackAction(
+                isActivePlayback = false,
+                isPipSupported = true,
+                isAlreadyInPip = false,
+                hasModalOrOverlayOpen = false,
+                isLocked = false,
+                isFinishing = false,
+                hasSessionTarget = false,
+                hasPlayerError = true
+            )
+        )
+    }
 }

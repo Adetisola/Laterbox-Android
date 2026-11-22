@@ -868,8 +868,24 @@ class MoviesRepositoryImpl(
         val primaryResult = fetchProviderDetails(resolvedProviderId, resolvedTitleId)
         if (primaryResult.isSuccess) {
             val rawDetails = primaryResult.getOrThrow()
+            val previousDecodedDuration = cachedEntry?.let { entry ->
+                withContext(defaultDispatcher) { MoviesCacheJsonCodec.decodeDetails(entry.payloadJson) }
+            }?.summary?.durationMinutes
+            val cachedSummaryDuration = getCachedSummary(resolvedProviderId, resolvedTitleId)?.durationMinutes
+            val preservedDuration = if (rawDetails.summary.kind == MediaKind.MOVIE) {
+                rawDetails.summary.durationMinutes?.takeIf { it > 0 }
+                    ?: cachedSummaryDuration?.takeIf { it > 0 }
+                    ?: previousDecodedDuration?.takeIf { it > 0 }
+            } else {
+                null
+            }
+            val mergedSummary = if (rawDetails.summary.durationMinutes != preservedDuration) {
+                rawDetails.summary.copy(durationMinutes = preservedDuration)
+            } else {
+                rawDetails.summary
+            }
             val resolvedSummary = mediaResolver.resolveOrRegister(
-                rawDetails.summary,
+                mergedSummary,
                 seasonCount = rawDetails.seasons.size.takeIf { it > 0 }
             )
             val resolvedRelated = registerSummariesCanonical(rawDetails.relatedTitles)
