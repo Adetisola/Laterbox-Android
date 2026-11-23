@@ -49,14 +49,44 @@ object GitHubUpdateChecker {
 
     fun buildBackendUpdateUrl(
         baseUrl: String = com.laterbox.app.BuildConfig.MOVIEBOX_API_BASE_URL,
-        forceRefresh: Boolean = false
+        forceRefresh: Boolean = false,
+        targetTag: String? = null,
     ): String {
         val cleanBase = baseUrl.trim()
             .ifBlank { com.laterbox.app.BuildConfig.MOVIEBOX_API_BASE_URL }
             .trim()
             .trimEnd('/')
+        val cleanTag = targetTag?.trim()?.takeIf { it.isNotEmpty() }
+        val params = buildList {
+            if (forceRefresh) add("refresh=1")
+            if (cleanTag != null) {
+                add("tag=${java.net.URLEncoder.encode(cleanTag, "UTF-8")}")
+            }
+        }
         val path = "$cleanBase$DEFAULT_BACKEND_UPDATE_PATH"
-        return if (forceRefresh) "$path?refresh=1" else path
+        return if (params.isEmpty()) path else "$path?${params.joinToString("&")}"
+    }
+
+    fun buildPublicFallbackUrl(targetTag: String? = null): String {
+        val cleanTag = targetTag?.trim()?.takeIf { it.isNotEmpty() }
+        return if (cleanTag != null) {
+            val encoded = java.net.URLEncoder.encode(cleanTag, "UTF-8")
+            "https://api.github.com/repos/Adetisola/Laterbox/releases/tags/$encoded"
+        } else {
+            UpdateNetworkSupport.PUBLIC_RELEASES_LATEST_URL
+        }
+    }
+
+    private fun extractTargetTagFromUrl(url: String): String? = try {
+        val query = java.net.URI(url).rawQuery ?: return null
+        query.split('&')
+            .firstOrNull { it.startsWith("tag=") }
+            ?.substringAfter("tag=")
+            ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+    } catch (_: Exception) {
+        null
     }
 
     private fun withRefreshQueryIfApplicable(url: String, forceRefresh: Boolean): String {
@@ -247,6 +277,7 @@ object GitHubUpdateChecker {
     private data class FallbackCacheEntry(
         val body: UpdateCheckResult,
         val currentVersionName: String,
+        val fallbackUrl: String,
         val storedAtMs: Long
     )
 
@@ -300,18 +331,26 @@ object GitHubUpdateChecker {
         ) {
             return primary
         }
+        val effectiveFallbackUrl = if (publicFallbackUrl == UpdateNetworkSupport.PUBLIC_RELEASES_LATEST_URL) {
+            buildPublicFallbackUrl(extractTargetTagFromUrl(releasesUrl))
+        } else {
+            publicFallbackUrl
+        }
         val host = UpdateNetworkSupport.safeHost(releasesUrl)
         Log.w(TAG, "Backend unreachable host=$host cause=${primary.cause?.javaClass?.simpleName}; trying public GitHub release metadata")
         val now = clock()
         val cached = fallbackCache
-        if (cached != null && cached.currentVersionName == currentVersionName) {
+        if (cached != null &&
+            cached.currentVersionName == currentVersionName &&
+            cached.fallbackUrl == effectiveFallbackUrl
+        ) {
             val age = now - cached.storedAtMs
             val ttl = if (forceRefresh) FALLBACK_FORCE_COOLDOWN_MS else FALLBACK_CACHE_TTL_MS
             if (age in 0 until ttl) return cached.body
         }
         val fallback = checkForUpdateAt(
             currentVersionName,
-            publicFallbackUrl,
+            effectiveFallbackUrl,
             deviceSupportedAbis,
             context,
             null,
@@ -320,7 +359,7 @@ object GitHubUpdateChecker {
         )
         return when (fallback) {
             is UpdateCheckResult.UpdateAvailable, is UpdateCheckResult.UpToDate -> {
-                fallbackCache = FallbackCacheEntry(fallback, currentVersionName, now)
+                fallbackCache = FallbackCacheEntry(fallback, currentVersionName, effectiveFallbackUrl, now)
                 fallback
             }
             is UpdateCheckResult.RateLimited -> fallback

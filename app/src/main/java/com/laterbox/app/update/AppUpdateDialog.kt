@@ -1,6 +1,7 @@
 package com.laterbox.app.update
 
 import android.util.Log
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,9 +17,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -33,13 +34,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
-import com.laterbox.app.ui.components.LaterboxIcons
+import com.laterbox.app.R
+import com.laterbox.app.remoteconfig.RemoteConfigLayoutHelper
 import com.laterbox.app.ui.components.LaterboxPrimaryButton
 import com.laterbox.app.ui.components.LaterboxSecondaryButton
 import com.laterbox.app.ui.components.LaterboxShapeTokens
@@ -50,6 +54,7 @@ import java.util.Locale
 
 private enum class UpdateStep {
     PROMPT,
+    RESOLVING,
     DOWNLOADING_PATCH,
     RECONSTRUCTING,
     DOWNLOADING_FULL,
@@ -61,11 +66,13 @@ private enum class UpdateStep {
 
 @Composable
 fun AppUpdateDialog(
-    updateInfo: AppUpdateInfo,
+    updateInfo: AppUpdateInfo? = null,
+    policyPrompt: RemoteConfigLayoutHelper.AdaptiveUpdatePromptPolicy? = null,
+    onResolvePolicyUpdate: (suspend () -> UpdateCheckResult)? = null,
     onDismiss: () -> Unit,
     onPostpone: (version: String) -> Unit,
     appCheckTokenProvider: (suspend (Boolean) -> String?)? = null,
-    dismissible: Boolean = true,
+    dismissible: Boolean = !(policyPrompt?.isBlocking ?: false),
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -81,19 +88,32 @@ fun AppUpdateDialog(
         }
     }
 
-    var currentStep by remember { mutableStateOf(UpdateStep.PROMPT) }
+    var resolvedUpdateInfo by remember(updateInfo, policyPrompt?.targetTag, policyPrompt?.mode) {
+        mutableStateOf(updateInfo)
+    }
+    val initialVersionLabel = resolvedUpdateInfo?.versionName?.takeIf { it.isNotBlank() }
+        ?: policyPrompt?.targetTag?.trim()?.removePrefix("v")?.removePrefix("V")?.takeIf { it.isNotBlank() }
+        ?: ""
+    val releasePageFallbackUrl = resolvedUpdateInfo?.releasePageUrl?.takeIf { it.isNotBlank() }
+        ?: policyPrompt?.fallbackUrl?.takeIf { it.isNotBlank() }
+        ?: "https://github.com/Adetisola/Laterbox/releases"
+
+    var currentStep by remember(policyPrompt?.mode, policyPrompt?.targetTag) {
+        mutableStateOf(UpdateStep.PROMPT)
+    }
     var downloadPercent by remember { mutableIntStateOf(0) }
     var reconstructPercent by remember { mutableIntStateOf(0) }
     var downloadedBytes by remember { mutableLongStateOf(0L) }
-    var totalDownloadBytes by remember { mutableLongStateOf(updateInfo.effectiveDownloadSize) }
+    var totalDownloadBytes by remember { mutableLongStateOf(updateInfo?.effectiveDownloadSize ?: 0L) }
     var downloadedFile by remember { mutableStateOf<File?>(null) }
     var errorMessage by remember { mutableStateOf("") }
     var saveStatusMessage by remember { mutableStateOf<String?>(null) }
     var fallbackNotice by remember { mutableStateOf<String?>(null) }
 
-    // Check if an APK for this update is already cached on disk and verified
-    LaunchedEffect(updateInfo.versionName, updateInfo.assetName) {
-        val existing = ApkInstallerHelper.getExistingDownloadedApk(context, updateInfo.versionName, updateInfo.assetName)
+    // Check if an APK for the resolved release is already cached on disk and verified
+    LaunchedEffect(resolvedUpdateInfo?.versionName, resolvedUpdateInfo?.assetName) {
+        val activeInfo = resolvedUpdateInfo ?: return@LaunchedEffect
+        val existing = ApkInstallerHelper.getExistingDownloadedApk(context, activeInfo.versionName, activeInfo.assetName)
         if (existing != null) {
             downloadedFile = existing
             currentStep = UpdateStep.READY_TO_INSTALL
@@ -131,20 +151,20 @@ fun AppUpdateDialog(
         }
     }
 
-    fun startFullDownload(notice: String? = null) {
+    fun startFullDownloadFor(info: AppUpdateInfo, notice: String? = null) {
         fallbackNotice = notice
         currentStep = UpdateStep.DOWNLOADING_FULL
         downloadPercent = 0
         downloadedBytes = 0L
-        totalDownloadBytes = updateInfo.apkSize
+        totalDownloadBytes = info.apkSize
 
         coroutineScope.launch {
             val file = ApkInstallerHelper.downloadApk(
                 context = context,
-                downloadUrl = updateInfo.downloadUrl,
-                versionName = updateInfo.versionName,
-                assetName = updateInfo.assetName,
-                expectedSizeBytes = updateInfo.apkSize,
+                downloadUrl = info.downloadUrl,
+                versionName = info.versionName,
+                assetName = info.assetName,
+                expectedSizeBytes = info.apkSize,
                 appCheckTokenProvider = effectiveAppCheckProvider,
                 onProgress = { progress ->
                     when (progress) {
@@ -173,12 +193,12 @@ fun AppUpdateDialog(
         }
     }
 
-    fun startDownloadAndInstall() {
+    fun startDownloadAndInstallFor(info: AppUpdateInfo) {
         saveStatusMessage = null
         fallbackNotice = null
 
-        val delta = updateInfo.deltaPatch
-        if (updateInfo.isDeltaAvailable && delta != null) {
+        val delta = info.deltaPatch
+        if (info.isDeltaAvailable && delta != null) {
             currentStep = UpdateStep.DOWNLOADING_PATCH
             downloadPercent = 0
             downloadedBytes = 0L
@@ -199,9 +219,7 @@ fun AppUpdateDialog(
                                     totalDownloadBytes = progress.totalBytes
                                 }
                             }
-                            is ApkInstallerHelper.DownloadProgress.Completed -> {
-                                // Patch download completed
-                            }
+                            is ApkInstallerHelper.DownloadProgress.Completed -> Unit
                             is ApkInstallerHelper.DownloadProgress.Error -> {
                                 patchError = progress
                             }
@@ -217,14 +235,12 @@ fun AppUpdateDialog(
                         return@launch
                     }
                     if (patchError?.kind?.isBackendUnreachable == true) {
-                        // Backend and public GitHub paths were both already tried; a full APK
-                        // download would only repeat the same network failure.
                         errorMessage = patchError?.message ?: "Couldn't reach the update server."
                         currentStep = UpdateStep.FAILED
                         return@launch
                     }
                     Log.w("AppUpdateDialog", "Delta patch download failed, falling back to full APK download")
-                    startFullDownload("Delta update could not be applied. Downloading complete update...")
+                    startFullDownloadFor(info, "Delta update could not be applied. Downloading complete update...")
                     return@launch
                 }
 
@@ -236,8 +252,8 @@ fun AppUpdateDialog(
                         context = context,
                         deltaPatch = delta,
                         patchFile = patchFile,
-                        targetVersionName = updateInfo.versionName,
-                        targetAssetName = updateInfo.assetName,
+                        targetVersionName = info.versionName,
+                        targetAssetName = info.assetName,
                         onProgress = { pct ->
                             reconstructPercent = pct
                         }
@@ -245,7 +261,7 @@ fun AppUpdateDialog(
                 } catch (e: Exception) {
                     Log.w("AppUpdateDialog", "Delta reconstruction failed: ${e.message}, falling back to full APK download", e)
                     try { patchFile.delete() } catch (_: Exception) {}
-                    startFullDownload("Delta update could not be applied. Downloading complete update...")
+                    startFullDownloadFor(info, "Delta update could not be applied. Downloading complete update...")
                     return@launch
                 }
 
@@ -253,17 +269,82 @@ fun AppUpdateDialog(
                 verifyAndProceed(reconstructedApk)
             }
         } else {
-            val diagCode = updateInfo.deltaDiagnosticReason?.logCode ?: "none"
-            val diagDetail = updateInfo.deltaDiagnosticDetail ?: "No compatible delta patch"
+            val diagCode = info.deltaDiagnosticReason?.logCode ?: "none"
+            val diagDetail = info.deltaDiagnosticDetail ?: "No compatible delta patch"
             Log.i("AppUpdateDialog", "Starting full APK download (delta reason=$diagCode): $diagDetail")
-            startFullDownload()
+            startFullDownloadFor(info)
         }
     }
 
-    val isProcessing = currentStep == UpdateStep.DOWNLOADING_PATCH ||
+    fun startUpdateFlow() {
+        val activeInfo = resolvedUpdateInfo
+        if (activeInfo != null) {
+            startDownloadAndInstallFor(activeInfo)
+            return
+        }
+        val resolver = onResolvePolicyUpdate
+        if (resolver == null) {
+            ApkInstallerHelper.openFallbackReleasePage(context, releasePageFallbackUrl)
+            return
+        }
+        saveStatusMessage = null
+        fallbackNotice = null
+        currentStep = UpdateStep.RESOLVING
+        coroutineScope.launch {
+            when (val res = resolver()) {
+                is UpdateCheckResult.UpdateAvailable -> {
+                    resolvedUpdateInfo = res.updateInfo
+                    val cachedApk = ApkInstallerHelper.getExistingDownloadedApk(
+                        context,
+                        res.updateInfo.versionName,
+                        res.updateInfo.assetName,
+                    )
+                    if (cachedApk != null) {
+                        verifyAndProceed(cachedApk)
+                    } else {
+                        startDownloadAndInstallFor(res.updateInfo)
+                    }
+                }
+                is UpdateCheckResult.NetworkError -> {
+                    errorMessage = res.message
+                    currentStep = UpdateStep.FAILED
+                }
+                is UpdateCheckResult.ApiError -> {
+                    errorMessage = res.message
+                    currentStep = UpdateStep.FAILED
+                }
+                is UpdateCheckResult.AuthError -> {
+                    errorMessage = res.message
+                    currentStep = UpdateStep.FAILED
+                }
+                is UpdateCheckResult.RateLimited -> {
+                    errorMessage = res.message
+                    currentStep = UpdateStep.FAILED
+                }
+                is UpdateCheckResult.NoCompatibleApk -> {
+                    errorMessage = "No compatible APK package was found for this device on v${res.releaseVersion}."
+                    currentStep = UpdateStep.FAILED
+                }
+                is UpdateCheckResult.InvalidRelease -> {
+                    errorMessage = res.message
+                    currentStep = UpdateStep.FAILED
+                }
+                is UpdateCheckResult.UpToDate -> {
+                    errorMessage = "This device already matches or exceeds the selected release package."
+                    currentStep = UpdateStep.FAILED
+                }
+            }
+        }
+    }
+
+    val isProcessing = currentStep == UpdateStep.RESOLVING ||
+        currentStep == UpdateStep.DOWNLOADING_PATCH ||
         currentStep == UpdateStep.RECONSTRUCTING ||
         currentStep == UpdateStep.DOWNLOADING_FULL ||
         currentStep == UpdateStep.VERIFYING
+
+    val isRequiredModal = !dismissible || (policyPrompt?.isBlocking == true)
+    val modalTitle = if (isRequiredModal) "Update Required" else "Update Available"
 
     Dialog(
         onDismissRequest = {
@@ -283,60 +364,66 @@ fun AppUpdateDialog(
                 .background(colors.surfaceElevated)
                 .border(spacing.hairline, colors.borderSubtle, LaterboxShapeTokens.Card)
                 .padding(spacing.lg)
+                .testTag(if (isRequiredModal) "adaptive_update_modal_required" else "adaptive_update_modal_available")
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
-                // Header: Icon + Title
+                // Header: Laterbox brand logo beside Update Available / Update Required title
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(36.dp)
-                            .clip(LaterboxShapeTokens.Chip)
-                            .background(colors.surfacePrimary)
-                            .border(spacing.hairline, colors.borderSubtle, LaterboxShapeTokens.Chip),
+                            .size(40.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0xFF1B1A18))
+                            .border(spacing.hairline, colors.borderSubtle, RoundedCornerShape(10.dp))
+                            .testTag("adaptive_update_modal_logo"),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            painter = painterResource(id = LaterboxIcons.Sparkles),
-                            contentDescription = null,
-                            tint = colors.accentPrimary,
-                            modifier = Modifier.size(20.dp)
+                        Image(
+                            painter = painterResource(id = R.drawable.ic_launcher_foreground),
+                            contentDescription = "Laterbox logo",
+                            modifier = Modifier.size(34.dp)
                         )
                     }
                     Spacer(modifier = Modifier.width(spacing.sm))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Update Available",
+                            text = modalTitle,
                             style = typography.sheetTitle,
                             color = colors.textPrimary
                         )
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(spacing.xs)
-                        ) {
-                            Text(
-                                text = "v${updateInfo.versionName}",
-                                style = typography.bodySecondary,
-                                color = colors.accentPrimary,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            if (updateInfo.targetAbiLabel.isNotBlank()) {
-                                val displaySize = updateInfo.effectiveDownloadSize
-                                val sizeText = if (displaySize > 0) {
-                                    val mb = displaySize / (1024f * 1024f)
-                                    " • ${String.format(Locale.US, "%.1f", mb)} MB"
-                                } else ""
-                                Text(
-                                    text = "• ${updateInfo.targetAbiLabel}$sizeText",
-                                    style = typography.caption,
-                                    color = colors.textSecondary
-                                )
+                        val infoSnapshot = resolvedUpdateInfo
+                        if (initialVersionLabel.isNotBlank() || infoSnapshot != null) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(spacing.xs)
+                            ) {
+                                if (initialVersionLabel.isNotBlank()) {
+                                    Text(
+                                        text = "v$initialVersionLabel",
+                                        style = typography.bodySecondary,
+                                        color = colors.accentPrimary,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                                if (infoSnapshot != null && infoSnapshot.targetAbiLabel.isNotBlank()) {
+                                    val displaySize = infoSnapshot.effectiveDownloadSize
+                                    val sizeText = if (displaySize > 0) {
+                                        val mb = displaySize / (1024f * 1024f)
+                                        " • ${String.format(Locale.US, "%.1f", mb)} MB"
+                                    } else ""
+                                    Text(
+                                        text = "• ${infoSnapshot.targetAbiLabel}$sizeText",
+                                        style = typography.caption,
+                                        color = colors.textSecondary
+                                    )
+                                }
                             }
                         }
-                        if (updateInfo.isDeltaAvailable && updateInfo.deltaPatch != null && updateInfo.apkSize > 0) {
-                            val savingsPercent = ((updateInfo.apkSize - updateInfo.deltaPatch.patchSize) * 100 / updateInfo.apkSize).toInt().coerceIn(1, 99)
+                        if (infoSnapshot != null && infoSnapshot.isDeltaAvailable && infoSnapshot.deltaPatch != null && infoSnapshot.apkSize > 0) {
+                            val savingsPercent = ((infoSnapshot.apkSize - infoSnapshot.deltaPatch.patchSize) * 100 / infoSnapshot.apkSize).toInt().coerceIn(1, 99)
                             Spacer(modifier = Modifier.height(spacing.xs))
                             Box(
                                 modifier = Modifier
@@ -360,8 +447,41 @@ fun AppUpdateDialog(
 
                 when (currentStep) {
                     UpdateStep.PROMPT -> {
+                        val activeInfo = resolvedUpdateInfo
+                        val customMessage = policyPrompt?.customMessage?.trim().orEmpty()
+                        val defaultPolicyBody = if (isRequiredModal) {
+                            val targetTagLabel = policyPrompt?.targetTag?.takeIf { it.isNotBlank() } ?: "the latest release"
+                            val minTagLabel = policyPrompt?.minimumSupportedTag?.takeIf { it.isNotBlank() }
+                            if (minTagLabel != null) {
+                                "Update to $targetTagLabel to continue using Laterbox online services (minimum required: $minTagLabel)."
+                            } else {
+                                "Update to $targetTagLabel to continue using Laterbox."
+                            }
+                        } else {
+                            val targetTagLabel = policyPrompt?.targetTag?.takeIf { it.isNotBlank() } ?: "a newer release"
+                            "Laterbox $targetTagLabel is available with improvements and fixes."
+                        }
+
+                        if (customMessage.isNotBlank()) {
+                            Text(
+                                text = customMessage,
+                                style = typography.bodySecondary,
+                                color = colors.textSecondary,
+                                lineHeight = 19.sp
+                            )
+                            Spacer(modifier = Modifier.height(spacing.md))
+                        } else if (activeInfo == null) {
+                            Text(
+                                text = defaultPolicyBody,
+                                style = typography.bodySecondary,
+                                color = colors.textSecondary,
+                                lineHeight = 19.sp
+                            )
+                            Spacer(modifier = Modifier.height(spacing.md))
+                        }
+
                         // Release Notes
-                        if (updateInfo.releaseNotes.isNotBlank()) {
+                        if (activeInfo != null && activeInfo.releaseNotes.isNotBlank()) {
                             Text(
                                 text = "What's New:",
                                 style = typography.fieldLabel,
@@ -380,7 +500,7 @@ fun AppUpdateDialog(
                                     .verticalScroll(rememberScrollState())
                             ) {
                                 Text(
-                                    text = updateInfo.releaseNotes.trim(),
+                                    text = activeInfo.releaseNotes.trim(),
                                     style = typography.bodySecondary,
                                     color = colors.textSecondary,
                                     lineHeight = 18.sp
@@ -389,15 +509,17 @@ fun AppUpdateDialog(
                             Spacer(modifier = Modifier.height(spacing.md))
                         }
 
-                        // Actions: Update Now, Later, GitHub
+                        // Actions: Update Now, View Release, Later (only when dismissible)
                         Column(
                             modifier = Modifier.fillMaxWidth(),
                             verticalArrangement = Arrangement.spacedBy(spacing.xs)
                         ) {
                             LaterboxPrimaryButton(
                                 text = "Update Now",
-                                onClick = { startDownloadAndInstall() },
-                                modifier = Modifier.fillMaxWidth()
+                                onClick = { startUpdateFlow() },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("adaptive_update_modal_primary_button")
                             )
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -410,20 +532,44 @@ fun AppUpdateDialog(
                                     color = colors.textTertiary,
                                     modifier = Modifier
                                         .clickable {
-                                            ApkInstallerHelper.openFallbackReleasePage(context, updateInfo.releasePageUrl)
+                                            ApkInstallerHelper.openFallbackReleasePage(context, releasePageFallbackUrl)
                                         }
                                         .padding(vertical = spacing.xs)
-                                    )
+                                )
                                 if (dismissible) {
                                     LaterboxSecondaryButton(
                                         text = "Later",
                                         onClick = {
-                                            onPostpone(updateInfo.versionName)
+                                            val postponeVersion = activeInfo?.versionName
+                                                ?: initialVersionLabel
+                                            if (postponeVersion.isNotBlank()) {
+                                                onPostpone(postponeVersion)
+                                            }
                                             onDismiss()
-                                        }
+                                        },
+                                        modifier = Modifier.testTag("adaptive_update_modal_later_button")
                                     )
                                 }
                             }
+                        }
+                    }
+
+                    UpdateStep.RESOLVING -> {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(22.dp),
+                                color = colors.accentPrimary,
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(spacing.sm))
+                            Text(
+                                text = "Preparing update package...",
+                                style = typography.bodyPrimary,
+                                color = colors.textPrimary
+                            )
                         }
                     }
 
@@ -585,6 +731,8 @@ fun AppUpdateDialog(
                     }
 
                     UpdateStep.READY_TO_INSTALL -> {
+                        val readyVersion = resolvedUpdateInfo?.versionName?.takeIf { it.isNotBlank() }
+                            ?: initialVersionLabel
                         Text(
                             text = "Package ready for installation.",
                             style = typography.bodyPrimary,
@@ -593,7 +741,11 @@ fun AppUpdateDialog(
                         )
                         Spacer(modifier = Modifier.height(spacing.xs))
                         Text(
-                            text = "Version ${updateInfo.versionName} is downloaded and verified.",
+                            text = if (readyVersion.isNotBlank()) {
+                                "Version $readyVersion is downloaded and verified."
+                            } else {
+                                "Update package is downloaded and verified."
+                            },
                             style = typography.bodySecondary,
                             color = colors.textSecondary
                         )
@@ -663,14 +815,16 @@ fun AppUpdateDialog(
                                         .clickable {
                                             downloadedFile?.delete()
                                             downloadedFile = null
-                                            startDownloadAndInstall()
+                                            startUpdateFlow()
                                         }
                                         .padding(vertical = spacing.xs)
                                 )
-                                LaterboxSecondaryButton(
-                                    text = "Dismiss",
-                                    onClick = onDismiss
-                                )
+                                if (dismissible) {
+                                    LaterboxSecondaryButton(
+                                        text = "Dismiss",
+                                        onClick = onDismiss
+                                    )
+                                }
                             }
                         }
                     }
@@ -723,8 +877,8 @@ fun AppUpdateDialog(
                                 )
                             } else {
                                 LaterboxPrimaryButton(
-                                    text = "Retry Download",
-                                    onClick = { startDownloadAndInstall() },
+                                    text = if (resolvedUpdateInfo == null) "Retry" else "Retry Download",
+                                    onClick = { startUpdateFlow() },
                                     modifier = Modifier.fillMaxWidth()
                                 )
                             }
@@ -740,15 +894,19 @@ fun AppUpdateDialog(
                                     color = colors.textTertiary,
                                     modifier = Modifier
                                         .clickable {
-                                            ApkInstallerHelper.openFallbackReleasePage(context, updateInfo.releasePageUrl)
-                                            onDismiss()
+                                            ApkInstallerHelper.openFallbackReleasePage(context, releasePageFallbackUrl)
+                                            if (dismissible) {
+                                                onDismiss()
+                                            }
                                         }
                                         .padding(vertical = spacing.xs)
                                 )
-                                LaterboxSecondaryButton(
-                                    text = "Dismiss",
-                                    onClick = onDismiss
-                                )
+                                if (dismissible) {
+                                    LaterboxSecondaryButton(
+                                        text = "Dismiss",
+                                        onClick = onDismiss
+                                    )
+                                }
                             }
                         }
                     }

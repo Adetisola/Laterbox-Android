@@ -119,13 +119,34 @@ object RemoteConfigLayoutHelper {
         return slots.sortedBy { it.order }
     }
 
+    enum class AdaptiveUpdateModalMode {
+        AVAILABLE,
+        REQUIRED,
+    }
+
+    data class AdaptiveUpdatePromptPolicy(
+        val mode: AdaptiveUpdateModalMode,
+        val targetVersionCode: Int,
+        val targetTag: String,
+        val minimumSupportedVersionCode: Int,
+        val minimumSupportedTag: String,
+        val customMessage: String,
+        val fallbackUrl: String = VersionEnforcementBlockState.DEFAULT_UPDATE_URL,
+    ) {
+        val isBlocking: Boolean
+            get() = mode == AdaptiveUpdateModalMode.REQUIRED
+    }
+
     fun shouldShowBlockingUpdateDialog(
         versionPolicy: RemoteVersionPolicy,
         currentVersionCode: Int,
     ): Boolean {
-        return versionPolicy.isEnforceModeActive &&
-            versionPolicy.minimumSupportedVersionCode > 0 &&
+        if (!versionPolicy.isEnforceModeActive) return false
+        val belowMinimum = versionPolicy.minimumSupportedVersionCode > 0 &&
             currentVersionCode < versionPolicy.minimumSupportedVersionCode
+        val belowRecommended = versionPolicy.recommendedVersionCode > 0 &&
+            currentVersionCode < versionPolicy.recommendedVersionCode
+        return belowMinimum || belowRecommended
     }
 
     fun shouldShowRecommendedUpdateBanner(
@@ -134,19 +155,88 @@ object RemoteConfigLayoutHelper {
         dismissedInSession: Boolean,
     ): Boolean {
         if (dismissedInSession) return false
-        if (shouldShowBlockingUpdateDialog(versionPolicy, currentVersionCode)) return false
-        return versionPolicy.recommendedVersionCode > currentVersionCode
+        if (versionPolicy.normalizedEnforcementMode != RemoteVersionPolicy.MODE_MONITOR) return false
+        return versionPolicy.recommendedVersionCode > 0 &&
+            currentVersionCode < versionPolicy.recommendedVersionCode
+    }
+
+    fun resolveAdaptiveUpdatePrompt(
+        versionPolicy: RemoteVersionPolicy,
+        currentVersionCode: Int,
+        dismissedInSession: Boolean,
+        serverBlock: VersionEnforcementBlockState? = null,
+    ): AdaptiveUpdatePromptPolicy? {
+        if (serverBlock != null &&
+            serverBlock.triggeredByServer426 &&
+            serverBlock.minimumSupportedVersionCode > 0 &&
+            currentVersionCode < serverBlock.minimumSupportedVersionCode
+        ) {
+            val targetTag = versionPolicy.recommendedTag.takeIf { it.isNotBlank() }
+                ?: serverBlock.recommendedTag.takeIf { it.isNotBlank() }
+                ?: serverBlock.latestStableTag
+            val targetCode = versionPolicy.recommendedVersionCode.takeIf { it > 0 }
+                ?: serverBlock.recommendedVersionCode.takeIf { it > 0 }
+                ?: serverBlock.minimumSupportedVersionCode
+            val msg = versionPolicy.updateMessage.ifBlank { serverBlock.message }
+            val fallbackUrl = targetTag.takeIf { it.isNotBlank() }
+                ?.let { "https://laterbox-website.vercel.app/releases/$it" }
+                ?: serverBlock.updateUrl
+            return AdaptiveUpdatePromptPolicy(
+                mode = AdaptiveUpdateModalMode.REQUIRED,
+                targetVersionCode = targetCode,
+                targetTag = targetTag,
+                minimumSupportedVersionCode = serverBlock.minimumSupportedVersionCode,
+                minimumSupportedTag = serverBlock.minimumSupportedTag.ifBlank { versionPolicy.minimumSupportedTag },
+                customMessage = msg,
+                fallbackUrl = fallbackUrl,
+            )
+        }
+
+        if (shouldShowBlockingUpdateDialog(versionPolicy, currentVersionCode)) {
+            val targetTag = versionPolicy.recommendedTag.ifBlank { versionPolicy.minimumSupportedTag }
+            val targetCode = versionPolicy.recommendedVersionCode.takeIf { it > 0 }
+                ?: versionPolicy.minimumSupportedVersionCode
+            val fallbackUrl = targetTag.takeIf { it.isNotBlank() }
+                ?.let { "https://laterbox-website.vercel.app/releases/$it" }
+                ?: VersionEnforcementBlockState.DEFAULT_UPDATE_URL
+            return AdaptiveUpdatePromptPolicy(
+                mode = AdaptiveUpdateModalMode.REQUIRED,
+                targetVersionCode = targetCode,
+                targetTag = targetTag,
+                minimumSupportedVersionCode = versionPolicy.minimumSupportedVersionCode,
+                minimumSupportedTag = versionPolicy.minimumSupportedTag,
+                customMessage = versionPolicy.updateMessage,
+                fallbackUrl = fallbackUrl,
+            )
+        }
+
+        if (shouldShowRecommendedUpdateBanner(versionPolicy, currentVersionCode, dismissedInSession)) {
+            val targetTag = versionPolicy.recommendedTag
+            val fallbackUrl = targetTag.takeIf { it.isNotBlank() }
+                ?.let { "https://laterbox-website.vercel.app/releases/$it" }
+                ?: VersionEnforcementBlockState.DEFAULT_UPDATE_URL
+            return AdaptiveUpdatePromptPolicy(
+                mode = AdaptiveUpdateModalMode.AVAILABLE,
+                targetVersionCode = versionPolicy.recommendedVersionCode,
+                targetTag = targetTag,
+                minimumSupportedVersionCode = versionPolicy.minimumSupportedVersionCode,
+                minimumSupportedTag = versionPolicy.minimumSupportedTag,
+                customMessage = versionPolicy.updateMessage,
+                fallbackUrl = fallbackUrl,
+            )
+        }
+
+        return null
     }
 
     enum class BottomFloatingOverlayChoice {
         NONE,
         NOTICE_DECK,
-        RECOMMENDED_UPDATE,
     }
 
     /**
-     * Enforces UI notification priority hierarchy:
-     * Blocking Dialog > Maintenance Status Strip > Critical/Warning Notice > Recommended Update > Info Notice.
+     * Floating bottom overlay deck excludes version-policy update prompts,
+     * which render directly via the single adaptive update modal.
      */
     fun selectBottomFloatingOverlay(
         versionPolicy: RemoteVersionPolicy,
@@ -154,18 +244,9 @@ object RemoteConfigLayoutHelper {
         dismissedUpdateInSession: Boolean,
         activeSurfaceNotices: List<RemoteAnnouncementItem>,
     ): BottomFloatingOverlayChoice {
+        val _dismissed = dismissedUpdateInSession
         if (shouldShowBlockingUpdateDialog(versionPolicy, currentVersionCode)) {
             return BottomFloatingOverlayChoice.NONE
-        }
-        val hasHighSeverityNotice = activeSurfaceNotices.any { notice ->
-            notice.severity == RemoteAnnouncementSeverity.CRITICAL ||
-                notice.severity == RemoteAnnouncementSeverity.WARNING
-        }
-        if (hasHighSeverityNotice) {
-            return BottomFloatingOverlayChoice.NOTICE_DECK
-        }
-        if (shouldShowRecommendedUpdateBanner(versionPolicy, currentVersionCode, dismissedUpdateInSession)) {
-            return BottomFloatingOverlayChoice.RECOMMENDED_UPDATE
         }
         if (activeSurfaceNotices.isNotEmpty()) {
             return BottomFloatingOverlayChoice.NOTICE_DECK

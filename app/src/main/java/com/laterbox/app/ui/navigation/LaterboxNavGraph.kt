@@ -81,10 +81,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
-import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.laterbox.app.update.AppUpdateDialog
-import com.laterbox.app.update.AppUpdateInfo
 import com.laterbox.app.update.GitHubUpdateChecker
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -195,21 +193,25 @@ fun LaterboxApp(
             kotlinx.coroutines.flow.MutableStateFlow<com.laterbox.app.remoteconfig.VersionEnforcementBlockState?>(null)
         }
         ).collectAsState()
-    val activeVersionBlock = remember(remoteConfig.versionPolicy, serverVersionBlockState) {
-        com.laterbox.app.remoteconfig.LaterboxVersionGate.resolveEffectiveBlock(
+    var sessionDismissedRecommendedUpdate by rememberSaveable { mutableStateOf(false) }
+    val adaptiveUpdatePrompt = remember(
+        remoteConfig.versionPolicy,
+        serverVersionBlockState,
+        sessionDismissedRecommendedUpdate,
+    ) {
+        com.laterbox.app.remoteconfig.RemoteConfigLayoutHelper.resolveAdaptiveUpdatePrompt(
             versionPolicy = remoteConfig.versionPolicy,
             currentVersionCode = com.laterbox.app.BuildConfig.VERSION_CODE,
+            dismissedInSession = sessionDismissedRecommendedUpdate,
             serverBlock = serverVersionBlockState,
         )
     }
-    var isCheckingForcedUpdate by remember { mutableStateOf(false) }
     val moviesTvEnabled = remoteConfig.isFeatureEnabled(com.laterbox.app.ai.RemoteCapabilities.KEY_MOVIES_TV)
     val recommendationsEnabled = remoteConfig.isFeatureEnabled(com.laterbox.app.ai.RemoteCapabilities.KEY_MOVIES_RECOMMENDATIONS)
     val introSkipEnabled = remoteConfig.isFeatureEnabled(com.laterbox.app.ai.RemoteCapabilities.KEY_PLAYER_INTRO_SKIP)
     val effectiveAssistantEnabled = preferences.assistantEnabled &&
         !remoteConfig.maintenance.isOnlineServicesPaused &&
         remoteConfig.isFeatureEnabled(com.laterbox.app.ai.RemoteCapabilities.KEY_AI_ASSISTANT)
-    var sessionDismissedRecommendedUpdate by rememberSaveable { mutableStateOf(false) }
 
     val handleRemoteAction: (String) -> Unit = { destination ->
         val clean = destination.trim()
@@ -487,67 +489,6 @@ fun LaterboxApp(
             }
         }
         onClearOpenDestination()
-    }
-
-    var appUpdateInfoToPrompt by remember { mutableStateOf<AppUpdateInfo?>(null) }
-    var sessionDismissedUpdateVersion by remember { mutableStateOf<String?>(null) }
-    var autoCheckBackoffUntilMs by remember { mutableStateOf(0L) }
-
-    LifecycleResumeEffect(Unit) {
-        val checkJob = coroutineScope.launch {
-            if (appUpdateInfoToPrompt != null) return@launch
-            val sixHoursMs = 6L * 60 * 60 * 1000L
-            val oneDayMs = 24L * 60 * 60 * 1000L
-            val now = System.currentTimeMillis()
-            if (now < autoCheckBackoffUntilMs) return@launch
-            val app = context.applicationContext as? LaterboxApplication ?: return@launch
-            val prefsRepo = app.container.userPreferencesRepository
-            val prefs = prefsRepo.userPreferencesFlow.first()
-            if (now - prefs.lastUpdateCheckTime >= sixHoursMs) {
-                val baseUrl = app.container.resolveBackendBaseUrl()
-                val result = GitHubUpdateChecker.checkForUpdate(
-                    currentVersionName = com.laterbox.app.BuildConfig.VERSION_NAME,
-                    releasesUrl = GitHubUpdateChecker.buildBackendUpdateUrl(
-                        baseUrl = baseUrl,
-                        forceRefresh = false
-                    ),
-                    context = context.applicationContext,
-                    appCheckTokenProvider = { forceRefresh ->
-                        app.container.getBackendAppCheckToken(forceRefresh)
-                    },
-                    forceRefresh = false
-                )
-                when (result) {
-                    is com.laterbox.app.update.UpdateCheckResult.UpdateAvailable -> {
-                        prefsRepo.recordUpdateCheck(System.currentTimeMillis())
-                        val info = result.updateInfo
-                        val isDismissedRecently = prefs.dismissedUpdateVersion == info.versionName &&
-                            (now - prefs.dismissedUpdateTimestamp < oneDayMs)
-                        val isSessionDismissed = sessionDismissedUpdateVersion == info.versionName
-                        if (!isDismissedRecently && !isSessionDismissed) {
-                            appUpdateInfoToPrompt = info
-                        }
-                    }
-                    is com.laterbox.app.update.UpdateCheckResult.UpToDate,
-                    is com.laterbox.app.update.UpdateCheckResult.NoCompatibleApk -> {
-                        prefsRepo.recordUpdateCheck(System.currentTimeMillis())
-                    }
-                    is com.laterbox.app.update.UpdateCheckResult.RateLimited -> {
-                        val backoffSec = (result.retryAfterSeconds ?: 60).coerceIn(30, 3600)
-                        autoCheckBackoffUntilMs = System.currentTimeMillis() + (backoffSec * 1000L)
-                    }
-                    is com.laterbox.app.update.UpdateCheckResult.AuthError,
-                    is com.laterbox.app.update.UpdateCheckResult.NetworkError,
-                    is com.laterbox.app.update.UpdateCheckResult.ApiError,
-                    is com.laterbox.app.update.UpdateCheckResult.InvalidRelease -> {
-                        autoCheckBackoffUntilMs = System.currentTimeMillis() + 60_000L
-                    }
-                }
-            }
-        }
-        onPauseOrDispose {
-            checkJob.cancel()
-        }
     }
 
     val handleOpenLink: (SavedLink) -> Unit = { link ->
@@ -1986,7 +1927,7 @@ fun LaterboxApp(
                     } else {
                         emptyList()
                     }
-                    val floatingOverlayChoice = if (!isImmersivePlayerRoute && !isImeVisible && activeVersionBlock == null) {
+                    val floatingOverlayChoice = if (!isImmersivePlayerRoute && !isImeVisible && adaptiveUpdatePrompt?.isBlocking != true) {
                         com.laterbox.app.remoteconfig.RemoteConfigLayoutHelper.selectBottomFloatingOverlay(
                             versionPolicy = remoteConfig.versionPolicy,
                             currentVersionCode = com.laterbox.app.BuildConfig.VERSION_CODE,
@@ -2021,36 +1962,6 @@ fun LaterboxApp(
                                         notices = activeSurfaceNotices,
                                         onActionClick = handleRemoteAction,
                                         onDismissClick = { id -> remoteConfigManager?.dismissAnnouncement(id) },
-                                        modifier = floatingOverlayModifier,
-                                    )
-                                }
-                                com.laterbox.app.remoteconfig.RemoteConfigLayoutHelper.BottomFloatingOverlayChoice.RECOMMENDED_UPDATE -> {
-                                    com.laterbox.app.remoteconfig.RemoteFloatingUpdateCard(
-                                        versionPolicy = remoteConfig.versionPolicy,
-                                        onUpdateClick = {
-                                            coroutineScope.launch {
-                                                val app = context.applicationContext as? LaterboxApplication
-                                                if (app != null) {
-                                                    val baseUrl = app.container.resolveBackendBaseUrl()
-                                                    val res = GitHubUpdateChecker.checkForUpdate(
-                                                        currentVersionName = com.laterbox.app.BuildConfig.VERSION_NAME,
-                                                        releasesUrl = GitHubUpdateChecker.buildBackendUpdateUrl(baseUrl, forceRefresh = true),
-                                                        context = context.applicationContext,
-                                                        appCheckTokenProvider = { force -> app.container.getBackendAppCheckToken(force) },
-                                                        forceRefresh = true,
-                                                        currentVersionCode = com.laterbox.app.BuildConfig.VERSION_CODE,
-                                                    )
-                                                    if (res is com.laterbox.app.update.UpdateCheckResult.UpdateAvailable) {
-                                                        appUpdateInfoToPrompt = res.updateInfo
-                                                    } else {
-                                                        BrowserLauncher.openUrl(context, "https://laterbox-website.vercel.app", colors)
-                                                    }
-                                                } else {
-                                                    BrowserLauncher.openUrl(context, "https://laterbox-website.vercel.app", colors)
-                                                }
-                                            }
-                                        },
-                                        onDismissClick = { sessionDismissedRecommendedUpdate = true },
                                         modifier = floatingOverlayModifier,
                                     )
                                 }
@@ -2625,69 +2536,44 @@ fun LaterboxApp(
         }
     }
 
-    if (appUpdateInfoToPrompt != null) {
-        val currentPrompt = appUpdateInfoToPrompt!!
+    adaptiveUpdatePrompt?.let { prompt ->
         val app = context.applicationContext as? LaterboxApplication
-        val isMandatoryPrompt = activeVersionBlock != null
         AppUpdateDialog(
-            updateInfo = currentPrompt,
+            updateInfo = null,
+            policyPrompt = prompt,
+            onResolvePolicyUpdate = {
+                val laterboxApp = app
+                    ?: return@AppUpdateDialog com.laterbox.app.update.UpdateCheckResult.InvalidRelease(
+                        "Application updater is unavailable."
+                    )
+                val baseUrl = laterboxApp.container.resolveBackendBaseUrl()
+                GitHubUpdateChecker.checkForUpdate(
+                    currentVersionName = com.laterbox.app.BuildConfig.VERSION_NAME,
+                    releasesUrl = GitHubUpdateChecker.buildBackendUpdateUrl(
+                        baseUrl = baseUrl,
+                        forceRefresh = true,
+                        targetTag = prompt.targetTag.ifBlank { null },
+                    ),
+                    context = context.applicationContext,
+                    appCheckTokenProvider = { force -> laterboxApp.container.getBackendAppCheckToken(force) },
+                    forceRefresh = true,
+                    currentVersionCode = com.laterbox.app.BuildConfig.VERSION_CODE,
+                )
+            },
             onDismiss = {
-                if (!isMandatoryPrompt) {
-                    sessionDismissedUpdateVersion = currentPrompt.versionName
-                    appUpdateInfoToPrompt = null
+                if (!prompt.isBlocking) {
+                    sessionDismissedRecommendedUpdate = true
                 }
             },
-            onPostpone = { version ->
-                if (!isMandatoryPrompt) {
-                    sessionDismissedUpdateVersion = version
-                    appUpdateInfoToPrompt = null
-                    coroutineScope.launch {
-                        app?.container?.userPreferencesRepository?.dismissUpdate(version)
-                    }
+            onPostpone = { _ ->
+                if (!prompt.isBlocking) {
+                    sessionDismissedRecommendedUpdate = true
                 }
             },
             appCheckTokenProvider = app?.let { laterboxApp ->
                 { forceRefresh -> laterboxApp.container.getBackendAppCheckToken(forceRefresh) }
             },
-            dismissible = !isMandatoryPrompt,
-        )
-    } else if (activeVersionBlock != null) {
-        com.laterbox.app.remoteconfig.RemoteForcedUpdateDialog(
-            blockState = activeVersionBlock,
-            isCheckingUpdate = isCheckingForcedUpdate,
-            onUpdateNow = {
-                if (isCheckingForcedUpdate) return@RemoteForcedUpdateDialog
-                coroutineScope.launch {
-                    isCheckingForcedUpdate = true
-                    try {
-                        val app = context.applicationContext as? LaterboxApplication
-                        if (app != null) {
-                            val baseUrl = app.container.resolveBackendBaseUrl()
-                            val res = GitHubUpdateChecker.checkForUpdate(
-                                currentVersionName = com.laterbox.app.BuildConfig.VERSION_NAME,
-                                releasesUrl = GitHubUpdateChecker.buildBackendUpdateUrl(baseUrl, forceRefresh = true),
-                                context = context.applicationContext,
-                                appCheckTokenProvider = { force -> app.container.getBackendAppCheckToken(force) },
-                                forceRefresh = true,
-                                currentVersionCode = com.laterbox.app.BuildConfig.VERSION_CODE,
-                            )
-                            val minReq = activeVersionBlock.minimumSupportedVersionCode
-                            val available = (res as? com.laterbox.app.update.UpdateCheckResult.UpdateAvailable)?.updateInfo
-                            val meetsMin = available != null &&
-                                (minReq <= 0 || available.versionCode == null || available.versionCode >= minReq)
-                            if (available != null && meetsMin) {
-                                appUpdateInfoToPrompt = available
-                            } else {
-                                BrowserLauncher.openUrl(context, activeVersionBlock.updateUrl, colors)
-                            }
-                        } else {
-                            BrowserLauncher.openUrl(context, activeVersionBlock.updateUrl, colors)
-                        }
-                    } finally {
-                        isCheckingForcedUpdate = false
-                    }
-                }
-            }
+            dismissible = !prompt.isBlocking,
         )
     }
 }

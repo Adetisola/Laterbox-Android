@@ -121,33 +121,112 @@ class RemoteConfigLayoutAndFlagsTest {
     }
 
     @Test
-    fun versionPolicy_evaluatesBlockingAndRecommendedUpdateThresholdsCorrectly() {
-        val advisoryPolicy = RemoteVersionPolicy(
+    fun versionPolicy_evaluatesAdaptiveUpdateModalAcrossDisabledMonitorAndEnforceModes() {
+        // 1. Disabled -> never shows modal even if stale fields are passed
+        val disabledPolicy = RemoteVersionPolicy(
+            minimumSupportedVersionCode = 0,
+            recommendedVersionCode = 0,
+            enforcementEnabled = false,
+            enforcementMode = RemoteVersionPolicy.MODE_DISABLED,
+        )
+        assertEquals(
+            null,
+            RemoteConfigLayoutHelper.resolveAdaptiveUpdatePrompt(
+                versionPolicy = disabledPolicy,
+                currentVersionCode = 60,
+                dismissedInSession = false,
+            ),
+        )
+
+        // 2. Monitor with recommendation OFF -> no modal
+        val monitorNoRec = RemoteVersionPolicy(
+            minimumSupportedVersionCode = 64,
+            recommendedVersionCode = 0,
+            enforcementEnabled = false,
+            enforcementMode = RemoteVersionPolicy.MODE_MONITOR,
+            minimumSupportedTag = "v1.0.64",
+        )
+        assertEquals(
+            null,
+            RemoteConfigLayoutHelper.resolveAdaptiveUpdatePrompt(
+                versionPolicy = monitorNoRec,
+                currentVersionCode = 62,
+                dismissedInSession = false,
+            ),
+        )
+
+        // 3. Monitor with recommendation ON -> dismissible Update Available when below recommended
+        val monitorWithRec = RemoteVersionPolicy(
             minimumSupportedVersionCode = 60,
             recommendedVersionCode = 65,
-            enforcementEnabled = true,
+            enforcementEnabled = false,
+            enforcementMode = RemoteVersionPolicy.MODE_MONITOR,
+            minimumSupportedTag = "v1.0.60",
             recommendedTag = "v1.0.65",
         )
-        // Build 62 meets min (60) but is below recommended (65)
-        assertFalse(RemoteConfigLayoutHelper.shouldShowBlockingUpdateDialog(advisoryPolicy, 62))
-        assertTrue(RemoteConfigLayoutHelper.shouldShowRecommendedUpdateBanner(advisoryPolicy, 62, dismissedInSession = false))
-        assertFalse(RemoteConfigLayoutHelper.shouldShowRecommendedUpdateBanner(advisoryPolicy, 62, dismissedInSession = true))
+        assertFalse(RemoteConfigLayoutHelper.shouldShowBlockingUpdateDialog(monitorWithRec, 62))
+        val availablePrompt = RemoteConfigLayoutHelper.resolveAdaptiveUpdatePrompt(
+            versionPolicy = monitorWithRec,
+            currentVersionCode = 62,
+            dismissedInSession = false,
+        )
+        assertEquals(RemoteConfigLayoutHelper.AdaptiveUpdateModalMode.AVAILABLE, availablePrompt?.mode)
+        assertEquals("v1.0.65", availablePrompt?.targetTag)
+        assertFalse(availablePrompt?.isBlocking ?: true)
+        assertEquals(
+            null,
+            RemoteConfigLayoutHelper.resolveAdaptiveUpdatePrompt(
+                versionPolicy = monitorWithRec,
+                currentVersionCode = 62,
+                dismissedInSession = true,
+            ),
+        )
 
-        // Build 59 is below minimumSupportedVersionCode with enforcementEnabled=true -> blocking dialog
-        assertTrue(RemoteConfigLayoutHelper.shouldShowBlockingUpdateDialog(advisoryPolicy, 59))
-        assertFalse(RemoteConfigLayoutHelper.shouldShowRecommendedUpdateBanner(advisoryPolicy, 59, dismissedInSession = false))
+        // 4. Enforce mode with min=64, rec=67: build 66 >= min yet < rec -> NON-DISMISSIBLE Update Required targeting v1.0.67
+        val enforcePolicy = RemoteVersionPolicy(
+            minimumSupportedVersionCode = 64,
+            recommendedVersionCode = 67,
+            enforcementEnabled = true,
+            enforcementMode = RemoteVersionPolicy.MODE_ENFORCE,
+            minimumSupportedTag = "v1.0.64",
+            recommendedTag = "v1.0.67",
+        )
+        assertTrue(RemoteConfigLayoutHelper.shouldShowBlockingUpdateDialog(enforcePolicy, 66))
+        val requiredAboveMinPrompt = RemoteConfigLayoutHelper.resolveAdaptiveUpdatePrompt(
+            versionPolicy = enforcePolicy,
+            currentVersionCode = 66,
+            dismissedInSession = true,
+        )
+        assertEquals(RemoteConfigLayoutHelper.AdaptiveUpdateModalMode.REQUIRED, requiredAboveMinPrompt?.mode)
+        assertEquals("v1.0.67", requiredAboveMinPrompt?.targetTag)
+        assertTrue(requiredAboveMinPrompt?.isBlocking == true)
 
-        // Build 66 satisfies both -> neither banner nor dialog
-        assertFalse(RemoteConfigLayoutHelper.shouldShowBlockingUpdateDialog(advisoryPolicy, 66))
-        assertFalse(RemoteConfigLayoutHelper.shouldShowRecommendedUpdateBanner(advisoryPolicy, 66, dismissedInSession = false))
+        // 5. Build 67 satisfies both min and rec -> no modal
+        assertFalse(RemoteConfigLayoutHelper.shouldShowBlockingUpdateDialog(enforcePolicy, 67))
+        assertEquals(
+            null,
+            RemoteConfigLayoutHelper.resolveAdaptiveUpdatePrompt(
+                versionPolicy = enforcePolicy,
+                currentVersionCode = 67,
+                dismissedInSession = false,
+            ),
+        )
     }
 
     @Test
-    fun floatingOverlayPriority_respectsHierarchy_blocking_criticalWarning_recommendedUpdate_infoNotice() {
-        val updatePolicy = RemoteVersionPolicy(
+    fun floatingOverlayPriority_showsNoticeDeckUnlessBlockingUpdateModalIsActive() {
+        val enforcePolicy = RemoteVersionPolicy(
             minimumSupportedVersionCode = 190,
             recommendedVersionCode = 198,
             enforcementEnabled = true,
+            enforcementMode = RemoteVersionPolicy.MODE_ENFORCE,
+            recommendedTag = "v1.0.65",
+        )
+        val monitorPolicy = RemoteVersionPolicy(
+            minimumSupportedVersionCode = 190,
+            recommendedVersionCode = 198,
+            enforcementEnabled = false,
+            enforcementMode = RemoteVersionPolicy.MODE_MONITOR,
             recommendedTag = "v1.0.65",
         )
         val infoNotice = RemoteAnnouncementItem(
@@ -156,59 +235,25 @@ class RemoteConfigLayoutAndFlagsTest {
             severity = RemoteAnnouncementSeverity.INFO,
             surfaces = listOf(RemoteUiSurface.INBOX),
         )
-        val warningNotice = RemoteAnnouncementItem(
-            id = "warn_sync",
-            message = "Sync degraded",
-            severity = RemoteAnnouncementSeverity.WARNING,
-            surfaces = listOf(RemoteUiSurface.INBOX),
-        )
-        val criticalNotice = RemoteAnnouncementItem(
-            id = "crit_outage",
-            message = "Service issue",
-            severity = RemoteAnnouncementSeverity.CRITICAL,
-            surfaces = listOf(RemoteUiSurface.INBOX),
-        )
 
-        // 1. Blocking dialog suppresses all bottom floating overlays
+        // 1. Blocking Update Required modal suppresses bottom floating notice deck
         assertEquals(
             RemoteConfigLayoutHelper.BottomFloatingOverlayChoice.NONE,
             RemoteConfigLayoutHelper.selectBottomFloatingOverlay(
-                versionPolicy = updatePolicy,
-                currentVersionCode = 185,
-                dismissedUpdateInSession = false,
-                activeSurfaceNotices = listOf(criticalNotice, infoNotice),
-            )
-        )
-
-        // 2. Critical or Warning notice outranks Recommended Update
-        assertEquals(
-            RemoteConfigLayoutHelper.BottomFloatingOverlayChoice.NOTICE_DECK,
-            RemoteConfigLayoutHelper.selectBottomFloatingOverlay(
-                versionPolicy = updatePolicy,
-                currentVersionCode = 195,
-                dismissedUpdateInSession = false,
-                activeSurfaceNotices = listOf(warningNotice, infoNotice),
-            )
-        )
-
-        // 3. Recommended Update outranks Info notice until dismissed in session
-        assertEquals(
-            RemoteConfigLayoutHelper.BottomFloatingOverlayChoice.RECOMMENDED_UPDATE,
-            RemoteConfigLayoutHelper.selectBottomFloatingOverlay(
-                versionPolicy = updatePolicy,
+                versionPolicy = enforcePolicy,
                 currentVersionCode = 195,
                 dismissedUpdateInSession = false,
                 activeSurfaceNotices = listOf(infoNotice),
             )
         )
 
-        // 4. Once Recommended Update is dismissed, Info notice renders
+        // 2. Monitor mode never uses floating update card; surface notices still render normally
         assertEquals(
             RemoteConfigLayoutHelper.BottomFloatingOverlayChoice.NOTICE_DECK,
             RemoteConfigLayoutHelper.selectBottomFloatingOverlay(
-                versionPolicy = updatePolicy,
+                versionPolicy = monitorPolicy,
                 currentVersionCode = 195,
-                dismissedUpdateInSession = true,
+                dismissedUpdateInSession = false,
                 activeSurfaceNotices = listOf(infoNotice),
             )
         )

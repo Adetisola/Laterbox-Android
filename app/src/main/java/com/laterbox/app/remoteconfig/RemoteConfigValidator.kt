@@ -77,15 +77,39 @@ object RemoteConfigValidator {
             RemoteVersionPolicy.MODE_DISABLED -> RemoteVersionPolicy.MODE_DISABLED
             else -> if (rawEnforcementEnabled) RemoteVersionPolicy.MODE_ENFORCE else RemoteVersionPolicy.MODE_DISABLED
         }
-        val versionPolicy = RemoteVersionPolicy(
-            minimumSupportedVersionCode = (vpObj?.optInt("minimumSupportedVersionCode", 0) ?: 0).coerceIn(0, 1_000_000),
-            recommendedVersionCode = (vpObj?.optInt("recommendedVersionCode", 0) ?: 0).coerceIn(0, 1_000_000),
-            enforcementEnabled = resolvedMode == RemoteVersionPolicy.MODE_ENFORCE,
-            enforcementMode = resolvedMode,
-            minimumSupportedTag = sanitizePlainText(vpObj?.optString("minimumSupportedTag", "") ?: "", 32),
-            recommendedTag = sanitizePlainText(vpObj?.optString("recommendedTag", "") ?: "", 32),
-            updateMessage = sanitizePlainText(vpObj?.optString("updateMessage", "") ?: "", 500),
-        )
+        val rawMinCode = (vpObj?.optInt("minimumSupportedVersionCode", 0) ?: 0).coerceIn(0, 1_000_000)
+        val rawRecCode = (vpObj?.optInt("recommendedVersionCode", 0) ?: 0).coerceIn(0, 1_000_000)
+        val rawMinTag = sanitizePlainText(vpObj?.optString("minimumSupportedTag", "") ?: "", 32)
+        val rawRecTag = sanitizePlainText(vpObj?.optString("recommendedTag", "") ?: "", 32)
+        val versionPolicy = when (resolvedMode) {
+            RemoteVersionPolicy.MODE_DISABLED -> RemoteVersionPolicy(
+                minimumSupportedVersionCode = 0,
+                recommendedVersionCode = 0,
+                enforcementEnabled = false,
+                enforcementMode = RemoteVersionPolicy.MODE_DISABLED,
+                minimumSupportedTag = "",
+                recommendedTag = "",
+                updateMessage = sanitizePlainText(vpObj?.optString("updateMessage", "") ?: "", 500),
+            )
+            RemoteVersionPolicy.MODE_MONITOR -> RemoteVersionPolicy(
+                minimumSupportedVersionCode = rawMinCode,
+                recommendedVersionCode = rawRecCode,
+                enforcementEnabled = false,
+                enforcementMode = RemoteVersionPolicy.MODE_MONITOR,
+                minimumSupportedTag = if (rawMinCode > 0) rawMinTag else "",
+                recommendedTag = if (rawRecCode > 0) rawRecTag else "",
+                updateMessage = sanitizePlainText(vpObj?.optString("updateMessage", "") ?: "", 500),
+            )
+            else -> RemoteVersionPolicy(
+                minimumSupportedVersionCode = rawMinCode,
+                recommendedVersionCode = rawRecCode,
+                enforcementEnabled = true,
+                enforcementMode = RemoteVersionPolicy.MODE_ENFORCE,
+                minimumSupportedTag = if (rawMinCode > 0) rawMinTag else "",
+                recommendedTag = if (rawRecCode > 0) rawRecTag else "",
+                updateMessage = sanitizePlainText(vpObj?.optString("updateMessage", "") ?: "", 500),
+            )
+        }
 
         val maintObj = root.optJSONObject("maintenance")
         val maintMode = RemoteMaintenanceMode.fromWire(maintObj?.optString("mode", "none"))

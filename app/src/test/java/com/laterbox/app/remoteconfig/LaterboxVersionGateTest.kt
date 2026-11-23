@@ -109,6 +109,17 @@ class LaterboxVersionGateTest {
         val extReq = server.takeRequest()
         assertNull(extReq.getHeader("X-Laterbox-Client"))
         assertNull(extReq.getHeader("X-Laterbox-Version-Code"))
+
+        val taggedBackendUrl = com.laterbox.app.update.GitHubUpdateChecker.buildBackendUpdateUrl(
+            baseUrl = "https://api.laterbox.example.com/",
+            forceRefresh = true,
+            targetTag = "v1.0.65",
+        )
+        assertEquals("https://api.laterbox.example.com/updates/laterbox/latest?refresh=1&tag=v1.0.65", taggedBackendUrl)
+        assertEquals(
+            "https://api.github.com/repos/Adetisola/Laterbox/releases/tags/v1.0.65",
+            com.laterbox.app.update.GitHubUpdateChecker.buildPublicFallbackUrl("v1.0.65"),
+        )
     }
 
     @Test

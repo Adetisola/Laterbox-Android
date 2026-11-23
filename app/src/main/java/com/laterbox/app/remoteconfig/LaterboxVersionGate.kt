@@ -14,6 +14,8 @@ data class VersionEnforcementBlockState(
     val minimumSupportedVersionCode: Int,
     val minimumSupportedTag: String = "",
     val minimumSupportedVersion: String = "",
+    val recommendedVersionCode: Int = 0,
+    val recommendedTag: String = "",
     val latestStableTag: String = "",
     val latestStableVersion: String = "",
     val updateUrl: String = DEFAULT_UPDATE_URL,
@@ -102,6 +104,8 @@ class LaterboxVersionGate(
                     minimumSupportedVersionCode = versionPolicy.minimumSupportedVersionCode,
                     minimumSupportedTag = versionPolicy.minimumSupportedTag,
                     minimumSupportedVersion = serverBlock?.minimumSupportedVersion.orEmpty(),
+                    recommendedVersionCode = versionPolicy.recommendedVersionCode,
+                    recommendedTag = versionPolicy.recommendedTag,
                     latestStableTag = targetTag,
                     latestStableVersion = serverBlock?.latestStableVersion.orEmpty(),
                     updateUrl = targetUrl,
@@ -137,6 +141,8 @@ class LaterboxVersionGate(
             }
             val minTag = detail.optString("minimumSupportedTag", "").trim().take(32)
             val minVersion = detail.optString("minimumSupportedVersion", "").trim().take(32)
+            val recCode = detail.optInt("recommendedVersionCode", 0).coerceAtLeast(0)
+            val recTag = detail.optString("recommendedTag", "").trim().take(32)
             val latestTag = detail.optString("latestStableTag", "").trim().take(32)
             val latestVersion = detail.optString("latestStableVersion", "").trim().take(32)
             val rawUpdateUrl = detail.optString("updateUrl", "").trim()
@@ -150,6 +156,8 @@ class LaterboxVersionGate(
                 minimumSupportedVersionCode = minCode,
                 minimumSupportedTag = minTag,
                 minimumSupportedVersion = minVersion,
+                recommendedVersionCode = recCode,
+                recommendedTag = recTag,
                 latestStableTag = latestTag,
                 latestStableVersion = latestVersion,
                 updateUrl = safeUpdateUrl,
