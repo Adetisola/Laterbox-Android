@@ -338,11 +338,21 @@ class SettingsViewModel(
     }
 
     suspend fun exportBackup(outputStream: OutputStream): Result<Int> {
-        return backupManager.exportToJson(outputStream)
+        return backupManager.exportToJson(outputStream).onFailure {
+            (appContext?.applicationContext as? com.laterbox.app.LaterboxApplication)
+                ?.container
+                ?.analyticsTracker
+                ?.trackErrorObserved(errorCategory = "backup_failed", screenId = "settings")
+        }
     }
 
     suspend fun importBackup(inputStream: InputStream): Result<BackupRestoreResult> {
-        return backupManager.importFromJson(inputStream)
+        return backupManager.importFromJson(inputStream).onFailure {
+            (appContext?.applicationContext as? com.laterbox.app.LaterboxApplication)
+                ?.container
+                ?.analyticsTracker
+                ?.trackErrorObserved(errorCategory = "backup_failed", screenId = "settings")
+        }
     }
 
     private val _isCheckingUpdate = MutableStateFlow(false)

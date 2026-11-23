@@ -83,6 +83,10 @@ class RemoteConfigManager(
         return currentConfig.isFeatureEnabled(featureKey, defaultValue)
     }
 
+    fun attachAnalyticsTracker(tracker: com.laterbox.app.analytics.LaterboxAnalyticsTracker) {
+        repository.attachAnalyticsTracker(tracker)
+    }
+
     fun dismissAnnouncement(id: String) {
         applicationScope.launch(Dispatchers.IO) {
             runCatching { repository.dismissAnnouncement(id) }

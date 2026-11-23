@@ -65,27 +65,51 @@ object LaterboxAnalyticsSchema {
 
     val ALLOWED_ERROR_CATEGORIES = setOf(
         "network_timeout",
-        "http_error",
-        "stream_resolution_failed",
-        "download_failed",
+        "api_http_error",
         "playback_error",
+        "stream_resolution_failed",
+        "metadata_fetch_error",
+        "download_error",
         "transcript_extraction_failed",
         "ai_request_failed",
+        "database_error",
         "backup_failed",
+        "unsupported_version_blocked",
         "unexpected_error",
     )
 
     val ALLOWED_PERFORMANCE_METRICS = setOf(
         "app_startup_ms",
-        "media_inspection_ms",
+        "config_refresh_ms",
+        "catalogue_load_ms",
         "stream_resolve_ms",
+        "player_first_frame_ms",
+        "media_inspection_ms",
         "transcript_extract_ms",
         "ai_first_token_ms",
-        "config_fetch_ms",
     )
 
     const val MAX_QUEUE_SIZE = 200
     const val HEARTBEAT_INTERVAL_MS = 120_000L
+
+    fun normalizeErrorCategory(raw: String?): String? {
+        val clean = raw?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return null
+        val canonical = when (clean) {
+            "http_error" -> "api_http_error"
+            "download_failed" -> "download_error"
+            else -> clean
+        }
+        return canonical.takeIf { it in ALLOWED_ERROR_CATEGORIES }
+    }
+
+    fun normalizePerformanceMetric(raw: String?): String? {
+        val clean = raw?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return null
+        val canonical = when (clean) {
+            "config_fetch_ms" -> "config_refresh_ms"
+            else -> clean
+        }
+        return canonical.takeIf { it in ALLOWED_PERFORMANCE_METRICS }
+    }
 
     fun mapRouteToScreenId(route: String?): String? {
         val clean = route?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return null
@@ -93,8 +117,12 @@ object LaterboxAnalyticsSchema {
             clean == "inbox" -> "inbox"
             clean == "collections" -> "collections"
             clean.startsWith("collection/") -> "collection_detail"
-            clean == "movies" || clean == "movies/watchlist" || clean == "movies/catalogue" -> "movies"
+            clean == "movies" ||
+                clean == "movies/watchlist" ||
+                clean == "movies/catalogue" ||
+                clean == "movies/viewing_history" -> "movies"
             clean.startsWith("movies/detail") -> "movie_detail"
+            clean == "movies/player" || clean.startsWith("movies/player/") || clean.startsWith("movies/player?") -> "player"
             clean == "downloads" || clean.startsWith("downloads/") -> "downloads"
             clean == "archive" -> "archive"
             clean.startsWith("chat") -> "chat"
@@ -136,7 +164,7 @@ data class AnalyticsEventRecord(
         if (errorCategory != null) put("errorCategory", errorCategory)
         if (httpStatus != null) put("httpStatus", httpStatus)
         if (metricName != null) put("metricName", metricName)
-        if (metricValueMs != null) put("metricValueMs", metricValueMs)
+        if (metricValueMs != null) put("durationMs", metricValueMs)
         put("timestampMs", timestampMs)
         put("isOfflineReplay", overrideOfflineReplay)
     }
@@ -156,24 +184,36 @@ data class AnalyticsEventRecord(
             val featureId = obj.optString("featureId", "").trim().takeIf { it.isNotEmpty() }
             if (featureId != null && featureId !in LaterboxAnalyticsSchema.ALLOWED_FEATURE_IDS) return null
 
-            val errorCategory = obj.optString("errorCategory", "").trim().takeIf { it.isNotEmpty() }
-            if (errorCategory != null && errorCategory !in LaterboxAnalyticsSchema.ALLOWED_ERROR_CATEGORIES) return null
+            val rawErrorCategory = obj.optString("errorCategory", "").trim().takeIf { it.isNotEmpty() }
+            val errorCategory = if (rawErrorCategory != null) {
+                LaterboxAnalyticsSchema.normalizeErrorCategory(rawErrorCategory) ?: return null
+            } else {
+                null
+            }
 
             val httpStatus = if (obj.has("httpStatus") && !obj.isNull("httpStatus")) {
                 obj.optInt("httpStatus", -1).takeIf { it in 100..599 } ?: return null
             } else null
 
-            val metricName = obj.optString("metricName", "").trim().takeIf { it.isNotEmpty() }
-            if (metricName != null && metricName !in LaterboxAnalyticsSchema.ALLOWED_PERFORMANCE_METRICS) return null
+            val rawMetricName = obj.optString("metricName", "").trim().takeIf { it.isNotEmpty() }
+            val metricName = if (rawMetricName != null) {
+                LaterboxAnalyticsSchema.normalizePerformanceMetric(rawMetricName) ?: return null
+            } else {
+                null
+            }
 
-            val metricValueMs = if (obj.has("metricValueMs") && !obj.isNull("metricValueMs")) {
-                obj.optInt("metricValueMs", -1).takeIf { it in 0..600_000 } ?: return null
-            } else null
+            val durationMs = when {
+                obj.has("durationMs") && !obj.isNull("durationMs") ->
+                    obj.optInt("durationMs", -1).takeIf { it in 0..600_000 } ?: return null
+                obj.has("metricValueMs") && !obj.isNull("metricValueMs") ->
+                    obj.optInt("metricValueMs", -1).takeIf { it in 0..600_000 } ?: return null
+                else -> null
+            }
 
             if (eventType == "screen_viewed" && screenId == null) return null
             if (eventType == "feature_used" && featureId == null) return null
             if (eventType == "app_error_observed" && errorCategory == null) return null
-            if (eventType == "performance_metric" && (metricName == null || metricValueMs == null)) return null
+            if (eventType == "performance_metric" && (metricName == null || durationMs == null)) return null
 
             val versionCode = obj.optInt("versionCode", 0)
             val versionName = obj.optString("versionName", "").trim()
@@ -193,7 +233,7 @@ data class AnalyticsEventRecord(
                 errorCategory = errorCategory,
                 httpStatus = httpStatus,
                 metricName = metricName,
-                metricValueMs = metricValueMs,
+                metricValueMs = durationMs,
                 timestampMs = timestampMs,
                 isOfflineReplay = obj.optBoolean("isOfflineReplay", false),
             )
@@ -241,6 +281,17 @@ class LaterboxAnalyticsTracker(
     @Volatile
     private var lastTrackedScreenId: String? = null
 
+    @Volatile
+    var lastPermanentDropReason: String? = null
+        private set
+
+    private val permanentDroppedCount = java.util.concurrent.atomic.AtomicInteger(0)
+
+    fun getPermanentDropCount(): Int = permanentDroppedCount.get()
+
+    private val _foregroundEpoch = kotlinx.coroutines.flow.MutableStateFlow(0)
+    val foregroundEpoch: StateFlow<Int> = _foregroundEpoch
+
     private var heartbeatJob: Job? = null
 
     private val enabled: Boolean
@@ -250,7 +301,7 @@ class LaterboxAnalyticsTracker(
 
     private sealed interface DispatchResult {
         data class Accepted(val pausedByServer: Boolean = false) : DispatchResult
-        data object DropPermanent : DispatchResult
+        data class DropPermanent(val statusCode: Int, val reason: String) : DispatchResult
         data object RetryLater : DispatchResult
     }
 
@@ -305,6 +356,7 @@ class LaterboxAnalyticsTracker(
         isForegrounded = true
         currentSessionId = UUID.randomUUID().toString()
         lastTrackedScreenId = null
+        _foregroundEpoch.value = _foregroundEpoch.value + 1
         val sessionIdSnapshot = currentSessionId
         scope.launch {
             if (!enabled) return@launch
@@ -364,8 +416,7 @@ class LaterboxAnalyticsTracker(
         screenId: String? = null,
         featureId: String? = null,
     ) {
-        val cleanCat = errorCategory.trim().lowercase()
-        if (cleanCat !in LaterboxAnalyticsSchema.ALLOWED_ERROR_CATEGORIES) return
+        val cleanCat = LaterboxAnalyticsSchema.normalizeErrorCategory(errorCategory) ?: return
         val safeHttp = httpStatus?.takeIf { it in 100..599 }
         val safeScreen = screenId?.trim()?.lowercase()?.takeIf { it in LaterboxAnalyticsSchema.ALLOWED_SCREEN_IDS }
         val safeFeature = featureId?.trim()?.lowercase()?.takeIf { it in LaterboxAnalyticsSchema.ALLOWED_FEATURE_IDS }
@@ -389,8 +440,7 @@ class LaterboxAnalyticsTracker(
         screenId: String? = null,
         featureId: String? = null,
     ) {
-        val cleanMetric = metricName.trim().lowercase()
-        if (cleanMetric !in LaterboxAnalyticsSchema.ALLOWED_PERFORMANCE_METRICS) return
+        val cleanMetric = LaterboxAnalyticsSchema.normalizePerformanceMetric(metricName) ?: return
         val boundedMs = metricValueMs.coerceIn(0, 600_000)
         val safeScreen = screenId?.trim()?.lowercase()?.takeIf { it in LaterboxAnalyticsSchema.ALLOWED_SCREEN_IDS }
         val safeFeature = featureId?.trim()?.lowercase()?.takeIf { it in LaterboxAnalyticsSchema.ALLOWED_FEATURE_IDS }
@@ -487,11 +537,20 @@ class LaterboxAnalyticsTracker(
             enqueueOffline(record)
             return
         }
-        when (sendBatch(listOf(record), markQueuedAsReplay = false)) {
+        when (val result = sendBatch(listOf(record), markQueuedAsReplay = false)) {
             is DispatchResult.Accepted -> flushOfflineQueue()
-            DispatchResult.DropPermanent -> Unit
+            is DispatchResult.DropPermanent -> recordPermanentDrop(listOf(record), result)
             DispatchResult.RetryLater -> enqueueOffline(record)
         }
+    }
+
+    private fun recordPermanentDrop(events: List<AnalyticsEventRecord>, result: DispatchResult.DropPermanent) {
+        if (events.isEmpty()) return
+        permanentDroppedCount.addAndGet(events.size)
+        val typesSummary = events.map { it.eventType }.distinct().joinToString(",")
+        val diagnostic = "HTTP ${result.statusCode} [$typesSummary]: ${result.reason}"
+        lastPermanentDropReason = diagnostic
+        runCatching { android.util.Log.w(TAG, "Dropped invalid analytics payload permanently: $diagnostic") }
     }
 
     private suspend fun enqueueOffline(record: AnalyticsEventRecord) = queueMutex.withLock {
@@ -527,16 +586,76 @@ class LaterboxAnalyticsTracker(
                         break
                     }
                 }
-                DispatchResult.DropPermanent -> {
-                    // Drop malformed/rejected 4xx batch so it never wedges newer analytics behind it
-                    val droppedIds = batch.map { it.eventId }.toSet()
-                    queueMutex.withLock {
-                        val remaining = loadQueueUnlocked().filterNot { it.eventId in droppedIds }
-                        saveQueueUnlocked(remaining)
+                is DispatchResult.DropPermanent -> {
+                    if (batch.size == 1) {
+                        recordPermanentDrop(batch, result)
+                        val droppedIds = setOf(batch.first().eventId)
+                        queueMutex.withLock {
+                            val remaining = loadQueueUnlocked().filterNot { it.eventId in droppedIds }
+                            saveQueueUnlocked(remaining)
+                        }
+                    } else {
+                        // Isolate individual malformed event(s) so valid sibling events are still delivered
+                        val settledIds = mutableSetOf<String>()
+                        var hitTransientFailure = false
+                        var paused = false
+                        for (item in batch) {
+                            when (val singleResult = sendBatch(listOf(item), markQueuedAsReplay = true)) {
+                                is DispatchResult.Accepted -> {
+                                    settledIds += item.eventId
+                                    if (singleResult.pausedByServer) {
+                                        paused = true
+                                        break
+                                    }
+                                }
+                                is DispatchResult.DropPermanent -> {
+                                    recordPermanentDrop(listOf(item), singleResult)
+                                    settledIds += item.eventId
+                                }
+                                DispatchResult.RetryLater -> {
+                                    hitTransientFailure = true
+                                    break
+                                }
+                            }
+                        }
+                        if (settledIds.isNotEmpty()) {
+                            queueMutex.withLock {
+                                val remaining = loadQueueUnlocked().filterNot { it.eventId in settledIds }
+                                saveQueueUnlocked(remaining)
+                            }
+                        }
+                        if (paused) {
+                            serverPausedUntilMs = System.currentTimeMillis() + SERVER_PAUSE_BACKOFF_MS
+                            break
+                        }
+                        if (hitTransientFailure) break
                     }
                 }
                 DispatchResult.RetryLater -> break
             }
+        }
+    }
+
+    private fun extractSafeRejectionReason(rawBody: String): String {
+        val trimmed = rawBody.trim()
+        if (trimmed.isEmpty()) return "rejected"
+        val parsed = runCatching { JSONObject(trimmed) }.getOrNull() ?: return "schema_error"
+        val detail = parsed.opt("detail") ?: return "rejected"
+        return when (detail) {
+            is String -> detail.take(120)
+            is JSONArray -> {
+                val first = detail.optJSONObject(0)
+                val loc = first?.optJSONArray("loc")?.let { arr ->
+                    (0 until arr.length()).joinToString(".") { idx -> arr.optString(idx) }
+                }.orEmpty()
+                val type = first?.optString("type", "").orEmpty()
+                if (loc.isNotBlank() || type.isNotBlank()) {
+                    "field=${loc.ifBlank { "unknown" }} type=${type.ifBlank { "invalid" }}".take(120)
+                } else {
+                    "validation_error"
+                }
+            }
+            else -> "validation_error"
         }
     }
 
@@ -608,7 +727,10 @@ class LaterboxAnalyticsTracker(
                         }
                     }
                     return when {
-                        resp.code == 400 || resp.code == 422 -> DispatchResult.DropPermanent
+                        resp.code == 400 || resp.code == 422 -> {
+                            val errBody = runCatching { resp.body?.string().orEmpty() }.getOrDefault("")
+                            DispatchResult.DropPermanent(resp.code, extractSafeRejectionReason(errBody))
+                        }
                         else -> DispatchResult.RetryLater
                     }
                 }
@@ -622,6 +744,7 @@ class LaterboxAnalyticsTracker(
     }
 
     companion object {
+        private const val TAG = "LaterboxAnalytics"
         private const val PREFS_NAME = "laterbox_analytics_prefs"
         private const val KEY_INSTALL_ID = "anonymous_install_id"
         private const val KEY_OFFLINE_QUEUE = "offline_event_queue_v1"

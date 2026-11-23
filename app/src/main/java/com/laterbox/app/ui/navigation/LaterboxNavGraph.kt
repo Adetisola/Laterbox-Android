@@ -292,12 +292,16 @@ fun LaterboxApp(
     var pendingAudioConsentTarget by remember { mutableStateOf<String?>(null) }
     var pendingPermissionTarget by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(currentRoute) {
+    val analyticsTracker = remember(context) {
+        (context.applicationContext as? LaterboxApplication)?.container?.analyticsTracker
+    }
+    val foregroundEpoch by (
+        analyticsTracker?.foregroundEpoch ?: remember { kotlinx.coroutines.flow.MutableStateFlow(0) }
+        ).collectAsState()
+
+    LaunchedEffect(currentRoute, foregroundEpoch) {
         pendingAudioConsentTarget = null
-        (context.applicationContext as? LaterboxApplication)
-            ?.container
-            ?.analyticsTracker
-            ?.trackScreenRoute(currentRoute)
+        analyticsTracker?.trackScreenRoute(currentRoute)
     }
 
     LaunchedEffect(effectiveAssistantEnabled) {

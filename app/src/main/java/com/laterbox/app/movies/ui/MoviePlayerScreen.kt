@@ -965,21 +965,39 @@ private fun ActiveVideoPlayerContent(
 
     DisposableEffect(exoPlayer, audioBoostController, playbackEpisodeKey) {
         val snapshotEpisodeKey = playbackEpisodeKey
+        val prepareStartedMs = System.currentTimeMillis()
         var hasSavedEpisodeStart = false
+        var hasTrackedFirstFrame = false
+        val analyticsTracker = (appContext.applicationContext as? com.laterbox.app.LaterboxApplication)
+            ?.container
+            ?.analyticsTracker
         audioBoostController.bindToPlayer(exoPlayer)
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 isBuffering = playbackState == Player.STATE_BUFFERING
                 isPlaybackEnded = playbackState == Player.STATE_ENDED
-                if (playbackState == Player.STATE_READY && !hasSavedEpisodeStart) {
-                    val readyDur = exoPlayer.duration.coerceAtLeast(0L)
-                    if (readyDur > 0L) {
-                        hasSavedEpisodeStart = true
-                        latestSaveEpisodeProgress(
-                            exoPlayer.currentPosition.coerceAtLeast(0L),
-                            readyDur,
-                            snapshotEpisodeKey
+                if (playbackState == Player.STATE_READY) {
+                    if (!hasTrackedFirstFrame) {
+                        hasTrackedFirstFrame = true
+                        val elapsedMs = (System.currentTimeMillis() - prepareStartedMs)
+                            .coerceIn(0L, 600_000L)
+                            .toInt()
+                        analyticsTracker?.trackPerformanceMetric(
+                            metricName = "player_first_frame_ms",
+                            metricValueMs = elapsedMs,
+                            screenId = "player",
                         )
+                    }
+                    if (!hasSavedEpisodeStart) {
+                        val readyDur = exoPlayer.duration.coerceAtLeast(0L)
+                        if (readyDur > 0L) {
+                            hasSavedEpisodeStart = true
+                            latestSaveEpisodeProgress(
+                                exoPlayer.currentPosition.coerceAtLeast(0L),
+                                readyDur,
+                                snapshotEpisodeKey
+                            )
+                        }
                     }
                 }
                 if (playbackState == Player.STATE_ENDED) {
@@ -1001,6 +1019,10 @@ private fun ActiveVideoPlayerContent(
             override fun onPlayerError(error: PlaybackException) {
                 isBuffering = false
                 playerErrorText = formatPlayerErrorMessage(error)
+                analyticsTracker?.trackErrorObserved(
+                    errorCategory = "playback_error",
+                    screenId = "player",
+                )
             }
 
             override fun onIsPlayingChanged(playing: Boolean) {

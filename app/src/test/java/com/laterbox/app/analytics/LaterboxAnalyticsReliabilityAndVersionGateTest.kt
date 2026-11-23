@@ -74,16 +74,110 @@ class LaterboxAnalyticsReliabilityAndVersionGateTest {
         assertEquals(504, body2.getInt("httpStatus"))
         assertTrue(tokenCalls >= 2)
 
-        // 2. Permanent 422 response is dropped cleanly rather than stuck retrying forever
+        // 2. Permanent 422 response is dropped cleanly with safe diagnostic rather than stuck retrying forever
         server.enqueue(MockResponse().setResponseCode(422).setBody("""{"detail":"bad schema"}"""))
-        tracker.trackPerformanceMetric(metricName = "config_fetch_ms", metricValueMs = 123)
-        val req3 = server.takeRequest(2, TimeUnit.SECONDS)
-        assertEquals("/analytics/v1/ingest", req3?.path)
+        tracker.trackPerformanceMetric(metricName = "config_refresh_ms", metricValueMs = 123)
+        val req3 = server.takeRequest(2, TimeUnit.SECONDS)!!
+        assertEquals("/analytics/v1/ingest", req3.path)
+        val body3 = JSONObject(req3.body.readUtf8()).getJSONArray("events").getJSONObject(0)
+        assertEquals("config_refresh_ms", body3.getString("metricName"))
+        assertEquals(123, body3.getInt("durationMs"))
+        assertFalse(body3.has("metricValueMs"))
+        val dropDeadline = System.currentTimeMillis() + 2_000L
+        while (tracker.getPermanentDropCount() < 1 && System.currentTimeMillis() < dropDeadline) {
+            kotlinx.coroutines.delay(20L)
+        }
+        assertEquals(1, tracker.getPermanentDropCount())
+        assertTrue(tracker.lastPermanentDropReason?.contains("HTTP 422") == true)
 
         // 3. Install ID rotation creates a distinct identifier
         val beforeReset = body2.getString("installId")
         val rotated = tracker.resetInstallId()
         assertNotEquals(beforeReset, rotated)
+    }
+
+    @Test
+    fun tracker_isolatesMalformedOfflineBatchItem_andIncrementsForegroundEpoch() = runBlocking {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = ctx.getSharedPreferences("laterbox_analytics_prefs", Context.MODE_PRIVATE)
+        prefs.edit().clear().commit()
+
+        val base = server.url("/").toString().trimEnd('/')
+        val remoteEnabled = MutableStateFlow(true)
+        val tracker = LaterboxAnalyticsTracker(
+            appContext = ctx,
+            okHttpClient = OkHttpClient(),
+            baseUrlProvider = { base },
+            appCheckTokenProvider = { "token-1" },
+            remoteCollectionFlow = remoteEnabled,
+            heartbeatIntervalMs = 60_000L,
+        )
+
+        val acceptedEvents = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                val arr = JSONObject(request.body.readUtf8()).getJSONArray("events")
+                if (arr.length() > 1) {
+                    return MockResponse().setResponseCode(422).setBody("""{"detail":"one bad item"}""")
+                }
+                val item = arr.getJSONObject(0)
+                if (item.optString("eventId") == "bad_event_123456") {
+                    return MockResponse().setResponseCode(422).setBody("""{"detail":"bad item"}""")
+                }
+                acceptedEvents += item
+                return MockResponse().setResponseCode(200).setBody("""{"acceptedCount":1,"paused":false}""")
+            }
+        }
+
+        val seededQueue = org.json.JSONArray()
+            .put(
+                AnalyticsEventRecord(
+                    eventId = "bad_event_123456",
+                    eventType = "feature_used",
+                    installId = "inst_12345678",
+                    sessionId = "sess_12345678",
+                    versionCode = 68,
+                    versionName = "1.0.68",
+                    manifestRevision = "rev",
+                    featureId = "assistant_chat",
+                    timestampMs = 1760000000000L,
+                    isOfflineReplay = true,
+                ).toJson()
+            )
+            .put(
+                AnalyticsEventRecord(
+                    eventId = "good_event_12345",
+                    eventType = "feature_used",
+                    installId = "inst_12345678",
+                    sessionId = "sess_12345678",
+                    versionCode = 68,
+                    versionName = "1.0.68",
+                    manifestRevision = "rev",
+                    featureId = "media_share",
+                    timestampMs = 1760000001000L,
+                    isOfflineReplay = true,
+                ).toJson()
+            )
+        prefs.edit().putString("offline_event_queue_v1", seededQueue.toString()).commit()
+
+        val initialEpoch = tracker.foregroundEpoch.value
+        tracker.onAppForegrounded()
+        assertEquals(initialEpoch + 1, tracker.foregroundEpoch.value)
+        tracker.trackScreenRoute("movies/viewing_history")
+
+        val d = System.currentTimeMillis() + 4_000L
+        while (
+            (!acceptedEvents.any { it.optString("eventId") == "good_event_12345" } ||
+                tracker.getPermanentDropCount() < 1) &&
+            System.currentTimeMillis() < d
+        ) {
+            kotlinx.coroutines.delay(25L)
+        }
+        assertTrue(acceptedEvents.any { it.optString("eventId") == "good_event_12345" })
+        assertTrue(acceptedEvents.any { it.optString("eventType") == "screen_viewed" && it.optString("screenId") == "movies" })
+        assertEquals(1, tracker.getPermanentDropCount())
+        assertTrue(prefs.getString("offline_event_queue_v1", null).isNullOrBlank())
+        tracker.onAppBackgrounded()
     }
 
     @Test

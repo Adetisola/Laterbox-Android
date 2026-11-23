@@ -1033,6 +1033,8 @@ class ChatViewModel(
             _streamingAssistantMessageId.value = placeholder.id
             _streamingPartialText.value = ""
 
+            val requestStartedMs = System.currentTimeMillis()
+            var firstTokenRecorded = false
             val accumulated = StringBuilder()
             var resolvedKey: String? = null
 
@@ -1075,6 +1077,17 @@ class ChatViewModel(
                                 }
                             }
                             is com.laterbox.app.ai.BackendAiStreamEvent.TextDelta -> {
+                                if (!firstTokenRecorded && event.chunk.isNotEmpty()) {
+                                    firstTokenRecorded = true
+                                    analyticsTracker?.trackPerformanceMetric(
+                                        metricName = "ai_first_token_ms",
+                                        metricValueMs = (System.currentTimeMillis() - requestStartedMs)
+                                            .coerceIn(0L, 600_000L)
+                                            .toInt(),
+                                        screenId = "chat",
+                                        featureId = "assistant_chat",
+                                    )
+                                }
                                 accumulated.append(event.chunk)
                                 _streamingPartialText.value = accumulated.toString()
                             }
@@ -1116,6 +1129,11 @@ class ChatViewModel(
                                     backendNotConfigured = true
                                 } else {
                                     receivedTerminal = true
+                                    analyticsTracker?.trackErrorObserved(
+                                        errorCategory = "ai_request_failed",
+                                        screenId = "chat",
+                                        featureId = "assistant_chat",
+                                    )
                                     val cleanError = GeminiClient.redactSecrets(event.message, resolvedKey)
                                     chatRepository.updateAssistantMessage(
                                         messageId = placeholder.id,
@@ -1141,6 +1159,17 @@ class ChatViewModel(
                     ).collect { event ->
                         when (event) {
                             is GeminiStreamEvent.Delta -> {
+                                if (!firstTokenRecorded && event.chunk.isNotEmpty()) {
+                                    firstTokenRecorded = true
+                                    analyticsTracker?.trackPerformanceMetric(
+                                        metricName = "ai_first_token_ms",
+                                        metricValueMs = (System.currentTimeMillis() - requestStartedMs)
+                                            .coerceIn(0L, 600_000L)
+                                            .toInt(),
+                                        screenId = "chat",
+                                        featureId = "assistant_chat",
+                                    )
+                                }
                                 accumulated.append(event.chunk)
                                 _streamingPartialText.value = accumulated.toString()
                             }
@@ -1166,6 +1195,11 @@ class ChatViewModel(
                             }
                             is GeminiStreamEvent.Error -> {
                                 receivedTerminal = true
+                                analyticsTracker?.trackErrorObserved(
+                                    errorCategory = "ai_request_failed",
+                                    screenId = "chat",
+                                    featureId = "assistant_chat",
+                                )
                                 val cleanError = GeminiClient.redactSecrets(event.reason.userMessage, resolvedKey)
                                 chatRepository.updateAssistantMessage(
                                     messageId = placeholder.id,
@@ -1211,6 +1245,11 @@ class ChatViewModel(
                 }
                 throw ce
             } catch (t: Throwable) {
+                analyticsTracker?.trackErrorObserved(
+                    errorCategory = "ai_request_failed",
+                    screenId = "chat",
+                    featureId = "assistant_chat",
+                )
                 val cleanMsg = GeminiClient.redactSecrets(t.message ?: "Assistant request failed.", resolvedKey)
                 chatRepository.updateAssistantMessage(
                     messageId = placeholder.id,

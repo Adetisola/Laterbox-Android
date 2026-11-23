@@ -1,9 +1,31 @@
 package com.laterbox.app.remoteconfig
 
 import com.laterbox.app.ai.RemoteCapabilities
+import java.security.MessageDigest
 import java.time.Instant
 
 const val SUPPORTED_REMOTE_CONFIG_SCHEMA_VERSION = 1
+
+enum class NoticeExclusionReason {
+    NONE,
+    INVALID_ID,
+    DUPLICATE_ID,
+    DISABLED,
+    EMPTY_MESSAGE,
+    VERSION_BELOW_MIN,
+    VERSION_ABOVE_MAX,
+    SURFACE_MISMATCH,
+    DISMISSED,
+    OVER_LIMIT,
+}
+
+data class RemoteNoticeDiagnostic(
+    val id: String,
+    val reason: NoticeExclusionReason,
+    val minVersionCode: Int = 0,
+    val maxVersionCode: Int = 0,
+    val severity: RemoteAnnouncementSeverity = RemoteAnnouncementSeverity.INFO,
+)
 
 enum class RemoteConfigSource {
     DEFAULT,
@@ -130,6 +152,33 @@ data class RemoteAnnouncementItem(
     fun targetsSurface(target: RemoteUiSurface): Boolean {
         return target in surfaces || (surfaces.isEmpty() && surface == target)
     }
+
+    /**
+     * Scopes dismissal persistence to the specific notice content and target range
+     * so editing an existing notice ID re-prompts eligible users automatically.
+     */
+    fun dismissalKey(): String {
+        val canonical = buildString {
+            append(title.trim()).append('|')
+            append(message.trim()).append('|')
+            append(severity.wireValue).append('|')
+            append(surfaces.joinToString(",") { it.wireValue }).append('|')
+            append(dismissible).append('|')
+            append(actionLabel.trim()).append('|')
+            append(actionDestination.trim()).append('|')
+            append(minVersionCode).append('|')
+            append(maxVersionCode)
+        }
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(canonical.toByteArray(Charsets.UTF_8))
+        val hexPrefix = buildString(12) {
+            for (i in 0 until 6) {
+                append(((digest[i].toInt() ushr 4) and 0x0F).toString(16))
+                append((digest[i].toInt() and 0x0F).toString(16))
+            }
+        }
+        return "$id#$hexPrefix"
+    }
 }
 
 data class RemoteHeroSlide(
@@ -219,7 +268,7 @@ data class RemoteConfigSnapshot(
             .filter { item ->
                 item.enabled &&
                     item.targetsSurface(surface) &&
-                    (!item.dismissible || item.id !in dismissedIds)
+                    (!item.dismissible || (item.id !in dismissedIds && item.dismissalKey() !in dismissedIds))
             }
             .sortedBy { item ->
                 when (item.severity) {

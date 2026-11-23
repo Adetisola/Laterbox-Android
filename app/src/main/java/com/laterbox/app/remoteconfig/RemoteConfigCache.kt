@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
@@ -29,6 +30,7 @@ class RemoteConfigCache(
         val ETAG = stringPreferencesKey("rc_etag")
         val FETCHED_AT_MS = longPreferencesKey("rc_fetched_at_ms")
         val LAST_ATTEMPT_MS = longPreferencesKey("rc_last_attempt_ms")
+        val CLIENT_VERSION_CODE = intPreferencesKey("rc_client_version_code")
         val DISMISSED_ANNOUNCEMENTS = stringSetPreferencesKey("rc_dismissed_announcement_ids")
     }
 
@@ -50,6 +52,10 @@ class RemoteConfigCache(
     ): RemoteConfigSnapshot? {
         val prefs = safePrefs.first()
         val rawJson = prefs[Keys.PAYLOAD_JSON]?.takeIf { it.isNotBlank() } ?: return null
+        val storedVersionCode = prefs[Keys.CLIENT_VERSION_CODE] ?: 0
+        if (clientVersionCode > 0 && storedVersionCode > 0 && storedVersionCode != clientVersionCode) {
+            return null
+        }
         val etag = prefs[Keys.ETAG]?.takeIf { it.isNotBlank() }
         val fetchedAtMs = prefs[Keys.FETCHED_AT_MS] ?: 0L
 
@@ -73,6 +79,7 @@ class RemoteConfigCache(
         rawJson: String,
         etag: String?,
         fetchedAtEpochMs: Long,
+        clientVersionCode: Int = 0,
     ) {
         dataStore.edit { prefs ->
             prefs[Keys.PAYLOAD_JSON] = rawJson
@@ -80,6 +87,9 @@ class RemoteConfigCache(
                 prefs.remove(Keys.ETAG)
             } else {
                 prefs[Keys.ETAG] = etag
+            }
+            if (clientVersionCode > 0) {
+                prefs[Keys.CLIENT_VERSION_CODE] = clientVersionCode
             }
             prefs[Keys.FETCHED_AT_MS] = fetchedAtEpochMs
             prefs[Keys.LAST_ATTEMPT_MS] = fetchedAtEpochMs
@@ -106,8 +116,16 @@ class RemoteConfigCache(
         return safePrefs.first()[Keys.LAST_ATTEMPT_MS] ?: 0L
     }
 
-    suspend fun readEtag(): String? {
-        return safePrefs.first()[Keys.ETAG]?.takeIf { it.isNotBlank() }
+    suspend fun readEtag(clientVersionCode: Int = 0): String? {
+        val prefs = safePrefs.first()
+        if (prefs[Keys.PAYLOAD_JSON].isNullOrBlank()) {
+            return null
+        }
+        val storedVersionCode = prefs[Keys.CLIENT_VERSION_CODE] ?: 0
+        if (clientVersionCode > 0 && storedVersionCode > 0 && storedVersionCode != clientVersionCode) {
+            return null
+        }
+        return prefs[Keys.ETAG]?.takeIf { it.isNotBlank() }
     }
 
     suspend fun dismissAnnouncement(id: String) {

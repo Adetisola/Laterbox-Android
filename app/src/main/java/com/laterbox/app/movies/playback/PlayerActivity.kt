@@ -89,6 +89,10 @@ class PlayerActivity : ComponentActivity() {
         container.analyticsTracker.trackScreenView("player")
 
         setContent {
+            val foregroundEpoch by container.analyticsTracker.foregroundEpoch.collectAsState()
+            LaunchedEffect(foregroundEpoch) {
+                container.analyticsTracker.trackScreenView("player")
+            }
             val preferences by container.userPreferencesRepository.userPreferences.collectAsState(
                 initial = UserPreferences()
             )

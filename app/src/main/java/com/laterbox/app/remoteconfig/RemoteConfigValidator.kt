@@ -3,6 +3,7 @@ package com.laterbox.app.remoteconfig
 import com.laterbox.app.ai.RemoteCapabilities
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URI
 import java.time.Instant
 
 sealed class RemoteConfigParseResult {
@@ -134,20 +135,28 @@ object RemoteConfigValidator {
             }
         }
 
-        // Announcements (up to 5, ignoring unsafe or out-of-range version items)
-        val announcementsList = mutableListOf<RemoteAnnouncementItem>()
+        // Announcements (parse candidates, sort by severity, then retain up to 5)
+        val candidateAnnouncements = mutableListOf<RemoteAnnouncementItem>()
         val announcementsArr = root.optJSONArray("announcements")
         val seenAnnouncementIds = mutableSetOf<String>()
         if (announcementsArr != null) {
-            for (i in 0 until minOf(announcementsArr.length(), 10)) {
+            for (i in 0 until minOf(announcementsArr.length(), 20)) {
                 val item = announcementsArr.optJSONObject(i) ?: continue
                 val parsed = parseAnnouncement(item, clientVersionCode) ?: continue
                 if (seenAnnouncementIds.add(parsed.id)) {
-                    announcementsList += parsed
-                    if (announcementsList.size >= 5) break
+                    candidateAnnouncements += parsed
                 }
             }
         }
+        val announcementsList = candidateAnnouncements
+            .sortedBy { item ->
+                when (item.severity) {
+                    RemoteAnnouncementSeverity.CRITICAL -> 0
+                    RemoteAnnouncementSeverity.WARNING -> 1
+                    RemoteAnnouncementSeverity.INFO -> 2
+                }
+            }
+            .take(5)
 
         // Native SDUI components (strict allowlist; unknown types/rails silently skipped)
         val uiObj = root.optJSONObject("ui")
@@ -196,10 +205,97 @@ object RemoteConfigValidator {
         val clean = destination.trim()
         if (clean.isEmpty()) return true
         if (clean in RemoteCapabilities.SUPPORTED_DESTINATIONS) return true
-        if (clean.startsWith("https://", ignoreCase = true) && clean.length <= 256) {
-            return !unsafeMarkupRegex.containsMatchIn(clean)
+        if (clean.startsWith("https://", ignoreCase = true) &&
+            clean.length <= 256 &&
+            !unsafeMarkupRegex.containsMatchIn(clean) &&
+            !clean.any { it.isWhitespace() }
+        ) {
+            val uri = runCatching { URI(clean) }.getOrNull() ?: return false
+            return uri.scheme.equals("https", ignoreCase = true) && !uri.host.isNullOrBlank()
         }
         return false
+    }
+
+    fun evaluateAnnouncementDiagnostics(
+        rawJson: String,
+        clientVersionCode: Int,
+        targetSurface: RemoteUiSurface? = null,
+        dismissedIds: Set<String> = emptySet(),
+    ): List<RemoteNoticeDiagnostic> {
+        val root = runCatching { JSONObject(rawJson) }.getOrNull() ?: return emptyList()
+        val announcementsArr = root.optJSONArray("announcements") ?: return emptyList()
+        val seenIds = mutableSetOf<String>()
+        val includedCandidates = mutableListOf<RemoteAnnouncementItem>()
+        val results = mutableListOf<RemoteNoticeDiagnostic>()
+
+        for (i in 0 until minOf(announcementsArr.length(), 20)) {
+            val obj = announcementsArr.optJSONObject(i) ?: continue
+            val id = obj.optString("id", "").trim()
+            val minVersion = obj.optInt("minVersionCode", 0).coerceIn(0, 1_000_000)
+            val maxVersion = obj.optInt("maxVersionCode", 0).coerceIn(0, 1_000_000)
+            val severity = RemoteAnnouncementSeverity.fromWire(obj.optString("severity", "info"))
+
+            val rejection = when {
+                !safeIdRegex.matches(id) -> NoticeExclusionReason.INVALID_ID
+                !seenIds.add(id) -> NoticeExclusionReason.DUPLICATE_ID
+                !obj.optBoolean("enabled", true) -> NoticeExclusionReason.DISABLED
+                clientVersionCode > 0 && minVersion > 0 && clientVersionCode < minVersion -> NoticeExclusionReason.VERSION_BELOW_MIN
+                clientVersionCode > 0 && maxVersion > 0 && clientVersionCode > maxVersion -> NoticeExclusionReason.VERSION_ABOVE_MAX
+                sanitizePlainText(obj.optString("message", ""), 500).isBlank() -> NoticeExclusionReason.EMPTY_MESSAGE
+                else -> null
+            }
+            if (rejection != null) {
+                results += RemoteNoticeDiagnostic(
+                    id = id.ifEmpty { "index-$i" },
+                    reason = rejection,
+                    minVersionCode = minVersion,
+                    maxVersionCode = maxVersion,
+                    severity = severity,
+                )
+                continue
+            }
+
+            val parsed = parseAnnouncement(obj, clientVersionCode) ?: continue
+            if (targetSurface != null && !parsed.targetsSurface(targetSurface)) {
+                results += RemoteNoticeDiagnostic(
+                    id = parsed.id,
+                    reason = NoticeExclusionReason.SURFACE_MISMATCH,
+                    minVersionCode = minVersion,
+                    maxVersionCode = maxVersion,
+                    severity = severity,
+                )
+                continue
+            }
+            if (parsed.dismissible && (parsed.id in dismissedIds || parsed.dismissalKey() in dismissedIds)) {
+                results += RemoteNoticeDiagnostic(
+                    id = parsed.id,
+                    reason = NoticeExclusionReason.DISMISSED,
+                    minVersionCode = minVersion,
+                    maxVersionCode = maxVersion,
+                    severity = severity,
+                )
+                continue
+            }
+            includedCandidates += parsed
+        }
+
+        val sorted = includedCandidates.sortedBy { item ->
+            when (item.severity) {
+                RemoteAnnouncementSeverity.CRITICAL -> 0
+                RemoteAnnouncementSeverity.WARNING -> 1
+                RemoteAnnouncementSeverity.INFO -> 2
+            }
+        }
+        sorted.forEachIndexed { idx, item ->
+            results += RemoteNoticeDiagnostic(
+                id = item.id,
+                reason = if (idx < 5) NoticeExclusionReason.NONE else NoticeExclusionReason.OVER_LIMIT,
+                minVersionCode = item.minVersionCode,
+                maxVersionCode = item.maxVersionCode,
+                severity = item.severity,
+            )
+        }
+        return results
     }
 
     private fun parseAndResolveHeroImageUrl(rawUrl: String, backendBaseUrl: String): String {

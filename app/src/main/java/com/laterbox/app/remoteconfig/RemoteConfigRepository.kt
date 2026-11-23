@@ -13,7 +13,15 @@ class RemoteConfigRepository(
     private val clientVersionCode: Int,
     private val clockMs: () -> Long = { System.currentTimeMillis() },
     private val versionGate: LaterboxVersionGate? = null,
+    analyticsTracker: com.laterbox.app.analytics.LaterboxAnalyticsTracker? = null,
 ) {
+    @Volatile
+    private var analyticsTracker: com.laterbox.app.analytics.LaterboxAnalyticsTracker? = analyticsTracker
+
+    fun attachAnalyticsTracker(tracker: com.laterbox.app.analytics.LaterboxAnalyticsTracker) {
+        analyticsTracker = tracker
+    }
+
     private val refreshMutex = Mutex()
     private val _state = MutableStateFlow(RemoteConfigState())
     val state: StateFlow<RemoteConfigState> = _state.asStateFlow()
@@ -80,8 +88,17 @@ class RemoteConfigRepository(
             _state.value = latestState.copy(isRefreshing = true)
             runCatching { cache.recordFetchAttempt(now) }
 
-            val cachedEtag = runCatching { cache.readEtag() }.getOrNull() ?: effectiveConfig.etag
-            val nextState = when (val outcome = client.fetchPublishedConfig(cachedEtag, forceRefresh = forceRefresh)) {
+            // Only send If-None-Match when we actually hold a valid non-default snapshot for this build.
+            val cachedEtag = if (effectiveConfig.source == RemoteConfigSource.DEFAULT) {
+                null
+            } else {
+                runCatching { cache.readEtag(clientVersionCode) }.getOrNull() ?: effectiveConfig.etag
+            }
+            val fetchStartedMs = clockMs()
+            val outcome = client.fetchPublishedConfig(cachedEtag, forceRefresh = forceRefresh)
+            val fetchDurationMs = (clockMs() - fetchStartedMs).coerceAtLeast(0L)
+
+            val nextState = when (outcome) {
                 is RemoteConfigFetchOutcome.Updated -> {
                     val fetchedMs = outcome.snapshot.fetchedAtEpochMs.takeIf { it > 0L } ?: now
                     runCatching {
@@ -89,9 +106,14 @@ class RemoteConfigRepository(
                             rawJson = outcome.rawJson,
                             etag = outcome.etag,
                             fetchedAtEpochMs = fetchedMs,
+                            clientVersionCode = clientVersionCode,
                         )
                     }
                     versionGate?.syncWithPublishedConfig(outcome.snapshot)
+                    analyticsTracker?.trackPerformanceMetric(
+                        "config_refresh_ms",
+                        fetchDurationMs.coerceIn(0L, 600_000L).toInt(),
+                    )
                     _state.value.copy(
                         activeConfig = outcome.snapshot,
                         isRefreshing = false,
@@ -115,6 +137,10 @@ class RemoteConfigRepository(
                     }
                     runCatching { cache.updateFetchTimestamp(now, outcome.etag) }
                     versionGate?.syncWithPublishedConfig(refreshedSnapshot)
+                    analyticsTracker?.trackPerformanceMetric(
+                        "config_refresh_ms",
+                        fetchDurationMs.coerceIn(0L, 600_000L).toInt(),
+                    )
                     _state.value.copy(
                         activeConfig = refreshedSnapshot,
                         isRefreshing = false,
@@ -135,6 +161,16 @@ class RemoteConfigRepository(
                     } else {
                         effectiveConfig
                     }
+                    val statusCode = outcome.statusCode
+                    val errorCategory = if (statusCode != null && statusCode in 400..599) {
+                        "api_http_error"
+                    } else {
+                        "network_timeout"
+                    }
+                    analyticsTracker?.trackErrorObserved(
+                        errorCategory = errorCategory,
+                        httpStatus = statusCode,
+                    )
                     val failures = latestState.consecutiveFailures + 1
                     val backoffMs = FAILURE_BACKOFF_MS.getOrElse(failures - 1) { FAILURE_BACKOFF_MS.last() }
                     _state.value.copy(
@@ -153,7 +189,12 @@ class RemoteConfigRepository(
     }
 
     suspend fun dismissAnnouncement(id: String) {
-        cache.dismissAnnouncement(id)
+        val activeItem = _state.value.activeConfig.announcements.firstOrNull { it.id == id }
+        cache.dismissAnnouncement(activeItem?.dismissalKey() ?: id)
+    }
+
+    suspend fun dismissAnnouncement(item: RemoteAnnouncementItem) {
+        cache.dismissAnnouncement(item.dismissalKey())
     }
 
     companion object {

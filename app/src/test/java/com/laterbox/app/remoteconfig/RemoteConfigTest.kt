@@ -545,4 +545,154 @@ class RemoteConfigTest {
             scope.cancel()
         }
     }
+
+    @Test
+    fun notices_inclusiveVersionBounds67To68_allSixSurfaces_severityCap_andScopedDismissal() = runBlocking {
+        val rawNoticePayload = { maxCode: Int, messageText: String ->
+            """
+            {
+              "schemaVersion": 1,
+              "revision": 30,
+              "publishedAt": "2026-11-23T00:00:00Z",
+              "expiresAt": null,
+              "general": { "minRefreshIntervalSeconds": 60, "staleCacheMaxAgeSeconds": 86400 },
+              "versionPolicy": {},
+              "maintenance": { "enabled": false, "mode": "none", "message": "" },
+              "announcements": [
+                { "id": "info-1", "title": "I1", "message": "M1", "severity": "info", "surfaces": ["inbox"], "dismissible": true, "minVersionCode": 0, "maxVersionCode": 0, "enabled": true },
+                { "id": "info-2", "title": "I2", "message": "M2", "severity": "info", "surfaces": ["inbox"], "dismissible": true, "minVersionCode": 0, "maxVersionCode": 0, "enabled": true },
+                { "id": "info-3", "title": "I3", "message": "M3", "severity": "info", "surfaces": ["inbox"], "dismissible": true, "minVersionCode": 0, "maxVersionCode": 0, "enabled": true },
+                { "id": "info-4", "title": "I4", "message": "M4", "severity": "info", "surfaces": ["inbox"], "dismissible": true, "minVersionCode": 0, "maxVersionCode": 0, "enabled": true },
+                { "id": "info-4", "title": "Dup", "message": "Dup", "severity": "critical", "surfaces": ["inbox"], "dismissible": false, "minVersionCode": 0, "maxVersionCode": 0, "enabled": true },
+                { "id": "paused-1", "title": "Paused", "message": "Hidden", "severity": "critical", "surfaces": ["inbox"], "dismissible": false, "minVersionCode": 0, "maxVersionCode": 0, "enabled": false },
+                {
+                  "id": "update-notice",
+                  "title": "App Update",
+                  "message": "$messageText",
+                  "severity": "critical",
+                  "surfaces": ["inbox", "collections", "movies", "downloads", "archive", "assistant"],
+                  "dismissible": true,
+                  "actionLabel": "Release Notes",
+                  "actionDestination": "https://laterbox-website.vercel.app/changelog",
+                  "minVersionCode": 65,
+                  "maxVersionCode": $maxCode,
+                  "enabled": true
+                },
+                { "id": "info-5", "title": "I5", "message": "M5", "severity": "info", "surfaces": ["inbox"], "dismissible": true, "minVersionCode": 0, "maxVersionCode": 0, "enabled": true }
+              ],
+              "features": {},
+              "ui": { "components": [] }
+            }
+            """.trimIndent()
+        }
+
+        // 1. maxVersionCode = 67: build 67 receives update-notice; build 68 does NOT.
+        val parsed67 = RemoteConfigValidator.parseAndValidate(
+            rawJson = rawNoticePayload(67, "Build 67 message"),
+            clientVersionCode = 67,
+            source = RemoteConfigSource.NETWORK,
+        ) as RemoteConfigParseResult.Valid
+        assertEquals(5, parsed67.snapshot.announcements.size)
+        // CRITICAL notice at index 6 must survive sorting before the 5-notice limit
+        assertEquals("update-notice", parsed67.snapshot.announcements.first().id)
+        assertEquals("https://laterbox-website.vercel.app/changelog", parsed67.snapshot.announcements.first().actionDestination)
+
+        // All 6 surfaces receive update-notice cleanly
+        for (surface in RemoteUiSurface.entries) {
+            assertTrue(
+                "Missing update-notice on $surface",
+                parsed67.snapshot.activeAnnouncementsForSurface(surface).any { it.id == "update-notice" }
+            )
+        }
+
+        val parsed68Excluded = RemoteConfigValidator.parseAndValidate(
+            rawJson = rawNoticePayload(67, "Build 67 message"),
+            clientVersionCode = 68,
+            source = RemoteConfigSource.NETWORK,
+        ) as RemoteConfigParseResult.Valid
+        assertFalse(parsed68Excluded.snapshot.announcements.any { it.id == "update-notice" })
+
+        val diag68 = RemoteConfigValidator.evaluateAnnouncementDiagnostics(
+            rawJson = rawNoticePayload(67, "Build 67 message"),
+            clientVersionCode = 68,
+        ).associateBy { it.id }
+        assertEquals(NoticeExclusionReason.VERSION_ABOVE_MAX, diag68["update-notice"]?.reason)
+        assertEquals(NoticeExclusionReason.DISABLED, diag68["paused-1"]?.reason)
+        assertEquals(NoticeExclusionReason.OVER_LIMIT, diag68["info-5"]?.reason)
+
+        // 2. maxVersionCode updated from 67 -> 68: build 68 now receives it; build 69 does not.
+        val parsed68Included = RemoteConfigValidator.parseAndValidate(
+            rawJson = rawNoticePayload(68, "Build 68 message"),
+            clientVersionCode = 68,
+            source = RemoteConfigSource.NETWORK,
+        ) as RemoteConfigParseResult.Valid
+        val noticeV68 = parsed68Included.snapshot.announcements.first { it.id == "update-notice" }
+        assertEquals(68, noticeV68.maxVersionCode)
+
+        val parsed69Excluded = RemoteConfigValidator.parseAndValidate(
+            rawJson = rawNoticePayload(68, "Build 68 message"),
+            clientVersionCode = 69,
+            source = RemoteConfigSource.NETWORK,
+        ) as RemoteConfigParseResult.Valid
+        assertFalse(parsed69Excluded.snapshot.announcements.any { it.id == "update-notice" })
+
+        // 3. Scoped dismissal: dismissing old version hides unchanged notice, but updated content/max re-prompts!
+        val noticeV67 = parsed67.snapshot.announcements.first { it.id == "update-notice" }
+        val dismissedOldKey = setOf(noticeV67.dismissalKey())
+        assertTrue(parsed67.snapshot.activeAnnouncementsForSurface(RemoteUiSurface.INBOX, dismissedOldKey).none { it.id == "update-notice" })
+        assertTrue(parsed68Included.snapshot.activeAnnouncementsForSurface(RemoteUiSurface.INBOX, dismissedOldKey).any { it.id == "update-notice" })
+
+        // 4. Destination validation rejects hostless https://
+        assertTrue(RemoteConfigValidator.isAllowedDestination("https://laterbox.app/help"))
+        assertFalse(RemoteConfigValidator.isAllowedDestination("https://"))
+        assertFalse(RemoteConfigValidator.isAllowedDestination("https://laterbox.app/bad path"))
+    }
+
+    @Test
+    fun cache_upgradeVersionMismatchClearsStaleSnapshotAndDoesNotSendOldEtag() = runBlocking {
+        val dsFile = File(tempFolder.newFolder("rc_upgrade_ds"), "test_upgrade.preferences_pb")
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            val nowMs = 1_795_300_000_000L
+            val dataStore = PreferenceDataStoreFactory.create(scope = scope) { dsFile }
+            val cache = RemoteConfigCache(dataStore)
+            cache.saveCachedConfig(
+                rawJson = sampleValidPayload(revision = 50),
+                etag = "\"rev-50-v67\"",
+                fetchedAtEpochMs = nowMs - 1_000L,
+                clientVersionCode = 67,
+            )
+
+            // Same build reads cache and ETag normally
+            assertNotNull(cache.readCachedConfig(clientVersionCode = 67, nowEpochMs = nowMs))
+            assertEquals("\"rev-50-v67\"", cache.readEtag(clientVersionCode = 67))
+
+            // Upgraded build 68 must NOT reuse build 67's cached payload or ETag
+            assertNull(cache.readCachedConfig(clientVersionCode = 68, nowEpochMs = nowMs))
+            assertNull(cache.readEtag(clientVersionCode = 68))
+
+            val client68 = RemoteConfigClient(
+                okHttpClient = OkHttpClient(),
+                baseUrlProvider = { server.url("/").toString().trimEnd('/') },
+                appCheckTokenProvider = { "token-1" },
+                clientVersionCode = 68,
+                clientVersionName = "1.0.68",
+                clockMs = { nowMs },
+            )
+            val repo68 = RemoteConfigRepository(cache, client68, clientVersionCode = 68, clockMs = { nowMs })
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(200)
+                    .addHeader("ETag", "\"rev-51-v68\"")
+                    .setBody(sampleValidPayload(revision = 51))
+            )
+            val state = repo68.refreshIfNeeded(forceRefresh = false, bypassThrottle = true)
+            assertEquals(51, state.activeConfig.revision)
+            val req = server.takeRequest()
+            assertNull(req.getHeader("If-None-Match"))
+            assertEquals("68", req.requestUrl?.queryParameter("versionCode"))
+        } finally {
+            scope.cancel()
+        }
+    }
 }

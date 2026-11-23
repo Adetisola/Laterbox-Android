@@ -35,6 +35,7 @@ data class VersionEnforcementBlockState(
 class LaterboxVersionGate(
     private val currentVersionCode: Int,
     private val onForceRefreshRequested: (() -> Unit)? = null,
+    private val onBlocked426: (() -> Unit)? = null,
     private val clockMs: () -> Long = { System.currentTimeMillis() },
 ) {
     private val _serverBlockState = MutableStateFlow<VersionEnforcementBlockState?>(null)
@@ -45,7 +46,11 @@ class LaterboxVersionGate(
         if (currentVersionCode >= parsed.minimumSupportedVersionCode) {
             return
         }
+        val wasBlocked = _serverBlockState.value != null
         _serverBlockState.value = parsed
+        if (!wasBlocked) {
+            onBlocked426?.invoke()
+        }
         // Refresh remote config asynchronously so UI & features stay synchronized with published policy
         onForceRefreshRequested?.invoke()
     }

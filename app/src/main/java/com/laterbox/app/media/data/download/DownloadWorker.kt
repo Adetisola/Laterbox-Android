@@ -624,6 +624,10 @@ class DownloadWorker(
                 detail = errorMessage,
                 linkId = validLinkId
             )
+            container.analyticsTracker.trackErrorObserved(
+                errorCategory = "download_error",
+                featureId = "media_download",
+            )
             container.contextualNotificationEngine.notifyDownloadFailure(
                 taskId = taskId,
                 savedLinkId = validLinkId ?: -1L,

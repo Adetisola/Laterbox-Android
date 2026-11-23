@@ -14,16 +14,18 @@ class LaterboxAnalyticsTrackerTest {
         assertEquals("inbox", LaterboxAnalyticsSchema.mapRouteToScreenId("inbox"))
         assertEquals("movies", LaterboxAnalyticsSchema.mapRouteToScreenId("movies"))
         assertEquals("movies", LaterboxAnalyticsSchema.mapRouteToScreenId("movies/catalogue"))
+        assertEquals("movies", LaterboxAnalyticsSchema.mapRouteToScreenId("movies/viewing_history"))
         assertEquals("movie_detail", LaterboxAnalyticsSchema.mapRouteToScreenId("movies/detail/moviebox/123"))
         assertEquals("chat", LaterboxAnalyticsSchema.mapRouteToScreenId("chat?initialPrompt=hi"))
         assertEquals("settings", LaterboxAnalyticsSchema.mapRouteToScreenId("settings/reminders_ai"))
         assertEquals("collection_detail", LaterboxAnalyticsSchema.mapRouteToScreenId("collection/1/Work"))
         assertEquals("player", LaterboxAnalyticsSchema.mapRouteToScreenId("player"))
+        assertEquals("player", LaterboxAnalyticsSchema.mapRouteToScreenId("movies/player"))
         assertNull(LaterboxAnalyticsSchema.mapRouteToScreenId("unknown_route"))
     }
 
     @Test
-    fun `AnalyticsEventRecord serialization enforces allowlists and preserves offline replay flag`() {
+    fun `AnalyticsEventRecord serialization enforces allowlists and emits durationMs`() {
         val valid = AnalyticsEventRecord(
             eventId = "ev_12345678",
             eventType = "screen_viewed",
@@ -56,8 +58,8 @@ class LaterboxAnalyticsTrackerTest {
             eventType = "app_error_observed",
             installId = "inst_12345678",
             sessionId = "sess_12345678",
-            versionCode = 66,
-            versionName = "1.0.66",
+            versionCode = 68,
+            versionName = "1.0.68",
             manifestRevision = "2026.11.21-v2",
             errorCategory = "stream_resolution_failed",
             httpStatus = 502,
@@ -71,14 +73,29 @@ class LaterboxAnalyticsTrackerTest {
             eventType = "performance_metric",
             installId = "inst_12345678",
             sessionId = "sess_12345678",
-            versionCode = 66,
-            versionName = "1.0.66",
+            versionCode = 68,
+            versionName = "1.0.68",
             manifestRevision = "2026.11.21-v2",
-            metricName = "config_fetch_ms",
+            metricName = "config_refresh_ms",
             metricValueMs = 240,
             timestampMs = 1760000000000L,
         )
-        assertNotNull(AnalyticsEventRecord.fromJson(perfEvent.toJson()))
-        assertNull(AnalyticsEventRecord.fromJson(perfEvent.toJson().put("metricValueMs", -5)))
+        val perfJson = perfEvent.toJson()
+        assertEquals(240, perfJson.getInt("durationMs"))
+        assertFalse(perfJson.has("metricValueMs"))
+        assertNotNull(AnalyticsEventRecord.fromJson(perfJson))
+        assertNull(AnalyticsEventRecord.fromJson(perfEvent.toJson().put("durationMs", -5)))
+        assertNull(AnalyticsEventRecord.fromJson(perfEvent.toJson().put("durationMs", 600_001)))
+
+        // Legacy queued metricValueMs / aliases migrate cleanly on deserialize
+        val legacyPerf = perfEvent.toJson().apply {
+            remove("durationMs")
+            put("metricName", "config_fetch_ms")
+            put("metricValueMs", 310)
+        }
+        val migratedPerf = AnalyticsEventRecord.fromJson(legacyPerf)
+        assertNotNull(migratedPerf)
+        assertEquals("config_refresh_ms", migratedPerf?.metricName)
+        assertEquals(310, migratedPerf?.metricValueMs)
     }
 }

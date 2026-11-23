@@ -106,6 +106,12 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
                     runCatching { remoteConfigManager.refreshNow() }
                 }
             },
+            onBlocked426 = {
+                analyticsTracker.trackErrorObserved(
+                    errorCategory = "unsupported_version_blocked",
+                    httpStatus = 426,
+                )
+            },
         )
     }
 
@@ -363,7 +369,20 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             },
             isTmdbEnabled = {
                 !remoteConfigManager.currentConfig.maintenance.isOnlineServicesPaused
-            }
+            },
+            onAnalyticsPerformance = { metricName, durationMs, screenId ->
+                analyticsTracker.trackPerformanceMetric(
+                    metricName = metricName,
+                    metricValueMs = durationMs,
+                    screenId = screenId,
+                )
+            },
+            onAnalyticsError = { category, screenId ->
+                analyticsTracker.trackErrorObserved(
+                    errorCategory = category,
+                    screenId = screenId,
+                )
+            },
         )
     }
 
@@ -446,7 +465,9 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             authHeaderProvider = { forceRefresh -> getBackendAuthHeader(forceRefresh) },
             remoteCollectionEnabledProvider = { remoteConfigManager.currentConfig.analyticsCollectionEnabled },
             remoteCollectionFlow = remoteAnalyticsEnabledFlow,
-        )
+        ).also { tracker ->
+            remoteConfigManager.attachAnalyticsTracker(tracker)
+        }
     }
 
     override suspend fun resolveBackendBaseUrl(): String {

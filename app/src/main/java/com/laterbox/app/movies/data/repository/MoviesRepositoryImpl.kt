@@ -87,6 +87,8 @@ class MoviesRepositoryImpl(
     private val isInternetArchiveEnabled: () -> Boolean = { true },
     private val isTvMazeEnabled: () -> Boolean = { true },
     private val isTmdbEnabled: () -> Boolean = { true },
+    private val onAnalyticsPerformance: ((metricName: String, durationMs: Int, screenId: String?) -> Unit)? = null,
+    private val onAnalyticsError: ((category: String, screenId: String?) -> Unit)? = null,
 ) : MoviesRepository {
 
     private fun activeMovieBox(): MovieBoxProvider? =
@@ -339,8 +341,14 @@ class MoviesRepositoryImpl(
                 }
             }
 
+            val fetchStartedMs = nowMs()
             val mbResult = mb.getHomeFeed()
             if (mbResult.isSuccess) {
+                onAnalyticsPerformance?.invoke(
+                    "catalogue_load_ms",
+                    (nowMs() - fetchStartedMs).coerceIn(0L, 600_000L).toInt(),
+                    "movies",
+                )
                 val enrichedFeed = registerFeedCanonical(mbResult.getOrThrow())
                 val encodedJson = withContext(defaultDispatcher) {
                     MoviesCacheJsonCodec.encodeHomeFeed(enrichedFeed)
@@ -364,6 +372,11 @@ class MoviesRepositoryImpl(
                 fallbackNotice = buildPrimaryFallbackNotice(mbResult.exceptionOrNull())
             )
             if (fallbackFeedResult.isSuccess) {
+                onAnalyticsPerformance?.invoke(
+                    "catalogue_load_ms",
+                    (nowMs() - fetchStartedMs).coerceIn(0L, 600_000L).toInt(),
+                    "movies",
+                )
                 return@withContext fallbackFeedResult
             }
 
@@ -397,6 +410,7 @@ class MoviesRepositoryImpl(
                     )
                 }
             }
+            onAnalyticsError?.invoke("metadata_fetch_error", "movies")
             return@withContext Result.failure(
                 mbResult.exceptionOrNull()
                     ?: fallbackFeedResult.exceptionOrNull()
@@ -1648,6 +1662,7 @@ class MoviesRepositoryImpl(
             )
         }
 
+        val resolveStartedMs = nowMs()
         val networkResult = when (resolvedProviderId) {
             MovieBoxProvider.PROVIDER_ID ->
                 activeMovieBox()?.resolvePlaybackSources(resolvedTitleId, seasonNumber, episodeNumber)
@@ -1675,12 +1690,25 @@ class MoviesRepositoryImpl(
             else -> Result.failure(IllegalArgumentException("Unknown provider '$resolvedProviderId'"))
         }
 
-        networkResult.map { resolution ->
-            when (resolution) {
-                is PlaybackResolution.Available -> resolution.copy(startPositionMs = savedPos)
-                is PlaybackResolution.Unavailable -> resolution
-            }
-        }
+        val resolveDurationMs = (nowMs() - resolveStartedMs).coerceIn(0L, 600_000L).toInt()
+        networkResult.fold(
+            onSuccess = { resolution ->
+                when (resolution) {
+                    is PlaybackResolution.Available -> {
+                        onAnalyticsPerformance?.invoke("stream_resolve_ms", resolveDurationMs, "player")
+                        Result.success(resolution.copy(startPositionMs = savedPos))
+                    }
+                    is PlaybackResolution.Unavailable -> {
+                        onAnalyticsError?.invoke("stream_resolution_failed", "player")
+                        Result.success(resolution)
+                    }
+                }
+            },
+            onFailure = { error ->
+                onAnalyticsError?.invoke("stream_resolution_failed", "player")
+                Result.failure(error)
+            },
+        )
     }
 
     override suspend fun getSubtitles(
