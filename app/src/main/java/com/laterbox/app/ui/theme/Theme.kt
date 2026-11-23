@@ -1,6 +1,8 @@
 package com.laterbox.app.ui.theme
 
 import android.app.Activity
+import android.graphics.Color as AndroidColor
+import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
@@ -9,7 +11,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.SideEffect
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
@@ -17,6 +18,7 @@ import androidx.core.view.WindowCompat
 fun LaterboxTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     fontScale: Float = 1.0f,
+    lightSystemBars: Boolean = !darkTheme,
     content: @Composable () -> Unit
 ) {
     val colors = if (darkTheme) DarkLaterboxColors else LightLaterboxColors
@@ -59,11 +61,19 @@ fun LaterboxTheme(
         SideEffect {
             val window = (view.context as? Activity)?.window
             if (window != null) {
-                window.statusBarColor = colors.backgroundPrimary.toArgb()
-                window.navigationBarColor = colors.surfacePrimary.toArgb()
+                WindowCompat.setDecorFitsSystemWindows(window, false)
+                @Suppress("DEPRECATION")
+                window.statusBarColor = AndroidColor.TRANSPARENT
+                @Suppress("DEPRECATION")
+                window.navigationBarColor = AndroidColor.TRANSPARENT
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    @Suppress("DEPRECATION")
+                    window.isStatusBarContrastEnforced = false
+                    window.isNavigationBarContrastEnforced = false
+                }
                 val insetsController = WindowCompat.getInsetsController(window, view)
-                insetsController.isAppearanceLightStatusBars = !darkTheme
-                insetsController.isAppearanceLightNavigationBars = !darkTheme
+                insetsController.isAppearanceLightStatusBars = lightSystemBars
+                insetsController.isAppearanceLightNavigationBars = lightSystemBars
             }
         }
     }

@@ -84,7 +84,10 @@ class PlayerActivity : ComponentActivity() {
         }
         launchTargetState.value = initialTarget
 
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+        )
         val container = (application as LaterboxApplication).container
         container.analyticsTracker.trackScreenView("player")
 
@@ -106,7 +109,11 @@ class PlayerActivity : ComponentActivity() {
                 ThemeMode.SYSTEM -> isSystemInDarkTheme()
             }
 
-            LaterboxTheme(darkTheme = darkTheme, fontScale = preferences.fontSizeScale.scaleFactor) {
+            LaterboxTheme(
+                darkTheme = darkTheme,
+                fontScale = preferences.fontSizeScale.scaleFactor,
+                lightSystemBars = false
+            ) {
                 CompositionLocalProvider(LocalIsInPictureInPictureMode provides isInPip) {
                     when (val activeTarget = target) {
                         is PlaybackSessionTarget.MovieStream -> {

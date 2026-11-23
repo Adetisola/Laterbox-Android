@@ -28,16 +28,23 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -815,6 +822,8 @@ private fun ActiveVideoPlayerContent(
         if (isInPip) return@LaunchedEffect
         val window = act.window
         val controller = WindowCompat.getInsetsController(window, window.decorView)
+        controller.isAppearanceLightStatusBars = false
+        controller.isAppearanceLightNavigationBars = false
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         controller.hide(WindowInsetsCompat.Type.systemBars())
 
@@ -1403,6 +1412,7 @@ private fun ActiveVideoPlayerContent(
                         border = BorderStroke(1.dp, Color.White.copy(alpha = 0.25f)),
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
+                            .navigationBarsPadding()
                             .padding(bottom = 32.dp)
                             .clip(RoundedCornerShape(24.dp))
                             .isolatePlayerControlTouch()
@@ -1433,6 +1443,11 @@ private fun ActiveVideoPlayerContent(
                         modifier = Modifier
                             .fillMaxWidth()
                             .statusBarsPadding()
+                            .windowInsetsPadding(
+                                WindowInsets.displayCutout
+                                    .union(WindowInsets.navigationBars)
+                                    .only(WindowInsetsSides.Horizontal)
+                            )
                             .padding(horizontal = 8.dp, vertical = 8.dp)
                             .align(Alignment.TopCenter)
                             .isolatePlayerControlTouch(),
@@ -1808,6 +1823,11 @@ private fun ActiveVideoPlayerContent(
                         modifier = Modifier
                             .fillMaxWidth()
                             .align(Alignment.BottomCenter)
+                            .windowInsetsPadding(
+                                WindowInsets.navigationBars
+                                    .union(WindowInsets.displayCutout)
+                                    .only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal)
+                            )
                             .isolatePlayerControlTouch()
                             .padding(horizontal = 16.dp, vertical = 12.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -2335,6 +2355,7 @@ private fun ActiveVideoPlayerContent(
                 border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.4f)),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
                     .padding(horizontal = 20.dp, vertical = 88.dp)
                     .testTag("player_download_status")
             ) {
