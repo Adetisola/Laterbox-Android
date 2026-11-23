@@ -305,10 +305,10 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
     private val moviesOkHttpClient: okhttp3.OkHttpClient by lazy {
         sharedOkHttpClient.newBuilder()
             .addInterceptor(clientHeadersInterceptor)
-            .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
-            .readTimeout(35, java.util.concurrent.TimeUnit.SECONDS)
+            .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(25, java.util.concurrent.TimeUnit.SECONDS)
             .writeTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
-            .callTimeout(45, java.util.concurrent.TimeUnit.SECONDS)
+            .callTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
             .build()
     }
 
@@ -324,6 +324,9 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             },
             authHeaderProvider = { forceRefresh ->
                 getBackendAuthHeader(forceRefresh)
+            },
+            authDiagnosticProvider = {
+                backendAuthProvider.lastResolutionReason
             }
         )
         val iaProvider = com.laterbox.app.movies.data.provider.InternetArchiveMoviesProvider(moviesOkHttpClient)

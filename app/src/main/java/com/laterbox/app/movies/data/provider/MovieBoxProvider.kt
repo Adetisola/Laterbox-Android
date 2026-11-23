@@ -52,14 +52,53 @@ import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import javax.net.ssl.SSLException
 
+enum class MovieBoxFailureCategory(val analyticsTag: String) {
+    REMOTE_DISABLED("moviebox_disabled"),
+    LOCAL_AUTH_UNAVAILABLE("moviebox_local_auth_error"),
+    BACKEND_AUTH_REJECTED("moviebox_auth_rejected"),
+    UPGRADE_REQUIRED("moviebox_upgrade_required"),
+    RATE_LIMITED("moviebox_rate_limited"),
+    UPSTREAM_BOOTSTRAP_FAILED("moviebox_bootstrap_error"),
+    UPSTREAM_REQUEST_FAILED("moviebox_upstream_error"),
+    TIMEOUT("moviebox_timeout_error"),
+    NETWORK_ERROR("moviebox_network_error"),
+    PARSE_ERROR("moviebox_parse_error"),
+    UNKNOWN("moviebox_unknown_error"),
+}
+
 class MovieBoxApiException(
     val httpCode: Int?,
     message: String,
     val isAuthFailure: Boolean = (httpCode == 401 || httpCode == 403),
     val isRateLimited: Boolean = (httpCode == 429),
     val isServerFailure: Boolean = (httpCode != null && httpCode in 500..599),
+    val failureCategory: MovieBoxFailureCategory = inferCategory(httpCode, message, null),
+    val diagnosticReason: String? = null,
     cause: Throwable? = null
-) : IOException(message, cause)
+) : IOException(message, cause) {
+    companion object {
+        internal fun inferCategory(
+            httpCode: Int?,
+            detail: String?,
+            cause: Throwable?
+        ): MovieBoxFailureCategory = when {
+            httpCode == 401 || httpCode == 403 -> MovieBoxFailureCategory.BACKEND_AUTH_REJECTED
+            httpCode == 426 -> MovieBoxFailureCategory.UPGRADE_REQUIRED
+            httpCode == 429 -> MovieBoxFailureCategory.RATE_LIMITED
+            httpCode != null && httpCode in 500..599 -> {
+                val lower = detail.orEmpty().lowercase(Locale.ROOT)
+                if (lower.contains("bootstrap") || lower.contains("token")) {
+                    MovieBoxFailureCategory.UPSTREAM_BOOTSTRAP_FAILED
+                } else {
+                    MovieBoxFailureCategory.UPSTREAM_REQUEST_FAILED
+                }
+            }
+            cause is SocketTimeoutException -> MovieBoxFailureCategory.TIMEOUT
+            cause is IOException -> MovieBoxFailureCategory.NETWORK_ERROR
+            else -> MovieBoxFailureCategory.UNKNOWN
+        }
+    }
+}
 
 class MovieBoxProvider(
     private val okHttpClient: OkHttpClient,
@@ -67,6 +106,7 @@ class MovieBoxProvider(
     private val retryDelayMs: Long = 250L,
     private val appCheckTokenProvider: suspend (forceRefresh: Boolean) -> String? = { null },
     private val authHeaderProvider: (suspend (forceRefresh: Boolean) -> Pair<String, String>?)? = null,
+    private val authDiagnosticProvider: (() -> String?)? = null,
 ) : MoviesCatalogueProvider,
     MoviesSearchProvider,
     MovieDetailsProvider,
@@ -1432,7 +1472,26 @@ class MovieBoxProvider(
                             json.optJSONObject("detail")?.optCleanString("message")
                                 ?: json.optCleanString("detail")
                         }.getOrNull()
-                        safeLogWarn("$methodLabel $redactedPath -> HTTP ${response.code} (${elapsedMs}ms)")
+                        val authDiag = authDiagnosticProvider?.invoke()
+                        val category = when (response.code) {
+                            401, 403 -> if (sentHeader == null && authHeaderProvider != null) {
+                                MovieBoxFailureCategory.LOCAL_AUTH_UNAVAILABLE
+                            } else {
+                                MovieBoxFailureCategory.BACKEND_AUTH_REJECTED
+                            }
+                            else -> MovieBoxApiException.inferCategory(response.code, detail, null)
+                        }
+                        val diagReason = when (category) {
+                            MovieBoxFailureCategory.LOCAL_AUTH_UNAVAILABLE ->
+                                "http_${response.code}:local_auth(${authDiag ?: "unavailable"})"
+                            MovieBoxFailureCategory.BACKEND_AUTH_REJECTED ->
+                                "http_${response.code}:header=${sentHeader?.first ?: "none"}"
+                            else -> "http_${response.code}:${detail?.take(120) ?: "error"}"
+                        }
+                        safeLogWarn(
+                            "$methodLabel $redactedPath -> HTTP ${response.code} category=$category " +
+                                "auth=${sentHeader?.first ?: "none"} (${elapsedMs}ms)"
+                        )
 
                         val isGuestRestricted403 = response.code == 403 &&
                             sentHeader?.first == com.laterbox.app.auth.LaterboxBackendAuthProvider.HEADER_GUEST_AUTH
@@ -1460,7 +1519,9 @@ class MovieBoxProvider(
                                 code = response.code,
                                 detail = detail,
                                 sentAppCheckToken = sentHeader != null
-                            )
+                            ),
+                            failureCategory = category,
+                            diagnosticReason = diagReason,
                         )
                     }
 
@@ -1468,7 +1529,9 @@ class MovieBoxProvider(
                         safeLogWarn("$methodLabel $redactedPath -> HTTP ${response.code} empty body (${elapsedMs}ms)")
                         throw MovieBoxApiException(
                             httpCode = response.code,
-                            message = "The catalogue service returned an empty response."
+                            message = "The catalogue service returned an empty response.",
+                            failureCategory = MovieBoxFailureCategory.PARSE_ERROR,
+                            diagnosticReason = "empty_response_body",
                         )
                     }
 
@@ -1488,8 +1551,11 @@ class MovieBoxProvider(
                 throw e
             } catch (e: IOException) {
                 lastError = e
-                val isNonRetryableNetwork = e is UnknownHostException || e is SSLException
-                safeLogWarn("$methodLabel $redactedPath -> network error (${e.javaClass.simpleName})")
+                val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
+                val isSlowTimeout = e is SocketTimeoutException && elapsedMs >= 15_000L
+                val isNonRetryableNetwork = e is UnknownHostException || e is SSLException || isSlowTimeout
+                val category = MovieBoxApiException.inferCategory(null, null, e)
+                safeLogWarn("$methodLabel $redactedPath -> $category (${e.javaClass.simpleName}, ${elapsedMs}ms)")
                 if (!isNonRetryableNetwork && transientAttempt < maxTransientAttempts) {
                     transientAttempt++
                     if (retryDelayMs > 0L) delay(retryDelayMs)
@@ -1498,6 +1564,8 @@ class MovieBoxProvider(
                 throw MovieBoxApiException(
                     httpCode = null,
                     message = buildNetworkErrorMessage(e),
+                    failureCategory = category,
+                    diagnosticReason = "${e.javaClass.simpleName}:${e.message}",
                     cause = e
                 )
             }

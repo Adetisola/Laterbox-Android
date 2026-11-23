@@ -58,6 +58,10 @@ class LaterboxBackendAuthProvider(
     @Volatile
     private var appCheckUnsupportedOnDevice: Boolean = false
 
+    @Volatile
+    var lastResolutionReason: String = "uninitialized"
+        private set
+
     val isUsingVerifiedAppCheck: Boolean
         get() = verifiedAppCheckDevice
 
@@ -68,17 +72,37 @@ class LaterboxBackendAuthProvider(
         return selectionMutex.withLock {
             // Once Play Integrity / App Check succeeds on this device, never downgrade it to guest auth.
             if (verifiedAppCheckDevice) {
-                val appCheckToken = appCheckFetcher(forceRefresh).getOrNull()?.trim().orEmpty()
-                return@withLock appCheckToken.takeIf { it.isNotBlank() }?.let {
-                    LaterboxBackendCredential.AppCheck(it)
+                val appCheckResult = runCatching { appCheckFetcher(forceRefresh) }
+                    .getOrElse { Result.failure(it) }
+                val appCheckToken = appCheckResult.getOrNull()?.trim().orEmpty()
+                if (appCheckToken.isNotBlank()) {
+                    lastResolutionReason = "verified_appcheck"
+                    return@withLock LaterboxBackendCredential.AppCheck(appCheckToken)
                 }
+                val err = appCheckResult.exceptionOrNull()
+                lastResolutionReason = if (err != null) {
+                    "appcheck_refresh_error:${err.javaClass.simpleName}"
+                } else {
+                    "appcheck_refresh_empty"
+                }
+                return@withLock null
             }
 
             if (appCheckUnsupportedOnDevice) {
-                val guestToken = guestTokenFetcher(forceRefresh).getOrNull()?.trim().orEmpty()
-                return@withLock guestToken.takeIf { it.isNotBlank() }?.let {
-                    LaterboxBackendCredential.GuestAuth(it)
+                val guestResult = runCatching { guestTokenFetcher(forceRefresh) }
+                    .getOrElse { Result.failure(it) }
+                val guestToken = guestResult.getOrNull()?.trim().orEmpty()
+                if (guestToken.isNotBlank()) {
+                    lastResolutionReason = "guest_fallback_ok"
+                    return@withLock LaterboxBackendCredential.GuestAuth(guestToken)
                 }
+                val err = guestResult.exceptionOrNull()
+                lastResolutionReason = if (err != null) {
+                    "guest_refresh_error:${err.javaClass.simpleName}"
+                } else {
+                    "guest_refresh_empty"
+                }
+                return@withLock null
             }
 
             val online = runCatching { isNetworkValidatedOnline() }.getOrDefault(true)
@@ -94,15 +118,18 @@ class LaterboxBackendAuthProvider(
             if (primaryToken.isNotBlank()) {
                 verifiedAppCheckDevice = true
                 appCheckUnsupportedOnDevice = false
+                lastResolutionReason = "verified_appcheck"
                 return@withLock LaterboxBackendCredential.AppCheck(primaryToken)
             }
 
             // Never treat an offline device or a temporary network error as proof that the device is an emulator.
             if (!online) {
+                lastResolutionReason = "offline"
                 return@withLock null
             }
             val appCheckError = appCheckResult.exceptionOrNull()
             if (appCheckError != null && isTransientNetworkFailure(appCheckError)) {
+                lastResolutionReason = "transient_network:${appCheckError.javaClass.simpleName}"
                 return@withLock null
             }
 
@@ -112,6 +139,11 @@ class LaterboxBackendAuthProvider(
                 else -> isEmulatorHint()
             }
             if (!shouldAttemptGuestFallback) {
+                lastResolutionReason = if (appCheckError != null) {
+                    "appcheck_rejected:${appCheckError.javaClass.simpleName}"
+                } else {
+                    "appcheck_timeout_or_null"
+                }
                 return@withLock null
             }
 
@@ -126,6 +158,7 @@ class LaterboxBackendAuthProvider(
             val guestToken = guestResult.getOrNull()?.trim().orEmpty()
             if (guestToken.isNotBlank()) {
                 appCheckUnsupportedOnDevice = true
+                lastResolutionReason = "guest_fallback_ok"
                 return@withLock LaterboxBackendCredential.GuestAuth(guestToken)
             }
 
@@ -134,6 +167,11 @@ class LaterboxBackendAuthProvider(
                 (appCheckError == null || isUnsupportedEnvironmentFailure(appCheckError))
             ) {
                 appCheckUnsupportedOnDevice = true
+            }
+            lastResolutionReason = if (guestError != null) {
+                "guest_error:${guestError.javaClass.simpleName}"
+            } else {
+                "guest_unavailable"
             }
             null
         }
@@ -151,7 +189,7 @@ class LaterboxBackendAuthProvider(
         private const val TAG = "LaterboxBackendAuth"
         const val HEADER_APP_CHECK = "X-Firebase-AppCheck"
         const val HEADER_GUEST_AUTH = "X-Firebase-Auth"
-        private const val TOKEN_FETCH_TIMEOUT_MS = 5_000L
+        private const val TOKEN_FETCH_TIMEOUT_MS = 10_000L
 
         fun createFirebaseBacked(context: Context): LaterboxBackendAuthProvider {
             val appContext = context.applicationContext
@@ -348,13 +386,17 @@ class LaterboxBackendAuthProvider(
                 }
                 if (msg.contains("play store") ||
                     msg.contains("play services") ||
+                    msg.contains("playintegrity") ||
                     msg.contains("integrity") ||
                     msg.contains("attestation") ||
                     msg.contains("api_not_available") ||
                     msg.contains("cannot bind to service") ||
                     msg.contains("too many attempts") ||
+                    msg.contains("too many requests") ||
+                    msg.contains("error returned from api") ||
                     msg.contains("app not installed") ||
                     msg.contains("client transient") ||
+                    msg.contains("not recognized") ||
                     msg.contains("403") ||
                     msg.contains("400")
                 ) {

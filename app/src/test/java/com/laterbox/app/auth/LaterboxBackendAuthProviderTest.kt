@@ -185,4 +185,71 @@ class LaterboxBackendAuthProviderTest {
         assertFalse(provider.isUsingGuestFallback)
         assertEquals(0, guestCalls.get())
     }
+
+    @Test
+    fun `play integrity attestation errors downgrade to guest and track lastResolutionReason`() = runBlocking {
+        for (errorMsg in listOf("App attestation failed.", "Too many requests from this device")) {
+            val guestCalls = AtomicInteger(0)
+            val provider = LaterboxBackendAuthProvider(
+                appCheckFetcher = { Result.failure(IllegalStateException(errorMsg)) },
+                guestTokenFetcher = {
+                    guestCalls.incrementAndGet()
+                    Result.success("guest-pi-jwt")
+                },
+                isNetworkValidatedOnline = { true },
+                isEmulatorHint = { false },
+            )
+
+            val header = provider.resolveHeaderPair()
+            assertEquals("X-Firebase-Auth" to "guest-pi-jwt", header)
+            assertTrue(provider.isUsingGuestFallback)
+            assertEquals(1, guestCalls.get())
+            assertFalse(provider.lastResolutionReason.isNullOrBlank())
+        }
+    }
+
+    @Test
+    fun `diagnostic lastResolutionReason distinguishes appcheck success, timeout_or_null, offline, and transient network`() = runBlocking {
+        val okProvider = LaterboxBackendAuthProvider(
+            appCheckFetcher = { Result.success("verified-token") },
+            guestTokenFetcher = { Result.success("guest-unused") },
+            isNetworkValidatedOnline = { true },
+            isEmulatorHint = { false },
+        )
+        assertEquals("X-Firebase-AppCheck" to "verified-token", okProvider.resolveHeaderPair())
+        val okReason = okProvider.lastResolutionReason
+        assertFalse(okReason.isNullOrBlank())
+
+        val nullProvider = LaterboxBackendAuthProvider(
+            appCheckFetcher = { Result.success(null) },
+            guestTokenFetcher = { Result.success("guest-unused") },
+            isNetworkValidatedOnline = { true },
+            isEmulatorHint = { false },
+        )
+        assertNull(nullProvider.resolveHeaderPair())
+        assertFalse(nullProvider.isUsingGuestFallback)
+        assertEquals("appcheck_timeout_or_null", nullProvider.lastResolutionReason)
+
+        val offlineProvider = LaterboxBackendAuthProvider(
+            appCheckFetcher = { Result.failure(java.io.IOException("no network")) },
+            guestTokenFetcher = { Result.success("guest-unused") },
+            isNetworkValidatedOnline = { false },
+            isEmulatorHint = { false },
+        )
+        assertNull(offlineProvider.resolveHeaderPair())
+        val offlineReason = offlineProvider.lastResolutionReason
+        assertFalse(offlineReason.isNullOrBlank())
+
+        val transientProvider = LaterboxBackendAuthProvider(
+            appCheckFetcher = { Result.failure(java.io.IOException("temporary reset")) },
+            guestTokenFetcher = { Result.success("guest-unused") },
+            isNetworkValidatedOnline = { true },
+            isEmulatorHint = { false },
+        )
+        assertNull(transientProvider.resolveHeaderPair())
+        assertFalse(transientProvider.isUsingGuestFallback)
+        val transientReason = transientProvider.lastResolutionReason
+        assertFalse(transientReason.isNullOrBlank())
+        assertTrue(setOf(okReason, nullProvider.lastResolutionReason, offlineReason, transientReason).size >= 3)
+    }
 }

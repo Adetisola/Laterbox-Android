@@ -1,5 +1,6 @@
 package com.laterbox.app.movies.data.repository
 
+import android.util.Log
 import com.laterbox.app.BuildConfig
 import com.laterbox.app.media.data.db.dao.DownloadedAssetDao
 import com.laterbox.app.movies.data.download.MoviesDownloadBridge
@@ -17,6 +18,7 @@ import com.laterbox.app.movies.data.local.entity.MovieWatchHistoryEntity
 import com.laterbox.app.movies.data.local.entity.MovieWatchlistEntity
 import com.laterbox.app.movies.data.provider.InternetArchiveMoviesProvider
 import com.laterbox.app.movies.data.provider.MovieBoxApiException
+import com.laterbox.app.movies.data.provider.MovieBoxFailureCategory
 import com.laterbox.app.movies.data.provider.MovieBoxProvider
 import com.laterbox.app.movies.data.provider.TmdbOptionalMoviesProvider
 import com.laterbox.app.movies.data.provider.TvMazeSeriesProvider
@@ -91,8 +93,73 @@ class MoviesRepositoryImpl(
     private val onAnalyticsError: ((category: String, screenId: String?) -> Unit)? = null,
 ) : MoviesRepository {
 
-    private fun activeMovieBox(): MovieBoxProvider? =
-        if (isMovieBoxEnabled()) movieBoxProvider else null
+    @Volatile
+    var lastPrimaryFailureCategory: MovieBoxFailureCategory? = null
+        private set
+
+    @Volatile
+    var lastPrimaryFailureDetail: String? = null
+        private set
+
+    private fun activeMovieBox(): MovieBoxProvider? {
+        val provider = movieBoxProvider ?: return null
+        return if (isMovieBoxEnabled()) {
+            clearPrimaryFailure()
+            provider
+        } else {
+            lastPrimaryFailureCategory = MovieBoxFailureCategory.REMOTE_DISABLED
+            lastPrimaryFailureDetail = "provider_moviebox_enabled=false"
+            null
+        }
+    }
+
+    private fun clearPrimaryFailure() {
+        lastPrimaryFailureCategory = null
+        lastPrimaryFailureDetail = null
+    }
+
+    private fun classifyPrimaryFailure(error: Throwable?): MovieBoxFailureCategory {
+        val apiErr = error as? MovieBoxApiException
+        if (apiErr != null) return apiErr.failureCategory
+        return when (error) {
+            is java.net.SocketTimeoutException -> MovieBoxFailureCategory.TIMEOUT
+            is java.io.IOException -> MovieBoxFailureCategory.NETWORK_ERROR
+            else -> MovieBoxFailureCategory.UNKNOWN
+        }
+    }
+
+    private fun recordPrimaryFallback(
+        operation: String,
+        error: Throwable?,
+        screenId: String = "movies",
+    ) {
+        val category = classifyPrimaryFailure(error)
+        val detail = (error as? MovieBoxApiException)?.diagnosticReason
+            ?: error?.message?.take(200)
+            ?: category.name
+        lastPrimaryFailureCategory = category
+        lastPrimaryFailureDetail = "$operation:$detail"
+        runCatching {
+            Log.w(
+                "MoviesRepositoryImpl",
+                "Primary catalogue fallback [$operation] category=$category detail=$detail"
+            )
+        }
+        val analyticsCategory = when (category) {
+            MovieBoxFailureCategory.TIMEOUT,
+            MovieBoxFailureCategory.NETWORK_ERROR -> "network_timeout"
+            MovieBoxFailureCategory.UPGRADE_REQUIRED -> "unsupported_version_blocked"
+            MovieBoxFailureCategory.PARSE_ERROR -> "metadata_fetch_error"
+            MovieBoxFailureCategory.REMOTE_DISABLED,
+            MovieBoxFailureCategory.LOCAL_AUTH_UNAVAILABLE,
+            MovieBoxFailureCategory.BACKEND_AUTH_REJECTED,
+            MovieBoxFailureCategory.RATE_LIMITED,
+            MovieBoxFailureCategory.UPSTREAM_BOOTSTRAP_FAILED,
+            MovieBoxFailureCategory.UPSTREAM_REQUEST_FAILED,
+            MovieBoxFailureCategory.UNKNOWN -> "api_http_error"
+        }
+        onAnalyticsError?.invoke(analyticsCategory, screenId)
+    }
 
     @Volatile
     private var hasBackfilledCanonicalState: Boolean = false
@@ -367,6 +434,7 @@ class MoviesRepositoryImpl(
             }
 
             // MovieBox failed live: attempt live Internet Archive + TVMaze fallback before stale cache.
+            recordPrimaryFallback("home", mbResult.exceptionOrNull(), screenId = "movies")
             val fallbackFeedResult = getOpenArchiveHomeFeed(
                 forceRefresh = true,
                 fallbackNotice = buildPrimaryFallbackNotice(mbResult.exceptionOrNull())
@@ -418,6 +486,13 @@ class MoviesRepositoryImpl(
             )
         }
 
+        if (!isMovieBoxEnabled() && movieBoxProvider != null) {
+            lastPrimaryFailureCategory = MovieBoxFailureCategory.REMOTE_DISABLED
+            lastPrimaryFailureDetail = "home:provider_moviebox_enabled=false"
+            runCatching {
+                Log.i("MoviesRepositoryImpl", "Primary catalogue disabled by remote configuration")
+            }
+        }
         getOpenArchiveHomeFeed(forceRefresh = forceRefresh, fallbackNotice = null)
     }
 
@@ -640,6 +715,7 @@ class MoviesRepositoryImpl(
                 return@withContext Result.success(pageData.copy(items = dedupedItems))
             }
             mbFailure = mbResult.exceptionOrNull()
+            recordPrimaryFallback("catalogue:${kind?.name?.lowercase(Locale.US) ?: "all"}", mbFailure, screenId = "catalogue")
         }
 
         if (kind == MediaKind.SHORT_DRAMA) {
@@ -865,6 +941,9 @@ class MoviesRepositoryImpl(
                 interleaveLists(suppPages.map { it.items }).distinctBy { it.compositeId }
             )
         )
+        mbResult?.exceptionOrNull()?.let { err ->
+            recordPrimaryFallback("search", err, screenId = "search")
+        }
         Result.success(
             CataloguePage(
                 items = items,
@@ -887,9 +966,13 @@ class MoviesRepositoryImpl(
 
         val mbResult = activeMovieBox()?.getSuggestions(clean, limit)
         if (mbResult != null && mbResult.isSuccess) {
+            clearPrimaryFailure()
             return@withContext mbResult.map {
                 MovieBoxPriorityDeduplicator.deduplicateSuggestionsPreferringMovieBox(it).take(limit)
             }
+        }
+        if (mbResult != null && mbResult.isFailure) {
+            recordPrimaryFallback("suggest", mbResult.exceptionOrNull(), screenId = "search")
         }
 
         val iaDeferred = if (isInternetArchiveEnabled()) {
@@ -1240,6 +1323,9 @@ class MoviesRepositoryImpl(
             else -> Result.success(emptyList())
         }
         if (primary.isSuccess) return@withContext primary
+        if (resolvedProviderId == MovieBoxProvider.PROVIDER_ID && isMovieBoxEnabled()) {
+            recordPrimaryFallback("seasons", primary.exceptionOrNull(), screenId = "details")
+        }
 
         val linkedAlternates = mediaResolver.getLinksForTitle(resolvedProviderId, resolvedSeriesId)
             .filterNot { it.providerId == resolvedProviderId }
@@ -1357,6 +1443,10 @@ class MoviesRepositoryImpl(
                 )
             )
             return@withContext Result.success(episodes)
+        }
+
+        if (resolvedProviderId == MovieBoxProvider.PROVIDER_ID && isMovieBoxEnabled()) {
+            recordPrimaryFallback("episodes", result.exceptionOrNull(), screenId = "details")
         }
 
         val linkedAlternates = mediaResolver.getLinksForTitle(resolvedProviderId, resolvedSeriesId)
@@ -2927,9 +3017,14 @@ class MoviesRepositoryImpl(
     private fun buildPrimaryFallbackNotice(error: Throwable?): String {
         val apiErr = error as? MovieBoxApiException
         return when {
-            apiErr?.isAuthFailure == true ->
+            apiErr?.failureCategory == MovieBoxFailureCategory.UPGRADE_REQUIRED ->
+                "Please update Laterbox to continue using the main catalogue — showing archive & TV guide"
+            apiErr?.failureCategory == MovieBoxFailureCategory.LOCAL_AUTH_UNAVAILABLE ||
+                apiErr?.failureCategory == MovieBoxFailureCategory.BACKEND_AUTH_REJECTED ||
+                apiErr?.isAuthFailure == true ->
                 "Access verification is temporarily unavailable — showing archive & TV guide"
-            apiErr?.isRateLimited == true ->
+            apiErr?.failureCategory == MovieBoxFailureCategory.RATE_LIMITED ||
+                apiErr?.isRateLimited == true ->
                 "Main catalogue is temporarily busy — showing archive & TV guide"
             else -> MOVIEBOX_FALLBACK_NOTICE
         }

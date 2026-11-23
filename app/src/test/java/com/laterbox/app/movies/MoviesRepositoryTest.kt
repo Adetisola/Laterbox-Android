@@ -1614,4 +1614,113 @@ class MoviesRepositoryTest {
         assertSanitized(serverNotice)
         assertTrue(serverNotice!!.contains("unavailable", ignoreCase = true))
     }
+
+    @Test
+    fun primaryFailureClassification_distinguishesRemoteDisabled_localAuth_backendAuth_bootstrap502_andCleanSuccess() = runTest {
+        var primaryStatus = 200
+        var primaryBody = """
+            {
+              "code": 0,
+              "message": "ok",
+              "data": {
+                "operatingList": [
+                  {
+                    "type": "BANNER",
+                    "opId": "hero",
+                    "title": "Featured",
+                    "subjects": [
+                      {
+                        "subjectId": "mb_ok_1",
+                        "subjectType": 1,
+                        "title": "Live MovieBox Title",
+                        "cover": {"url": "https://cdn.example/mb_ok_1.jpg"}
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+        """.trimIndent()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path == "/home" || path.startsWith("/trending") ->
+                        MockResponse().setResponseCode(primaryStatus).setBody(primaryBody)
+                    path.startsWith("/advancedsearch.php") -> MockResponse().setResponseCode(200).setBody(
+                        """{"response":{"numFound":1,"docs":[{"identifier":"ia_fb","title":"Archive Fallback","year":1960}]}}"""
+                    )
+                    path.startsWith("/shows?page=") -> MockResponse().setResponseCode(200).setBody(
+                        """[{"id":91,"name":"TV Guide Fallback","weight":80,"genres":["Drama"],"premiered":"2021-01-01","rating":{"average":7.8}}]"""
+                    )
+                    path.startsWith("/schedule") -> MockResponse().setResponseCode(200).setBody("[]")
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val client = OkHttpClient()
+        val base = server.url("/").toString().trimEnd('/')
+        var mbEnabled = false
+        var authHeader: Pair<String, String>? = null
+        val analyticsErrors = mutableListOf<Pair<String, String?>>()
+
+        val mbProvider = com.laterbox.app.movies.data.provider.MovieBoxProvider(
+            okHttpClient = client,
+            baseUrlProvider = { base },
+            retryDelayMs = 1L,
+            authHeaderProvider = { authHeader },
+            authDiagnosticProvider = { if (authHeader == null) "appcheck_timeout_or_null" else "guest_fallback" }
+        )
+        val repo = MoviesRepositoryImpl(
+            moviesDao = db.moviesDao(),
+            internetArchiveProvider = InternetArchiveMoviesProvider(client, base),
+            tvMazeProvider = TvMazeSeriesProvider(client, base),
+            tmdbProvider = TmdbOptionalMoviesProvider(client, apiKeyProvider = { "" }, baseUrl = base),
+            movieBoxProvider = mbProvider,
+            useSampleFixturesOnlyProvider = { false },
+            nowMs = { fakeClockMs },
+            isMovieBoxEnabled = { mbEnabled },
+            onAnalyticsError = { category, screenId -> analyticsErrors += (category to screenId) }
+        )
+
+        // 1. Remote disabled -> REMOTE_DISABLED, no error analytics
+        val disabledFeed = repo.getHomeFeed(forceRefresh = true).getOrThrow()
+        assertEquals(com.laterbox.app.movies.data.provider.MovieBoxFailureCategory.REMOTE_DISABLED, repo.lastPrimaryFailureCategory)
+        org.junit.Assert.assertNull(disabledFeed.activeProviderNotice)
+        assertTrue(analyticsErrors.isEmpty())
+
+        // 2. Local auth missing -> LOCAL_AUTH_UNAVAILABLE
+        mbEnabled = true
+        authHeader = null
+        primaryStatus = 401
+        primaryBody = """{"detail":"Unauthorized"}"""
+        repo.getHomeFeed(forceRefresh = true).getOrThrow()
+        assertEquals(com.laterbox.app.movies.data.provider.MovieBoxFailureCategory.LOCAL_AUTH_UNAVAILABLE, repo.lastPrimaryFailureCategory)
+        assertEquals(1, analyticsErrors.size)
+        assertEquals("api_http_error" to "movies", analyticsErrors.last())
+
+        // 3. Backend rejected valid guest auth -> BACKEND_AUTH_REJECTED
+        authHeader = "X-Firebase-Auth" to "guest-token"
+        primaryStatus = 403
+        primaryBody = """{"detail":"Forbidden"}"""
+        repo.getHomeFeed(forceRefresh = true).getOrThrow()
+        assertEquals(com.laterbox.app.movies.data.provider.MovieBoxFailureCategory.BACKEND_AUTH_REJECTED, repo.lastPrimaryFailureCategory)
+        assertEquals(2, analyticsErrors.size)
+
+        // 4. Upstream bootstrap 502 -> UPSTREAM_BOOTSTRAP_FAILED
+        primaryStatus = 502
+        primaryBody = """{"detail":"Upstream MovieBox bootstrap failed"}"""
+        repo.getHomeFeed(forceRefresh = true).getOrThrow()
+        assertEquals(com.laterbox.app.movies.data.provider.MovieBoxFailureCategory.UPSTREAM_BOOTSTRAP_FAILED, repo.lastPrimaryFailureCategory)
+        assertEquals(3, analyticsErrors.size)
+
+        // 5. MovieBox recovers -> clears failure category, no notice, no extra analytics error
+        primaryStatus = 200
+        primaryBody = """{"code":0,"message":"ok","data":{"operatingList":[]}}"""
+        val recovered = repo.getHomeFeed(forceRefresh = true).getOrThrow()
+        org.junit.Assert.assertNull(repo.lastPrimaryFailureCategory)
+        org.junit.Assert.assertNull(recovered.activeProviderNotice)
+        assertEquals(3, analyticsErrors.size)
+    }
 }

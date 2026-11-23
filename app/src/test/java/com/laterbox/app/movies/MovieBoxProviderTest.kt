@@ -1341,4 +1341,114 @@ class MovieBoxProviderTest {
             anim.items[0].posterBlurHash
         )
     }
+
+    @Test
+    fun `failureCategory classifies local auth missing, backend auth rejected, bootstrap and upstream 502, 429, timeout, and parse errors`() = kotlinx.coroutines.test.runTest {
+        val base = server.url("/").toString().trimEnd('/')
+        val fastClient = OkHttpClient.Builder()
+            .connectTimeout(java.time.Duration.ofSeconds(1))
+            .readTimeout(java.time.Duration.ofMillis(350))
+            .callTimeout(java.time.Duration.ofSeconds(2))
+            .build()
+
+        var nextResponse: () -> MockResponse = { MockResponse().setResponseCode(404) }
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = nextResponse()
+        }
+
+        // 1. Missing local auth header -> LOCAL_AUTH_UNAVAILABLE
+        nextResponse = { MockResponse().setResponseCode(401).setBody("""{"detail":"Unauthorized"}""") }
+        val noAuthProvider = MovieBoxProvider(
+            okHttpClient = fastClient,
+            baseUrlProvider = { base },
+            retryDelayMs = 1L,
+            authHeaderProvider = { null },
+            authDiagnosticProvider = { "appcheck_timeout_or_null" }
+        )
+        val localAuthErr = noAuthProvider.getHomeFeed().exceptionOrNull() as com.laterbox.app.movies.data.provider.MovieBoxApiException
+        assertEquals(com.laterbox.app.movies.data.provider.MovieBoxFailureCategory.LOCAL_AUTH_UNAVAILABLE, localAuthErr.failureCategory)
+        assertTrue(localAuthErr.isAuthFailure)
+
+        // 2. Valid header still rejected 401/403 -> BACKEND_AUTH_REJECTED
+        nextResponse = { MockResponse().setResponseCode(403).setBody("""{"detail":"Forbidden"}""") }
+        val rejectedProvider = MovieBoxProvider(
+            okHttpClient = fastClient,
+            baseUrlProvider = { base },
+            retryDelayMs = 1L,
+            authHeaderProvider = { "X-Firebase-Auth" to "guest-token" },
+            authDiagnosticProvider = { "guest_fallback" }
+        )
+        val rejectedErr = rejectedProvider.getHomeFeed().exceptionOrNull() as com.laterbox.app.movies.data.provider.MovieBoxApiException
+        assertEquals(com.laterbox.app.movies.data.provider.MovieBoxFailureCategory.BACKEND_AUTH_REJECTED, rejectedErr.failureCategory)
+        assertTrue(rejectedErr.isAuthFailure)
+
+        // 3. Upstream bootstrap 502 vs generic 503 upstream failure
+        nextResponse = { MockResponse().setResponseCode(502).setBody("""{"detail":"Upstream MovieBox bootstrap failed"}""") }
+        val bootstrapErr = rejectedProvider.getHomeFeed().exceptionOrNull() as com.laterbox.app.movies.data.provider.MovieBoxApiException
+        assertEquals(com.laterbox.app.movies.data.provider.MovieBoxFailureCategory.UPSTREAM_BOOTSTRAP_FAILED, bootstrapErr.failureCategory)
+
+        nextResponse = { MockResponse().setResponseCode(503).setBody("""{"detail":"Upstream gateway busy"}""") }
+        val upstreamErr = rejectedProvider.getHomeFeed().exceptionOrNull() as com.laterbox.app.movies.data.provider.MovieBoxApiException
+        assertEquals(com.laterbox.app.movies.data.provider.MovieBoxFailureCategory.UPSTREAM_REQUEST_FAILED, upstreamErr.failureCategory)
+
+        // 4. Rate limited 429 & upgrade required 426
+        nextResponse = { MockResponse().setResponseCode(429).setBody("""{"detail":"Too many requests"}""") }
+        val rateErr = rejectedProvider.getHomeFeed().exceptionOrNull() as com.laterbox.app.movies.data.provider.MovieBoxApiException
+        assertEquals(com.laterbox.app.movies.data.provider.MovieBoxFailureCategory.RATE_LIMITED, rateErr.failureCategory)
+
+        nextResponse = { MockResponse().setResponseCode(426).setBody("""{"detail":"Update required"}""") }
+        val upgradeErr = rejectedProvider.getHomeFeed().exceptionOrNull() as com.laterbox.app.movies.data.provider.MovieBoxApiException
+        assertEquals(com.laterbox.app.movies.data.provider.MovieBoxFailureCategory.UPGRADE_REQUIRED, upgradeErr.failureCategory)
+
+        // 5. Empty 200 body -> PARSE_ERROR
+        nextResponse = { MockResponse().setResponseCode(200).setBody("") }
+        val parseErr = rejectedProvider.getHomeFeed().exceptionOrNull() as com.laterbox.app.movies.data.provider.MovieBoxApiException
+        assertEquals(com.laterbox.app.movies.data.provider.MovieBoxFailureCategory.PARSE_ERROR, parseErr.failureCategory)
+
+        // 6. Slow/unresponsive server -> TIMEOUT
+        nextResponse = { MockResponse().setResponseCode(200).setBody("{}").setBodyDelay(2, java.util.concurrent.TimeUnit.SECONDS) }
+        val timeoutErr = rejectedProvider.getHomeFeed().exceptionOrNull() as com.laterbox.app.movies.data.provider.MovieBoxApiException
+        assertEquals(com.laterbox.app.movies.data.provider.MovieBoxFailureCategory.TIMEOUT, timeoutErr.failureCategory)
+    }
+
+    @Test
+    fun `401 response triggers forced auth refresh and retries both appCheck and guest headers`() = kotlinx.coroutines.test.runTest {
+        val base = server.url("/").toString().trimEnd('/')
+        val validHomeJson = """{"data":{"operatingList":[]}}"""
+
+        for ((headerName, firstToken, refreshedToken) in listOf(
+            Triple("X-Firebase-AppCheck", "stale-appcheck", "fresh-appcheck"),
+            Triple("X-Firebase-Auth", "stale-guest", "fresh-guest"),
+        )) {
+            var refreshCount = 0
+            val seenTokens = mutableListOf<String?>()
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    val tok = request.getHeader(headerName)
+                    seenTokens += tok
+                    return if (tok == firstToken) {
+                        MockResponse().setResponseCode(401).setBody("""{"detail":"expired"}""")
+                    } else {
+                        MockResponse().setResponseCode(200).setBody(validHomeJson)
+                    }
+                }
+            }
+            val provider = MovieBoxProvider(
+                okHttpClient = OkHttpClient(),
+                baseUrlProvider = { base },
+                authHeaderProvider = { forceRefresh ->
+                    if (forceRefresh) {
+                        refreshCount++
+                        headerName to refreshedToken
+                    } else {
+                        headerName to firstToken
+                    }
+                }
+            )
+            val result = provider.getHomeFeed()
+            assertTrue("Expected retry success for $headerName, err=${result.exceptionOrNull()}", result.isSuccess)
+            assertEquals(1, refreshCount)
+            assertEquals(listOf(firstToken, refreshedToken), seenTokens)
+        }
+    }
 }
