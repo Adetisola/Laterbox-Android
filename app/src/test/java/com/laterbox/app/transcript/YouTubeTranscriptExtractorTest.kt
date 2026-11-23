@@ -628,11 +628,13 @@ class YouTubeTranscriptExtractorTest {
             assertEquals(429, ex!!.code)
             assertEquals(2L, ex.retryAfterSeconds)
 
-            server.enqueue(MockResponse().setBodyDelay(5, java.util.concurrent.TimeUnit.SECONDS).setBody("WEBVTT"))
+            server.enqueue(MockResponse().setBodyDelay(2, java.util.concurrent.TimeUnit.SECONDS).setBody("WEBVTT"))
             val job = async(kotlinx.coroutines.Dispatchers.IO) {
                 dataSource.fetchCaptionPayload(server.url("/slow").toString())
             }
-            delay(60L)
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                delay(60L)
+            }
             job.cancel(CancellationException("User cancelled HTTP call"))
             try {
                 job.await()
@@ -641,7 +643,7 @@ class YouTubeTranscriptExtractorTest {
             }
             assertTrue(job.isCancelled)
         } finally {
-            server.shutdown()
+            runCatching { server.shutdown() }
         }
     }
 
