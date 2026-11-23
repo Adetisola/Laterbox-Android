@@ -135,6 +135,11 @@ class MediaRepositoryImpl(
         urlExpiresAt = urlExpiresAt
     )
 
+    override fun observeTasksBySourceRefPrefix(prefix: String): Flow<List<DownloadTask>> =
+        taskDao.observeTasksBySourceRefPrefix(prefix).map { entities ->
+            entities.map { it.toDomain() }
+        }
+
     private suspend fun enqueueDownloadInternal(
         linkId: Long?,
         candidate: MediaCandidate,
@@ -149,6 +154,19 @@ class MediaRepositoryImpl(
         sourceRef: String?,
         urlExpiresAt: Long?
     ): String = withContext(Dispatchers.IO) {
+        val cleanSourceRef = sourceRef?.trim()?.takeIf { it.isNotEmpty() }
+        if (cleanSourceRef != null) {
+            taskDao.findActiveOrPausedBySourceRef(cleanSourceRef)?.let { existing ->
+                return@withContext existing.id
+            }
+            val refParts = cleanSourceRef.split("|")
+            if (refParts.size >= 4 && ((refParts[2].toIntOrNull() ?: 0) > 0 || (refParts[3].toIntOrNull() ?: 0) > 0)) {
+                val episodePrefix = refParts.take(4).joinToString("|") + "|"
+                taskDao.findActiveOrPausedBySourceRefPrefix(episodePrefix)?.let { existing ->
+                    return@withContext existing.id
+                }
+            }
+        }
         val taskId = UUID.randomUUID().toString()
         val sourceUrl = when (val s = candidate.source) {
             is AcquisitionSource.DirectHttp -> s.url

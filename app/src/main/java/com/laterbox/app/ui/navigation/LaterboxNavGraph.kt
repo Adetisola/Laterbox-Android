@@ -1614,7 +1614,10 @@ fun LaterboxApp(
                                 onScheduleViewingReminder = movieDetailViewModel::scheduleViewingReminder,
                                 onDismissViewingReminder = movieDetailViewModel::dismissViewingReminder,
                                 onToggleMuteSeriesReminders = movieDetailViewModel::toggleMuteSeriesReminders,
-                                onClearActionFeedback = movieDetailViewModel::clearActionFeedback
+                                onClearActionFeedback = movieDetailViewModel::clearActionFeedback,
+                                onEpisodeDownloadClick = movieDetailViewModel::onEpisodeDownloadButtonClick,
+                                onSelectEpisodeDownloadSource = movieDetailViewModel::startEpisodeDownloadWithSource,
+                                onDismissEpisodeResolutionPicker = movieDetailViewModel::dismissEpisodeResolutionPicker
                             )
                         }
 

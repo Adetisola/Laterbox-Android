@@ -138,6 +138,7 @@ object AppViewModelProvider {
                 userPreferencesRepository = app.container.userPreferencesRepository,
                 collectionRepository = app.container.collectionRepository,
                 reminderScheduler = app.container.reminderScheduler,
+                mediaRepository = app.container.mediaRepository,
                 computeDispatcher = kotlinx.coroutines.Dispatchers.Default
             )
         }

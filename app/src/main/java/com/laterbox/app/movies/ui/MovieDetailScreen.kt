@@ -12,10 +12,16 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -23,6 +29,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,6 +49,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -86,22 +94,32 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -186,6 +204,9 @@ fun MovieDetailScreen(
     onDismissViewingReminder: () -> Unit = {},
     onToggleMuteSeriesReminders: () -> Unit = {},
     onClearActionFeedback: () -> Unit = {},
+    onEpisodeDownloadClick: (EpisodeItem) -> Unit = {},
+    onSelectEpisodeDownloadSource: (seasonNumber: Int, episodeNumber: Int, episodeTitle: String, source: PlaybackSource) -> Unit = { _, _, _, _ -> },
+    onDismissEpisodeResolutionPicker: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -1835,12 +1856,23 @@ fun MovieDetailScreen(
                                             ?.get(ep.seasonNumber to ep.episodeNumber)
                                         val isWatched = epProgress?.isCompleted == true
                                         val isEpDownloaded = offlineLookup.hasEpisode(summary.providerId, summary.id, ep.seasonNumber, ep.episodeNumber)
+                                        val epDownloadState = uiState.episodeDownloads[ep.seasonNumber to ep.episodeNumber]
+                                            ?: if (isEpDownloaded) EpisodeDownloadUiState(status = EpisodeDownloadStatus.COMPLETED, progressPercent = 100) else EpisodeDownloadUiState()
+                                        val epPicker = uiState.episodeResolutionPicker
+                                            ?.takeIf { it.seasonNumber == ep.seasonNumber && it.episodeNumber == ep.episodeNumber }
                                         EpisodeRowCard(
                                             episode = ep,
                                             seriesPosterUrl = summary.posterUrl ?: summary.backdropUrl,
                                             episodeProgress = epProgress,
                                             isWatched = isWatched,
-                                            isDownloaded = isEpDownloaded,
+                                            isDownloaded = isEpDownloaded || epDownloadState.status == EpisodeDownloadStatus.COMPLETED,
+                                            downloadState = epDownloadState,
+                                            resolutionPicker = epPicker,
+                                            onDownloadClick = { onEpisodeDownloadClick(ep) },
+                                            onSelectDownloadSource = { src ->
+                                                onSelectEpisodeDownloadSource(ep.seasonNumber, ep.episodeNumber, ep.title, src)
+                                            },
+                                            onDismissResolutionPicker = onDismissEpisodeResolutionPicker,
                                             onToggleWatched = { onToggleEpisodeWatched(ep) },
                                             onClick = { onPlayClick(ep.seasonNumber, ep.episodeNumber) },
                                             modifier = Modifier.padding(horizontal = 16.dp)
@@ -1878,12 +1910,23 @@ fun MovieDetailScreen(
                                     ?.get(ep.seasonNumber to ep.episodeNumber)
                                 val isWatched = epProgress?.isCompleted == true
                                 val isEpDownloaded = offlineLookup.hasEpisode(summary.providerId, summary.id, ep.seasonNumber, ep.episodeNumber)
+                                val epDownloadState = uiState.episodeDownloads[ep.seasonNumber to ep.episodeNumber]
+                                    ?: if (isEpDownloaded) EpisodeDownloadUiState(status = EpisodeDownloadStatus.COMPLETED, progressPercent = 100) else EpisodeDownloadUiState()
+                                val epPicker = uiState.episodeResolutionPicker
+                                    ?.takeIf { it.seasonNumber == ep.seasonNumber && it.episodeNumber == ep.episodeNumber }
                                 EpisodeRowCard(
                                     episode = ep,
                                     seriesPosterUrl = summary.posterUrl ?: summary.backdropUrl,
                                     episodeProgress = epProgress,
                                     isWatched = isWatched,
-                                    isDownloaded = isEpDownloaded,
+                                    isDownloaded = isEpDownloaded || epDownloadState.status == EpisodeDownloadStatus.COMPLETED,
+                                    downloadState = epDownloadState,
+                                    resolutionPicker = epPicker,
+                                    onDownloadClick = { onEpisodeDownloadClick(ep) },
+                                    onSelectDownloadSource = { src ->
+                                        onSelectEpisodeDownloadSource(ep.seasonNumber, ep.episodeNumber, ep.title, src)
+                                    },
+                                    onDismissResolutionPicker = onDismissEpisodeResolutionPicker,
                                     onToggleWatched = { onToggleEpisodeWatched(ep) },
                                     onClick = { onPlayClick(ep.seasonNumber, ep.episodeNumber) },
                                     modifier = Modifier.padding(horizontal = 16.dp)
@@ -2063,6 +2106,11 @@ private fun EpisodeRowCard(
     episodeProgress: com.laterbox.app.movies.domain.model.EpisodeProgressState? = null,
     isWatched: Boolean = false,
     isDownloaded: Boolean = false,
+    downloadState: EpisodeDownloadUiState = EpisodeDownloadUiState(),
+    resolutionPicker: EpisodeResolutionPickerState? = null,
+    onDownloadClick: () -> Unit = {},
+    onSelectDownloadSource: (PlaybackSource) -> Unit = {},
+    onDismissResolutionPicker: () -> Unit = {},
     onToggleWatched: () -> Unit = {}
 ) {
     val colors = LaterboxTheme.colors
@@ -2234,6 +2282,14 @@ private fun EpisodeRowCard(
                     }
                 }
             }
+            EpisodeDownloadActionButton(
+                episode = episode,
+                downloadState = downloadState,
+                resolutionPicker = resolutionPicker,
+                onDownloadClick = onDownloadClick,
+                onSelectDownloadSource = onSelectDownloadSource,
+                onDismissResolutionPicker = onDismissResolutionPicker
+            )
             Surface(
                 shape = CircleShape,
                 color = colors.accentContainer,
@@ -2249,6 +2305,303 @@ private fun EpisodeRowCard(
                         tint = colors.accentPrimary,
                         modifier = Modifier.size(14.dp)
                     )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EpisodeDownloadActionButton(
+    episode: EpisodeItem,
+    downloadState: EpisodeDownloadUiState,
+    resolutionPicker: EpisodeResolutionPickerState?,
+    onDownloadClick: () -> Unit,
+    onSelectDownloadSource: (PlaybackSource) -> Unit,
+    onDismissResolutionPicker: () -> Unit
+) {
+    val colors = LaterboxTheme.colors
+    val statusTagSuffix = "${episode.seasonNumber}_${episode.episodeNumber}"
+    val animatedProgress by animateFloatAsState(
+        targetValue = (downloadState.progressPercent.coerceIn(0, 100) / 100f),
+        animationSpec = tween(durationMillis = 240),
+        label = "ep_dl_progress_$statusTagSuffix"
+    )
+    val contentDesc = when (downloadState.status) {
+        EpisodeDownloadStatus.IDLE -> "Download episode ${episode.episodeNumber}"
+        EpisodeDownloadStatus.STARTING -> "Preparing episode ${episode.episodeNumber} download"
+        EpisodeDownloadStatus.DOWNLOADING -> "Pause episode ${episode.episodeNumber} download (${downloadState.progressPercent}%)"
+        EpisodeDownloadStatus.PAUSED -> "Resume episode ${episode.episodeNumber} download (${downloadState.progressPercent}%)"
+        EpisodeDownloadStatus.COMPLETED -> "Episode ${episode.episodeNumber} downloaded offline"
+        EpisodeDownloadStatus.FAILED -> "Retry episode ${episode.episodeNumber} download"
+    }
+
+    Box(contentAlignment = Alignment.Center) {
+        IconButton(
+            onClick = onDownloadClick,
+            modifier = Modifier
+                .size(34.dp)
+                .testTag("episode_download_button_$statusTagSuffix")
+        ) {
+            AnimatedContent(
+                targetState = downloadState.status,
+                transitionSpec = {
+                    (fadeIn(tween(180)) + scaleIn(initialScale = 0.86f, animationSpec = tween(180))) togetherWith
+                        (fadeOut(tween(140)) + scaleOut(targetScale = 0.86f, animationSpec = tween(140)))
+                },
+                label = "ep_dl_morph_$statusTagSuffix"
+            ) { status ->
+                when (status) {
+                    EpisodeDownloadStatus.IDLE -> {
+                        Surface(
+                            shape = CircleShape,
+                            color = colors.surfaceSecondary,
+                            border = BorderStroke(0.75.dp, colors.borderSubtle),
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    painter = painterResource(LaterboxIcons.Download),
+                                    contentDescription = contentDesc,
+                                    tint = colors.textSecondary,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                        }
+                    }
+                    EpisodeDownloadStatus.STARTING -> {
+                        Surface(
+                            shape = CircleShape,
+                            color = colors.accentContainer,
+                            border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.4f)),
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator(
+                                    color = colors.accentPrimary,
+                                    strokeWidth = 2.dp,
+                                    modifier = Modifier
+                                        .size(15.dp)
+                                        .testTag("episode_download_starting_$statusTagSuffix")
+                                )
+                            }
+                        }
+                    }
+                    EpisodeDownloadStatus.DOWNLOADING -> {
+                        Box(
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(CircleShape)
+                                .background(colors.accentContainer.copy(alpha = 0.7f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(
+                                progress = { animatedProgress.coerceAtLeast(0.04f) },
+                                color = colors.accentPrimary,
+                                trackColor = colors.borderSubtle,
+                                strokeWidth = 2.25.dp,
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .testTag("episode_download_progress_$statusTagSuffix")
+                            )
+                            Icon(
+                                painter = painterResource(LaterboxIcons.Pause),
+                                contentDescription = contentDesc,
+                                tint = colors.accentPrimary,
+                                modifier = Modifier.size(12.dp)
+                            )
+                        }
+                    }
+                    EpisodeDownloadStatus.PAUSED -> {
+                        Box(
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(CircleShape)
+                                .background(colors.surfaceSecondary),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(
+                                progress = { animatedProgress.coerceAtLeast(0.04f) },
+                                color = colors.accentPrimary.copy(alpha = 0.65f),
+                                trackColor = colors.borderSubtle,
+                                strokeWidth = 2.25.dp,
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .testTag("episode_download_paused_$statusTagSuffix")
+                            )
+                            Icon(
+                                painter = painterResource(LaterboxIcons.Play),
+                                contentDescription = contentDesc,
+                                tint = colors.textPrimary,
+                                modifier = Modifier.size(12.dp)
+                            )
+                        }
+                    }
+                    EpisodeDownloadStatus.COMPLETED -> {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color(0xFF1B5E20).copy(alpha = 0.18f),
+                            border = BorderStroke(0.75.dp, Color(0xFF4CAF50).copy(alpha = 0.65f)),
+                            modifier = Modifier
+                                .size(28.dp)
+                                .testTag("episode_download_completed_$statusTagSuffix")
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    painter = painterResource(LaterboxIcons.Check),
+                                    contentDescription = contentDesc,
+                                    tint = Color(0xFF4CAF50),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                        }
+                    }
+                    EpisodeDownloadStatus.FAILED -> {
+                        Surface(
+                            shape = CircleShape,
+                            color = colors.statusDanger.copy(alpha = 0.14f),
+                            border = BorderStroke(0.75.dp, colors.statusDanger.copy(alpha = 0.65f)),
+                            modifier = Modifier
+                                .size(28.dp)
+                                .testTag("episode_download_failed_$statusTagSuffix")
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    painter = painterResource(LaterboxIcons.Refresh),
+                                    contentDescription = contentDesc,
+                                    tint = colors.statusDanger,
+                                    modifier = Modifier.size(13.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (resolutionPicker != null && resolutionPicker.sources.isNotEmpty()) {
+            EpisodeResolutionPopover(
+                picker = resolutionPicker,
+                onSelectSource = onSelectDownloadSource,
+                onDismiss = onDismissResolutionPicker
+            )
+        }
+    }
+}
+
+private class EpisodeResolutionPopoverPositionProvider(
+    private val verticalMarginPx: Int,
+    private val screenEdgeMarginPx: Int
+) : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize
+    ): IntOffset {
+        val maxX = (windowSize.width - popupContentSize.width - screenEdgeMarginPx)
+            .coerceAtLeast(screenEdgeMarginPx)
+        val desiredX = anchorBounds.right - popupContentSize.width
+        val clampedX = desiredX.coerceIn(screenEdgeMarginPx, maxX)
+
+        val spaceAbove = anchorBounds.top - screenEdgeMarginPx
+        val desiredY = if (spaceAbove >= popupContentSize.height + verticalMarginPx) {
+            anchorBounds.top - popupContentSize.height - verticalMarginPx
+        } else {
+            (anchorBounds.bottom + verticalMarginPx).coerceAtMost(
+                (windowSize.height - popupContentSize.height - screenEdgeMarginPx).coerceAtLeast(screenEdgeMarginPx)
+            )
+        }
+        return IntOffset(clampedX, desiredY)
+    }
+}
+
+@Composable
+private fun EpisodeResolutionPopover(
+    picker: EpisodeResolutionPickerState,
+    onSelectSource: (PlaybackSource) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val colors = LaterboxTheme.colors
+    val typography = LaterboxTheme.typography
+    val density = LocalDensity.current
+    val configuration = LocalConfiguration.current
+    val maxPopoverWidth = (configuration.screenWidthDp - 24).dp.coerceAtLeast(180.dp)
+    val verticalMarginPx = with(density) { 8.dp.roundToPx() }
+    val screenEdgeMarginPx = with(density) { 12.dp.roundToPx() }
+    val positionProvider = remember(verticalMarginPx, screenEdgeMarginPx) {
+        EpisodeResolutionPopoverPositionProvider(
+            verticalMarginPx = verticalMarginPx,
+            screenEdgeMarginPx = screenEdgeMarginPx
+        )
+    }
+
+    var revealed by remember { mutableStateOf(false) }
+    LaunchedEffect(picker.seasonNumber, picker.episodeNumber) {
+        revealed = true
+    }
+
+    Popup(
+        popupPositionProvider = positionProvider,
+        onDismissRequest = onDismiss,
+        properties = PopupProperties(
+            focusable = true,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true
+        )
+    ) {
+        AnimatedVisibility(
+            visible = revealed,
+            enter = fadeIn(tween(150)) + scaleIn(
+                initialScale = 0.92f,
+                transformOrigin = TransformOrigin(0.9f, 0.9f),
+                animationSpec = tween(160)
+            ),
+            exit = fadeOut(tween(120))
+        ) {
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = colors.surfaceElevated,
+                tonalElevation = 4.dp,
+                shadowElevation = 10.dp,
+                border = BorderStroke(0.75.dp, colors.borderSubtle),
+                modifier = Modifier
+                    .widthIn(max = maxPopoverWidth)
+                    .testTag("episode_resolution_popover_${picker.seasonNumber}_${picker.episodeNumber}")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    picker.sources.forEach { source ->
+                        val sizeText = source.sizeMb?.takeIf { it > 0.0 }?.let { mb ->
+                            if (mb >= 1024.0) {
+                                String.format(Locale.US, " · %.1f GB", mb / 1024.0)
+                            } else {
+                                String.format(Locale.US, " · %.0f MB", mb)
+                            }
+                        }.orEmpty()
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = colors.surfaceSecondary,
+                            border = BorderStroke(0.75.dp, colors.borderSubtle),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { onSelectSource(source) }
+                                .testTag("episode_resolution_pill_${picker.seasonNumber}_${picker.episodeNumber}_${source.qualityLabel}")
+                        ) {
+                            Text(
+                                text = "${source.qualityLabel}$sizeText",
+                                style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                color = colors.textPrimary,
+                                maxLines = 1,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
+                            )
+                        }
+                    }
                 }
             }
         }

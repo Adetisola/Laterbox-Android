@@ -70,9 +70,35 @@ data class MovieDetailUiState(
     val seriesPreferences: SeriesPreferences? = null,
     val hiddenMediaKeys: Set<String> = emptySet(),
     val rankedRelatedTitles: List<MovieTitleSummary> = emptyList(),
+    val episodeDownloads: Map<Pair<Int, Int>, EpisodeDownloadUiState> = emptyMap(),
+    val episodeResolutionPicker: EpisodeResolutionPickerState? = null,
     val actionFeedbackMessage: String? = null,
     val actionErrorMessage: String? = null,
     val errorMessage: String? = null
+)
+
+enum class EpisodeDownloadStatus {
+    IDLE,
+    STARTING,
+    DOWNLOADING,
+    PAUSED,
+    COMPLETED,
+    FAILED
+}
+
+data class EpisodeDownloadUiState(
+    val status: EpisodeDownloadStatus = EpisodeDownloadStatus.IDLE,
+    val taskId: String? = null,
+    val progressPercent: Int = 0,
+    val qualityLabel: String? = null,
+    val errorMessage: String? = null
+)
+
+data class EpisodeResolutionPickerState(
+    val seasonNumber: Int,
+    val episodeNumber: Int,
+    val episodeTitle: String,
+    val sources: List<PlaybackSource> = emptyList()
 )
 
 class MovieDetailViewModel(
@@ -81,7 +107,8 @@ class MovieDetailViewModel(
     private val userPreferencesRepository: UserPreferencesRepository? = null,
     private val collectionRepository: CollectionRepository? = null,
     private val reminderScheduler: ReminderScheduler? = null,
-    private val computeDispatcher: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.Main.immediate
+    private val computeDispatcher: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.Main.immediate,
+    private val mediaRepository: com.laterbox.app.media.domain.repository.MediaRepository? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MovieDetailUiState())
@@ -96,6 +123,12 @@ class MovieDetailViewModel(
     private var personJob: Job? = null
     private var currentKey: Pair<String, String>? = null
     private var loadRequestSeq: Long = 0L
+
+    private var observedEpisodeTasks: List<com.laterbox.app.media.domain.model.DownloadTask> = emptyList()
+    private val resolvingEpisodes = mutableSetOf<Pair<Int, Int>>()
+    private val enqueuingEpisodes = mutableSetOf<Pair<Int, Int>>()
+    private val resolvedEpisodeSourcesCache = mutableMapOf<Pair<Int, Int>, List<PlaybackSource>>()
+    private val episodeResolveJobs = mutableMapOf<Pair<Int, Int>, Job>()
 
     init {
         userPreferencesRepository?.let { repo ->
@@ -134,6 +167,7 @@ class MovieDetailViewModel(
         viewModelScope.launch {
             moviesRepository.observeOfflineAvailability().collect { matches ->
                 _uiState.update { it.copy(offlineMatches = matches) }
+                recomputeEpisodeDownloadStates()
             }
         }
         viewModelScope.launch {
@@ -157,7 +191,17 @@ class MovieDetailViewModel(
     fun load(providerId: String, titleId: String, forceRefresh: Boolean = false) {
         val key = providerId to titleId
         if (!forceRefresh && currentKey == key && _uiState.value.details != null) return
+        val switchedTitle = currentKey != null && currentKey != key
         currentKey = key
+        if (switchedTitle) {
+            observedEpisodeTasks = emptyList()
+            resolvingEpisodes.clear()
+            enqueuingEpisodes.clear()
+            resolvedEpisodeSourcesCache.clear()
+            episodeResolveJobs.values.forEach { it.cancel() }
+            episodeResolveJobs.clear()
+            _uiState.update { it.copy(episodeResolutionPicker = null, episodeDownloads = emptyMap()) }
+        }
 
         watchlistJob?.cancel()
         watchlistJob = viewModelScope.launch {
@@ -237,6 +281,15 @@ class MovieDetailViewModel(
                     _uiState.update { it.copy(seriesPreferences = prefs) }
                 }
             }
+            mediaRepository?.let { mediaRepo ->
+                launch {
+                    val prefix = "${providerId.trim()}|${titleId.trim()}|"
+                    mediaRepo.observeTasksBySourceRefPrefix(prefix).collect { tasks ->
+                        observedEpisodeTasks = tasks
+                        recomputeEpisodeDownloadStates()
+                    }
+                }
+            }
         }
 
         loadJob?.cancel()
@@ -267,7 +320,8 @@ class MovieDetailViewModel(
                         playbackPreferences = prev.playbackPreferences,
                         collections = prev.collections,
                         offlineMatches = prev.offlineMatches,
-                        hiddenMediaKeys = prev.hiddenMediaKeys
+                        hiddenMediaKeys = prev.hiddenMediaKeys,
+                        episodeDownloads = prev.episodeDownloads
                     )
                 }
                 if (cachedIsSeries && prefillSeason != null) {
@@ -287,7 +341,8 @@ class MovieDetailViewModel(
                         playbackPreferences = prev.playbackPreferences,
                         collections = prev.collections,
                         offlineMatches = prev.offlineMatches,
-                        hiddenMediaKeys = prev.hiddenMediaKeys
+                        hiddenMediaKeys = prev.hiddenMediaKeys,
+                        episodeDownloads = prev.episodeDownloads
                     )
                 }
             }
@@ -1257,4 +1312,395 @@ class MovieDetailViewModel(
             )
         }
     }
+
+    fun onEpisodeDownloadButtonClick(episode: EpisodeItem) {
+        val epKey = episode.seasonNumber to episode.episodeNumber
+        val currentState = _uiState.value.episodeDownloads[epKey] ?: EpisodeDownloadUiState()
+        when (currentState.status) {
+            EpisodeDownloadStatus.STARTING -> return
+            EpisodeDownloadStatus.COMPLETED -> {
+                _uiState.update {
+                    it.copy(actionFeedbackMessage = "S${episode.seasonNumber} · E${episode.episodeNumber} is already downloaded offline.")
+                }
+                return
+            }
+            EpisodeDownloadStatus.DOWNLOADING -> {
+                currentState.taskId?.let { pauseEpisodeDownload(it) }
+                return
+            }
+            EpisodeDownloadStatus.PAUSED -> {
+                currentState.taskId?.let { resumeEpisodeDownload(it) }
+                return
+            }
+            EpisodeDownloadStatus.FAILED -> {
+                if (currentState.taskId != null) {
+                    retryEpisodeDownload(currentState.taskId)
+                    return
+                }
+            }
+            EpisodeDownloadStatus.IDLE -> Unit
+        }
+
+        val cachedSources = resolvedEpisodeSourcesCache[epKey]
+        if (!cachedSources.isNullOrEmpty()) {
+            handleResolvedEpisodeSources(episode, cachedSources)
+            return
+        }
+
+        if (episodeResolveJobs[epKey]?.isActive == true || epKey in resolvingEpisodes || epKey in enqueuingEpisodes) {
+            return
+        }
+
+        val summary = _uiState.value.details?.summary
+        val providerId = summary?.providerId?.takeIf { it.isNotBlank() } ?: currentKey?.first.orEmpty()
+        val titleId = summary?.id?.takeIf { it.isNotBlank() } ?: currentKey?.second.orEmpty()
+        if (providerId.isBlank() || titleId.isBlank()) return
+
+        resolvingEpisodes.add(epKey)
+        recomputeEpisodeDownloadStates()
+
+        episodeResolveJobs[epKey] = viewModelScope.launch {
+            try {
+                val res = moviesRepository.resolvePlayback(
+                    providerId = providerId,
+                    titleId = titleId,
+                    seasonNumber = episode.seasonNumber,
+                    episodeNumber = episode.episodeNumber
+                )
+                resolvingEpisodes.remove(epKey)
+                res.fold(
+                    onSuccess = { playback ->
+                        if (playback is PlaybackResolution.Available) {
+                            val downloadable = filterDownloadableProgressiveSources(playback.sources)
+                            if (downloadable.isEmpty()) {
+                                _uiState.update {
+                                    it.copy(actionErrorMessage = "No downloadable streams available for S${episode.seasonNumber} · E${episode.episodeNumber}.")
+                                }
+                                recomputeEpisodeDownloadStates()
+                            } else {
+                                resolvedEpisodeSourcesCache[epKey] = downloadable
+                                handleResolvedEpisodeSources(episode, downloadable)
+                            }
+                        } else {
+                            _uiState.update {
+                                it.copy(actionErrorMessage = "Episode download options aren't available yet.")
+                            }
+                            recomputeEpisodeDownloadStates()
+                        }
+                    },
+                    onFailure = { error ->
+                        _uiState.update {
+                            it.copy(
+                                actionErrorMessage = error.message?.takeIf { m -> m.isNotBlank() }
+                                    ?: "Unable to load resolution options for S${episode.seasonNumber} · E${episode.episodeNumber}."
+                            )
+                        }
+                        recomputeEpisodeDownloadStates()
+                    }
+                )
+            } finally {
+                resolvingEpisodes.remove(epKey)
+                episodeResolveJobs.remove(epKey)
+                recomputeEpisodeDownloadStates()
+            }
+        }
+    }
+
+    private fun handleResolvedEpisodeSources(episode: EpisodeItem, sources: List<PlaybackSource>) {
+        if (sources.size == 1) {
+            startEpisodeDownloadWithSource(
+                seasonNumber = episode.seasonNumber,
+                episodeNumber = episode.episodeNumber,
+                episodeTitle = episode.title,
+                source = sources.first()
+            )
+        } else {
+            _uiState.update {
+                it.copy(
+                    episodeResolutionPicker = EpisodeResolutionPickerState(
+                        seasonNumber = episode.seasonNumber,
+                        episodeNumber = episode.episodeNumber,
+                        episodeTitle = episode.title,
+                        sources = sources
+                    )
+                )
+            }
+            recomputeEpisodeDownloadStates()
+        }
+    }
+
+    fun startEpisodeDownloadWithSource(
+        seasonNumber: Int,
+        episodeNumber: Int,
+        episodeTitle: String,
+        source: PlaybackSource
+    ) {
+        _uiState.update { it.copy(episodeResolutionPicker = null) }
+        val epKey = seasonNumber to episodeNumber
+        val currentStatus = _uiState.value.episodeDownloads[epKey]?.status
+        if (epKey in enqueuingEpisodes ||
+            currentStatus == EpisodeDownloadStatus.DOWNLOADING ||
+            currentStatus == EpisodeDownloadStatus.PAUSED
+        ) {
+            return
+        }
+
+        val bridge = moviesDownloadBridge
+        if (bridge == null) {
+            _uiState.update { it.copy(actionErrorMessage = "Downloads are not available right now.") }
+            return
+        }
+        val summary = _uiState.value.details?.summary
+        if (summary == null) {
+            _uiState.update { it.copy(actionErrorMessage = "Still loading title details. Please wait.") }
+            return
+        }
+
+        enqueuingEpisodes.add(epKey)
+        recomputeEpisodeDownloadStates()
+
+        viewModelScope.launch {
+            try {
+                val cleanEpTitle = episodeTitle.takeIf {
+                    it.isNotBlank() && !it.equals("Episode $episodeNumber", ignoreCase = true)
+                }
+                val epLabel = if (cleanEpTitle != null) {
+                    "S$seasonNumber · E$episodeNumber · $cleanEpTitle"
+                } else {
+                    "S$seasonNumber · E$episodeNumber"
+                }
+                val result = bridge.enqueueAuthorisedDownload(
+                    summary = summary,
+                    source = source,
+                    episodeLabel = epLabel,
+                    seasonNumber = seasonNumber,
+                    episodeNumber = episodeNumber
+                )
+                result.fold(
+                    onSuccess = {
+                        _uiState.update {
+                            it.copy(
+                                actionFeedbackMessage = "Downloading S$seasonNumber · E$episodeNumber (${source.qualityLabel})"
+                            )
+                        }
+                    },
+                    onFailure = { error ->
+                        _uiState.update {
+                            it.copy(
+                                actionErrorMessage = error.message?.takeIf { m -> m.isNotBlank() }
+                                    ?: "Could not start download for S$seasonNumber · E$episodeNumber."
+                            )
+                        }
+                    }
+                )
+            } finally {
+                enqueuingEpisodes.remove(epKey)
+                recomputeEpisodeDownloadStates()
+            }
+        }
+    }
+
+    fun pauseEpisodeDownload(taskId: String) {
+        val repo = mediaRepository ?: return
+        viewModelScope.launch {
+            runCatching { repo.pauseDownload(taskId) }
+        }
+    }
+
+    fun resumeEpisodeDownload(taskId: String) {
+        val repo = mediaRepository ?: return
+        viewModelScope.launch {
+            runCatching { repo.resumeDownload(taskId) }
+        }
+    }
+
+    fun retryEpisodeDownload(taskId: String) {
+        val repo = mediaRepository ?: return
+        viewModelScope.launch {
+            runCatching { repo.retryDownload(taskId) }
+                .onFailure { error ->
+                    _uiState.update {
+                        it.copy(actionErrorMessage = error.message ?: "Unable to retry episode download.")
+                    }
+                }
+        }
+    }
+
+    fun dismissEpisodeResolutionPicker() {
+        _uiState.update { it.copy(episodeResolutionPicker = null) }
+    }
+
+    private fun recomputeEpisodeDownloadStates() {
+        _uiState.update { current ->
+            val summary = current.details?.summary
+            val providerId = summary?.providerId?.takeIf { it.isNotBlank() } ?: currentKey?.first.orEmpty()
+            val titleId = summary?.id?.takeIf { it.isNotBlank() } ?: currentKey?.second.orEmpty()
+            val nextMap = computeEpisodeDownloadStates(
+                providerId = providerId,
+                titleId = titleId,
+                episodes = current.episodes,
+                tasks = observedEpisodeTasks,
+                offlineMatches = current.offlineMatches,
+                startingKeys = resolvingEpisodes + enqueuingEpisodes
+            )
+            current.copy(episodeDownloads = nextMap)
+        }
+    }
 }
+
+internal fun filterDownloadableProgressiveSources(sources: List<PlaybackSource>): List<PlaybackSource> {
+    val progressive = sources.filter { src ->
+        src.isAuthorised &&
+            !src.format.equals("DASH", ignoreCase = true) &&
+            !src.format.equals("HLS", ignoreCase = true) &&
+            !src.url.contains(".mpd", ignoreCase = true) &&
+            !src.url.contains(".m3u8", ignoreCase = true) &&
+            (src.url.startsWith("http://") || src.url.startsWith("https://"))
+    }
+    return progressive
+        .distinctBy { it.qualityLabel.trim().lowercase() }
+        .sortedByDescending { src ->
+            if (src.qualityHeight > 0) src.qualityHeight else parseQualityHeight(src.qualityLabel)
+        }
+}
+
+private fun parseQualityHeight(qualityLabel: String): Int {
+    val digits = Regex("(\\d{3,4})").find(qualityLabel)?.groupValues?.getOrNull(1)?.toIntOrNull()
+    return digits ?: 0
+}
+
+internal fun computeEpisodeDownloadStates(
+    providerId: String,
+    titleId: String,
+    episodes: List<EpisodeItem>,
+    tasks: List<com.laterbox.app.media.domain.model.DownloadTask>,
+    offlineMatches: List<OfflineMediaMatch>,
+    startingKeys: Set<Pair<Int, Int>>
+): Map<Pair<Int, Int>, EpisodeDownloadUiState> {
+    val taskByEpisode = mutableMapOf<Pair<Int, Int>, com.laterbox.app.media.domain.model.DownloadTask>()
+    tasks.sortedByDescending { it.updatedAt }.forEach { task ->
+        val parts = com.laterbox.app.media.data.db.entity.DownloadPlaybackProgressKey.parseMediaParts(task.sourceRef)
+        if (parts != null &&
+            parts.providerId.equals(providerId, ignoreCase = true) &&
+            parts.titleId == titleId &&
+            parts.seasonNumber != null &&
+            parts.episodeNumber != null
+        ) {
+            val epKey = parts.seasonNumber to parts.episodeNumber
+            if (!taskByEpisode.containsKey(epKey)) {
+                taskByEpisode[epKey] = task
+            }
+        }
+    }
+
+    val offlineEpisodes = buildSet {
+        offlineMatches.forEach { match ->
+            val parts = match.sourceRef.split("|")
+            if (parts.size >= 4 &&
+                parts[0].equals(providerId, ignoreCase = true) &&
+                parts[1] == titleId
+            ) {
+                val s = parts[2].toIntOrNull()
+                val e = parts[3].toIntOrNull()
+                if (s != null && e != null) {
+                    add(s to e)
+                }
+            }
+        }
+    }
+
+    val allKeys = buildSet {
+        episodes.forEach { add(it.seasonNumber to it.episodeNumber) }
+        addAll(taskByEpisode.keys)
+        addAll(offlineEpisodes)
+        addAll(startingKeys)
+    }
+
+    val result = mutableMapOf<Pair<Int, Int>, EpisodeDownloadUiState>()
+    for (epKey in allKeys) {
+        val task = taskByEpisode[epKey]
+        val isOfflineDone = epKey in offlineEpisodes
+        val isStarting = epKey in startingKeys
+
+        val uiState = when {
+            isStarting -> EpisodeDownloadUiState(
+                status = EpisodeDownloadStatus.STARTING,
+                taskId = task?.id,
+                progressPercent = task?.progress ?: 0,
+                qualityLabel = task?.qualityLabel
+            )
+            task != null -> when (task.status) {
+                com.laterbox.app.media.domain.model.DownloadState.QUEUED,
+                com.laterbox.app.media.domain.model.DownloadState.WAITING_FOR_WIFI,
+                com.laterbox.app.media.domain.model.DownloadState.INSPECTING,
+                com.laterbox.app.media.domain.model.DownloadState.READY -> {
+                    if (task.progress > 0 || task.downloadedBytes > 0L) {
+                        EpisodeDownloadUiState(
+                            status = EpisodeDownloadStatus.DOWNLOADING,
+                            taskId = task.id,
+                            progressPercent = task.progress.coerceIn(0, 100),
+                            qualityLabel = task.qualityLabel
+                        )
+                    } else {
+                        EpisodeDownloadUiState(
+                            status = EpisodeDownloadStatus.STARTING,
+                            taskId = task.id,
+                            progressPercent = 0,
+                            qualityLabel = task.qualityLabel
+                        )
+                    }
+                }
+                com.laterbox.app.media.domain.model.DownloadState.DOWNLOADING,
+                com.laterbox.app.media.domain.model.DownloadState.PROCESSING -> EpisodeDownloadUiState(
+                    status = EpisodeDownloadStatus.DOWNLOADING,
+                    taskId = task.id,
+                    progressPercent = task.progress.coerceIn(0, 100),
+                    qualityLabel = task.qualityLabel
+                )
+                com.laterbox.app.media.domain.model.DownloadState.PAUSED -> EpisodeDownloadUiState(
+                    status = EpisodeDownloadStatus.PAUSED,
+                    taskId = task.id,
+                    progressPercent = task.progress.coerceIn(0, 100),
+                    qualityLabel = task.qualityLabel
+                )
+                com.laterbox.app.media.domain.model.DownloadState.COMPLETED -> {
+                    if (isOfflineDone || task.assetId != null) {
+                        EpisodeDownloadUiState(
+                            status = EpisodeDownloadStatus.COMPLETED,
+                            taskId = task.id,
+                            progressPercent = 100,
+                            qualityLabel = task.qualityLabel
+                        )
+                    } else {
+                        EpisodeDownloadUiState(status = EpisodeDownloadStatus.IDLE)
+                    }
+                }
+                com.laterbox.app.media.domain.model.DownloadState.FAILED -> EpisodeDownloadUiState(
+                    status = EpisodeDownloadStatus.FAILED,
+                    taskId = task.id,
+                    progressPercent = task.progress.coerceIn(0, 100),
+                    qualityLabel = task.qualityLabel,
+                    errorMessage = task.errorMessage ?: "Download interrupted"
+                )
+                com.laterbox.app.media.domain.model.DownloadState.CANCELLED -> {
+                    if (isOfflineDone) {
+                        EpisodeDownloadUiState(
+                            status = EpisodeDownloadStatus.COMPLETED,
+                            progressPercent = 100
+                        )
+                    } else {
+                        EpisodeDownloadUiState(status = EpisodeDownloadStatus.IDLE)
+                    }
+                }
+            }
+            isOfflineDone -> EpisodeDownloadUiState(
+                status = EpisodeDownloadStatus.COMPLETED,
+                progressPercent = 100
+            )
+            else -> EpisodeDownloadUiState(status = EpisodeDownloadStatus.IDLE)
+        }
+        result[epKey] = uiState
+    }
+    return result
+}
+

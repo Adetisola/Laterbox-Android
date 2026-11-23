@@ -135,4 +135,24 @@ interface DownloadTaskDao {
 
     @Query("SELECT * FROM download_task ORDER BY updatedAt DESC LIMIT :limit")
     suspend fun getRecentTasksSnapshot(limit: Int = 20): List<com.laterbox.app.media.data.db.entity.DownloadTaskEntity>
+    @Query("SELECT * FROM download_task WHERE sourceRef LIKE :prefix || '%' ORDER BY updatedAt DESC")
+    fun observeTasksBySourceRefPrefix(prefix: String): Flow<List<DownloadTaskEntity>>
+
+    @Query("""
+        SELECT * FROM download_task
+        WHERE sourceRef = :sourceRef
+          AND status IN ('QUEUED', 'WAITING_FOR_WIFI', 'INSPECTING', 'READY', 'DOWNLOADING', 'PROCESSING', 'PAUSED')
+        ORDER BY updatedAt DESC
+        LIMIT 1
+    """)
+    suspend fun findActiveOrPausedBySourceRef(sourceRef: String): DownloadTaskEntity?
+
+    @Query("""
+        SELECT * FROM download_task
+        WHERE sourceRef LIKE :prefix || '%'
+          AND status IN ('QUEUED', 'WAITING_FOR_WIFI', 'INSPECTING', 'READY', 'DOWNLOADING', 'PROCESSING', 'PAUSED')
+        ORDER BY updatedAt DESC
+        LIMIT 1
+    """)
+    suspend fun findActiveOrPausedBySourceRefPrefix(prefix: String): DownloadTaskEntity?
 }

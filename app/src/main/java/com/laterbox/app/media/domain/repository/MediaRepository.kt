@@ -88,4 +88,6 @@ interface MediaRepository {
     }
 
     suspend fun markAssetExported(assetId: String, exportedUri: String?) {}
+
+    fun observeTasksBySourceRefPrefix(prefix: String): Flow<List<DownloadTask>> = kotlinx.coroutines.flow.emptyFlow()
 }
