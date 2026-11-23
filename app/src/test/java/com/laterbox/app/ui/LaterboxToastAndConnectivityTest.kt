@@ -306,4 +306,159 @@ class LaterboxToastAndConnectivityTest {
         val unusedItem = LaterboxToastItem(id = "noop", message = "Check")
         assertEquals("Check", unusedItem.message)
     }
+
+    @Test
+    fun connectivityObserver_wifiOff_withValidatedCellular_staysOnline() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val shadowCm = Shadows.shadowOf(cm)
+
+        val cellular = cm.activeNetwork ?: ShadowNetwork.newInstance(101)
+        val cellularCaps = ShadowNetworkCapabilities.newInstance()
+        Shadows.shadowOf(cellularCaps).addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+        Shadows.shadowOf(cellularCaps).addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        Shadows.shadowOf(cellularCaps).addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        shadowCm.setNetworkCapabilities(cellular, cellularCaps)
+
+        val controller = LaterboxToastController(scope = this)
+        val observer = LaterboxConnectivityObserver(
+            context = context,
+            toastController = controller,
+            scope = this,
+            offlineGracePeriodMs = 1_200L
+        )
+        observer.refresh()
+        runCurrent()
+
+        assertTrue(observer.tracker.isValidatedOnline.value)
+        assertTrue(controller.toasts.value.isEmpty())
+    }
+
+    @Test
+    fun connectivityObserver_networkHandoff_avoidsFalseOfflineFlash() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val shadowCm = Shadows.shadowOf(cm)
+
+        val controller = LaterboxToastController(scope = this)
+        val observer = LaterboxConnectivityObserver(
+            context = context,
+            toastController = controller,
+            scope = this,
+            offlineGracePeriodMs = 1_200L
+        )
+        val callback = observer.createDefaultNetworkCallback(cm)
+
+        val wifi = ShadowNetwork.newInstance(201)
+        val cellular = ShadowNetwork.newInstance(202)
+        val wifiCaps = ShadowNetworkCapabilities.newInstance().apply {
+            Shadows.shadowOf(this).addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            Shadows.shadowOf(this).addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            Shadows.shadowOf(this).addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        }
+        val cellularUnvalidated = ShadowNetworkCapabilities.newInstance().apply {
+            Shadows.shadowOf(this).addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+            Shadows.shadowOf(this).addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        }
+        val cellularValidated = ShadowNetworkCapabilities.newInstance().apply {
+            Shadows.shadowOf(this).addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+            Shadows.shadowOf(this).addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            Shadows.shadowOf(this).addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        }
+
+        // Start online on validated Wi-Fi
+        shadowCm.setNetworkCapabilities(wifi, wifiCaps)
+        callback.onCapabilitiesChanged(wifi, wifiCaps)
+        assertTrue(observer.tracker.isValidatedOnline.value)
+        assertTrue(controller.toasts.value.isEmpty())
+
+        // Wi-Fi drops and cellular connects unvalidated before validating 500ms later
+        @Suppress("DEPRECATION")
+        shadowCm.setActiveNetworkInfo(null)
+        callback.onLost(wifi)
+        advanceTimeBy(150)
+        runCurrent()
+        assertTrue(controller.toasts.value.none { it.variant == LaterboxToastVariant.OFFLINE })
+
+        shadowCm.setNetworkCapabilities(cellular, cellularUnvalidated)
+        callback.onAvailable(cellular)
+        callback.onCapabilitiesChanged(cellular, cellularUnvalidated)
+        advanceTimeBy(500)
+        runCurrent()
+        assertTrue(controller.toasts.value.none { it.variant == LaterboxToastVariant.OFFLINE })
+
+        // Cellular validates well before the 1200ms handoff grace elapses
+        shadowCm.setNetworkCapabilities(cellular, cellularValidated)
+        callback.onCapabilitiesChanged(cellular, cellularValidated)
+        advanceTimeBy(1_500)
+        runCurrent()
+
+        assertTrue(observer.tracker.isValidatedOnline.value)
+        assertTrue(controller.toasts.value.isEmpty())
+    }
+
+    @Test
+    fun connectivityObserver_unvalidatedWifiAndOutage_reportsOfflineAfterGrace_andSyncsOnRefresh() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val shadowCm = Shadows.shadowOf(cm)
+
+        val controller = LaterboxToastController(scope = this)
+        val observer = LaterboxConnectivityObserver(
+            context = context,
+            toastController = controller,
+            scope = this,
+            offlineGracePeriodMs = 1_200L
+        )
+        val callback = observer.createDefaultNetworkCallback(cm)
+        val wifi = cm.activeNetwork ?: ShadowNetwork.newInstance(301)
+
+        val validWifi = ShadowNetworkCapabilities.newInstance().apply {
+            Shadows.shadowOf(this).addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            Shadows.shadowOf(this).addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            Shadows.shadowOf(this).addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        }
+        val noInternetWifi = ShadowNetworkCapabilities.newInstance().apply {
+            Shadows.shadowOf(this).addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            Shadows.shadowOf(this).addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        }
+
+        shadowCm.setNetworkCapabilities(wifi, validWifi)
+        callback.onCapabilitiesChanged(wifi, validWifi)
+        assertTrue(observer.tracker.isValidatedOnline.value)
+
+        // Wi-Fi loses internet validation (connected to router, no WAN)
+        shadowCm.setNetworkCapabilities(wifi, noInternetWifi)
+        callback.onCapabilitiesChanged(wifi, noInternetWifi)
+        advanceTimeBy(1_199)
+        runCurrent()
+        assertTrue(controller.toasts.value.isEmpty())
+
+        advanceTimeBy(2)
+        runCurrent()
+        assertFalse(observer.tracker.isValidatedOnline.value)
+        assertEquals("You're offline", controller.toasts.value.single().message)
+
+        // User manually dismisses offline banner during the outage
+        val offlineId = controller.toasts.value.single().id
+        controller.dismiss(offlineId, byUser = true)
+        assertTrue(controller.toasts.value.isEmpty())
+
+        // Returning to foreground while still offline keeps manual dismissal suppressed
+        @Suppress("DEPRECATION")
+        shadowCm.setActiveNetworkInfo(null)
+        observer.refresh()
+        runCurrent()
+        assertFalse(observer.tracker.isValidatedOnline.value)
+        assertTrue(controller.toasts.value.isEmpty())
+
+        // Restoring validated connectivity clears suppression & re-arms for next genuine outage
+        shadowCm.setDefaultNetworkActive(true)
+        shadowCm.setNetworkCapabilities(wifi, validWifi)
+        observer.refresh()
+        runCurrent()
+        assertTrue(observer.tracker.isValidatedOnline.value)
+        assertFalse(observer.tracker.isSuppressedForCurrentOutage)
+    }
 }
+

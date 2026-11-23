@@ -166,6 +166,7 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
 
             override fun onActivityStarted(activity: android.app.Activity) {
                 if (startedActivities == 0) {
+                    container.connectivityObserver.refresh()
                     container.remoteConfigManager.onAppForegrounded()
                     container.analyticsTracker.onAppForegrounded()
                     applicationScope.launch {
