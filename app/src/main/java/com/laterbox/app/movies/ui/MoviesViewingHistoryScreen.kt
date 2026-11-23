@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -30,9 +31,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -78,11 +81,14 @@ fun MoviesViewingHistoryScreen(
     onRemoveRecentlyViewed: (providerId: String, titleId: String) -> Unit = { _, _ -> },
     onClearRecentlyViewed: () -> Unit = {},
     isLoading: Boolean = false,
+    seriesMetadataByKey: Map<String, ViewingHistorySeriesMetadata> = emptyMap(),
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
-    var selectedTab by remember { mutableStateOf(ViewingHistoryTab.ALL) }
+    var selectedTab by rememberSaveable { mutableStateOf(ViewingHistoryTab.ALL) }
+    var selectedSeriesKey by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedSeasonKey by rememberSaveable { mutableStateOf<String?>(null) }
     var showClearDialog by remember { mutableStateOf(false) }
     var pendingRemoveViewed by remember { mutableStateOf<MovieTitleSummary?>(null) }
 
@@ -94,6 +100,59 @@ fun MoviesViewingHistoryScreen(
             ViewingHistoryTab.TRAILERS -> items.filter { it.isTrailer }
             ViewingHistoryTab.RECENTLY_VIEWED, ViewingHistoryTab.HIDDEN -> emptyList()
         }
+    }
+
+    val topLevelEntries = remember(filteredHistoryItems, selectedTab, seriesMetadataByKey) {
+        when (selectedTab) {
+            ViewingHistoryTab.ALL, ViewingHistoryTab.EPISODES ->
+                ViewingHistoryHierarchyBuilder.buildTopLevelEntries(
+                    items = filteredHistoryItems,
+                    metadataBySeriesKey = seriesMetadataByKey
+                )
+            ViewingHistoryTab.MOVIES, ViewingHistoryTab.TRAILERS ->
+                filteredHistoryItems.map { ViewingHistoryTopLevelEntry.Individual(it) }
+            ViewingHistoryTab.RECENTLY_VIEWED, ViewingHistoryTab.HIDDEN ->
+                emptyList()
+        }
+    }
+
+    val activeSeriesGroup = remember(topLevelEntries, selectedSeriesKey) {
+        val key = selectedSeriesKey ?: return@remember null
+        topLevelEntries.asSequence()
+            .filterIsInstance<ViewingHistoryTopLevelEntry.SeriesGroup>()
+            .firstOrNull { it.series.seriesKey == key }
+            ?.series
+    }
+
+    val activeSeasonGroup = remember(activeSeriesGroup, selectedSeasonKey) {
+        val series = activeSeriesGroup ?: return@remember null
+        if (!series.shouldGroupBySeason) return@remember null
+        val sKey = selectedSeasonKey ?: return@remember null
+        series.seasons.firstOrNull { it.seasonKey == sKey }
+    }
+
+    LaunchedEffect(selectedSeriesKey, activeSeriesGroup, activeSeasonGroup) {
+        if (selectedSeriesKey != null && activeSeriesGroup == null) {
+            selectedSeasonKey = null
+            selectedSeriesKey = null
+        } else if (selectedSeasonKey != null && activeSeasonGroup == null) {
+            selectedSeasonKey = null
+        }
+    }
+
+    val navigateUpHierarchy: () -> Unit = {
+        when {
+            activeSeasonGroup != null -> selectedSeasonKey = null
+            activeSeriesGroup != null -> {
+                selectedSeasonKey = null
+                selectedSeriesKey = null
+            }
+            else -> onBackClick()
+        }
+    }
+
+    BackHandler(enabled = activeSeriesGroup != null) {
+        navigateUpHierarchy()
     }
 
     if (showClearDialog) {
@@ -221,18 +280,34 @@ fun MoviesViewingHistoryScreen(
                 LaterboxIconButton(
                     iconRes = LaterboxIcons.ArrowLeft,
                     contentDescription = "Back",
-                    onClick = onBackClick
+                    onClick = navigateUpHierarchy
                 )
                 Column {
+                    val headerTitle = when {
+                        activeSeasonGroup != null && activeSeriesGroup != null ->
+                            "${activeSeriesGroup.title} · ${activeSeasonGroup.label}"
+                        activeSeriesGroup != null -> activeSeriesGroup.title
+                        else -> "Viewing History"
+                    }
                     Text(
-                        text = "Viewing History",
+                        text = headerTitle,
                         style = typography.wordmark,
-                        color = colors.textPrimary
+                        color = colors.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
-                    val subtitleCount = when (selectedTab) {
-                        ViewingHistoryTab.RECENTLY_VIEWED ->
+                    val subtitleCount = when {
+                        activeSeasonGroup != null ->
+                            "${activeSeasonGroup.watchedEpisodeCount} watched ${if (activeSeasonGroup.watchedEpisodeCount == 1) "episode" else "episodes"}"
+                        activeSeriesGroup != null ->
+                            if (activeSeriesGroup.shouldGroupBySeason) {
+                                "${activeSeriesGroup.seasonCountInHistory} seasons · ${activeSeriesGroup.watchedEpisodeCount} watched episodes"
+                            } else {
+                                "${activeSeriesGroup.watchedEpisodeCount} watched episodes"
+                            }
+                        selectedTab == ViewingHistoryTab.RECENTLY_VIEWED ->
                             "${recentlyViewed.size} recently viewed ${if (recentlyViewed.size == 1) "title" else "titles"}"
-                        ViewingHistoryTab.HIDDEN ->
+                        selectedTab == ViewingHistoryTab.HIDDEN ->
                             "${hiddenTitles.size} hidden ${if (hiddenTitles.size == 1) "title" else "titles"}"
                         else ->
                             "${items.size} recorded ${if (items.size == 1) "entry" else "entries"}"
@@ -245,51 +320,66 @@ fun MoviesViewingHistoryScreen(
                 }
             }
 
-            val canClear = when (selectedTab) {
-                ViewingHistoryTab.RECENTLY_VIEWED -> recentlyViewed.isNotEmpty()
-                ViewingHistoryTab.HIDDEN -> false
-                else -> items.isNotEmpty()
-            }
-            if (canClear) {
+            if (activeSeriesGroup != null) {
                 TextButton(
-                    onClick = { showClearDialog = true },
-                    modifier = Modifier.testTag("viewing_history_clear_button")
+                    onClick = { onOpenDetail(activeSeriesGroup.providerId, activeSeriesGroup.titleId) },
+                    modifier = Modifier.testTag("viewing_history_series_view_details")
                 ) {
-                    Text("Clear", color = colors.statusDanger)
+                    Text("View details", color = colors.accentPrimary)
+                }
+            } else {
+                val canClear = when (selectedTab) {
+                    ViewingHistoryTab.RECENTLY_VIEWED -> recentlyViewed.isNotEmpty()
+                    ViewingHistoryTab.HIDDEN -> false
+                    else -> items.isNotEmpty()
+                }
+                if (canClear) {
+                    TextButton(
+                        onClick = { showClearDialog = true },
+                        modifier = Modifier.testTag("viewing_history_clear_button")
+                    ) {
+                        Text("Clear", color = colors.statusDanger)
+                    }
                 }
             }
         }
 
-        // Scrollable Filter Tabs
-        LazyRow(
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("viewing_history_tabs_row"),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            items(ViewingHistoryTab.entries, key = { it.name }) { tab ->
-                val isSelected = selectedTab == tab
-                Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = if (isSelected) colors.accentPrimary else colors.surfacePrimary,
-                    border = BorderStroke(
-                        0.75.dp,
-                        if (isSelected) colors.accentPrimary else colors.borderSubtle
-                    ),
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(20.dp))
-                        .clickable { selectedTab = tab }
-                        .testTag(tab.tag)
-                ) {
-                    Text(
-                        text = tab.label,
-                        style = typography.caption.copy(
-                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium
+        // Scrollable Filter Tabs (shown at top level)
+        if (activeSeriesGroup == null) {
+            LazyRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("viewing_history_tabs_row"),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(ViewingHistoryTab.entries, key = { it.name }) { tab ->
+                    val isSelected = selectedTab == tab
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = if (isSelected) colors.accentPrimary else colors.surfacePrimary,
+                        border = BorderStroke(
+                            0.75.dp,
+                            if (isSelected) colors.accentPrimary else colors.borderSubtle
                         ),
-                        color = if (isSelected) colors.onAccentPrimary else colors.textSecondary,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
-                    )
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .clickable {
+                                selectedSeriesKey = null
+                                selectedSeasonKey = null
+                                selectedTab = tab
+                            }
+                            .testTag(tab.tag)
+                    ) {
+                        Text(
+                            text = tab.label,
+                            style = typography.caption.copy(
+                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium
+                            ),
+                            color = if (isSelected) colors.onAccentPrimary else colors.textSecondary,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                        )
+                    }
                 }
             }
         }
@@ -350,51 +440,158 @@ fun MoviesViewingHistoryScreen(
                 }
             }
             else -> {
-                if (filteredHistoryItems.isEmpty()) {
-                    ViewingHistoryEmptyState(
-                        title = when (selectedTab) {
-                            ViewingHistoryTab.ALL -> "No viewing history yet"
-                            ViewingHistoryTab.MOVIES -> "No movies watched yet"
-                            ViewingHistoryTab.EPISODES -> "No episodes watched yet"
-                            ViewingHistoryTab.TRAILERS -> "No trailers watched yet"
-                            else -> "No viewing history yet"
-                        },
-                        subtitle = "Titles and trailers you watch in Movies & TV will show up here."
-                    )
-                } else {
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .testTag("viewing_history_list"),
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        items(
-                            items = filteredHistoryItems,
-                            key = { it.historyKey.ifBlank { "${it.compositeId}_${it.lastWatchedAt}_${it.isTrailer}" } }
-                        ) { item ->
-                            ViewingHistoryRowCard(
-                                item = item,
-                                onOpen = {
-                                    if (item.isTrailer) {
-                                        onOpenDetail(item.providerId, item.titleId)
-                                    } else {
+                when {
+                    activeSeasonGroup != null -> {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .testTag("viewing_history_season_episodes_list"),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            items(
+                                items = activeSeasonGroup.episodes,
+                                key = { ViewingHistoryHierarchyBuilder.individualStableKey(it) }
+                            ) { episode ->
+                                ViewingHistoryRowCard(
+                                    item = episode,
+                                    onOpen = {
                                         onOpenPlayer(
-                                            item.providerId,
-                                            item.titleId,
-                                            item.seasonNumber,
-                                            item.episodeNumber
+                                            episode.providerId,
+                                            episode.titleId,
+                                            episode.seasonNumber,
+                                            episode.episodeNumber
+                                        )
+                                    },
+                                    onOpenDetail = {
+                                        onOpenDetail(episode.providerId, episode.titleId)
+                                    },
+                                    onDelete = {
+                                        val key = episode.historyKey.ifBlank { episode.compositeId }
+                                        onDeleteItem(key)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    activeSeriesGroup != null && activeSeriesGroup.shouldGroupBySeason -> {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .testTag("viewing_history_seasons_list"),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            items(
+                                items = activeSeriesGroup.seasons,
+                                key = { "season_${activeSeriesGroup.seriesKey}_${it.seasonKey}" }
+                            ) { season ->
+                                ViewingHistorySeasonCard(
+                                    seriesKey = activeSeriesGroup.seriesKey,
+                                    season = season,
+                                    onOpenSeason = { selectedSeasonKey = season.seasonKey }
+                                )
+                            }
+                        }
+                    }
+                    activeSeriesGroup != null -> {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .testTag("viewing_history_series_episodes_list"),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            items(
+                                items = activeSeriesGroup.allEpisodesSorted,
+                                key = { ViewingHistoryHierarchyBuilder.individualStableKey(it) }
+                            ) { episode ->
+                                ViewingHistoryRowCard(
+                                    item = episode,
+                                    onOpen = {
+                                        onOpenPlayer(
+                                            episode.providerId,
+                                            episode.titleId,
+                                            episode.seasonNumber,
+                                            episode.episodeNumber
+                                        )
+                                    },
+                                    onOpenDetail = {
+                                        onOpenDetail(episode.providerId, episode.titleId)
+                                    },
+                                    onDelete = {
+                                        val key = episode.historyKey.ifBlank { episode.compositeId }
+                                        onDeleteItem(key)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    topLevelEntries.isEmpty() -> {
+                        ViewingHistoryEmptyState(
+                            title = when (selectedTab) {
+                                ViewingHistoryTab.ALL -> "No viewing history yet"
+                                ViewingHistoryTab.MOVIES -> "No movies watched yet"
+                                ViewingHistoryTab.EPISODES -> "No episodes watched yet"
+                                ViewingHistoryTab.TRAILERS -> "No trailers watched yet"
+                                else -> "No viewing history yet"
+                            },
+                            subtitle = "Titles and trailers you watch in Movies & TV will show up here."
+                        )
+                    }
+                    else -> {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .testTag("viewing_history_list"),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            items(
+                                items = topLevelEntries,
+                                key = { it.stableKey }
+                            ) { entry ->
+                                when (entry) {
+                                    is ViewingHistoryTopLevelEntry.Individual -> {
+                                        val item = entry.item
+                                        ViewingHistoryRowCard(
+                                            item = item,
+                                            onOpen = {
+                                                if (item.isTrailer) {
+                                                    onOpenDetail(item.providerId, item.titleId)
+                                                } else {
+                                                    onOpenPlayer(
+                                                        item.providerId,
+                                                        item.titleId,
+                                                        item.seasonNumber,
+                                                        item.episodeNumber
+                                                    )
+                                                }
+                                            },
+                                            onOpenDetail = {
+                                                onOpenDetail(item.providerId, item.titleId)
+                                            },
+                                            onDelete = {
+                                                val key = item.historyKey.ifBlank { item.compositeId }
+                                                onDeleteItem(key)
+                                            }
                                         )
                                     }
-                                },
-                                onOpenDetail = {
-                                    onOpenDetail(item.providerId, item.titleId)
-                                },
-                                onDelete = {
-                                    val key = item.historyKey.ifBlank { item.compositeId }
-                                    onDeleteItem(key)
+                                    is ViewingHistoryTopLevelEntry.SeriesGroup -> {
+                                        val series = entry.series
+                                        ViewingHistorySeriesCard(
+                                            series = series,
+                                            onOpenSeries = {
+                                                selectedSeriesKey = series.seriesKey
+                                                selectedSeasonKey = null
+                                            },
+                                            onOpenDetail = {
+                                                onOpenDetail(series.providerId, series.titleId)
+                                            }
+                                        )
+                                    }
                                 }
-                            )
+                            }
                         }
                     }
                 }
@@ -623,6 +820,275 @@ private fun ViewingHistoryRowCard(
                     modifier = Modifier.size(18.dp)
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun ViewingHistorySeriesCard(
+    series: ViewingHistorySeriesGroup,
+    onOpenSeries: () -> Unit,
+    onOpenDetail: () -> Unit
+) {
+    val colors = LaterboxTheme.colors
+    val typography = LaterboxTheme.typography
+    val formattedDate = remember(series.latestWatchedAt) {
+        DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(series.latestWatchedAt))
+    }
+
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = colors.surfacePrimary,
+        border = BorderStroke(0.75.dp, colors.borderSubtle),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onOpenSeries)
+            .testTag("viewing_history_series_${series.seriesKey}")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(120.dp)
+                    .aspectRatio(16f / 9f)
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(colors.surfaceSecondary),
+                contentAlignment = Alignment.Center
+            ) {
+                if (!series.artworkUrl.isNullOrBlank()) {
+                    AsyncImage(
+                        model = series.artworkUrl,
+                        contentDescription = series.title,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Icon(
+                        painter = painterResource(LaterboxIcons.Movies),
+                        contentDescription = null,
+                        tint = colors.textTertiary,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = Color.Black.copy(alpha = 0.70f),
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(5.dp)
+                ) {
+                    Text(
+                        text = if (series.kind == MediaKind.SHORT_DRAMA) "Short Drama" else "Series",
+                        style = typography.caption.copy(fontSize = 10.sp, fontWeight = FontWeight.SemiBold),
+                        color = Color.White,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+
+                val pct = series.completionPercent
+                if (pct != null) {
+                    LinearProgressIndicator(
+                        progress = { (pct / 100f).coerceIn(0f, 1f) },
+                        color = colors.accentPrimary,
+                        trackColor = Color.White.copy(alpha = 0.28f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(3.dp)
+                            .align(Alignment.BottomCenter)
+                    )
+                }
+            }
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Text(
+                    text = series.title,
+                    style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
+                    color = colors.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                val summaryParts = buildList {
+                    val epText = if (series.knownTotalEpisodes != null && series.completionPercent != null) {
+                        "${series.watchedEpisodeCount} of ${series.knownTotalEpisodes} episodes · ${series.completionPercent}%"
+                    } else {
+                        "${series.watchedEpisodeCount} episodes watched"
+                    }
+                    add(epText)
+                    if (series.shouldGroupBySeason) {
+                        add("${series.seasonCountInHistory} seasons")
+                    }
+                }.joinToString(" · ")
+                Text(
+                    text = summaryParts,
+                    style = typography.caption,
+                    color = colors.textSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                val latestLabel = ViewingHistoryHierarchyBuilder.formatEpisodeShortLabel(series.latestEpisode)
+                Text(
+                    text = "Latest: $latestLabel · $formattedDate",
+                    style = typography.caption,
+                    color = colors.textTertiary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                Text(
+                    text = "View details",
+                    style = typography.caption.copy(fontWeight = FontWeight.Medium),
+                    color = colors.accentPrimary,
+                    modifier = Modifier
+                        .clickable(onClick = onOpenDetail)
+                        .padding(top = 2.dp)
+                )
+            }
+
+            Icon(
+                painter = painterResource(LaterboxIcons.ChevronRight),
+                contentDescription = "Open ${series.title}",
+                tint = colors.textTertiary,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun ViewingHistorySeasonCard(
+    seriesKey: String,
+    season: ViewingHistorySeasonGroup,
+    onOpenSeason: () -> Unit
+) {
+    val colors = LaterboxTheme.colors
+    val typography = LaterboxTheme.typography
+    val formattedDate = remember(season.latestWatchedAt) {
+        DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(season.latestWatchedAt))
+    }
+
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = colors.surfacePrimary,
+        border = BorderStroke(0.75.dp, colors.borderSubtle),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onOpenSeason)
+            .testTag("viewing_history_season_${seriesKey}_${season.seasonKey}")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(120.dp)
+                    .aspectRatio(16f / 9f)
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(colors.surfaceSecondary),
+                contentAlignment = Alignment.Center
+            ) {
+                if (!season.artworkUrl.isNullOrBlank()) {
+                    AsyncImage(
+                        model = season.artworkUrl,
+                        contentDescription = season.label,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Icon(
+                        painter = painterResource(LaterboxIcons.Movies),
+                        contentDescription = null,
+                        tint = colors.textTertiary,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = Color.Black.copy(alpha = 0.70f),
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(5.dp)
+                ) {
+                    Text(
+                        text = season.label,
+                        style = typography.caption.copy(fontSize = 10.sp, fontWeight = FontWeight.SemiBold),
+                        color = Color.White,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+
+                val pct = season.completionPercent
+                if (pct != null) {
+                    LinearProgressIndicator(
+                        progress = { (pct / 100f).coerceIn(0f, 1f) },
+                        color = colors.accentPrimary,
+                        trackColor = Color.White.copy(alpha = 0.28f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(3.dp)
+                            .align(Alignment.BottomCenter)
+                    )
+                }
+            }
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Text(
+                    text = season.label,
+                    style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
+                    color = colors.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                val countSummary = if (season.knownTotalEpisodes != null && season.completionPercent != null) {
+                    "${season.watchedEpisodeCount} of ${season.knownTotalEpisodes} episodes · ${season.completionPercent}%"
+                } else {
+                    "${season.watchedEpisodeCount} ${if (season.watchedEpisodeCount == 1) "episode" else "episodes"} watched"
+                }
+                Text(
+                    text = countSummary,
+                    style = typography.caption,
+                    color = colors.textSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                val latestLabel = ViewingHistoryHierarchyBuilder.formatEpisodeShortLabel(season.latestEpisode)
+                Text(
+                    text = "Latest: $latestLabel · $formattedDate",
+                    style = typography.caption,
+                    color = colors.textTertiary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Icon(
+                painter = painterResource(LaterboxIcons.ChevronRight),
+                contentDescription = "Open ${season.label}",
+                tint = colors.textTertiary,
+                modifier = Modifier.size(18.dp)
+            )
         }
     }
 }
