@@ -53,7 +53,8 @@ fun DataStorageSettingsScreen(
     onRefreshStorage: () -> Unit = {},
     onClearSafeCache: () -> Unit = {},
     onRunStorageMaintenance: () -> Unit = {},
-    onDismissStorageFeedback: () -> Unit = {}
+    onDismissStorageFeedback: () -> Unit = {},
+    onManageDownloadsClick: (() -> Unit)? = null
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -230,7 +231,8 @@ fun DataStorageSettingsScreen(
                 onRefresh = onRefreshStorage,
                 onClearSafeCache = onClearSafeCache,
                 onRunMaintenance = onRunStorageMaintenance,
-                onDismissFeedback = onDismissStorageFeedback
+                onDismissFeedback = onDismissStorageFeedback,
+                onManageDownloadsClick = onManageDownloadsClick
             )
 
             Spacer(modifier = Modifier.navigationBarsPadding().height(40.dp))

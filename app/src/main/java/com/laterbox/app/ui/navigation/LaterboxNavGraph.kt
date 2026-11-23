@@ -1880,7 +1880,12 @@ fun LaterboxApp(
                                 onRefreshStorage = settingsViewModel::refreshAppStorage,
                                 onClearSafeCache = settingsViewModel::clearSafeCaches,
                                 onRunStorageMaintenance = settingsViewModel::runStorageMaintenance,
-                                onDismissStorageFeedback = settingsViewModel::dismissStorageFeedback
+                                onDismissStorageFeedback = settingsViewModel::dismissStorageFeedback,
+                                onManageDownloadsClick = {
+                                    navController.navigate(LaterboxDestination.Downloads.route) {
+                                        launchSingleTop = true
+                                    }
+                                }
                             )
                         }
 

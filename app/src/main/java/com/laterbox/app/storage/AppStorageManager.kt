@@ -27,8 +27,21 @@ data class AppStorageReport(
     val deviceFreeBytes: Long,
     val deviceTotalBytes: Long,
     val storagePressureHigh: Boolean,
-    val cachedApiEntryCount: Int
-)
+    val cachedApiEntryCount: Int,
+    val settingsAndPrefsBytes: Long = 0L
+) {
+    /** Completed offline media, subtitles, and storage occupied by in-progress downloads. */
+    val downloadedBytes: Long
+        get() = (downloadedMediaBytes + inProgressDownloadsBytes).coerceAtLeast(0L)
+
+    /** Disposable stream playback cache, artwork/poster cache, and other temporary cache files. */
+    val cacheBytes: Long
+        get() = (streamPlaybackCacheBytes + imageCacheBytes + tempAndOtherCacheBytes).coerceAtLeast(0L)
+
+    /** Saved library records, download-tool runtimes, settings, and persistent app data. */
+    val appDataBytes: Long
+        get() = (databaseAndMetadataBytes + extractorRuntimesBytes + settingsAndPrefsBytes).coerceAtLeast(0L)
+}
 
 data class StorageCleanupResult(
     val bytesFreed: Long,
@@ -70,14 +83,13 @@ class AppStorageManager(
             .filter { it.name !in knownCacheSubdirs }
             .sumOf { fileOrDir -> measurePathBytes(fileOrDir) }
 
+        val settingsAndPrefsBytes = measureDirBytes(File(filesDir, "datastore")) +
+            runCatching { measureDirBytes(File(context.applicationInfo.dataDir, "shared_prefs")) }.getOrDefault(0L)
+
         val safeClearableBytes = streamPlaybackCacheBytes + imageCacheBytes + tempAndOtherCacheBytes
-        val totalUsedBytes = downloadedMediaBytes +
-            inProgressDownloadsBytes +
-            streamPlaybackCacheBytes +
-            imageCacheBytes +
-            dbBytes +
-            runtimesBytes +
-            tempAndOtherCacheBytes
+        val downloadedBytes = downloadedMediaBytes + inProgressDownloadsBytes
+        val appDataBytes = dbBytes + runtimesBytes + settingsAndPrefsBytes
+        val totalUsedBytes = downloadedBytes + safeClearableBytes + appDataBytes
 
         val (freeBytes, totalBytes) = readDeviceStorageStats()
         val pressureHigh = (freeBytes in 1L until LOW_FREE_SPACE_THRESHOLD_BYTES) ||
@@ -98,7 +110,8 @@ class AppStorageManager(
             deviceFreeBytes = freeBytes,
             deviceTotalBytes = totalBytes,
             storagePressureHigh = pressureHigh,
-            cachedApiEntryCount = cachedEntriesCount
+            cachedApiEntryCount = cachedEntriesCount,
+            settingsAndPrefsBytes = settingsAndPrefsBytes
         )
     }
 

@@ -203,13 +203,69 @@ class AppStorageManagerTest {
         }
 
         composeTestRule.onNodeWithTag("app_storage_settings_screen").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Downloaded Media & Subtitles").performScrollTo().assertIsDisplayed()
-        composeTestRule.onNodeWithText("Stream Playback Cache").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("storage_stacked_bar").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("storage_downloaded_card").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("storage_cache_card").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("storage_app_data_row").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithTag("clear_safe_cache_button")
             .performScrollTo()
             .assertIsDisplayed()
             .performClick()
         assertTrue(cleared)
+    }
+
+    @Test
+    fun threeCategoryReport_reconcilesTotalWithPrefsAndNoDoubleCounting() = runTest {
+        val manager = AppStorageManager(
+            context = context,
+            moviesDao = db.moviesDao(),
+            downloadTaskDao = db.downloadTaskDao(),
+            storageManager = MediaStorageManager(context),
+            nowMs = { fakeClockMs }
+        )
+
+        File(File(context.filesDir, "media/video").apply { mkdirs() }, "done.mp4").writeBytes(ByteArray(1_000))
+        File(File(context.filesDir, "subtitles").apply { mkdirs() }, "en.srt").writeBytes(ByteArray(250))
+        File(File(context.filesDir, "download_parts").apply { mkdirs() }, "partial.part").writeBytes(ByteArray(500))
+        File(File(context.cacheDir, "image_cache").apply { mkdirs() }, "img.bin").writeBytes(ByteArray(400))
+        File(File(context.cacheDir, "movies_media_cache").apply { mkdirs() }, "seg.exo").writeBytes(ByteArray(600))
+        File(File(context.filesDir, "datastore").apply { mkdirs() }, "prefs.preferences_pb").writeBytes(ByteArray(300))
+
+        try {
+            val report = manager.inspectStorage()
+            assertEquals(1_250L, report.downloadedMediaBytes)
+            assertEquals(500L, report.inProgressDownloadsBytes)
+            assertEquals(1_750L, report.downloadedBytes)
+            assertEquals(1_000L, report.streamPlaybackCacheBytes + report.imageCacheBytes)
+            assertEquals(report.cacheBytes, report.safeClearableBytes)
+            assertTrue(report.settingsAndPrefsBytes >= 300L)
+            assertEquals(
+                report.totalUsedBytes,
+                report.downloadedBytes + report.cacheBytes + report.appDataBytes
+            )
+        } finally {
+            File(context.filesDir, "subtitles").deleteRecursively()
+            File(context.filesDir, "datastore").deleteRecursively()
+        }
+    }
+
+    @Test
+    fun storageBarFractions_handlesZeroAndSmallNonZeroSegmentsProportionally() {
+        val zero = com.laterbox.app.ui.settings.computeStorageBarFractions(0L, 0L, 0L)
+        assertEquals(0f, zero.downloaded, 0.0001f)
+        assertEquals(0f, zero.cache, 0.0001f)
+        assertEquals(0f, zero.appData, 0.0001f)
+
+        val skewed = com.laterbox.app.ui.settings.computeStorageBarFractions(
+            downloadedBytes = 10_000_000L,
+            cacheBytes = 1_000L,
+            appDataBytes = 500_000L,
+            minVisibleFraction = 0.03f
+        )
+        assertTrue(skewed.cache >= 0.029f)
+        assertTrue(skewed.downloaded > skewed.appData)
+        assertTrue(skewed.appData > skewed.cache)
+        assertEquals(1f, skewed.downloaded + skewed.cache + skewed.appData, 0.001f)
     }
 
     @Test
