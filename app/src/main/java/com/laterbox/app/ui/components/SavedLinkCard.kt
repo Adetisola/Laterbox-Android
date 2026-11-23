@@ -484,7 +484,11 @@ fun SavedLinkCard(
                                 onCopyLink = {
                                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                     clipboard.setPrimaryClip(ClipData.newPlainText("URL", link.originalUrl))
-                                    Toast.makeText(context, "Link copied", Toast.LENGTH_SHORT).show()
+                                    com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                                        context = context,
+                                        message = "Link copied",
+                                        variant = LaterboxToastVariant.SUCCESS
+                                    )
                                 },
                                 onShareLink = {
                                     val sendIntent = Intent(Intent.ACTION_SEND).apply {

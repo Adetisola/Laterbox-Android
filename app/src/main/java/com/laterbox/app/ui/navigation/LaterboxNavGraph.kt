@@ -188,6 +188,11 @@ fun LaterboxApp(
     val versionGate = remember(context) {
         (context.applicationContext as? LaterboxApplication)?.container?.versionGate
     }
+    val toastController = remember(context) {
+        (context.applicationContext as? LaterboxApplication)?.container?.toastController
+            ?: com.laterbox.app.ui.components.LaterboxToastController(coroutineScope)
+    }
+    val activeToasts by toastController.toasts.collectAsState()
     val serverVersionBlockState by (
         versionGate?.serverBlockState ?: remember {
             kotlinx.coroutines.flow.MutableStateFlow<com.laterbox.app.remoteconfig.VersionEnforcementBlockState?>(null)
@@ -274,6 +279,7 @@ fun LaterboxApp(
     var isInboxComposerExpanded by rememberSaveable { mutableStateOf(false) }
     var inboxOverlayHeightPx by remember { mutableIntStateOf(0) }
     var bottomBarHeightPx by remember { mutableIntStateOf(0) }
+    var bottomChromeHeightPx by remember { mutableIntStateOf(0) }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
 
@@ -283,7 +289,6 @@ fun LaterboxApp(
         isInboxComposerExpanded = false
     }
 
-    val snackbarHostState = remember { SnackbarHostState() }
     var pendingAudioConsentTarget by remember { mutableStateOf<String?>(null) }
     var pendingPermissionTarget by remember { mutableStateOf<String?>(null) }
 
@@ -332,12 +337,12 @@ fun LaterboxApp(
             val permanentlyDenied = activity != null &&
                 !ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.RECORD_AUDIO)
             coroutineScope.launch {
-                val res = snackbarHostState.showSnackbar(
+                val goSettings = toastController.showAndAwaitAction(
                     message = "Microphone permission is needed for voice input.",
-                    actionLabel = if (permanentlyDenied) "Settings" else null,
-                    duration = SnackbarDuration.Short
+                    variant = com.laterbox.app.ui.components.LaterboxToastVariant.WARNING,
+                    actionLabel = if (permanentlyDenied) "Settings" else null
                 )
-                if (res == SnackbarResult.ActionPerformed) {
+                if (goSettings) {
                     val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                         data = Uri.fromParts("package", context.packageName, null)
                     }
@@ -519,7 +524,10 @@ fun LaterboxApp(
         collapseInboxComposer()
     }
 
-    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+    androidx.compose.runtime.CompositionLocalProvider(
+        com.laterbox.app.ui.components.LocalLaterboxToastController provides toastController
+    ) {
+        BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val isWideTablet = maxWidth >= 840.dp
         val currentSection = sectionForRoute(currentRoute)
         val topLevelBottomBarRoutes = remember {
@@ -614,39 +622,7 @@ fun LaterboxApp(
             Scaffold(
                 modifier = Modifier.fillMaxSize(),
                 containerColor = colors.backgroundPrimary,
-                contentWindowInsets = if (isImmersivePlayerRoute) WindowInsets(0, 0, 0, 0) else WindowInsets.statusBars,
-                snackbarHost = {
-                    val navBarBottomDp = with(density) { WindowInsets.navigationBars.getBottom(density).toDp() }
-                    val inboxOverlayDp = with(density) { inboxOverlayHeightPx.toDp() }
-                    val bottomBarAboveNavDp = (with(density) { bottomBarHeightPx.toDp() } - navBarBottomDp).coerceAtLeast(0.dp)
-                    val snackbarBottomPad = when {
-                        isInboxOverlayVisible && inboxOverlayHeightPx > 0 ->
-                            inboxOverlayDp + (if (showHandsetBottomBar) bottomBarAboveNavDp else 0.dp) + 8.dp
-                        showHandsetBottomBar && bottomBarHeightPx > 0 -> bottomBarAboveNavDp + 8.dp
-                        else -> 16.dp
-                    }
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .windowInsetsPadding(
-                                WindowInsets.navigationBars.union(WindowInsets.ime).only(WindowInsetsSides.Bottom)
-                            )
-                            .padding(bottom = snackbarBottomPad)
-                    ) {
-                        SnackbarHost(
-                            hostState = snackbarHostState,
-                            snackbar = { data ->
-                                Snackbar(
-                                    snackbarData = data,
-                                    containerColor = colors.surfaceElevated,
-                                    contentColor = colors.textPrimary,
-                                    actionColor = colors.accentPrimary,
-                                    shape = LaterboxShapeTokens.Card
-                                )
-                            }
-                        )
-                    }
-                }
+                contentWindowInsets = if (isImmersivePlayerRoute) WindowInsets(0, 0, 0, 0) else WindowInsets.statusBars
             ) { innerPadding ->
                 Column(
                     modifier = Modifier
@@ -744,12 +720,11 @@ fun LaterboxApp(
                                 onArchiveAllRead = {
                                     inboxViewModel.onArchiveAllRead { archivedIds ->
                                         coroutineScope.launch {
-                                            val result = snackbarHostState.showSnackbar(
+                                            val undo = toastController.showAndAwaitAction(
                                                 message = "Archived ${archivedIds.size} read ${if (archivedIds.size == 1) "link" else "links"}",
-                                                actionLabel = "Undo",
-                                                duration = SnackbarDuration.Short
+                                                actionLabel = "Undo"
                                             )
-                                            if (result == SnackbarResult.ActionPerformed) {
+                                            if (undo) {
                                                 inboxViewModel.unarchiveBatch(archivedIds)
                                             }
                                         }
@@ -778,12 +753,11 @@ fun LaterboxApp(
                                 onArchive = { link ->
                                     inboxViewModel.onArchive(link.id)
                                     coroutineScope.launch {
-                                        val result = snackbarHostState.showSnackbar(
+                                        val undo = toastController.showAndAwaitAction(
                                             message = "Link archived",
-                                            actionLabel = "Undo",
-                                            duration = SnackbarDuration.Short
+                                            actionLabel = "Undo"
                                         )
-                                        if (result == SnackbarResult.ActionPerformed) {
+                                        if (undo) {
                                             inboxViewModel.unarchive(link.id)
                                         }
                                     }
@@ -791,12 +765,11 @@ fun LaterboxApp(
                                 onDelete = { link ->
                                     inboxViewModel.onDelete(link.id)
                                     coroutineScope.launch {
-                                        val result = snackbarHostState.showSnackbar(
+                                        val undo = toastController.showAndAwaitAction(
                                             message = "Link deleted",
-                                            actionLabel = "Undo",
-                                            duration = SnackbarDuration.Short
+                                            actionLabel = "Undo"
                                         )
-                                        if (result == SnackbarResult.ActionPerformed) {
+                                        if (undo) {
                                             inboxViewModel.onRestore(link)
                                         }
                                     }
@@ -806,22 +779,12 @@ fun LaterboxApp(
                                 onClearSelection = inboxViewModel::onClearSelection,
                                 onArchiveSelected = {
                                     inboxViewModel.onArchiveSelected()
-                                    coroutineScope.launch {
-                                        snackbarHostState.showSnackbar(
-                                            message = "Selected links archived",
-                                            duration = SnackbarDuration.Short
-                                        )
-                                    }
+                                    toastController.showSuccess("Selected links archived")
                                 },
                                 onToggleReadSelected = { inboxViewModel.onToggleReadSelected(inboxUiState.links) },
                                 onDeleteSelected = {
                                     inboxViewModel.onDeleteSelected()
-                                    coroutineScope.launch {
-                                        snackbarHostState.showSnackbar(
-                                            message = "Selected links deleted",
-                                            duration = SnackbarDuration.Short
-                                        )
-                                    }
+                                    toastController.showSuccess("Selected links deleted")
                                 },
                                 onCheckClipboard = inboxViewModel::checkClipboard,
                                 onSaveClipboardSuggestion = { suggestion ->
@@ -901,7 +864,7 @@ fun LaterboxApp(
                                                 openUnifiedDetailSheet(link, DetailSheetTab.DETAILS)
                                                 onResult(true, "Opened details for \"${link.title}\"")
                                             } else {
-                                                snackbarHostState.showSnackbar("Saved link is no longer in your library.")
+                                                toastController.showWarning("Saved link is no longer in your library.")
                                                 onResult(false, "Saved link is no longer in your library.")
                                             }
                                         }
@@ -1192,12 +1155,11 @@ fun LaterboxApp(
                                 onArchive = { link ->
                                     inboxViewModel.onArchive(link.id)
                                     coroutineScope.launch {
-                                        val result = snackbarHostState.showSnackbar(
+                                        val undo = toastController.showAndAwaitAction(
                                             message = "Link archived",
-                                            actionLabel = "Undo",
-                                            duration = SnackbarDuration.Short
+                                            actionLabel = "Undo"
                                         )
-                                        if (result == SnackbarResult.ActionPerformed) {
+                                        if (undo) {
                                             inboxViewModel.unarchive(link.id)
                                         }
                                     }
@@ -1305,11 +1267,11 @@ fun LaterboxApp(
                                 },
                                 onExportEpisode = { asset ->
                                     downloadsViewModel.onExportAsset(asset.id) { success ->
-                                        android.widget.Toast.makeText(
-                                            context,
-                                            if (success) "Saved to device" else "Failed to save to device",
-                                            android.widget.Toast.LENGTH_SHORT
-                                        ).show()
+                                        if (success) {
+                                            toastController.showSuccess("Saved to device")
+                                        } else {
+                                            toastController.showError("Failed to save to device")
+                                        }
                                     }
                                 },
                                 onDeleteEpisode = { asset ->
@@ -1317,11 +1279,11 @@ fun LaterboxApp(
                                 },
                                 onExportAllSeries = { group ->
                                     downloadsViewModel.onExportAssets(group.allAssets.map { it.id }) { succeeded, total ->
-                                        android.widget.Toast.makeText(
-                                            context,
-                                            if (succeeded > 0) "Saved $succeeded of $total episode${if (total == 1) "" else "s"} to device" else "Failed to save episodes",
-                                            android.widget.Toast.LENGTH_SHORT
-                                        ).show()
+                                        if (succeeded > 0) {
+                                            toastController.showSuccess("Saved $succeeded of $total episode${if (total == 1) "" else "s"} to device")
+                                        } else {
+                                            toastController.showError("Failed to save episodes")
+                                        }
                                     }
                                 },
                                 onDeleteSeries = { group ->
@@ -1334,9 +1296,14 @@ fun LaterboxApp(
                         // Movies & TV Discovery Home
                         composable(LaterboxDestination.Movies.route) {
                             val moviesUiState by moviesHomeViewModel.uiState.collectAsState()
+                            LaunchedEffect(moviesUiState.actionFeedbackMessage) {
+                                val msg = moviesUiState.actionFeedbackMessage ?: return@LaunchedEffect
+                                toastController.showSuccess(msg)
+                                moviesHomeViewModel.clearActionFeedback()
+                            }
                             LaunchedEffect(moviesUiState.actionErrorMessage) {
                                 val err = moviesUiState.actionErrorMessage ?: return@LaunchedEffect
-                                snackbarHostState.showSnackbar(err, duration = SnackbarDuration.Short)
+                                toastController.showError(err)
                                 moviesHomeViewModel.clearActionError()
                             }
                             com.laterbox.app.movies.ui.MoviesScreen(
@@ -1432,9 +1399,14 @@ fun LaterboxApp(
                         // Dedicated Watchlist Grid Screen
                         composable(LaterboxDestination.MoviesWatchlist.route) {
                             val watchlistUiState by moviesHomeViewModel.uiState.collectAsState()
+                            LaunchedEffect(watchlistUiState.actionFeedbackMessage) {
+                                val msg = watchlistUiState.actionFeedbackMessage ?: return@LaunchedEffect
+                                toastController.showSuccess(msg)
+                                moviesHomeViewModel.clearActionFeedback()
+                            }
                             LaunchedEffect(watchlistUiState.actionErrorMessage) {
                                 val err = watchlistUiState.actionErrorMessage ?: return@LaunchedEffect
-                                snackbarHostState.showSnackbar(err, duration = SnackbarDuration.Short)
+                                toastController.showError(err)
                                 moviesHomeViewModel.clearActionError()
                             }
                             com.laterbox.app.movies.ui.MoviesWatchlistScreen(
@@ -1500,9 +1472,14 @@ fun LaterboxApp(
                             }
 
                             val catState by moviesCatalogueViewModel.uiState.collectAsState()
+                            LaunchedEffect(catState.actionFeedbackMessage) {
+                                val msg = catState.actionFeedbackMessage ?: return@LaunchedEffect
+                                toastController.showSuccess(msg)
+                                moviesCatalogueViewModel.clearActionFeedback()
+                            }
                             LaunchedEffect(catState.actionErrorMessage) {
                                 val err = catState.actionErrorMessage ?: return@LaunchedEffect
-                                snackbarHostState.showSnackbar(err, duration = SnackbarDuration.Short)
+                                toastController.showError(err)
                                 moviesCatalogueViewModel.clearActionError()
                             }
                             com.laterbox.app.movies.ui.MoviesCatalogueScreen(
@@ -1562,9 +1539,14 @@ fun LaterboxApp(
                                 movieDetailViewModel.load(providerId, titleId)
                             }
                             val detailState by movieDetailViewModel.uiState.collectAsState()
+                            LaunchedEffect(detailState.actionFeedbackMessage) {
+                                val msg = detailState.actionFeedbackMessage ?: return@LaunchedEffect
+                                toastController.showSuccess(msg)
+                                movieDetailViewModel.clearActionFeedback()
+                            }
                             LaunchedEffect(detailState.actionErrorMessage) {
                                 val err = detailState.actionErrorMessage ?: return@LaunchedEffect
-                                snackbarHostState.showSnackbar(err, duration = SnackbarDuration.Short)
+                                toastController.showError(err)
                                 movieDetailViewModel.clearActionError()
                             }
                             com.laterbox.app.movies.ui.MovieDetailScreen(
@@ -1690,7 +1672,14 @@ fun LaterboxApp(
                                 availableUpdateInfo = availableUpdateInfo,
                                 onCheckForUpdates = {
                                     settingsViewModel.checkForUpdates { msg ->
-                                        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+                                        toastController.show(
+                                            message = msg,
+                                            variant = if (msg.contains("error", ignoreCase = true) || msg.contains("failed", ignoreCase = true)) {
+                                                com.laterbox.app.ui.components.LaterboxToastVariant.WARNING
+                                            } else {
+                                                com.laterbox.app.ui.components.LaterboxToastVariant.NEUTRAL
+                                            }
+                                        )
                                     }
                                 },
                                 onDismissUpdateDialog = settingsViewModel::dismissUpdateDialog,
@@ -1786,7 +1775,7 @@ fun LaterboxApp(
                                 isUpdatingYtDlp = isUpdatingYtDlp,
                                 onUpdateYtDlpClick = {
                                     settingsViewModel.updateYtDlp { msg ->
-                                        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+                                        toastController.showNeutral(msg)
                                     }
                                 },
                                 ytDlpState = ytDlpState,
@@ -1795,7 +1784,7 @@ fun LaterboxApp(
                                 onGetDiagnosticReportText = settingsViewModel::getDiagnosticsReportText,
                                 onRetryInitializeEngine = {
                                     settingsViewModel.retryInitializeEngine { msg ->
-                                        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+                                        toastController.showNeutral(msg)
                                     }
                                 },
                                 onSetCustomExportDirectory = settingsViewModel::setCustomExportDirectory,
@@ -1827,9 +1816,14 @@ fun LaterboxApp(
                         // Movies & TV Viewing History
                         composable(LaterboxDestination.MoviesViewingHistory.route) {
                             val historyState by settingsViewModel.viewingHistoryUiState.collectAsState()
+                            LaunchedEffect(historyState.actionFeedbackMessage) {
+                                val msg = historyState.actionFeedbackMessage ?: return@LaunchedEffect
+                                toastController.showSuccess(msg)
+                                settingsViewModel.clearViewingHistoryFeedback()
+                            }
                             LaunchedEffect(historyState.actionErrorMessage) {
                                 val err = historyState.actionErrorMessage ?: return@LaunchedEffect
-                                snackbarHostState.showSnackbar(err, duration = SnackbarDuration.Short)
+                                toastController.showError(err)
                                 settingsViewModel.clearViewingHistoryFeedback()
                             }
                             com.laterbox.app.movies.ui.MoviesViewingHistoryScreen(
@@ -1932,11 +1926,19 @@ fun LaterboxApp(
                     } else {
                         com.laterbox.app.remoteconfig.RemoteConfigLayoutHelper.BottomFloatingOverlayChoice.NONE
                     }
-                    if (showGlobalMiniPlayer || isInboxOverlayVisible || showHandsetBottomBar || floatingOverlayChoice != com.laterbox.app.remoteconfig.RemoteConfigLayoutHelper.BottomFloatingOverlayChoice.NONE) {
+                    val showBottomOverlayColumn = showGlobalMiniPlayer ||
+                        isInboxOverlayVisible ||
+                        showHandsetBottomBar ||
+                        floatingOverlayChoice != com.laterbox.app.remoteconfig.RemoteConfigLayoutHelper.BottomFloatingOverlayChoice.NONE
+                    LaunchedEffect(showBottomOverlayColumn) {
+                        if (!showBottomOverlayColumn) bottomChromeHeightPx = 0
+                    }
+                    if (showBottomOverlayColumn) {
                         Column(
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
-                                .fillMaxWidth(),
+                                .fillMaxWidth()
+                                .onSizeChanged { bottomChromeHeightPx = it.height },
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             val needsNavInsets = !showHandsetBottomBar && !isInboxOverlayVisible && !showGlobalMiniPlayer
@@ -2146,6 +2148,32 @@ fun LaterboxApp(
                             }
                         }
                     }
+
+                    if (!isImmersivePlayerRoute) {
+                        val toastBottomPadding = when {
+                            bottomChromeHeightPx > 0 -> with(density) { bottomChromeHeightPx.toDp() } + 8.dp
+                            currentRoute?.startsWith("chat") == true && effectiveAssistantEnabled -> 84.dp
+                            else -> 16.dp
+                        }
+                        val toastInsetModifier = if (bottomChromeHeightPx > 0) {
+                            Modifier
+                        } else {
+                            Modifier.windowInsetsPadding(
+                                WindowInsets.navigationBars.union(WindowInsets.ime).only(WindowInsetsSides.Bottom)
+                            )
+                        }
+                        com.laterbox.app.ui.components.LaterboxToastHost(
+                            toasts = activeToasts,
+                            onDismissToast = { toastId -> toastController.dismiss(toastId, byUser = true) },
+                            onActionClick = { toastId -> toastController.performAction(toastId) },
+                            bottomPadding = toastBottomPadding,
+                            reducedMotion = reducedMotion,
+                            toastController = toastController,
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .then(toastInsetModifier)
+                        )
+                    }
                 }
             }
             }
@@ -2303,12 +2331,11 @@ fun LaterboxApp(
                         detailSheetState.hide()
                         selectedLinkForDetails = null
                         if (!wasArchived && linkId != null) {
-                            val result = snackbarHostState.showSnackbar(
+                            val undo = toastController.showAndAwaitAction(
                                 message = "Archived",
-                                actionLabel = "Undo",
-                                duration = SnackbarDuration.Short
+                                actionLabel = "Undo"
                             )
-                            if (result == SnackbarResult.ActionPerformed) {
+                            if (undo) {
                                 inboxViewModel.unarchive(linkId)
                             }
                         }
@@ -2321,12 +2348,11 @@ fun LaterboxApp(
                     coroutineScope.launch {
                         detailSheetState.hide()
                         selectedLinkForDetails = null
-                        val result = snackbarHostState.showSnackbar(
+                        val undo = toastController.showAndAwaitAction(
                             message = "Deleted link",
-                            actionLabel = "Undo",
-                            duration = SnackbarDuration.Short
+                            actionLabel = "Undo"
                         )
-                        if (result == SnackbarResult.ActionPerformed) {
+                        if (undo) {
                             inboxViewModel.restoreLink(deletedLink)
                         }
                     }
@@ -2338,12 +2364,11 @@ fun LaterboxApp(
                     coroutineScope.launch {
                         detailSheetState.hide()
                         selectedLinkForDetails = null
-                        val result = snackbarHostState.showSnackbar(
+                        val undo = toastController.showAndAwaitAction(
                             message = if (deleteFiles) "Deleted link & files" else "Deleted link",
-                            actionLabel = "Undo",
-                            duration = SnackbarDuration.Short
+                            actionLabel = "Undo"
                         )
-                        if (result == SnackbarResult.ActionPerformed) {
+                        if (undo) {
                             inboxViewModel.restoreLink(deletedLink)
                         }
                     }
@@ -2365,11 +2390,11 @@ fun LaterboxApp(
             },
             onExportMediaAsset = { asset ->
                 savedItemDetailViewModel.exportAsset(asset.id) { success ->
-                    android.widget.Toast.makeText(
-                        context,
-                        if (success) "Exported successfully" else "Failed to export",
-                        android.widget.Toast.LENGTH_SHORT
-                    ).show()
+                    if (success) {
+                        toastController.showSuccess("Exported successfully")
+                    } else {
+                        toastController.showError("Failed to export")
+                    }
                 }
             },
             onDeleteMediaAsset = { asset -> savedItemDetailViewModel.deleteAsset(asset.id) },
@@ -2410,12 +2435,11 @@ fun LaterboxApp(
                         detailSheetState.hide()
                         selectedLinkForDetails = null
                         if (!wasArchived) {
-                            val result = snackbarHostState.showSnackbar(
+                            val undo = toastController.showAndAwaitAction(
                                 message = "Marked read & archived",
-                                actionLabel = "Undo",
-                                duration = SnackbarDuration.Short
+                                actionLabel = "Undo"
                             )
-                            if (result == SnackbarResult.ActionPerformed) {
+                            if (undo) {
                                 inboxViewModel.unarchive(activeLink.id)
                             }
                         }
@@ -2475,11 +2499,11 @@ fun LaterboxApp(
                     onDismiss = { activeViewerAsset = null },
                     onExport = {
                         savedItemDetailViewModel.exportAsset(asset.id) { success ->
-                            android.widget.Toast.makeText(
-                                context,
-                                if (success) "Exported to gallery" else "Failed to export",
-                                android.widget.Toast.LENGTH_SHORT
-                            ).show()
+                            if (success) {
+                                toastController.showSuccess("Exported to gallery")
+                            } else {
+                                toastController.showError("Failed to export")
+                            }
                         }
                     }
                 )
@@ -2514,11 +2538,11 @@ fun LaterboxApp(
                     onDismiss = { activeViewerAsset = null },
                     onExport = {
                         savedItemDetailViewModel.exportAsset(asset.id) { success ->
-                            android.widget.Toast.makeText(
-                                context,
-                                if (success) "Exported to storage" else "Failed to export",
-                                android.widget.Toast.LENGTH_SHORT
-                            ).show()
+                            if (success) {
+                                toastController.showSuccess("Exported to storage")
+                            } else {
+                                toastController.showError("Failed to export")
+                            }
                         }
                     },
                     playbackPreferences = localPlaybackPrefs,
@@ -2570,5 +2594,6 @@ fun LaterboxApp(
             },
             dismissible = !prompt.isBlocking,
         )
+    }
     }
 }

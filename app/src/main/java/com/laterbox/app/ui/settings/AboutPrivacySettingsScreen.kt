@@ -355,11 +355,11 @@ fun AboutLaterboxSection(
                             text = "Reset Installation Identifier",
                             onClick = {
                                 onResetAnalyticsInstallId()
-                                android.widget.Toast.makeText(
-                                    context,
-                                    "Installation identifier rotated",
-                                    android.widget.Toast.LENGTH_SHORT
-                                ).show()
+                                com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                                    context = context,
+                                    message = "Installation identifier rotated",
+                                    variant = com.laterbox.app.ui.components.LaterboxToastVariant.SUCCESS
+                                )
                             },
                             modifier = Modifier.fillMaxWidth()
                         )

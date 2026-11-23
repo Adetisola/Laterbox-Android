@@ -4,10 +4,13 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
+import com.laterbox.app.LaterboxApplication
+import com.laterbox.app.ui.components.LaterboxToastController
+import com.laterbox.app.ui.components.LaterboxToastVariant
 
 /**
  * Standardized, debounced feedback helper for link save and update operations
- * across all Laterbox capture and entry points.
+ * and unified in-app toast routing with system Toast fallback when outside the main Activity.
  */
 object SaveFeedbackHelper {
 
@@ -19,6 +22,34 @@ object SaveFeedbackHelper {
 
     fun showSaveSuccess(context: Context, isUpdate: Boolean = false) {
         val message = if (isUpdate) "Updated in Laterbox" else "Saved to Laterbox"
+        showInAppOrSystem(context, message, LaterboxToastVariant.SUCCESS)
+    }
+
+    fun showInAppOrSystem(
+        context: Context,
+        message: String,
+        variant: LaterboxToastVariant = LaterboxToastVariant.NEUTRAL,
+        controller: LaterboxToastController? = null,
+        durationMs: Long? = LaterboxToastController.DEFAULT_DURATION_MS
+    ) {
+        val targetController = controller
+            ?: (context.applicationContext as? LaterboxApplication)?.container?.toastController
+        if (targetController != null && targetController.isInAppHostActive) {
+            targetController.show(
+                message = message,
+                variant = variant,
+                durationMs = durationMs
+            )
+            return
+        }
+        if (controller != null) {
+            controller.show(
+                message = message,
+                variant = variant,
+                durationMs = durationMs
+            )
+            return
+        }
         showToast(context, message)
     }
 

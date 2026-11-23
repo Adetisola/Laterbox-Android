@@ -192,7 +192,11 @@ fun MediaPlayerScreen(
                             }
                             context.startActivity(Intent.createChooser(shareIntent, "Share media"))
                         } catch (e: Exception) {
-                            Toast.makeText(context, "Cannot share: ${e.message}", Toast.LENGTH_SHORT).show()
+                            com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                                context = context,
+                                message = "Cannot share: ${e.message}",
+                                variant = com.laterbox.app.ui.components.LaterboxToastVariant.ERROR
+                            )
                         }
                     }
                 ) {

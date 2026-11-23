@@ -119,7 +119,11 @@ object LaterboxShareHelper {
     fun shareTitle(context: Context, item: MovieTitleSummary): Boolean {
         val url = resolveTitleShareUrl(item)
         if (url == null) {
-            Toast.makeText(context, "Unable to create share link for this title.", Toast.LENGTH_SHORT).show()
+            com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                context,
+                "Unable to create share link for this title.",
+                com.laterbox.app.ui.components.LaterboxToastVariant.ERROR
+            )
             return false
         }
         return launchTextShare(context, title = item.title, url = url)
@@ -134,7 +138,11 @@ object LaterboxShareHelper {
     ): Boolean {
         val url = LaterboxDeepLinks.buildTitleUrl(providerId, titleId, kind)
         if (url == null) {
-            Toast.makeText(context, "Unable to create share link for this title.", Toast.LENGTH_SHORT).show()
+            com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                context,
+                "Unable to create share link for this title.",
+                com.laterbox.app.ui.components.LaterboxToastVariant.ERROR
+            )
             return false
         }
         return launchTextShare(context, title = title, url = url)
@@ -143,7 +151,11 @@ object LaterboxShareHelper {
     fun shareSeriesGroup(context: Context, group: DownloadLibraryEntry.SeriesGroup): Boolean {
         val url = resolveSeriesGroupShareUrl(group)
         if (url == null) {
-            Toast.makeText(context, "Unable to create share link for this series.", Toast.LENGTH_SHORT).show()
+            com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                context,
+                "Unable to create share link for this series.",
+                com.laterbox.app.ui.components.LaterboxToastVariant.ERROR
+            )
             return false
         }
         return launchTextShare(context, title = group.seriesTitle, url = url)
@@ -158,20 +170,20 @@ object LaterboxShareHelper {
                 launchFileShare(context, target)
 
             LaterboxShareTarget.BlockedEpisodeShare -> {
-                Toast.makeText(
+                com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
                     context,
                     "Share the series page instead of individual downloaded episodes.",
-                    Toast.LENGTH_SHORT
-                ).show()
+                    com.laterbox.app.ui.components.LaterboxToastVariant.WARNING
+                )
                 false
             }
 
             LaterboxShareTarget.Unavailable -> {
-                Toast.makeText(
+                com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
                     context,
                     "This downloaded file is unavailable to share.",
-                    Toast.LENGTH_SHORT
-                ).show()
+                    com.laterbox.app.ui.components.LaterboxToastVariant.WARNING
+                )
                 false
             }
         }
@@ -195,7 +207,11 @@ object LaterboxShareHelper {
             )
         }.getOrNull()
         if (contentUri == null || contentUri.scheme != "content") {
-            Toast.makeText(context, "Unable to prepare file for sharing.", Toast.LENGTH_SHORT).show()
+            com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                context,
+                "Unable to prepare file for sharing.",
+                com.laterbox.app.ui.components.LaterboxToastVariant.ERROR
+            )
             return false
         }
 
@@ -223,7 +239,11 @@ object LaterboxShareHelper {
                 ?.trackFeatureUsed("media_share")
             true
         } catch (_: ActivityNotFoundException) {
-            Toast.makeText(context, "No app available to share with.", Toast.LENGTH_SHORT).show()
+            com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                context,
+                "No app available to share with.",
+                com.laterbox.app.ui.components.LaterboxToastVariant.WARNING
+            )
             false
         }
     }

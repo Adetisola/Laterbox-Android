@@ -672,6 +672,7 @@ private fun ChatMessageBubble(
     val spacing = LaterboxTheme.spacing
     val clipboard = LocalClipboardManager.current
     val context = androidx.compose.ui.platform.LocalContext.current
+    val toastController = com.laterbox.app.ui.components.LocalLaterboxToastController.current
     val isUser = message.role == ChatRole.USER.name
 
     val trackedActions = remember(message.actionsJson) {
@@ -870,11 +871,12 @@ private fun ChatMessageBubble(
                                     if (onMessageCopied != null) {
                                         onMessageCopied()
                                     } else {
-                                        android.widget.Toast.makeText(
-                                            context,
-                                            "Copied",
-                                            android.widget.Toast.LENGTH_SHORT
-                                        ).show()
+                                        com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                                            context = context,
+                                            message = "Copied",
+                                            variant = com.laterbox.app.ui.components.LaterboxToastVariant.SUCCESS,
+                                            controller = toastController
+                                        )
                                     }
                                 }
                                 .testTag("chat_quick_copy_${message.id}")

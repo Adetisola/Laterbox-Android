@@ -326,7 +326,11 @@ fun SavedItemDetailSheet(
                             onCopyLink = {
                                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                 clipboard.setPrimaryClip(ClipData.newPlainText("URL", link.originalUrl))
-                                Toast.makeText(context, "Link copied", Toast.LENGTH_SHORT).show()
+                                com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                                    context = context,
+                                    message = "Link copied",
+                                    variant = com.laterbox.app.ui.components.LaterboxToastVariant.SUCCESS
+                                )
                             },
                             onShareLink = {
                                 val sendIntent = Intent().apply {
@@ -995,7 +999,11 @@ fun SavedItemDetailSheet(
                     onClick = {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         clipboard.setPrimaryClip(ClipData.newPlainText("URL", link.originalUrl))
-                        Toast.makeText(context, "URL copied to clipboard", Toast.LENGTH_SHORT).show()
+                        com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                            context = context,
+                            message = "URL copied to clipboard",
+                            variant = com.laterbox.app.ui.components.LaterboxToastVariant.SUCCESS
+                        )
                     }
                 )
             }

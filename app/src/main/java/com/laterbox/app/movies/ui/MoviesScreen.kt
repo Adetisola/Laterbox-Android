@@ -149,13 +149,6 @@ fun MoviesScreen(
     var prevIndex by remember(uiState.isFilteredMode) { mutableIntStateOf(0) }
     var prevOffset by remember(uiState.isFilteredMode) { mutableIntStateOf(0) }
 
-    LaunchedEffect(uiState.actionFeedbackMessage) {
-        if (uiState.actionFeedbackMessage != null) {
-            delay(2_600L)
-            onClearActionFeedback()
-        }
-    }
-
     collectionPickerTarget?.let { target ->
         MovieCollectionPickerDialog(
             title = target.title,
@@ -1376,37 +1369,6 @@ fun MoviesScreen(
                 }
             }
         }
-        }
-
-        // Non-shifting floating action feedback banner
-        uiState.actionFeedbackMessage?.let { feedback ->
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = colors.accentContainer,
-                border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.3f)),
-                shadowElevation = 4.dp,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = (bottomPaddingDp + 8).dp)
-                    .testTag("movies_home_feedback_banner")
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = feedback,
-                        style = typography.metaText.copy(fontWeight = FontWeight.Medium),
-                        color = colors.accentPrimary,
-                        modifier = Modifier.weight(1f)
-                    )
-                    TextButton(onClick = onClearActionFeedback) {
-                        Text("Dismiss", color = colors.accentPrimary)
-                    }
-                }
-            }
         }
     }
 }

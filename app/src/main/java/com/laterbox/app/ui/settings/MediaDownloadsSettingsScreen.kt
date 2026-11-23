@@ -93,7 +93,11 @@ fun MediaDownloadsSettingsScreen(
             val docFile = DocumentFile.fromTreeUri(context, uri)
             val dirName = docFile?.name ?: "Selected Folder"
             onSetCustomExportDirectory(uri.toString(), dirName)
-            Toast.makeText(context, "Export directory set to: $dirName", Toast.LENGTH_SHORT).show()
+            com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                context = context,
+                message = "Export directory set to: $dirName",
+                variant = com.laterbox.app.ui.components.LaterboxToastVariant.SUCCESS
+            )
         }
     }
 
@@ -421,7 +425,11 @@ fun MediaDownloadsSettingsScreen(
                             onClick = {
                                 val reportText = diagnosticReportText ?: diagnosticReport?.toFormattedString() ?: ""
                                 clipboardManager.setText(AnnotatedString(reportText))
-                                Toast.makeText(context, "Diagnostics copied to clipboard", Toast.LENGTH_SHORT).show()
+                                com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                                    context = context,
+                                    message = "Diagnostics copied to clipboard",
+                                    variant = com.laterbox.app.ui.components.LaterboxToastVariant.SUCCESS
+                                )
                             }
                         ) {
                             Text(

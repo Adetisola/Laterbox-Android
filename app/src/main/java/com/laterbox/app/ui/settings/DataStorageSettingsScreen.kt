@@ -70,21 +70,25 @@ fun DataStorageSettingsScreen(
                         val result = onExportBackup(outputStream)
                         if (result.isSuccess) {
                             val count = result.getOrNull() ?: 0
-                            Toast.makeText(context, "Exported $count items", Toast.LENGTH_SHORT).show()
+                            com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                                context = context,
+                                message = "Exported $count items",
+                                variant = com.laterbox.app.ui.components.LaterboxToastVariant.SUCCESS
+                            )
                         } else {
-                            Toast.makeText(
-                                context,
-                                "Couldn't export backup. Check available space and try again.",
-                                Toast.LENGTH_LONG
-                            ).show()
+                            com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                                context = context,
+                                message = "Couldn't export backup. Check available space and try again.",
+                                variant = com.laterbox.app.ui.components.LaterboxToastVariant.ERROR
+                            )
                         }
                     }
                 } catch (_: Exception) {
-                    Toast.makeText(
-                        context,
-                        "Couldn't export backup to the chosen location.",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                        context = context,
+                        message = "Couldn't export backup to the chosen location.",
+                        variant = com.laterbox.app.ui.components.LaterboxToastVariant.ERROR
+                    )
                 }
             }
         }
@@ -103,21 +107,25 @@ fun DataStorageSettingsScreen(
                             val msg = stats?.let {
                                 "Restored ${it.restoredLinksCount} links and ${it.restoredCollectionsCount} collections"
                             } ?: "Backup restored"
-                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                            com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                                context = context,
+                                message = msg,
+                                variant = com.laterbox.app.ui.components.LaterboxToastVariant.SUCCESS
+                            )
                         } else {
-                            Toast.makeText(
-                                context,
-                                "Couldn't restore backup. Make sure you chose a valid Laterbox backup file.",
-                                Toast.LENGTH_LONG
-                            ).show()
+                            com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                                context = context,
+                                message = "Couldn't restore backup. Make sure you chose a valid Laterbox backup file.",
+                                variant = com.laterbox.app.ui.components.LaterboxToastVariant.ERROR
+                            )
                         }
                     }
                 } catch (_: Exception) {
-                    Toast.makeText(
-                        context,
-                        "Couldn't read the selected backup file.",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                        context = context,
+                        message = "Couldn't read the selected backup file.",
+                        variant = com.laterbox.app.ui.components.LaterboxToastVariant.ERROR
+                    )
                 }
             }
         }

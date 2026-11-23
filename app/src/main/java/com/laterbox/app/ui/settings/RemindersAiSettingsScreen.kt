@@ -515,9 +515,17 @@ fun RemindersAiSettingsScreen(
                                 coroutineScope.launch {
                                     val sent = onSendTestSmartDigest()
                                     if (sent) {
-                                        Toast.makeText(context, "Test reminder sent! Check notification shade.", Toast.LENGTH_SHORT).show()
+                                        com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                                            context = context,
+                                            message = "Test reminder sent! Check notification shade.",
+                                            variant = com.laterbox.app.ui.components.LaterboxToastVariant.SUCCESS
+                                        )
                                     } else {
-                                        Toast.makeText(context, "Could not send test reminder. Check notification permission and AI connection.", Toast.LENGTH_LONG).show()
+                                        com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                                            context = context,
+                                            message = "Could not send test reminder. Check notification permission and AI connection.",
+                                            variant = com.laterbox.app.ui.components.LaterboxToastVariant.WARNING
+                                        )
                                     }
                                 }
                             },

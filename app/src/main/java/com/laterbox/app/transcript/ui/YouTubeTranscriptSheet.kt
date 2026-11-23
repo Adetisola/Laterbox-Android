@@ -1198,7 +1198,11 @@ private fun copyTextToClipboard(
     if (text.isBlank()) return
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
     clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
-    Toast.makeText(context, toastMessage, Toast.LENGTH_SHORT).show()
+    com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+        context = context,
+        message = toastMessage,
+        variant = com.laterbox.app.ui.components.LaterboxToastVariant.SUCCESS
+    )
 }
 
 private fun openExportedFile(context: Context, outcome: SingleExportOutcome) {
@@ -1211,11 +1215,11 @@ private fun openExportedFile(context: Context, outcome: SingleExportOutcome) {
     try {
         context.startActivity(Intent.createChooser(viewIntent, "Open ${outcome.filename}"))
     } catch (_: Throwable) {
-        Toast.makeText(
-            context,
-            "No app found to open ${outcome.format.extension.uppercase()} files",
-            Toast.LENGTH_SHORT
-        ).show()
+        com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+            context = context,
+            message = "No app found to open ${outcome.format.extension.uppercase()} files",
+            variant = com.laterbox.app.ui.components.LaterboxToastVariant.WARNING
+        )
     }
 }
 
@@ -1231,6 +1235,10 @@ private fun shareExportedFile(context: Context, outcome: SingleExportOutcome) {
     try {
         context.startActivity(Intent.createChooser(shareIntent, "Share ${outcome.filename}"))
     } catch (_: Throwable) {
-        Toast.makeText(context, "Unable to share ${outcome.filename}", Toast.LENGTH_SHORT).show()
+        com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+            context = context,
+            message = "Unable to share ${outcome.filename}",
+            variant = com.laterbox.app.ui.components.LaterboxToastVariant.ERROR
+        )
     }
 }

@@ -1380,36 +1380,6 @@ fun MovieDetailScreen(
                                     }
                                 }
                             }
-
-                            uiState.actionFeedbackMessage?.let { feedbackMsg ->
-                                Surface(
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = colors.accentContainer.copy(alpha = 0.7f),
-                                    border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.3f)),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .testTag("detail_action_feedback")
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Text(
-                                            text = feedbackMsg,
-                                            style = typography.metaText,
-                                            color = colors.textPrimary,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                        TextButton(
-                                            onClick = onClearActionFeedback,
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
-                                        ) {
-                                            Text("OK", style = typography.caption, color = colors.accentPrimary)
-                                        }
-                                    }
-                                }
-                            }
                         }
                     }
 

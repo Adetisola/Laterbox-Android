@@ -83,6 +83,7 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
 
         // Initialize Remote Config non-blockingly (hydrates local DataStore cache first, fetches after frame settles)
         container.remoteConfigManager.initializeNonBlocking()
+        container.connectivityObserver.start()
 
         // Fast startup state recovery first; defer heavy yt-dlp / FFmpeg / orphan sweep I/O
         val startupBeginMs = android.os.SystemClock.elapsedRealtime()

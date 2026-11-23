@@ -218,16 +218,20 @@ fun CaptureShortcutsSettingsScreen(
                                         { it.run() },
                                         { result ->
                                             if (result == StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ADDED) {
-                                                Toast.makeText(context, "Tile added to Quick Settings!", Toast.LENGTH_SHORT).show()
+                                                com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                                                    context = context,
+                                                    message = "Tile added to Quick Settings!",
+                                                    variant = com.laterbox.app.ui.components.LaterboxToastVariant.SUCCESS
+                                                )
                                             }
                                         }
                                     )
                                 } else {
-                                    Toast.makeText(
-                                        context,
-                                        "Swipe down Quick Settings, tap the pencil edit icon, and drag 'Save to Laterbox' into your tiles.",
-                                        Toast.LENGTH_LONG
-                                    ).show()
+                                    com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                                        context = context,
+                                        message = "Swipe down Quick Settings, tap the pencil edit icon, and drag 'Save to Laterbox' into your tiles.",
+                                        variant = com.laterbox.app.ui.components.LaterboxToastVariant.NEUTRAL
+                                    )
                                 }
                             },
                             modifier = Modifier.fillMaxWidth()

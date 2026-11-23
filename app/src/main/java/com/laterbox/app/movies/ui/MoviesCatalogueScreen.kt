@@ -118,13 +118,6 @@ fun MoviesCatalogueScreen(
     var showExpandedFilters by remember { mutableStateOf(false) }
     var collectionPickerTarget by remember { mutableStateOf<MovieTitleSummary?>(null) }
 
-    LaunchedEffect(uiState.actionFeedbackMessage) {
-        if (uiState.actionFeedbackMessage != null) {
-            delay(2_600L)
-            onClearActionFeedback()
-        }
-    }
-
     collectionPickerTarget?.let { target ->
         MovieCollectionPickerDialog(
             title = target.title,
@@ -295,34 +288,6 @@ fun MoviesCatalogueScreen(
 
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             Column(modifier = Modifier.fillMaxSize()) {
-
-        uiState.actionFeedbackMessage?.let { feedback ->
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = colors.accentContainer,
-                border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.3f)),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp)
-                    .testTag("catalogue_feedback_banner")
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = feedback,
-                        style = typography.metaText.copy(fontWeight = FontWeight.Medium),
-                        color = colors.accentPrimary,
-                        modifier = Modifier.weight(1f)
-                    )
-                    TextButton(onClick = onClearActionFeedback) {
-                        Text("Dismiss", color = colors.accentPrimary)
-                    }
-                }
-            }
-        }
 
         // Kind Filters + Expanded Filters Toggle + Reset Row
         val hasActiveFilters = uiState.selectedKind != null ||

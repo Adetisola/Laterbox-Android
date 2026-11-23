@@ -49,6 +49,8 @@ interface AppContainer {
     val versionGate: com.laterbox.app.remoteconfig.LaterboxVersionGate
     val backendAiClient: com.laterbox.app.ai.LaterboxBackendAiClient
     val analyticsTracker: com.laterbox.app.analytics.LaterboxAnalyticsTracker
+    val toastController: com.laterbox.app.ui.components.LaterboxToastController
+    val connectivityObserver: com.laterbox.app.network.LaterboxConnectivityObserver
     suspend fun resolveBackendBaseUrl(): String
     suspend fun getBackendAppCheckToken(forceRefresh: Boolean = false): String?
 }
@@ -58,6 +60,21 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
     private val containerScope = kotlinx.coroutines.CoroutineScope(
         kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO
     )
+
+    override val toastController: com.laterbox.app.ui.components.LaterboxToastController by lazy {
+        com.laterbox.app.ui.components.LaterboxToastController(
+            scope = kotlinx.coroutines.CoroutineScope(
+                kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate
+            )
+        )
+    }
+
+    override val connectivityObserver: com.laterbox.app.network.LaterboxConnectivityObserver by lazy {
+        com.laterbox.app.network.LaterboxConnectivityObserver(
+            context = context.applicationContext,
+            toastController = toastController
+        )
+    }
 
     @Volatile
     private var cachedBackendBaseUrl: String = com.laterbox.app.BuildConfig.MOVIEBOX_API_BASE_URL

@@ -110,11 +110,11 @@ fun DownloadsScreen(
         onDeleteSelectedAssets = viewModel::onDeleteSelectedAssets,
         onExportSelectedAssets = {
             viewModel.onExportSelectedAssets { succeeded, total ->
-                Toast.makeText(
-                    context,
-                    if (succeeded > 0) "Exported $succeeded of $total file${if (total == 1) "" else "s"}" else "Export failed",
-                    Toast.LENGTH_SHORT
-                ).show()
+                com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                    context = context,
+                    message = if (succeeded > 0) "Exported $succeeded of $total file${if (total == 1) "" else "s"}" else "Export failed",
+                    variant = if (succeeded > 0) com.laterbox.app.ui.components.LaterboxToastVariant.SUCCESS else com.laterbox.app.ui.components.LaterboxToastVariant.ERROR
+                )
             }
         },
         onOpenAsset = { asset ->
@@ -138,11 +138,11 @@ fun DownloadsScreen(
         },
         onExportAsset = { asset ->
             viewModel.onExportAsset(asset.id) { success ->
-                Toast.makeText(
-                    context,
-                    if (success) "Saved to device" else "Failed to save to device",
-                    Toast.LENGTH_SHORT
-                ).show()
+                com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                    context = context,
+                    message = if (success) "Saved to device" else "Failed to save to device",
+                    variant = if (success) com.laterbox.app.ui.components.LaterboxToastVariant.SUCCESS else com.laterbox.app.ui.components.LaterboxToastVariant.ERROR
+                )
             }
         },
         onDeleteAsset = { asset -> viewModel.onDeleteAsset(asset.id) },
@@ -162,11 +162,11 @@ fun DownloadsScreen(
         onOpenSeries = onOpenSeries,
         onExportSeries = { group ->
             viewModel.onExportAssets(group.allAssets.map { it.id }) { succeeded, total ->
-                Toast.makeText(
-                    context,
-                    if (succeeded > 0) "Saved $succeeded of $total episode${if (total == 1) "" else "s"} to device" else "Failed to save episodes",
-                    Toast.LENGTH_SHORT
-                ).show()
+                com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                    context = context,
+                    message = if (succeeded > 0) "Saved $succeeded of $total episode${if (total == 1) "" else "s"} to device" else "Failed to save episodes",
+                    variant = if (succeeded > 0) com.laterbox.app.ui.components.LaterboxToastVariant.SUCCESS else com.laterbox.app.ui.components.LaterboxToastVariant.ERROR
+                )
             }
         },
         onDeleteSeries = { group ->
@@ -187,11 +187,11 @@ fun DownloadsScreen(
                     onDismiss = { activeViewerAsset = null },
                     onExport = {
                         viewModel.onExportAsset(asset.id) { success ->
-                            Toast.makeText(
-                                context,
-                                if (success) "Exported to gallery" else "Export failed",
-                                Toast.LENGTH_SHORT
-                            ).show()
+                            com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                                context = context,
+                                message = if (success) "Exported to gallery" else "Export failed",
+                                variant = if (success) com.laterbox.app.ui.components.LaterboxToastVariant.SUCCESS else com.laterbox.app.ui.components.LaterboxToastVariant.ERROR
+                            )
                         }
                     }
                 )
@@ -202,11 +202,11 @@ fun DownloadsScreen(
                     onDismiss = { activeViewerAsset = null },
                     onExport = {
                         viewModel.onExportAsset(asset.id) { success ->
-                            Toast.makeText(
-                                context,
-                                if (success) "Exported to storage" else "Export failed",
-                                Toast.LENGTH_SHORT
-                            ).show()
+                            com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                                context = context,
+                                message = if (success) "Exported to storage" else "Export failed",
+                                variant = if (success) com.laterbox.app.ui.components.LaterboxToastVariant.SUCCESS else com.laterbox.app.ui.components.LaterboxToastVariant.ERROR
+                            )
                         }
                     },
                     playbackPreferences = playbackPreferences,
