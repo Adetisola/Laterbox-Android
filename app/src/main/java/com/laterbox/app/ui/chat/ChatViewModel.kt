@@ -21,8 +21,6 @@ import com.laterbox.app.data.repository.ChatRepository
 import com.laterbox.app.data.repository.ChatRole
 import com.laterbox.app.data.repository.CollectionRepository
 import com.laterbox.app.data.repository.LinkRepository
-import com.laterbox.app.diagnostics.AppHealthChecker
-import com.laterbox.app.diagnostics.AppHealthReport
 import com.laterbox.app.media.domain.repository.MediaRepository
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.repository.MoviesRepository
@@ -65,8 +63,6 @@ data class ChatUiState(
     val isStreaming: Boolean = false,
     val streamingAssistantMessageId: String? = null,
     val streamingPartialText: String = "",
-    val latestHealthReport: AppHealthReport? = null,
-    val isRunningHealthCheck: Boolean = false,
     val pendingMutatingAction: ChatAction? = null,
     val statusNotice: String? = null,
     val manifestOutOfSync: Boolean = false
@@ -77,7 +73,6 @@ class ChatViewModel(
     private val chatRepository: ChatRepository,
     private val userPreferencesRepository: UserPreferencesRepository,
     private val laterboxContextEngine: LaterboxContextEngine,
-    private val appHealthChecker: AppHealthChecker,
     private val linkRepository: LinkRepository,
     private val mediaRepository: MediaRepository,
     private val speech: SpeechTranscriptionCoordinator? = null,
@@ -94,8 +89,6 @@ class ChatViewModel(
     private val _isStreaming = MutableStateFlow(false)
     private val _streamingAssistantMessageId = MutableStateFlow<String?>(null)
     private val _streamingPartialText = MutableStateFlow("")
-    private val _latestHealthReport = MutableStateFlow<AppHealthReport?>(null)
-    private val _isRunningHealthCheck = MutableStateFlow(false)
     private val _pendingMutatingAction = MutableStateFlow<ChatAction?>(null)
     private val _statusNotice = MutableStateFlow<String?>(null)
     private val _manifestOutOfSync = MutableStateFlow(false)
@@ -135,13 +128,11 @@ class ChatViewModel(
     }
 
     private val auxiliaryTuple = combine(
-        _latestHealthReport,
-        _isRunningHealthCheck,
         _pendingMutatingAction,
         _statusNotice,
         _manifestOutOfSync
-    ) { report, running, pendingAction, notice, manifestOutOfSync ->
-        AuxState(report, running, pendingAction, notice, manifestOutOfSync)
+    ) { pendingAction, notice, manifestOutOfSync ->
+        AuxState(pendingAction, notice, manifestOutOfSync)
     }
 
     val uiState: StateFlow<ChatUiState> = combine(
@@ -176,8 +167,6 @@ class ChatViewModel(
             isStreaming = stream.isStreaming,
             streamingAssistantMessageId = stream.msgId,
             streamingPartialText = stream.partial,
-            latestHealthReport = aux.report,
-            isRunningHealthCheck = aux.runningHealthCheck,
             pendingMutatingAction = aux.pendingAction,
             statusNotice = aux.notice,
             manifestOutOfSync = aux.manifestOutOfSync
@@ -262,7 +251,6 @@ class ChatViewModel(
         clearPendingActionPipelineState()
         pendingConsentConversationId = null
         _activeConversationId.value = null
-        _latestHealthReport.value = null
         _statusNotice.value = null
     }
 
@@ -400,69 +388,35 @@ class ChatViewModel(
                 pendingConsentConversationId = convId
                 return@launch
             }
-            chatRepository.deleteMessage(assistantMessageId)
-            val lastUserPrompt = chatRepository.getMessagesSnapshot(convId)
+            val snapshot = chatRepository.getMessagesSnapshot(convId)
+            val targetIndex = snapshot.indexOfFirst { it.id == assistantMessageId }
+            if (targetIndex < 0) return@launch
+            val targetMessage = snapshot[targetIndex]
+            if (targetMessage.role != ChatRole.ASSISTANT.name) return@launch
+            if (hasBlockingMutatingActionForRetry(targetMessage.actionsJson)) {
+                _statusNotice.value = "Cannot retry a response that already applied in-app changes."
+                return@launch
+            }
+            val promptToRetry = snapshot.subList(0, targetIndex)
                 .lastOrNull { it.role == ChatRole.USER.name }
                 ?.content
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
                 ?: return@launch
-            generateAssistantReply(convId, lastUserPrompt)
+
+            val latestAssistantIndex = snapshot.indexOfLast { it.role == ChatRole.ASSISTANT.name }
+            if (targetIndex == latestAssistantIndex) {
+                chatRepository.deleteMessage(assistantMessageId)
+            } else {
+                chatRepository.addUserMessage(convId, promptToRetry)
+            }
+            generateAssistantReply(convId, promptToRetry)
         }
     }
 
     fun cancelStreaming() {
         streamingJob?.cancel()
         streamingJob = null
-    }
-
-    fun runAppHealthCheck() {
-        if (_isRunningHealthCheck.value) return
-        viewModelScope.launch {
-            _isRunningHealthCheck.value = true
-            try {
-                _latestHealthReport.value = appHealthChecker.runCheck()
-            } finally {
-                _isRunningHealthCheck.value = false
-            }
-        }
-    }
-
-    fun runAppHealthCheckForAction(messageId: String, actionId: String) {
-        val convId = _activeConversationId.value
-        viewModelScope.launch {
-            if (convId != null) {
-                chatRepository.updateMessageActionStatus(
-                    convId,
-                    messageId,
-                    actionId,
-                    com.laterbox.app.ai.ChatActionStatus.AUTO_EXECUTING
-                )
-            }
-            _isRunningHealthCheck.value = true
-            val ok = try {
-                _latestHealthReport.value = appHealthChecker.runCheck()
-                true
-            } catch (_: Throwable) {
-                false
-            } finally {
-                _isRunningHealthCheck.value = false
-            }
-            if (convId != null) {
-                chatRepository.updateMessageActionStatus(
-                    conversationId = convId,
-                    messageId = messageId,
-                    actionId = actionId,
-                    status = if (ok) com.laterbox.app.ai.ChatActionStatus.EXECUTED else com.laterbox.app.ai.ChatActionStatus.FAILED,
-                    statusDetail = if (ok) "Health check completed" else "Health check failed"
-                )
-            }
-            reportActionOutcome(
-                conversationId = convId,
-                action = ChatAction.RunHealthCheck,
-                status = if (ok) "executed" else "failed",
-                detail = if (ok) "Diagnostics completed" else "Diagnostics failed",
-                actionId = actionId
-            )
-        }
     }
 
     fun reportUiActionOutcome(
@@ -1285,43 +1239,39 @@ class ChatViewModel(
             if (!processedMessageActionKeys.add("$messageId:${tracked.actionId}")) continue
             val action = tracked.action
             if (action.category == ActionCategory.READ_ONLY) {
-                if (action is ChatAction.RunHealthCheck) {
-                    runAppHealthCheckForAction(messageId, tracked.actionId)
+                val problem = validateReadOnlyActionTarget(action)
+                if (problem != null) {
+                    chatRepository.updateMessageActionStatus(
+                        conversationId = conversationId,
+                        messageId = messageId,
+                        actionId = tracked.actionId,
+                        status = com.laterbox.app.ai.ChatActionStatus.FAILED,
+                        statusDetail = problem
+                    )
+                    reportActionOutcome(
+                        conversationId = conversationId,
+                        action = action,
+                        status = "failed",
+                        detail = problem,
+                        actionId = tracked.actionId,
+                        postFollowUpIfMissing = true
+                    )
                 } else {
-                    val problem = validateReadOnlyActionTarget(action)
-                    if (problem != null) {
-                        chatRepository.updateMessageActionStatus(
-                            conversationId = conversationId,
+                    chatRepository.updateMessageActionStatus(
+                        conversationId = conversationId,
+                        messageId = messageId,
+                        actionId = tracked.actionId,
+                        status = com.laterbox.app.ai.ChatActionStatus.AUTO_EXECUTING
+                    )
+                    enqueueUiAction(
+                        UiActionDispatch(
+                            requestId = UUID.randomUUID().toString(),
                             messageId = messageId,
                             actionId = tracked.actionId,
-                            status = com.laterbox.app.ai.ChatActionStatus.FAILED,
-                            statusDetail = problem
-                        )
-                        reportActionOutcome(
-                            conversationId = conversationId,
                             action = action,
-                            status = "failed",
-                            detail = problem,
-                            actionId = tracked.actionId,
-                            postFollowUpIfMissing = true
+                            conversationId = conversationId
                         )
-                    } else {
-                        chatRepository.updateMessageActionStatus(
-                            conversationId = conversationId,
-                            messageId = messageId,
-                            actionId = tracked.actionId,
-                            status = com.laterbox.app.ai.ChatActionStatus.AUTO_EXECUTING
-                        )
-                        enqueueUiAction(
-                            UiActionDispatch(
-                                requestId = UUID.randomUUID().toString(),
-                                messageId = messageId,
-                                actionId = tracked.actionId,
-                                action = action,
-                                conversationId = conversationId
-                            )
-                        )
-                    }
+                    )
                 }
             } else {
                 val problem = validateActionTarget(action)
@@ -1431,10 +1381,19 @@ class ChatViewModel(
     )
 
     private data class AuxState(
-        val report: AppHealthReport?,
-        val runningHealthCheck: Boolean,
         val pendingAction: ChatAction?,
         val notice: String?,
         val manifestOutOfSync: Boolean = false
     )
+
+    companion object {
+        fun hasBlockingMutatingActionForRetry(actionsJson: String?): Boolean {
+            val tracked = AssistantActionHandler.fromTrackedJsonList(actionsJson)
+            return tracked.any { item ->
+                item.action.category == ActionCategory.STATE_CHANGING &&
+                    (item.status == com.laterbox.app.ai.ChatActionStatus.EXECUTED ||
+                        item.status == com.laterbox.app.ai.ChatActionStatus.AUTO_EXECUTING)
+            }
+        }
+    }
 }

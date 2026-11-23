@@ -233,20 +233,6 @@ class LaterboxContextEngine(
             moviesActiveRemindersCount = activeMovieReminders.size
         )
 
-        val asksAboutHealthOrDiagnostics = listOf(
-            "health", "diagnostic", "yt-dlp", "ytdlp", "ffmpeg", "quickjs",
-            "fail", "error", "broken", "slow", "storage", "permission", "download", "inspect",
-            "transcript", "caption", "export", "document"
-        ).any { lowerPrompt.contains(it) }
-
-        val healthReport = if (asksAboutHealthOrDiagnostics && appHealthChecker != null) {
-            try {
-                appHealthChecker.runCheck()
-            } catch (_: Throwable) {
-                null
-            }
-        } else null
-
         val asksForDeepContent = listOf(
             "transcript", "caption", "full article", "summarize the video", "what did they say",
             "read the whole", "word for word", "entire page", "full text"
@@ -402,10 +388,6 @@ class LaterboxContextEngine(
                     if (!ev.detail.isNullOrBlank()) append(" (${sanitize(ev.detail, 100)})")
                     appendLine()
                 }
-            }
-
-            if (healthReport != null) {
-                appendLine("\n${sanitize(healthReport.toHumanSummary(), 1000)}")
             }
 
             if (asksForDeepContent) {

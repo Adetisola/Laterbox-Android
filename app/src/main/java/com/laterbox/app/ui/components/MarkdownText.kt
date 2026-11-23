@@ -20,6 +20,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.DisableSelection
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
@@ -214,6 +216,7 @@ fun MarkdownText(
     isUserMessage: Boolean,
     modifier: Modifier = Modifier,
     isStreaming: Boolean = false,
+    selectable: Boolean = !isStreaming,
     onLinkClick: ((String) -> Unit)? = null
 ) {
     val colors = LaterboxTheme.colors
@@ -242,36 +245,37 @@ fun MarkdownText(
     }
 
     val document = remember(markdown, isStreaming) { parseMarkdownDocumentSafely(markdown, isStreaming) }
-    if (document == null) {
-        Text(
-            text = markdown,
-            style = baseBodyStyle,
-            modifier = modifier
-        )
-        return
+    val topLevelNodes = remember(document) { document?.childrenList().orEmpty() }
+
+    val renderContent: @Composable () -> Unit = {
+        if (document == null || topLevelNodes.isEmpty()) {
+            Text(
+                text = markdown,
+                style = baseBodyStyle,
+                modifier = modifier
+            )
+        } else {
+            Column(
+                modifier = modifier,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                RenderBlockNodes(
+                    nodes = topLevelNodes,
+                    baseBodyStyle = baseBodyStyle,
+                    palette = palette,
+                    onOpenUrl = openSafeUrl,
+                    listDepth = 0
+                )
+            }
+        }
     }
 
-    val topLevelNodes = remember(document) { document.childrenList() }
-    if (topLevelNodes.isEmpty()) {
-        Text(
-            text = markdown,
-            style = baseBodyStyle,
-            modifier = modifier
-        )
-        return
-    }
-
-    Column(
-        modifier = modifier,
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        RenderBlockNodes(
-            nodes = topLevelNodes,
-            baseBodyStyle = baseBodyStyle,
-            palette = palette,
-            onOpenUrl = openSafeUrl,
-            listDepth = 0
-        )
+    if (selectable) {
+        SelectionContainer {
+            renderContent()
+        }
+    } else {
+        renderContent()
     }
 }
 
@@ -460,16 +464,18 @@ private fun RenderListBlock(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.Top
             ) {
-                Text(
-                    text = marker,
-                    style = baseBodyStyle.copy(
-                        fontWeight = if (isOrdered) FontWeight.Medium else FontWeight.Bold,
-                        color = palette.textSecondary
-                    ),
-                    modifier = Modifier
-                        .widthIn(min = if (isOrdered) 24.dp else 16.dp)
-                        .padding(end = 6.dp)
-                )
+                DisableSelection {
+                    Text(
+                        text = marker,
+                        style = baseBodyStyle.copy(
+                            fontWeight = if (isOrdered) FontWeight.Medium else FontWeight.Bold,
+                            color = palette.textSecondary
+                        ),
+                        modifier = Modifier
+                            .widthIn(min = if (isOrdered) 24.dp else 16.dp)
+                            .padding(end = 6.dp)
+                    )
+                }
                 Column(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -512,54 +518,56 @@ private fun MarkdownCodeBlock(
         border = BorderStroke(1.dp, palette.codeBlockBorder)
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(palette.codeBlockHeaderBackground)
-                    .padding(horizontal = 10.dp, vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = language ?: "code",
-                    style = TextStyle(
-                        fontFamily = JetBrainsMonoFamily,
-                        fontWeight = FontWeight.Medium,
-                        fontSize = 11.sp,
-                        lineHeight = 14.sp,
-                        color = palette.codeBlockMetaText
-                    )
-                )
+            DisableSelection {
                 Row(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .clickable(role = Role.Button, onClickLabel = "Copy code") {
-                            clipboard.setText(AnnotatedString(code))
-                            copied = true
-                        }
-                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                        .testTag("markdown_copy_code_button"),
+                        .fillMaxWidth()
+                        .background(palette.codeBlockHeaderBackground)
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Icon(
-                        painter = painterResource(
-                            id = if (copied) LaterboxIcons.Check else LaterboxIcons.Copy
-                        ),
-                        contentDescription = if (copied) "Copied" else "Copy code",
-                        modifier = Modifier.size(12.dp),
-                        tint = palette.codeBlockMetaText
-                    )
                     Text(
-                        text = if (copied) "Copied" else "Copy",
+                        text = language ?: "code",
                         style = TextStyle(
-                            fontFamily = InterFamily,
+                            fontFamily = JetBrainsMonoFamily,
                             fontWeight = FontWeight.Medium,
                             fontSize = 11.sp,
                             lineHeight = 14.sp,
                             color = palette.codeBlockMetaText
                         )
                     )
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable(role = Role.Button, onClickLabel = "Copy code") {
+                                clipboard.setText(AnnotatedString(code))
+                                copied = true
+                            }
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                            .testTag("markdown_copy_code_button"),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            painter = painterResource(
+                                id = if (copied) LaterboxIcons.Check else LaterboxIcons.Copy
+                            ),
+                            contentDescription = if (copied) "Copied" else "Copy code",
+                            modifier = Modifier.size(12.dp),
+                            tint = palette.codeBlockMetaText
+                        )
+                        Text(
+                            text = if (copied) "Copied" else "Copy",
+                            style = TextStyle(
+                                fontFamily = InterFamily,
+                                fontWeight = FontWeight.Medium,
+                                fontSize = 11.sp,
+                                lineHeight = 14.sp,
+                                color = palette.codeBlockMetaText
+                            )
+                        )
+                    }
                 }
             }
 

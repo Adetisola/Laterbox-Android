@@ -245,10 +245,6 @@ sealed interface ChatAction {
         }
     }
 
-    data object RunHealthCheck : ChatAction {
-        override val label: String get() = "Run app health check"
-    }
-
     data class RetryInspection(
         val linkId: Long,
         val title: String,
@@ -436,7 +432,6 @@ object AssistantActionHandler {
         is ChatAction.OpenYouTubeTranscripts -> "OPEN_YOUTUBE_TRANSCRIPTS|${action.url.orEmpty()}"
         is ChatAction.OpenCollections -> "OPEN_COLLECTIONS"
         is ChatAction.OpenSettings -> "OPEN_SETTINGS|${action.route}"
-        is ChatAction.RunHealthCheck -> "RUN_HEALTH_CHECK"
         is ChatAction.RetryInspection -> "RETRY_INSPECTION|${action.linkId}"
         is ChatAction.RetryDownload -> "RETRY_DOWNLOAD|${action.taskId}"
         is ChatAction.RefreshMetadata -> "REFRESH_METADATA|${action.linkId}"
@@ -592,9 +587,6 @@ object AssistantActionHandler {
                 obj.put("type", "OPEN_SETTINGS")
                 obj.put("route", action.route)
             }
-            is ChatAction.RunHealthCheck -> {
-                obj.put("type", "RUN_HEALTH_CHECK")
-            }
             is ChatAction.RetryInspection -> {
                 obj.put("type", "RETRY_INSPECTION")
                 obj.put("linkId", action.linkId)
@@ -733,7 +725,6 @@ object AssistantActionHandler {
                 val route = obj.optString("route").trim().ifBlank { "settings" }
                 if (route in ALLOWED_SETTINGS_ROUTES) ChatAction.OpenSettings(route) else ChatAction.OpenSettings("settings")
             }
-            "RUN_HEALTH_CHECK" -> ChatAction.RunHealthCheck
             "RETRY_INSPECTION" -> {
                 val linkId = obj.optLong("linkId", -1L)
                 val title = obj.optString("title").trim().ifBlank { "Saved link" }.take(60)

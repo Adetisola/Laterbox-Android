@@ -133,7 +133,6 @@ class InboxUiAndChatFlowTest {
                     ),
                     onMenuClick = {},
                     onNewChatClick = {},
-                    onRunHealthCheck = {},
                     onAcceptAiDisclosure = { accepted = true },
                     onOpenAiSettings = {},
                     onComposerTextChange = {},
@@ -173,7 +172,6 @@ class InboxUiAndChatFlowTest {
                     ),
                     onMenuClick = {},
                     onNewChatClick = {},
-                    onRunHealthCheck = {},
                     onAcceptAiDisclosure = {},
                     onOpenAiSettings = {},
                     onComposerTextChange = {},
@@ -293,6 +291,7 @@ class InboxUiAndChatFlowTest {
             .assertIsDisplayed()
         composeTestRule.onNodeWithTag("drawer_conv_more_c-123")
             .performClick()
+        assertEquals(0, composeTestRule.onAllNodes(hasText("Assistant Info")).fetchSemanticsNodes().size)
         composeTestRule.onNodeWithText("Delete").performClick()
         composeTestRule.onNodeWithText("Delete conversation?").assertIsDisplayed()
         composeTestRule.onNodeWithText("Delete").performClick()
@@ -373,7 +372,6 @@ class InboxUiAndChatFlowTest {
                     ),
                     onMenuClick = {},
                     onNewChatClick = {},
-                    onRunHealthCheck = {},
                     onAcceptAiDisclosure = {},
                     onOpenAiSettings = {},
                     onComposerTextChange = {},
@@ -492,7 +490,6 @@ class InboxUiAndChatFlowTest {
                     ),
                     onMenuClick = {},
                     onNewChatClick = {},
-                    onRunHealthCheck = {},
                     onAcceptAiDisclosure = {},
                     onOpenAiSettings = {},
                     onComposerTextChange = {},
@@ -515,5 +512,123 @@ class InboxUiAndChatFlowTest {
 
         composeTestRule.onNodeWithTag("chat_action_proposed_a_prop").assertIsDisplayed().performClick()
         assertEquals(listOf("a_prop"), clicks)
+    }
+
+    @Test
+    fun chatScreen_movesTransparencyIntoConversationMoreMenu_removesHealthCheck_andAddsQuickActionsBelowTrackedChips() {
+        val actionsJson = com.laterbox.app.ai.AssistantActionHandler.toTrackedJsonList(
+            listOf(
+                com.laterbox.app.ai.TrackedChatAction(
+                    actionId = "act_nav",
+                    action = ChatAction.OpenMoviesHome,
+                    status = com.laterbox.app.ai.ChatActionStatus.EXECUTED
+                )
+            )
+        )
+        val userMsg = com.laterbox.app.data.local.entity.ChatMessageEntity(
+            id = "u-1",
+            conversationId = "c-1",
+            role = com.laterbox.app.data.repository.ChatRole.USER.name,
+            content = "Open movies please",
+            actionsJson = null,
+            status = com.laterbox.app.data.repository.ChatMessageStatus.COMPLETE.name,
+            createdAt = 100L
+        )
+        val assistantMsg = com.laterbox.app.data.local.entity.ChatMessageEntity(
+            id = "m-1",
+            conversationId = "c-1",
+            role = com.laterbox.app.data.repository.ChatRole.ASSISTANT.name,
+            content = "Sure, opening Movies & TV.",
+            actionsJson = actionsJson,
+            status = com.laterbox.app.data.repository.ChatMessageStatus.COMPLETE.name,
+            createdAt = 200L
+        )
+
+        var copiedCount = 0
+        var retriedId: String? = null
+        var activeConvId by mutableStateOf<String?>("c-1")
+        var messagesState by mutableStateOf(listOf(userMsg, assistantMsg))
+        var isStreamingState by mutableStateOf(false)
+        var streamingMsgIdState by mutableStateOf<String?>(null)
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                ChatScreen(
+                    uiState = ChatUiState(
+                        activeConversationId = activeConvId,
+                        activeConversationTitle = "Movies Chat",
+                        assistantEnabled = true,
+                        aiDisclosureAccepted = true,
+                        messages = messagesState,
+                        isStreaming = isStreamingState,
+                        streamingAssistantMessageId = streamingMsgIdState
+                    ),
+                    onMenuClick = {},
+                    onNewChatClick = {},
+                    onAcceptAiDisclosure = {},
+                    onOpenAiSettings = {},
+                    onComposerTextChange = {},
+                    onSendMessage = {},
+                    onStopStreaming = {},
+                    onRetryMessage = { retriedId = it },
+                    onQuickPromptClick = {},
+                    onActionClick = {},
+                    onConfirmMutatingAction = {},
+                    onDismissMutatingAction = {},
+                    onDismissNotice = {},
+                    onMessageCopied = { copiedCount++ }
+                )
+            }
+        }
+
+        // Pill and health check chrome are completely removed
+        assertEquals(0, composeTestRule.onAllNodes(hasText("Local Library Context · Sent only on prompt")).fetchSemanticsNodes().size)
+        assertEquals(0, composeTestRule.onAllNodesWithContentDescription("Run App Health Check").fetchSemanticsNodes().size)
+
+        // Open conversation top More menu exposes Assistant Info modal
+        composeTestRule.onNodeWithTag("chat_more_actions_button").performClick()
+        composeTestRule.onNodeWithTag("chat_action_assistant_info").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithText("What Laterbox Shares on Prompt").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Got it").performClick()
+
+        // Quick Actions (Copy + Retry for read-only action) sit strictly below tracked action chips
+        val chipBounds = composeTestRule.onNodeWithTag("chat_action_executed_act_nav").getUnclippedBoundsInRoot()
+        val quickBounds = composeTestRule.onNodeWithTag("chat_quick_actions_m-1").getUnclippedBoundsInRoot()
+        assertTrue(chipBounds.bottom <= quickBounds.top)
+
+        composeTestRule.onNodeWithTag("chat_quick_copy_m-1").assertIsDisplayed().performClick()
+        assertEquals(1, copiedCount)
+        composeTestRule.onNodeWithTag("chat_quick_retry_m-1").assertIsDisplayed().performClick()
+        assertEquals("m-1", retriedId)
+
+        // Executed mutating action omits Retry while keeping Copy
+        val mutatingJson = com.laterbox.app.ai.AssistantActionHandler.toTrackedJsonList(
+            listOf(
+                com.laterbox.app.ai.TrackedChatAction(
+                    actionId = "act_mut",
+                    action = ChatAction.ToggleMovieWatchlist("moviebox", "42", true, "Arrival"),
+                    status = com.laterbox.app.ai.ChatActionStatus.EXECUTED
+                )
+            )
+        )
+        messagesState = listOf(userMsg, assistantMsg.copy(actionsJson = mutatingJson))
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("chat_quick_copy_m-1").assertIsDisplayed()
+        assertEquals(0, composeTestRule.onAllNodes(hasText("Retry")).fetchSemanticsNodes().size)
+
+        // Streaming hides Quick Actions completely
+        messagesState = listOf(userMsg, assistantMsg)
+        isStreamingState = true
+        streamingMsgIdState = "m-1"
+        composeTestRule.waitForIdle()
+        assertEquals(0, composeTestRule.onAllNodes(hasText("Copy")).fetchSemanticsNodes().size)
+
+        // Starter state has no Check App Health chip
+        isStreamingState = false
+        streamingMsgIdState = null
+        activeConvId = null
+        messagesState = emptyList()
+        composeTestRule.waitForIdle()
+        assertEquals(0, composeTestRule.onAllNodes(hasText("Check App Health")).fetchSemanticsNodes().size)
     }
 }

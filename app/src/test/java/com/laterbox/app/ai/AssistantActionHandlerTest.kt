@@ -72,13 +72,18 @@ class AssistantActionHandlerTest {
     @Test
     fun roundTripSerialization_preservesAllowlistedActions() {
         val original = listOf(
-            ChatAction.RunHealthCheck,
+            ChatAction.OpenMoviesHome,
             ChatAction.OpenSettings("settings/reminders_ai"),
             ChatAction.RetryInspection(linkId = 7L, title = "Sample", requiresConfirmation = true)
         )
         val json = AssistantActionHandler.toJsonList(original)
         val restored = AssistantActionHandler.fromJsonList(json)
         assertEquals(original, restored)
+
+        val deprecatedParsed = AssistantActionHandler.parseModelResponse(
+            "Done.\n[ACTIONS]\n[{\"type\":\"RUN_HEALTH_CHECK\"},{\"type\":\"OPEN_COLLECTIONS\"}]\n[/ACTIONS]"
+        )
+        assertEquals(listOf(ChatAction.OpenCollections), deprecatedParsed.actions)
     }
 
     @Test

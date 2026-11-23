@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -48,14 +49,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.laterbox.app.ai.ActionCategory
 import com.laterbox.app.ai.AssistantActionHandler
 import com.laterbox.app.ai.ChatAction
 import com.laterbox.app.ai.ChatActionStatus
@@ -64,8 +68,6 @@ import com.laterbox.app.ai.speech.ComposerSpeechUiState
 import com.laterbox.app.data.local.entity.ChatMessageEntity
 import com.laterbox.app.data.repository.ChatMessageStatus
 import com.laterbox.app.data.repository.ChatRole
-import com.laterbox.app.diagnostics.AppHealthReport
-import com.laterbox.app.diagnostics.AppHealthStatus
 import com.laterbox.app.ui.components.ComposerInsetHost
 import com.laterbox.app.ui.components.FloatingChatComposer
 import com.laterbox.app.ui.components.LaterboxBanner
@@ -81,7 +83,6 @@ fun ChatScreen(
     uiState: ChatUiState,
     onMenuClick: (() -> Unit)?,
     onNewChatClick: () -> Unit,
-    onRunHealthCheck: () -> Unit,
     onAcceptAiDisclosure: () -> Unit,
     onOpenAiSettings: () -> Unit,
     onComposerTextChange: (String) -> Unit,
@@ -110,7 +111,8 @@ fun ChatScreen(
     onOpenMiniPlayerFullscreen: () -> Unit = {},
     onToggleMiniPlayerPlayPause: () -> Unit = {},
     onCloseMiniPlayer: () -> Unit = {},
-    onTrackedActionClick: ((messageId: String, tracked: TrackedChatAction) -> Unit)? = null
+    onTrackedActionClick: ((messageId: String, tracked: TrackedChatAction) -> Unit)? = null,
+    onMessageCopied: (() -> Unit)? = null
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -229,17 +231,6 @@ fun ChatScreen(
                     )
                 }
 
-                Spacer(modifier = Modifier.width(spacing.xs))
-
-                LaterboxIconButton(
-                    iconRes = LaterboxIcons.Health,
-                    contentDescription = "Run App Health Check",
-                    onClick = onRunHealthCheck,
-                    enabled = !uiState.isRunningHealthCheck
-                )
-
-                Spacer(modifier = Modifier.width(spacing.xs))
-
                 LaterboxIconButton(
                     iconRes = LaterboxIcons.Chat,
                     contentDescription = "New chat",
@@ -260,6 +251,14 @@ fun ChatScreen(
                             onDismissRequest = { showConversationMenu = false },
                             containerColor = colors.surfaceElevated
                         ) {
+                            androidx.compose.material3.DropdownMenuItem(
+                                modifier = Modifier.testTag("chat_action_assistant_info"),
+                                text = { Text("Assistant Info", color = colors.textPrimary) },
+                                onClick = {
+                                    showConversationMenu = false
+                                    showContextTransparencyDialog = true
+                                }
+                            )
                             androidx.compose.material3.DropdownMenuItem(
                                 modifier = Modifier.testTag("chat_action_rename"),
                                 text = { Text("Rename", color = colors.textPrimary) },
@@ -285,50 +284,6 @@ fun ChatScreen(
                                 }
                             )
                         }
-                    }
-                }
-            }
-
-            if (uiState.assistantEnabled && uiState.aiDisclosureAccepted) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = spacing.base)
-                        .padding(bottom = spacing.xs),
-                    horizontalArrangement = Arrangement.Start
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .testTag("ai_context_transparency_pill")
-                            .clip(LaterboxShapeTokens.Chip)
-                            .background(colors.surfacePrimary)
-                            .border(spacing.hairline, colors.borderSubtle, LaterboxShapeTokens.Chip)
-                            .clickable(role = Role.Button) { showContextTransparencyDialog = true }
-                            .padding(horizontal = 10.dp, vertical = 5.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Icon(
-                            painter = painterResource(id = LaterboxIcons.Inbox),
-                            contentDescription = null,
-                            modifier = Modifier.size(13.dp),
-                            tint = colors.accentPrimary
-                        )
-                        Text(
-                            text = "Local Library Context · Sent only on prompt",
-                            style = typography.metaText.copy(fontSize = 11.5.sp),
-                            color = colors.textSecondary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = "Inspect",
-                            style = typography.metaText.copy(
-                                fontSize = 11.5.sp,
-                                fontWeight = FontWeight.Medium
-                            ),
-                            color = colors.accentPrimary
-                        )
                     }
                 }
             }
@@ -370,13 +325,6 @@ fun ChatScreen(
                 )
             }
 
-            uiState.latestHealthReport?.let { report ->
-                HealthSummaryCard(
-                    report = report,
-                    modifier = Modifier.padding(horizontal = spacing.base, vertical = spacing.xs)
-                )
-            }
-
             // Messages or Starter Prompts
             Box(
                 modifier = Modifier
@@ -387,8 +335,7 @@ fun ChatScreen(
                     ChatEmptyStarter(
                         assistantEnabled = uiState.assistantEnabled,
                         aiDisclosureAccepted = uiState.aiDisclosureAccepted,
-                        onQuickPromptClick = onQuickPromptClick,
-                        onRunHealthCheck = onRunHealthCheck
+                        onQuickPromptClick = onQuickPromptClick
                     )
                 } else {
                     LazyColumn(
@@ -402,7 +349,7 @@ fun ChatScreen(
                         ),
                         verticalArrangement = Arrangement.spacedBy(spacing.md)
                     ) {
-                        items(uiState.messages, key = { it.id }) { message ->
+                        itemsIndexed(uiState.messages, key = { _, msg -> msg.id }) { index, message ->
                             val isActiveStreamingBubble =
                                 uiState.isStreaming && message.id == uiState.streamingAssistantMessageId
                             val displayedContent = if (isActiveStreamingBubble) {
@@ -410,14 +357,22 @@ fun ChatScreen(
                             } else {
                                 message.content
                             }
+                            val hasPrecedingUserPrompt = remember(uiState.messages, index) {
+                                uiState.messages.subList(0, index).any {
+                                    it.role == ChatRole.USER.name && it.content.isNotBlank()
+                                }
+                            }
                             ChatMessageBubble(
                                 message = message,
                                 displayedContent = displayedContent,
                                 isStreamingThis = isActiveStreamingBubble,
+                                isAnyStreaming = uiState.isStreaming,
+                                hasPrecedingUserPrompt = hasPrecedingUserPrompt,
                                 onRetry = { onRetryMessage(message.id) },
                                 onActionClick = onActionClick,
                                 onTrackedActionClick = onTrackedActionClick,
-                                onMarkdownLinkClick = onMarkdownLinkClick
+                                onMarkdownLinkClick = onMarkdownLinkClick,
+                                onMessageCopied = onMessageCopied
                             )
                         }
                     }
@@ -454,7 +409,7 @@ fun ChatScreen(
                         onSend = onSendMessage,
                         isStreaming = uiState.isStreaming,
                         onStopStreaming = onStopStreaming,
-                        placeholder = "Ask about your links, downloads, or app health...",
+                        placeholder = "Ask about your links, downloads, or library...",
                         onAddLinkClick = onAddLinkClick,
                         onMicClick = onMicClick,
                         speechState = speechState,
@@ -608,94 +563,10 @@ private fun AiDisclosureConsentCard(
 }
 
 @Composable
-private fun HealthSummaryCard(
-    report: AppHealthReport,
-    modifier: Modifier = Modifier
-) {
-    val colors = LaterboxTheme.colors
-    val typography = LaterboxTheme.typography
-    val spacing = LaterboxTheme.spacing
-
-    val statusColor = when (report.overallStatus) {
-        AppHealthStatus.HEALTHY -> colors.statusSuccess
-        AppHealthStatus.ATTENTION_NEEDED -> colors.accentPrimary
-        AppHealthStatus.CRITICAL -> colors.statusDanger
-    }
-    val statusLabel = when (report.overallStatus) {
-        AppHealthStatus.HEALTHY -> "Healthy"
-        AppHealthStatus.ATTENTION_NEEDED -> "Attention Needed"
-        AppHealthStatus.CRITICAL -> "Critical Issue"
-    }
-
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = LaterboxShapeTokens.Card,
-        color = colors.surfacePrimary,
-        border = BorderStroke(spacing.hairline, colors.borderSubtle)
-    ) {
-        Column(
-            modifier = Modifier.padding(spacing.md),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(spacing.xs)
-                ) {
-                    Icon(
-                        painter = painterResource(id = LaterboxIcons.Health),
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                        tint = statusColor
-                    )
-                    Text(
-                        text = "App Health: $statusLabel",
-                        style = typography.uiMedium.copy(fontWeight = FontWeight.SemiBold),
-                        color = statusColor
-                    )
-                }
-                Text(
-                    text = "${report.availableStorageMb()} MB free",
-                    style = typography.metaText,
-                    color = colors.textSecondary
-                )
-            }
-
-            Text(
-                text = "yt-dlp: ${report.ytDlpStateLabel}${report.ytDlpVersion?.let { " v$it" } ?: ""} • FFmpeg: ${report.ffmpegStateLabel} • QuickJS: ${if (report.quickJsAvailable) "Ready" else "Missing"}",
-                style = typography.metaText,
-                color = colors.textSecondary
-            )
-
-            if (report.issues.isNotEmpty()) {
-                report.issues.take(3).forEach { issue ->
-                    Text(
-                        text = "• ${issue.title}: ${issue.suggestedFix}",
-                        style = typography.bodySecondary.copy(fontSize = 12.sp),
-                        color = colors.textPrimary
-                    )
-                }
-            } else {
-                Text(
-                    text = "Media extractor, storage, permissions, and connectivity look healthy.",
-                    style = typography.bodySecondary.copy(fontSize = 12.sp),
-                    color = colors.textSecondary
-                )
-            }
-        }
-    }
-}
-
-@Composable
 private fun ChatEmptyStarter(
     assistantEnabled: Boolean,
     aiDisclosureAccepted: Boolean,
-    onQuickPromptClick: (String) -> Unit,
-    onRunHealthCheck: () -> Unit
+    onQuickPromptClick: (String) -> Unit
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -732,7 +603,7 @@ private fun ChatEmptyStarter(
         )
         Spacer(modifier = Modifier.height(spacing.xs))
         Text(
-            text = "Search your saved library, extract YouTube transcripts, check downloads, or run diagnostics.",
+            text = "Search your saved library, extract YouTube transcripts, check downloads, or get recommendations.",
             style = typography.bodySecondary,
             color = colors.textSecondary
         )
@@ -751,11 +622,6 @@ private fun ChatEmptyStarter(
                     onClick = { onQuickPromptClick(prompt) }
                 )
             }
-            StarterChip(
-                label = "Check App Health",
-                enabled = true,
-                onClick = onRunHealthCheck
-            )
         }
     }
 }
@@ -793,19 +659,32 @@ private fun ChatMessageBubble(
     message: ChatMessageEntity,
     displayedContent: String,
     isStreamingThis: Boolean,
+    isAnyStreaming: Boolean,
+    hasPrecedingUserPrompt: Boolean,
     onRetry: () -> Unit,
     onActionClick: (ChatAction) -> Unit,
     onMarkdownLinkClick: ((String) -> Unit)?,
-    onTrackedActionClick: ((messageId: String, tracked: TrackedChatAction) -> Unit)? = null
+    onTrackedActionClick: ((messageId: String, tracked: TrackedChatAction) -> Unit)? = null,
+    onMessageCopied: (() -> Unit)? = null
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
     val spacing = LaterboxTheme.spacing
+    val clipboard = LocalClipboardManager.current
+    val context = androidx.compose.ui.platform.LocalContext.current
     val isUser = message.role == ChatRole.USER.name
 
     val trackedActions = remember(message.actionsJson) {
         AssistantActionHandler.fromTrackedJsonList(message.actionsJson)
     }
+    val hasBlockingMutatingAction = remember(trackedActions) {
+        trackedActions.any { item ->
+            item.action.category == ActionCategory.STATE_CHANGING &&
+                (item.status == ChatActionStatus.EXECUTED || item.status == ChatActionStatus.AUTO_EXECUTING)
+        }
+    }
+    val canCopy = !isUser && !isStreamingThis && displayedContent.isNotBlank()
+    val canRetry = !isUser && !isStreamingThis && hasPrecedingUserPrompt && !hasBlockingMutatingAction
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -850,6 +729,7 @@ private fun ChatMessageBubble(
                             markdown = displayedContent,
                             isUserMessage = isUser,
                             isStreaming = isStreamingThis,
+                            selectable = !isStreamingThis,
                             onLinkClick = onMarkdownLinkClick
                         )
                     }
@@ -868,27 +748,6 @@ private fun ChatMessageBubble(
                             style = typography.bodySecondary.copy(fontSize = 12.sp),
                             color = colors.statusDanger
                         )
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            modifier = Modifier
-                                .clip(LaterboxShapeTokens.Chip)
-                                .background(colors.surfaceSecondary)
-                                .clickable(role = Role.Button, onClick = onRetry)
-                                .padding(horizontal = 10.dp, vertical = 5.dp)
-                        ) {
-                            Icon(
-                                painter = painterResource(id = LaterboxIcons.Refresh),
-                                contentDescription = null,
-                                modifier = Modifier.size(13.dp),
-                                tint = colors.accentPrimary
-                            )
-                            Text(
-                                text = "Retry",
-                                style = typography.metaText.copy(fontWeight = FontWeight.SemiBold),
-                                color = colors.accentPrimary
-                            )
-                        }
                     }
                 }
             }
@@ -986,6 +845,83 @@ private fun ChatMessageBubble(
                                     fontWeight = if (isInteractive) FontWeight.Medium else FontWeight.Normal
                                 ),
                                 color = chipTextColor
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (canCopy || canRetry) {
+                Spacer(modifier = Modifier.height(6.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.testTag("chat_quick_actions_${message.id}")
+                ) {
+                    if (canCopy) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier
+                                .clip(LaterboxShapeTokens.Chip)
+                                .background(colors.surfaceSecondary.copy(alpha = 0.72f))
+                                .clickable(role = Role.Button) {
+                                    clipboard.setText(AnnotatedString(displayedContent))
+                                    if (onMessageCopied != null) {
+                                        onMessageCopied()
+                                    } else {
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            "Copied",
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                }
+                                .testTag("chat_quick_copy_${message.id}")
+                                .padding(horizontal = 9.dp, vertical = 5.dp)
+                        ) {
+                            Icon(
+                                painter = painterResource(id = LaterboxIcons.Copy),
+                                contentDescription = null,
+                                modifier = Modifier.size(12.dp),
+                                tint = colors.textSecondary
+                            )
+                            Text(
+                                text = "Copy",
+                                style = typography.metaText.copy(
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Medium
+                                ),
+                                color = colors.textSecondary
+                            )
+                        }
+                    }
+                    if (canRetry) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier
+                                .clip(LaterboxShapeTokens.Chip)
+                                .background(colors.surfaceSecondary.copy(alpha = 0.72f))
+                                .let { base ->
+                                    if (!isAnyStreaming) base.clickable(role = Role.Button, onClick = onRetry) else base
+                                }
+                                .testTag("chat_quick_retry_${message.id}")
+                                .padding(horizontal = 9.dp, vertical = 5.dp)
+                        ) {
+                            Icon(
+                                painter = painterResource(id = LaterboxIcons.Refresh),
+                                contentDescription = null,
+                                modifier = Modifier.size(12.dp),
+                                tint = if (!isAnyStreaming) colors.textSecondary else colors.textTertiary
+                            )
+                            Text(
+                                text = "Retry",
+                                style = typography.metaText.copy(
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Medium
+                                ),
+                                color = if (!isAnyStreaming) colors.textSecondary else colors.textTertiary
                             )
                         }
                     }

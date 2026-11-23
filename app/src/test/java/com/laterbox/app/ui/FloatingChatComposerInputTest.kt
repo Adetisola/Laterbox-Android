@@ -205,7 +205,6 @@ class FloatingChatComposerInputTest {
                     ),
                     onMenuClick = {},
                     onNewChatClick = {},
-                    onRunHealthCheck = {},
                     onAcceptAiDisclosure = {},
                     onOpenAiSettings = {},
                     onComposerTextChange = { composerFlow.value = it },
@@ -231,7 +230,7 @@ class FloatingChatComposerInputTest {
 
         val input = composeTestRule.onNodeWithTag("floating_chat_input")
         // Verify ChatScreen custom placeholder doesn't interfere either
-        composeTestRule.onNodeWithText("Ask about your links, downloads, or app health...").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Ask about your links, downloads, or library...").assertIsDisplayed()
 
         // 1 & 2. Type and delete char by char including final char
         input.performClick()

@@ -1013,7 +1013,6 @@ fun LaterboxApp(
                                 uiState = chatUiState,
                                 onMenuClick = openMenuHandler,
                                 onNewChatClick = { chatViewModel.startNewChat() },
-                                onRunHealthCheck = { chatViewModel.runAppHealthCheck() },
                                 onAcceptAiDisclosure = { chatViewModel.acceptAiDisclosure() },
                                 onOpenAiSettings = { navController.navigate(LaterboxDestination.SettingsRemindersAi.route) },
                                 onComposerTextChange = chatViewModel::onComposerTextChange,
@@ -1023,7 +1022,6 @@ fun LaterboxApp(
                                 onQuickPromptClick = { prompt -> chatViewModel.sendMessage(prompt) },
                                 onActionClick = { action ->
                                     when (action) {
-                                        is ChatAction.RunHealthCheck -> chatViewModel.runAppHealthCheck()
                                         is ChatAction.SearchLinks,
                                         is ChatAction.OpenLinkDetail,
                                         is ChatAction.OpenDownloads,
@@ -1052,9 +1050,6 @@ fun LaterboxApp(
                                 onTrackedActionClick = { messageId, tracked ->
                                     val action = tracked.action
                                     when (action) {
-                                        is ChatAction.RunHealthCheck -> {
-                                            chatViewModel.runAppHealthCheckForAction(messageId, tracked.actionId)
-                                        }
                                         is ChatAction.SearchLinks,
                                         is ChatAction.OpenLinkDetail,
                                         is ChatAction.OpenDownloads,
