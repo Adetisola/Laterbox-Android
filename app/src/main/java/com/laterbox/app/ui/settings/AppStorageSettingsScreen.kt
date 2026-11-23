@@ -36,6 +36,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -123,10 +124,17 @@ fun AppStorageSettingsScreen(
     onDismissFeedback: () -> Unit,
     onBackClick: () -> Unit,
     modifier: Modifier = Modifier,
+    errorMessage: String? = null,
     onManageDownloadsClick: (() -> Unit)? = null
 ) {
     val colors = LaterboxTheme.colors
     val spacing = LaterboxTheme.spacing
+
+    LaunchedEffect(Unit) {
+        if (report == null && !isLoading) {
+            onRefresh()
+        }
+    }
 
     Box(
         modifier = modifier
@@ -151,6 +159,7 @@ fun AppStorageSettingsScreen(
                 isLoading = isLoading,
                 isClearingSafeCache = isClearingSafeCache,
                 feedbackMessage = feedbackMessage,
+                errorMessage = errorMessage,
                 onRefresh = onRefresh,
                 onClearSafeCache = onClearSafeCache,
                 onRunMaintenance = onRunMaintenance,
@@ -175,6 +184,7 @@ fun AppStorageSectionContent(
     onRunMaintenance: () -> Unit,
     onDismissFeedback: () -> Unit,
     modifier: Modifier = Modifier,
+    errorMessage: String? = null,
     onManageDownloadsClick: (() -> Unit)? = null
 ) {
     val colors = LaterboxTheme.colors
@@ -215,8 +225,29 @@ fun AppStorageSectionContent(
             Spacer(modifier = Modifier.height(spacing.xs))
         }
 
+        if (errorMessage != null && report != null) {
+            SettingsCard(modifier = Modifier.testTag("storage_error_banner")) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = errorMessage,
+                        style = typography.metaText,
+                        color = colors.statusDanger,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = onRefresh, enabled = !isLoading) {
+                        Text("Retry", color = colors.accentPrimary)
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(spacing.xs))
+        }
+
         if (isLoading && report == null) {
-            SettingsCard {
+            SettingsCard(modifier = Modifier.testTag("storage_loading_card")) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -237,7 +268,76 @@ fun AppStorageSectionContent(
                     )
                 }
             }
-        } else if (report != null) {
+        } else if (report == null && errorMessage != null) {
+            SettingsCard(modifier = Modifier.testTag("storage_error_card")) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "Couldn't load storage breakdown",
+                        style = typography.uiMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = colors.textPrimary
+                    )
+                    Text(
+                        text = errorMessage,
+                        style = typography.metaText,
+                        color = colors.textSecondary
+                    )
+                    OutlinedButton(
+                        onClick = onRefresh,
+                        enabled = !isLoading,
+                        border = BorderStroke(1.dp, colors.borderSubtle),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.testTag("storage_retry_button")
+                    ) {
+                        Text(
+                            text = "Retry",
+                            style = typography.uiLabel,
+                            color = colors.accentPrimary
+                        )
+                    }
+                }
+            }
+        } else if (report == null) {
+            SettingsCard(modifier = Modifier.testTag("storage_empty_prompt_card")) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Text(
+                            text = "Storage breakdown ready to inspect",
+                            style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
+                            color = colors.textPrimary
+                        )
+                        Text(
+                            text = "Measure downloaded media, cache, and app data.",
+                            style = typography.metaText,
+                            color = colors.textSecondary
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = onRefresh,
+                        border = BorderStroke(1.dp, colors.borderSubtle),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.testTag("storage_calculate_button")
+                    ) {
+                        Text(
+                            text = "Inspect",
+                            style = typography.uiLabel,
+                            color = colors.accentPrimary
+                        )
+                    }
+                }
+            }
+        } else {
             val fractions = computeStorageBarFractions(
                 downloadedBytes = report.downloadedBytes,
                 cacheBytes = report.cacheBytes,

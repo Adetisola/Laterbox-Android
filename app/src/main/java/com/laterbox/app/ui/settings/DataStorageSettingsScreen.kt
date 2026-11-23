@@ -19,6 +19,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,6 +51,7 @@ fun DataStorageSettingsScreen(
     isStorageLoading: Boolean = false,
     isClearingSafeCache: Boolean = false,
     storageFeedbackMessage: String? = null,
+    storageErrorMessage: String? = null,
     onRefreshStorage: () -> Unit = {},
     onClearSafeCache: () -> Unit = {},
     onRunStorageMaintenance: () -> Unit = {},
@@ -61,6 +63,10 @@ fun DataStorageSettingsScreen(
     val spacing = LaterboxTheme.spacing
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        onRefreshStorage()
+    }
 
     val exportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/json")
@@ -228,6 +234,7 @@ fun DataStorageSettingsScreen(
                 isLoading = isStorageLoading,
                 isClearingSafeCache = isClearingSafeCache,
                 feedbackMessage = storageFeedbackMessage,
+                errorMessage = storageErrorMessage,
                 onRefresh = onRefreshStorage,
                 onClearSafeCache = onClearSafeCache,
                 onRunMaintenance = onRunStorageMaintenance,

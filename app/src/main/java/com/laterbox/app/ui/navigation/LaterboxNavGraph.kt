@@ -1869,6 +1869,7 @@ fun LaterboxApp(
                             val isStorageLoading by settingsViewModel.isStorageLoading.collectAsState()
                             val isClearingSafeCache by settingsViewModel.isClearingSafeCache.collectAsState()
                             val storageFeedback by settingsViewModel.storageFeedbackMessage.collectAsState()
+                            val storageError by settingsViewModel.storageErrorMessage.collectAsState()
 
                             com.laterbox.app.ui.settings.DataStorageSettingsScreen(
                                 preferences = preferences,
@@ -1880,6 +1881,7 @@ fun LaterboxApp(
                                 isStorageLoading = isStorageLoading,
                                 isClearingSafeCache = isClearingSafeCache,
                                 storageFeedbackMessage = storageFeedback,
+                                storageErrorMessage = storageError,
                                 onRefreshStorage = settingsViewModel::refreshAppStorage,
                                 onClearSafeCache = settingsViewModel::clearSafeCaches,
                                 onRunStorageMaintenance = settingsViewModel::runStorageMaintenance,

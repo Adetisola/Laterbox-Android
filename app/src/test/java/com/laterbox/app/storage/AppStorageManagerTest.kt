@@ -281,4 +281,131 @@ class AppStorageManagerTest {
         }
         assertFalse(com.laterbox.app.movies.data.cache.MoviesMediaCache.isStreamActive(activeUrl))
     }
+
+    @Test
+    fun dataStorageSettingsScreen_autoTriggersRefreshAndRendersLoadedOverview() {
+        var refreshCalls = 0
+        val report = AppStorageReport(
+            downloadedMediaBytes = 25L * 1024 * 1024,
+            inProgressDownloadsBytes = 0L,
+            streamPlaybackCacheBytes = 5L * 1024 * 1024,
+            imageCacheBytes = 3L * 1024 * 1024,
+            databaseAndMetadataBytes = 1L * 1024 * 1024,
+            extractorRuntimesBytes = 0L,
+            tempAndOtherCacheBytes = 0L,
+            safeClearableBytes = 8L * 1024 * 1024,
+            totalUsedBytes = 34L * 1024 * 1024,
+            deviceFreeBytes = 1_500L * 1024 * 1024,
+            deviceTotalBytes = 8_000L * 1024 * 1024,
+            storagePressureHigh = false,
+            cachedApiEntryCount = 4
+        )
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                com.laterbox.app.ui.settings.DataStorageSettingsScreen(
+                    preferences = com.laterbox.app.data.preferences.UserPreferences(),
+                    onAllowSystemBackupChange = {},
+                    onExportBackup = { Result.success(0) },
+                    onImportBackup = {
+                        Result.success(com.laterbox.app.data.backup.BackupRestoreResult(0, 0, 0))
+                    },
+                    onBackClick = {},
+                    storageReport = report,
+                    isStorageLoading = false,
+                    onRefreshStorage = { refreshCalls++ }
+                )
+            }
+        }
+
+        composeTestRule.waitForIdle()
+        assertEquals(1, refreshCalls)
+        composeTestRule.onNodeWithText("Storage Overview").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("storage_overview_card").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("storage_downloaded_card").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("storage_cache_card").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("storage_app_data_row").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun storageOverview_rendersLoadingFallbackErrorAndZeroStatesCleanly() {
+        var retried = 0
+        var isLoadingState = true
+        var errorState: String? = null
+        var reportState: AppStorageReport? = null
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                com.laterbox.app.ui.settings.AppStorageSectionContent(
+                    report = reportState,
+                    isLoading = isLoadingState,
+                    isClearingSafeCache = false,
+                    feedbackMessage = null,
+                    errorMessage = errorState,
+                    onRefresh = { retried++ },
+                    onClearSafeCache = {},
+                    onRunMaintenance = {},
+                    onDismissFeedback = {}
+                )
+            }
+        }
+
+        // 1. Loading before first report completes
+        composeTestRule.onNodeWithTag("storage_loading_card").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Calculating storage usage…").assertIsDisplayed()
+
+        // Verify error, empty-fallback, and zero-bytes branches separately
+        composeTestRule.setContent {
+            LaterboxTheme {
+                com.laterbox.app.ui.settings.AppStorageSectionContent(
+                    report = null,
+                    isLoading = false,
+                    isClearingSafeCache = false,
+                    feedbackMessage = null,
+                    errorMessage = "Disk read timed out",
+                    onRefresh = { retried++ },
+                    onClearSafeCache = {},
+                    onRunMaintenance = {},
+                    onDismissFeedback = {}
+                )
+            }
+        }
+        composeTestRule.onNodeWithTag("storage_error_card").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Disk read timed out").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("storage_retry_button").performClick()
+        assertEquals(1, retried)
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                com.laterbox.app.ui.settings.AppStorageSectionContent(
+                    report = AppStorageReport(
+                        downloadedMediaBytes = 0L,
+                        inProgressDownloadsBytes = 0L,
+                        streamPlaybackCacheBytes = 0L,
+                        imageCacheBytes = 0L,
+                        databaseAndMetadataBytes = 0L,
+                        extractorRuntimesBytes = 0L,
+                        tempAndOtherCacheBytes = 0L,
+                        safeClearableBytes = 0L,
+                        totalUsedBytes = 0L,
+                        deviceFreeBytes = 0L,
+                        deviceTotalBytes = 0L,
+                        storagePressureHigh = false,
+                        cachedApiEntryCount = 0
+                    ),
+                    isLoading = false,
+                    isClearingSafeCache = false,
+                    feedbackMessage = null,
+                    onRefresh = {},
+                    onClearSafeCache = {},
+                    onRunMaintenance = {},
+                    onDismissFeedback = {}
+                )
+            }
+        }
+        composeTestRule.onNodeWithTag("storage_overview_card").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("storage_stacked_bar").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("clear_safe_cache_button").assertIsDisplayed()
+    }
 }
+

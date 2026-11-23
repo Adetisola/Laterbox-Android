@@ -947,12 +947,28 @@ class SettingsViewModel(
     private val _storageFeedbackMessage = MutableStateFlow<String?>(null)
     val storageFeedbackMessage: StateFlow<String?> = _storageFeedbackMessage.asStateFlow()
 
+    private val _storageErrorMessage = MutableStateFlow<String?>(null)
+    val storageErrorMessage: StateFlow<String?> = _storageErrorMessage.asStateFlow()
+
+    private var storageRefreshJob: kotlinx.coroutines.Job? = null
+
     fun refreshAppStorage() {
-        val manager = resolvedStorageManager ?: return
-        viewModelScope.launch {
+        val manager = resolvedStorageManager
+        if (manager == null) {
+            _isStorageLoading.value = false
+            _storageErrorMessage.value = "Storage inspection is unavailable right now."
+            return
+        }
+        if (storageRefreshJob?.isActive == true) return
+        storageRefreshJob = viewModelScope.launch {
             _isStorageLoading.value = true
+            _storageErrorMessage.value = null
             try {
                 _appStorageReport.value = manager.inspectStorage()
+            } catch (t: Throwable) {
+                if (t is kotlinx.coroutines.CancellationException) throw t
+                _storageErrorMessage.value = t.message?.takeIf { it.isNotBlank() }
+                    ?: "Couldn't inspect app storage usage."
             } finally {
                 _isStorageLoading.value = false
             }
@@ -964,6 +980,7 @@ class SettingsViewModel(
         if (_isClearingSafeCache.value) return
         viewModelScope.launch {
             _isClearingSafeCache.value = true
+            _storageErrorMessage.value = null
             try {
                 val res = manager.clearSafeCaches()
                 _appStorageReport.value = res.report
@@ -971,6 +988,10 @@ class SettingsViewModel(
                     android.text.format.Formatter.formatShortFileSize(it, res.bytesFreed)
                 } ?: "${res.bytesFreed} B"
                 _storageFeedbackMessage.value = "Cleared safe caches ($freedStr freed)"
+            } catch (t: Throwable) {
+                if (t is kotlinx.coroutines.CancellationException) throw t
+                _storageErrorMessage.value = t.message?.takeIf { it.isNotBlank() }
+                    ?: "Couldn't clear caches. Try refreshing storage."
             } finally {
                 _isClearingSafeCache.value = false
             }
@@ -982,6 +1003,7 @@ class SettingsViewModel(
         if (_isClearingSafeCache.value) return
         viewModelScope.launch {
             _isClearingSafeCache.value = true
+            _storageErrorMessage.value = null
             try {
                 val res = manager.runMaintenanceCleanup()
                 _appStorageReport.value = res.report
@@ -990,6 +1012,10 @@ class SettingsViewModel(
                 } ?: "${res.bytesFreed} B"
                 _storageFeedbackMessage.value =
                     "Maintenance complete ($freedStr freed, ${res.expiredEntriesPruned} expired entries pruned)"
+            } catch (t: Throwable) {
+                if (t is kotlinx.coroutines.CancellationException) throw t
+                _storageErrorMessage.value = t.message?.takeIf { it.isNotBlank() }
+                    ?: "Couldn't complete storage maintenance."
             } finally {
                 _isClearingSafeCache.value = false
             }
@@ -998,6 +1024,7 @@ class SettingsViewModel(
 
     fun dismissStorageFeedback() {
         _storageFeedbackMessage.value = null
+        _storageErrorMessage.value = null
     }
 }
 
