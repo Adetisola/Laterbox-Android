@@ -453,8 +453,18 @@ class LaterboxToastAndConnectivityTest {
         assertTrue(controller.toasts.value.isEmpty())
 
         // Restoring validated connectivity clears suppression & re-arms for next genuine outage
-        shadowCm.setDefaultNetworkActive(true)
-        shadowCm.setNetworkCapabilities(wifi, validWifi)
+        @Suppress("DEPRECATION")
+        shadowCm.setActiveNetworkInfo(
+            org.robolectric.shadows.ShadowNetworkInfo.newInstance(
+                android.net.NetworkInfo.DetailedState.CONNECTED,
+                ConnectivityManager.TYPE_WIFI,
+                0,
+                true,
+                android.net.NetworkInfo.State.CONNECTED
+            )
+        )
+        val restoredNetwork = cm.activeNetwork ?: wifi
+        shadowCm.setNetworkCapabilities(restoredNetwork, validWifi)
         observer.refresh()
         runCurrent()
         assertTrue(observer.tracker.isValidatedOnline.value)

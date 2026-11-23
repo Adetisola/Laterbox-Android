@@ -1,12 +1,14 @@
 package com.laterbox.app.movies.ui
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.WatchHistoryItem
 import com.laterbox.app.ui.theme.LaterboxTheme
@@ -281,7 +283,10 @@ class ViewingHistoryGroupingTest {
         composeTestRule.onNodeWithTag("viewing_history_item_moviebox:bb:2:1").assertIsDisplayed()
 
         // Tapping an episode launches player; tapping delete deletes that episode
-        composeTestRule.onNodeWithTag("viewing_history_item_moviebox:bb:2:2").performClick()
+        composeTestRule.onNodeWithTag("viewing_history_item_moviebox:bb:2:2")
+            .performTouchInput {
+                click(androidx.compose.ui.geometry.Offset(30f, 30f))
+            }
         assertEquals(2 to 2, openedEpisode)
         composeTestRule.onNodeWithTag("viewing_history_delete_moviebox:bb:2:1").performClick()
         assertEquals("moviebox:bb:2:1", deletedKey)

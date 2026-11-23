@@ -331,18 +331,18 @@ class AppStorageManagerTest {
     @Test
     fun storageOverview_rendersLoadingFallbackErrorAndZeroStatesCleanly() {
         var retried = 0
-        var isLoadingState = true
-        var errorState: String? = null
-        var reportState: AppStorageReport? = null
+        val isLoadingState = androidx.compose.runtime.mutableStateOf(true)
+        val errorState = androidx.compose.runtime.mutableStateOf<String?>(null)
+        val reportState = androidx.compose.runtime.mutableStateOf<AppStorageReport?>(null)
 
         composeTestRule.setContent {
             LaterboxTheme {
                 com.laterbox.app.ui.settings.AppStorageSectionContent(
-                    report = reportState,
-                    isLoading = isLoadingState,
+                    report = reportState.value,
+                    isLoading = isLoadingState.value,
                     isClearingSafeCache = false,
                     feedbackMessage = null,
-                    errorMessage = errorState,
+                    errorMessage = errorState.value,
                     onRefresh = { retried++ },
                     onClearSafeCache = {},
                     onRunMaintenance = {},
@@ -355,54 +355,41 @@ class AppStorageManagerTest {
         composeTestRule.onNodeWithTag("storage_loading_card").assertIsDisplayed()
         composeTestRule.onNodeWithText("Calculating storage usage…").assertIsDisplayed()
 
-        // Verify error, empty-fallback, and zero-bytes branches separately
-        composeTestRule.setContent {
-            LaterboxTheme {
-                com.laterbox.app.ui.settings.AppStorageSectionContent(
-                    report = null,
-                    isLoading = false,
-                    isClearingSafeCache = false,
-                    feedbackMessage = null,
-                    errorMessage = "Disk read timed out",
-                    onRefresh = { retried++ },
-                    onClearSafeCache = {},
-                    onRunMaintenance = {},
-                    onDismissFeedback = {}
-                )
-            }
+        // 2. Empty fallback (non-loading, null report, no error) still renders actionable card
+        composeTestRule.runOnIdle {
+            isLoadingState.value = false
+        }
+        composeTestRule.onNodeWithTag("storage_empty_prompt_card").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("storage_calculate_button").performClick()
+        assertEquals(1, retried)
+
+        // 3. Error state renders message + working Retry button
+        composeTestRule.runOnIdle {
+            errorState.value = "Disk read timed out"
         }
         composeTestRule.onNodeWithTag("storage_error_card").assertIsDisplayed()
         composeTestRule.onNodeWithText("Disk read timed out").assertIsDisplayed()
         composeTestRule.onNodeWithTag("storage_retry_button").performClick()
-        assertEquals(1, retried)
+        assertEquals(2, retried)
 
-        composeTestRule.setContent {
-            LaterboxTheme {
-                com.laterbox.app.ui.settings.AppStorageSectionContent(
-                    report = AppStorageReport(
-                        downloadedMediaBytes = 0L,
-                        inProgressDownloadsBytes = 0L,
-                        streamPlaybackCacheBytes = 0L,
-                        imageCacheBytes = 0L,
-                        databaseAndMetadataBytes = 0L,
-                        extractorRuntimesBytes = 0L,
-                        tempAndOtherCacheBytes = 0L,
-                        safeClearableBytes = 0L,
-                        totalUsedBytes = 0L,
-                        deviceFreeBytes = 0L,
-                        deviceTotalBytes = 0L,
-                        storagePressureHigh = false,
-                        cachedApiEntryCount = 0
-                    ),
-                    isLoading = false,
-                    isClearingSafeCache = false,
-                    feedbackMessage = null,
-                    onRefresh = {},
-                    onClearSafeCache = {},
-                    onRunMaintenance = {},
-                    onDismissFeedback = {}
-                )
-            }
+        // 4. All-zero loaded report renders cleanly without crashing
+        composeTestRule.runOnIdle {
+            errorState.value = null
+            reportState.value = AppStorageReport(
+                downloadedMediaBytes = 0L,
+                inProgressDownloadsBytes = 0L,
+                streamPlaybackCacheBytes = 0L,
+                imageCacheBytes = 0L,
+                databaseAndMetadataBytes = 0L,
+                extractorRuntimesBytes = 0L,
+                tempAndOtherCacheBytes = 0L,
+                safeClearableBytes = 0L,
+                totalUsedBytes = 0L,
+                deviceFreeBytes = 0L,
+                deviceTotalBytes = 0L,
+                storagePressureHigh = false,
+                cachedApiEntryCount = 0
+            )
         }
         composeTestRule.onNodeWithTag("storage_overview_card").assertIsDisplayed()
         composeTestRule.onNodeWithTag("storage_stacked_bar").assertIsDisplayed()
