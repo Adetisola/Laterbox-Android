@@ -11,6 +11,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -69,6 +71,8 @@ import com.laterbox.app.movies.domain.model.RuntimeBucket
 import com.laterbox.app.movies.domain.model.WatchHistoryItem
 import com.laterbox.app.ui.components.LaterboxIconButton
 import com.laterbox.app.ui.components.LaterboxIcons
+import com.laterbox.app.ui.components.LaterboxPrimaryButton
+import com.laterbox.app.ui.components.LaterboxSecondaryButton
 import com.laterbox.app.ui.components.LaterboxTabHeader
 import com.laterbox.app.ui.theme.LaterboxTheme
 import kotlinx.coroutines.delay
@@ -1149,7 +1153,7 @@ fun MoviesScreen(
                                                                 }
                                                                 Column(
                                                                     modifier = Modifier.weight(1f),
-                                                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                                                    verticalArrangement = Arrangement.spacedBy(6.dp)
                                                                 ) {
                                                                     Text(
                                                                         text = "SURPRISE ME",
@@ -1170,30 +1174,24 @@ fun MoviesScreen(
                                                                         maxLines = 2,
                                                                         overflow = TextOverflow.Ellipsis
                                                                     )
-                                                                    Row(
+                                                                    @OptIn(ExperimentalLayoutApi::class)
+                                                                    FlowRow(
                                                                         horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                                                        verticalAlignment = Alignment.CenterVertically,
+                                                                        verticalArrangement = Arrangement.spacedBy(8.dp),
                                                                         modifier = Modifier.padding(top = 4.dp)
                                                                     ) {
-                                                                        Button(
+                                                                        LaterboxPrimaryButton(
+                                                                            text = "Open",
                                                                             onClick = { onOpenDetail(surprise.pick.providerId, surprise.pick.id) },
-                                                                            colors = ButtonDefaults.buttonColors(containerColor = colors.accentPrimary),
-                                                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                                                                        ) {
-                                                                            Text("Open", style = typography.caption.copy(fontWeight = FontWeight.SemiBold))
-                                                                        }
-                                                                        OutlinedButton(
+                                                                            leadingIcon = LaterboxIcons.Play,
+                                                                            modifier = Modifier.testTag("movies_surprise_open")
+                                                                        )
+                                                                        LaterboxSecondaryButton(
+                                                                            text = "Pick another",
                                                                             onClick = { onRerollSurprise(null) },
-                                                                            border = BorderStroke(0.75.dp, colors.borderSubtle),
-                                                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                                                            leadingIcon = LaterboxIcons.Refresh,
                                                                             modifier = Modifier.testTag("movies_surprise_reroll")
-                                                                        ) {
-                                                                            Text(
-                                                                                text = "Pick another",
-                                                                                style = typography.caption,
-                                                                                color = colors.textPrimary
-                                                                            )
-                                                                        }
+                                                                        )
                                                                     }
                                                                 }
                                                             }

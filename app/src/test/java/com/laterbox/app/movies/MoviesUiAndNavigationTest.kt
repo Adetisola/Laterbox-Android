@@ -1528,6 +1528,8 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithTag("movies_home_byw_rail_0").assertIsDisplayed()
 
         composeTestRule.onNodeWithTag("movies_home_list").performScrollToNode(hasTestTag("movies_home_surprise_card"))
+        composeTestRule.onNodeWithTag("movies_surprise_open").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("movies_surprise_reroll").assertIsDisplayed()
         composeTestRule.onNodeWithTag("movies_surprise_reroll").performClick()
         assertTrue(rerolled)
 
