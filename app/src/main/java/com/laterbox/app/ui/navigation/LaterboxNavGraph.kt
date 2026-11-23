@@ -2539,7 +2539,8 @@ fun LaterboxApp(
                         autoplayNextEpisode = preferences.moviesAutoplayNextEpisode,
                         autoplayCountdownSeconds = preferences.moviesAutoplayCountdownSeconds,
                         defaultQualityHeight = preferences.moviesDefaultQualityHeight,
-                        subtitleStyle = preferences.toSubtitleStyleConfig()
+                        subtitleStyle = preferences.toSubtitleStyleConfig(),
+                        ambientModeEnabled = preferences.moviesAmbientModeEnabled
                     )
                 }
                 com.laterbox.app.media.ui.viewer.MediaPlayerScreen(

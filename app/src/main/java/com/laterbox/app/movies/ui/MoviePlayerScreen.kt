@@ -15,9 +15,12 @@ import com.laterbox.app.movies.playback.PlaybackSessionTarget
 import com.laterbox.app.movies.playback.PlayerBackAction
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -170,6 +173,7 @@ fun MoviePlayerScreen(
     onSelectInStreamAudio: (language: String?, label: String?) -> Unit = { _, _ -> },
     onNextEpisode: () -> Unit = {},
     onSubtitleStyleChange: (SubtitleStyleConfig) -> Unit = {},
+    onToggleAmbientMode: (Boolean) -> Unit = {},
     onOpenRelatedTitle: (providerId: String, titleId: String) -> Unit = { _, _ -> },
     onSaveProgressForEpisode: ((positionMs: Long, durationMs: Long, expectedEpisodeKey: String) -> Unit)? = null,
     onTryEnterPipOnBack: () -> Boolean = { false },
@@ -295,6 +299,7 @@ fun MoviePlayerScreen(
                     onDownloadSource = onDownloadSource,
                     onDismissDownloadStatus = onDismissDownloadStatus,
                     onSubtitleStyleChange = onSubtitleStyleChange,
+                    onToggleAmbientMode = onToggleAmbientMode,
                     onOpenRelatedTitle = onOpenRelatedTitle,
                     introSkipEnabled = introSkipEnabled
                 )
@@ -329,6 +334,7 @@ fun LocalVideoPlayerScreen(
     onTryEnterPipOnBack: () -> Boolean = { false },
     playbackPreferences: PlayerPlaybackPreferences = PlayerPlaybackPreferences(),
     onSubtitleStyleChange: (SubtitleStyleConfig) -> Unit = {},
+    onToggleAmbientMode: ((Boolean) -> Unit)? = null,
     offlineSubtitles: List<SubtitleTrack>? = null,
     modifier: Modifier = Modifier
 ) {
@@ -530,6 +536,15 @@ fun LocalVideoPlayerScreen(
                 onDownloadSource = {},
                 onDismissDownloadStatus = {},
                 onSubtitleStyleChange = onSubtitleStyleChange,
+                onToggleAmbientMode = { enabled ->
+                    if (onToggleAmbientMode != null) {
+                        onToggleAmbientMode(enabled)
+                    } else {
+                        appContainer?.userPreferencesRepository?.let { repo ->
+                            playerScope.launch { repo.setMoviesAmbientModeEnabled(enabled) }
+                        }
+                    }
+                },
                 onOpenRelatedTitle = { _, _ -> }
         )
     }
@@ -580,6 +595,7 @@ private fun ActiveVideoPlayerContent(
     onDownloadSource: (PlaybackSource) -> Unit,
     onDismissDownloadStatus: () -> Unit,
     onSubtitleStyleChange: (SubtitleStyleConfig) -> Unit,
+    onToggleAmbientMode: (Boolean) -> Unit = {},
     onOpenRelatedTitle: (String, String) -> Unit,
     introSkipEnabled: Boolean = true
 ) {
@@ -600,6 +616,9 @@ private fun ActiveVideoPlayerContent(
     var isHolding2x by remember { mutableStateOf(false) }
     var ignoreNextTap by remember { mutableStateOf(false) }
     var resizeMode by rememberSaveable { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
+    var ambientModeEnabled by remember(playbackPreferences.ambientModeEnabled) {
+        mutableStateOf(playbackPreferences.ambientModeEnabled)
+    }
 
     val playbackEpisodeKey = "${activeTitleId}:${seasonNumber ?: 0}:${episodeNumber ?: 0}"
 
@@ -1371,6 +1390,39 @@ private fun ActiveVideoPlayerContent(
                 }
             }
     ) {
+        val isLetterboxedMode = resizeMode != AspectRatioFrameLayout.RESIZE_MODE_ZOOM &&
+            resizeMode != AspectRatioFrameLayout.RESIZE_MODE_FILL
+        val ambientColor = com.laterbox.app.movies.ui.player.PlayerAmbientSampler.rememberAmbientColor(
+            playerView = attachedPlayerView,
+            isEnabled = ambientModeEnabled,
+            isPlaying = isPlaying,
+            isInPip = isInPip,
+            resizeMode = resizeMode
+        )
+        val ambientAlpha by animateFloatAsState(
+            targetValue = if (ambientModeEnabled && !isInPip && isLetterboxedMode && ambientColor != Color.Black) 1f else 0f,
+            animationSpec = tween(durationMillis = 550),
+            label = "player_ambient_alpha"
+        )
+        if (ambientAlpha > 0.01f) {
+            Canvas(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag("player_ambient_backdrop")
+            ) {
+                drawRect(color = Color.Black)
+                val maxDim = size.maxDimension.coerceAtLeast(1f)
+                drawRect(
+                    brush = Brush.radialGradient(
+                        0.0f to ambientColor.copy(alpha = 0.52f * ambientAlpha),
+                        0.55f to ambientColor.copy(alpha = 0.22f * ambientAlpha),
+                        1.0f to Color.Transparent,
+                        center = androidx.compose.ui.geometry.Offset(size.width * 0.5f, size.height * 0.48f),
+                        radius = maxDim * 0.72f
+                    )
+                )
+            }
+        }
         LaterboxVideoSurface(
             player = exoPlayer,
             resizeMode = resizeMode,
@@ -1944,6 +1996,38 @@ private fun ActiveVideoPlayerContent(
                                             style = typography.caption.copy(fontWeight = FontWeight.Bold),
                                             color = colors.onAccentPrimary,
                                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                        )
+                                    }
+                                }
+
+                                // Ambient Mode Toggle Pill
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (ambientModeEnabled) colors.accentPrimary else Color.White.copy(alpha = 0.16f),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            val next = !ambientModeEnabled
+                                            ambientModeEnabled = next
+                                            onToggleAmbientMode(next)
+                                        }
+                                        .testTag("player_ambient_toggle_button")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(LaterboxIcons.Sparkles),
+                                            contentDescription = if (ambientModeEnabled) "Disable Ambient Mode" else "Enable Ambient Mode",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Text(
+                                            text = "Ambient",
+                                            style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                            color = Color.White
                                         )
                                     }
                                 }

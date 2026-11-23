@@ -32,7 +32,8 @@ data class PlayerPlaybackPreferences(
     val autoplayNextEpisode: Boolean = true,
     val autoplayCountdownSeconds: Int = 10,
     val defaultQualityHeight: Int = 720,
-    val subtitleStyle: SubtitleStyleConfig = SubtitleStyleConfig()
+    val subtitleStyle: SubtitleStyleConfig = SubtitleStyleConfig(),
+    val ambientModeEnabled: Boolean = false
 )
 
 data class NextEpisodePreview(
@@ -118,7 +119,8 @@ class MoviePlayerViewModel(
                         autoplayNextEpisode = prefs.moviesAutoplayNextEpisode,
                         autoplayCountdownSeconds = prefs.moviesAutoplayCountdownSeconds,
                         defaultQualityHeight = prefs.moviesDefaultQualityHeight,
-                        subtitleStyle = prefs.toSubtitleStyleConfig()
+                        subtitleStyle = prefs.toSubtitleStyleConfig(),
+                        ambientModeEnabled = prefs.moviesAmbientModeEnabled
                     )
                     _uiState.update { it.copy(playbackPreferences = mapped) }
                 }
@@ -133,6 +135,17 @@ class MoviePlayerViewModel(
         userPreferencesRepository?.let { repo ->
             viewModelScope.launch {
                 repo.setSubtitleStyleConfig(config)
+            }
+        }
+    }
+
+    fun setAmbientModeEnabled(enabled: Boolean) {
+        _uiState.update {
+            it.copy(playbackPreferences = it.playbackPreferences.copy(ambientModeEnabled = enabled))
+        }
+        userPreferencesRepository?.let { repo ->
+            viewModelScope.launch {
+                repo.setMoviesAmbientModeEnabled(enabled)
             }
         }
     }
@@ -188,7 +201,8 @@ class MoviePlayerViewModel(
                     autoplayNextEpisode = prefs.moviesAutoplayNextEpisode,
                     autoplayCountdownSeconds = prefs.moviesAutoplayCountdownSeconds,
                     defaultQualityHeight = prefs.moviesDefaultQualityHeight,
-                    subtitleStyle = prefs.toSubtitleStyleConfig()
+                    subtitleStyle = prefs.toSubtitleStyleConfig(),
+                    ambientModeEnabled = prefs.moviesAmbientModeEnabled
                 )
             } ?: _uiState.value.playbackPreferences
 

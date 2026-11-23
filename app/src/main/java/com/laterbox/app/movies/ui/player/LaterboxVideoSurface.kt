@@ -44,11 +44,11 @@ fun LaterboxVideoSurface(
                 LayoutInflater.from(ctx)
                     .inflate(R.layout.laterbox_player_texture_view, null, false) as PlayerView
             } else {
-                PlayerView(ctx).apply {
-                    setShutterBackgroundColor(android.graphics.Color.BLACK)
-                }
+                PlayerView(ctx)
             }
             view.apply {
+                setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
                 useController = false
                 controllerAutoShow = false
                 isClickable = false

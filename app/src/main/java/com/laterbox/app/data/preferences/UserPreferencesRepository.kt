@@ -196,6 +196,7 @@ data class UserPreferences(
     val moviesAutoplayCountdownSeconds: Int = 10,
     val moviesDefaultQualityHeight: Int = 720,
     val moviesTrailerMuted: Boolean = false,
+    val moviesAmbientModeEnabled: Boolean = false,
     val subtitleUseSystemCaptions: Boolean = false,
     val subtitleFontSizeSp: Float = 20f,
     val subtitleTextColorArgb: Int = 0xFFFFFFFF.toInt(),
@@ -356,6 +357,7 @@ class UserPreferencesRepository(
         val MOVIES_AUTOPLAY_COUNTDOWN_SECONDS = intPreferencesKey("movies_autoplay_countdown_seconds")
         val MOVIES_DEFAULT_QUALITY_HEIGHT = intPreferencesKey("movies_default_quality_height")
         val MOVIES_TRAILER_MUTED = booleanPreferencesKey("movies_trailer_muted")
+        val MOVIES_AMBIENT_MODE_ENABLED = booleanPreferencesKey("movies_ambient_mode_enabled")
         val SUBTITLE_USE_SYSTEM_CAPTIONS = booleanPreferencesKey("subtitle_use_system_captions")
         val SUBTITLE_FONT_SIZE_SP = floatPreferencesKey("subtitle_font_size_sp")
         val SUBTITLE_TEXT_COLOR_ARGB = intPreferencesKey("subtitle_text_color_argb")
@@ -580,6 +582,7 @@ class UserPreferencesRepository(
             moviesAutoplayCountdownSeconds = (preferences[PreferencesKeys.MOVIES_AUTOPLAY_COUNTDOWN_SECONDS] ?: 10).coerceIn(3, 30),
             moviesDefaultQualityHeight = (preferences[PreferencesKeys.MOVIES_DEFAULT_QUALITY_HEIGHT] ?: 720).coerceIn(240, 2160),
             moviesTrailerMuted = preferences[PreferencesKeys.MOVIES_TRAILER_MUTED] ?: false,
+            moviesAmbientModeEnabled = preferences[PreferencesKeys.MOVIES_AMBIENT_MODE_ENABLED] ?: false,
             subtitleUseSystemCaptions = preferences[PreferencesKeys.SUBTITLE_USE_SYSTEM_CAPTIONS] ?: false,
             subtitleFontSizeSp = (preferences[PreferencesKeys.SUBTITLE_FONT_SIZE_SP] ?: 20f).coerceIn(12f, 36f),
             subtitleTextColorArgb = preferences[PreferencesKeys.SUBTITLE_TEXT_COLOR_ARGB] ?: 0xFFFFFFFF.toInt(),
@@ -1160,6 +1163,12 @@ class UserPreferencesRepository(
     suspend fun setMoviesTrailerMuted(muted: Boolean) {
         dataStore.edit { preferences ->
             preferences[PreferencesKeys.MOVIES_TRAILER_MUTED] = muted
+        }
+    }
+
+    suspend fun setMoviesAmbientModeEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.MOVIES_AMBIENT_MODE_ENABLED] = enabled
         }
     }
 

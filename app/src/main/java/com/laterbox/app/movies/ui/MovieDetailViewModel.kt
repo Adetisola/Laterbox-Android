@@ -111,7 +111,8 @@ class MovieDetailViewModel(
                         autoplayNextEpisode = prefs.moviesAutoplayNextEpisode,
                         autoplayCountdownSeconds = prefs.moviesAutoplayCountdownSeconds.coerceIn(3, 30),
                         defaultQualityHeight = prefs.moviesDefaultQualityHeight,
-                        subtitleStyle = style
+                        subtitleStyle = style,
+                        ambientModeEnabled = prefs.moviesAmbientModeEnabled
                     )
                     _uiState.update {
                         it.copy(

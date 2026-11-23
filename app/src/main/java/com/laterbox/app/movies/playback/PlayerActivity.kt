@@ -160,6 +160,7 @@ class PlayerActivity : ComponentActivity() {
                                 onSelectInStreamAudio = moviePlayerViewModel::saveStreamAudioPreference,
                                 onNextEpisode = moviePlayerViewModel::playNextEpisode,
                                 onSubtitleStyleChange = moviePlayerViewModel::updateSubtitleStyle,
+                                onToggleAmbientMode = moviePlayerViewModel::setAmbientModeEnabled,
                                 onOpenRelatedTitle = { relProvider, relId ->
                                     LaterboxPlaybackBridge.stopAndDetach(applicationContext)
                                     val detailIntent = Intent(this@PlayerActivity, MainActivity::class.java).apply {
@@ -223,7 +224,8 @@ class PlayerActivity : ComponentActivity() {
                                         autoplayNextEpisode = preferences.moviesAutoplayNextEpisode,
                                         autoplayCountdownSeconds = preferences.moviesAutoplayCountdownSeconds,
                                         defaultQualityHeight = preferences.moviesDefaultQualityHeight,
-                                        subtitleStyle = preferences.toSubtitleStyleConfig()
+                                        subtitleStyle = preferences.toSubtitleStyleConfig(),
+                                        ambientModeEnabled = preferences.moviesAmbientModeEnabled
                                     )
                                 }
                                 LocalVideoPlayerScreen(
@@ -234,6 +236,11 @@ class PlayerActivity : ComponentActivity() {
                                     onSubtitleStyleChange = { style ->
                                         lifecycleScope.launch {
                                             container.userPreferencesRepository.setSubtitleStyleConfig(style)
+                                        }
+                                    },
+                                    onToggleAmbientMode = { enabled ->
+                                        lifecycleScope.launch {
+                                            container.userPreferencesRepository.setMoviesAmbientModeEnabled(enabled)
                                         }
                                     }
                                 )
