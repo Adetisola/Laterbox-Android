@@ -612,13 +612,21 @@ class RemoteConfigTest {
         ) as RemoteConfigParseResult.Valid
         assertFalse(parsed68Excluded.snapshot.announcements.any { it.id == "update-notice" })
 
+        val diag67 = RemoteConfigValidator.evaluateAnnouncementDiagnostics(
+            rawJson = rawNoticePayload(67, "Build 67 message"),
+            clientVersionCode = 67,
+        ).associateBy { it.id }
+        assertEquals(NoticeExclusionReason.NONE, diag67["update-notice"]?.reason)
+        assertEquals(NoticeExclusionReason.DISABLED, diag67["paused-1"]?.reason)
+        assertEquals(NoticeExclusionReason.OVER_LIMIT, diag67["info-5"]?.reason)
+
         val diag68 = RemoteConfigValidator.evaluateAnnouncementDiagnostics(
             rawJson = rawNoticePayload(67, "Build 67 message"),
             clientVersionCode = 68,
         ).associateBy { it.id }
         assertEquals(NoticeExclusionReason.VERSION_ABOVE_MAX, diag68["update-notice"]?.reason)
         assertEquals(NoticeExclusionReason.DISABLED, diag68["paused-1"]?.reason)
-        assertEquals(NoticeExclusionReason.OVER_LIMIT, diag68["info-5"]?.reason)
+        assertEquals(NoticeExclusionReason.NONE, diag68["info-5"]?.reason)
 
         // 2. maxVersionCode updated from 67 -> 68: build 68 now receives it; build 69 does not.
         val parsed68Included = RemoteConfigValidator.parseAndValidate(

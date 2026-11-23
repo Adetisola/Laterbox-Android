@@ -588,15 +588,16 @@ class LaterboxAnalyticsTracker(
                 }
                 is DispatchResult.DropPermanent -> {
                     if (batch.size == 1) {
-                        recordPermanentDrop(batch, result)
                         val droppedIds = setOf(batch.first().eventId)
                         queueMutex.withLock {
                             val remaining = loadQueueUnlocked().filterNot { it.eventId in droppedIds }
                             saveQueueUnlocked(remaining)
                         }
+                        recordPermanentDrop(batch, result)
                     } else {
                         // Isolate individual malformed event(s) so valid sibling events are still delivered
                         val settledIds = mutableSetOf<String>()
+                        val permanentDrops = mutableListOf<Pair<AnalyticsEventRecord, DispatchResult.DropPermanent>>()
                         var hitTransientFailure = false
                         var paused = false
                         for (item in batch) {
@@ -609,7 +610,7 @@ class LaterboxAnalyticsTracker(
                                     }
                                 }
                                 is DispatchResult.DropPermanent -> {
-                                    recordPermanentDrop(listOf(item), singleResult)
+                                    permanentDrops += item to singleResult
                                     settledIds += item.eventId
                                 }
                                 DispatchResult.RetryLater -> {
@@ -623,6 +624,9 @@ class LaterboxAnalyticsTracker(
                                 val remaining = loadQueueUnlocked().filterNot { it.eventId in settledIds }
                                 saveQueueUnlocked(remaining)
                             }
+                        }
+                        permanentDrops.forEach { (item, dropResult) ->
+                            recordPermanentDrop(listOf(item), dropResult)
                         }
                         if (paused) {
                             serverPausedUntilMs = System.currentTimeMillis() + SERVER_PAUSE_BACKOFF_MS

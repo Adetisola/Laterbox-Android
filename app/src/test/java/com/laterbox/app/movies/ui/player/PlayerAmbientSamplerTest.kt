@@ -1,6 +1,5 @@
 package com.laterbox.app.movies.ui.player
 
-import android.graphics.Color as AndroidColor
 import androidx.compose.ui.graphics.Color
 import com.laterbox.app.movies.ui.PlayerPlaybackPreferences
 import org.junit.Assert.assertEquals
@@ -11,6 +10,9 @@ import kotlin.math.max
 
 class PlayerAmbientSamplerTest {
 
+    private fun argb(r: Int, g: Int, b: Int): Int =
+        (0xFF shl 24) or ((r and 0xFF) shl 16) or ((g and 0xFF) shl 8) or (b and 0xFF)
+
     @Test
     fun extractAmbientColor_emptyPixels_returnsBlack() {
         assertEquals(Color.Black, PlayerAmbientSampler.extractAmbientColor(intArrayOf()))
@@ -18,8 +20,8 @@ class PlayerAmbientSamplerTest {
 
     @Test
     fun extractAmbientColor_filtersBlackLetterboxBarsAndClampsBrightness() {
-        val blackBar = AndroidColor.rgb(0, 0, 0)
-        val brightWarmRed = AndroidColor.rgb(255, 80, 40)
+        val blackBar = argb(0, 0, 0)
+        val brightWarmRed = argb(255, 80, 40)
         val pixels = IntArray(144) { idx ->
             if (idx < 72) blackBar else brightWarmRed
         }
@@ -33,7 +35,7 @@ class PlayerAmbientSamplerTest {
 
     @Test
     fun extractAmbientColor_clampsPureWhiteToRestrainedGlow() {
-        val white = AndroidColor.rgb(255, 255, 255)
+        val white = argb(255, 255, 255)
         val pixels = IntArray(64) { white }
         val extracted = PlayerAmbientSampler.extractAmbientColor(pixels)
         val peak = max(extracted.red, max(extracted.green, extracted.blue))

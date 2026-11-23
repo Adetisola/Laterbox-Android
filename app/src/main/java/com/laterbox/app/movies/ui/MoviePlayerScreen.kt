@@ -1898,10 +1898,11 @@ private fun ActiveVideoPlayerContent(
 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Row(
+                                modifier = Modifier.weight(1f),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -1966,7 +1967,8 @@ private fun ActiveVideoPlayerContent(
                                         text = "Hold video for 2×",
                                         style = typography.caption,
                                         color = Color.White.copy(alpha = 0.58f),
-                                        maxLines = 1
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             }
@@ -2000,11 +2002,12 @@ private fun ActiveVideoPlayerContent(
                                     }
                                 }
 
-                                // Ambient Mode Toggle Pill
+                                // Ambient Mode Toggle Pill (icon-only in narrow portrait, icon+label in landscape)
                                 Surface(
                                     shape = RoundedCornerShape(8.dp),
                                     color = if (ambientModeEnabled) colors.accentPrimary else Color.White.copy(alpha = 0.16f),
                                     modifier = Modifier
+                                        .let { base -> if (effectiveIsLandscape) base else base.size(34.dp) }
                                         .clip(RoundedCornerShape(8.dp))
                                         .clickable {
                                             val next = !ambientModeEnabled
@@ -2013,22 +2016,33 @@ private fun ActiveVideoPlayerContent(
                                         }
                                         .testTag("player_ambient_toggle_button")
                                 ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
-                                        Icon(
-                                            painter = painterResource(LaterboxIcons.Sparkles),
-                                            contentDescription = if (ambientModeEnabled) "Disable Ambient Mode" else "Enable Ambient Mode",
-                                            tint = Color.White,
-                                            modifier = Modifier.size(14.dp)
-                                        )
-                                        Text(
-                                            text = "Ambient",
-                                            style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
-                                            color = Color.White
-                                        )
+                                    if (effectiveIsLandscape) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                painter = painterResource(LaterboxIcons.Sparkles),
+                                                contentDescription = if (ambientModeEnabled) "Disable Ambient Mode" else "Enable Ambient Mode",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Text(
+                                                text = "Ambient",
+                                                style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                                color = Color.White
+                                            )
+                                        }
+                                    } else {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                painter = painterResource(LaterboxIcons.Sparkles),
+                                                contentDescription = if (ambientModeEnabled) "Disable Ambient Mode" else "Enable Ambient Mode",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
                                     }
                                 }
 
