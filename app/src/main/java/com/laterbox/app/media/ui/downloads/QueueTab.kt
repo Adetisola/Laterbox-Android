@@ -27,7 +27,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -259,6 +261,7 @@ fun QueueTaskCard(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(6.dp)
+                                .clip(RoundedCornerShape(999.dp))
                                 .testTag("queue_task_progress_${task.id}"),
                             color = colors.accentPrimary,
                             trackColor = colors.surfaceSecondary
@@ -269,6 +272,7 @@ fun QueueTaskCard(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(6.dp)
+                                .clip(RoundedCornerShape(999.dp))
                                 .testTag("queue_task_progress_${task.id}"),
                             color = colors.accentPrimary,
                             trackColor = colors.surfaceSecondary
@@ -329,6 +333,7 @@ fun QueueTaskCard(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(6.dp)
+                            .clip(RoundedCornerShape(999.dp))
                             .testTag("queue_task_progress_${task.id}"),
                         color = colors.accentPrimary.copy(alpha = 0.65f),
                         trackColor = colors.surfaceSecondary
@@ -412,6 +417,15 @@ fun QueueTaskCard(
                 }
 
                 DownloadState.QUEUED, DownloadState.INSPECTING, DownloadState.READY -> {
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(999.dp)),
+                        color = colors.accentPrimary.copy(alpha = 0.7f),
+                        trackColor = colors.surfaceSecondary
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         text = task.stage?.label ?: "Queued...",
                         style = typography.bodySmall,

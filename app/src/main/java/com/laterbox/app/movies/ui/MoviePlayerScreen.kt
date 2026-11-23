@@ -2673,16 +2673,24 @@ private fun ActiveVideoPlayerContent(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (selectedSubtitle == null) colors.accentContainer else Color.Transparent)
                             .clickable {
                                 onSelectSubtitle(null, exoPlayer.currentPosition)
                                 showSubtitleDialog = false
                             }
-                            .padding(vertical = 8.dp),
+                            .padding(horizontal = 8.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         RadioButton(selected = selectedSubtitle == null, onClick = null)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Off", style = typography.uiLabel, color = colors.textPrimary)
+                        Text(
+                            text = "Off",
+                            style = typography.uiLabel.copy(
+                                fontWeight = if (selectedSubtitle == null) FontWeight.SemiBold else FontWeight.Normal
+                            ),
+                            color = if (selectedSubtitle == null) colors.accentPrimary else colors.textPrimary
+                        )
                     }
                     if (resolution.subtitles.isEmpty()) {
                         Text(
@@ -2697,16 +2705,42 @@ private fun ActiveVideoPlayerContent(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (isSelected) colors.accentContainer else Color.Transparent)
                                     .clickable {
                                         onSelectSubtitle(track, exoPlayer.currentPosition)
                                         showSubtitleDialog = false
                                     }
-                                    .padding(vertical = 8.dp),
+                                    .padding(horizontal = 8.dp, vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 RadioButton(selected = isSelected, onClick = null)
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text(track.label, style = typography.uiLabel, color = colors.textPrimary)
+                                Text(
+                                    text = track.label,
+                                    style = typography.uiLabel.copy(
+                                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+                                    ),
+                                    color = if (isSelected) colors.accentPrimary else colors.textPrimary,
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                if (track.isOfflineLocal) {
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = Color(0xFF1B5E20).copy(alpha = 0.16f),
+                                        border = BorderStroke(0.75.dp, Color(0xFF4CAF50).copy(alpha = 0.55f))
+                                    ) {
+                                        Text(
+                                            text = "OFFLINE",
+                                            style = typography.caption.copy(fontSize = 9.sp, fontWeight = FontWeight.Bold),
+                                            color = Color(0xFF4CAF50),
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
