@@ -17,6 +17,7 @@ import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.longClick
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -2604,5 +2605,27 @@ class MoviesUiAndNavigationTest {
         composeTestRule.waitForIdle()
         // Exactly one match exists (on hero banner only); poster card "2010 · Action" omits duration
         composeTestRule.onNodeWithText("2hrs 28mins", substring = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun moviePosterCard_omitsBottomRightPlayIconBadge() {
+        val playableMovie = sampleMovie.copy(
+            id = "playable_poster_test",
+            title = "Clean Poster Card",
+            isPlayableHint = true
+        )
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                com.laterbox.app.movies.ui.MoviePosterCard(
+                    item = playableMovie,
+                    onClick = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithText("Clean Poster Card").assertIsDisplayed()
+        composeTestRule.onNodeWithText("FILM").assertIsDisplayed()
+        composeTestRule.onNodeWithContentDescription("Stream available").assertDoesNotExist()
     }
 }

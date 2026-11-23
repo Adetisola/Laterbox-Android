@@ -404,27 +404,6 @@ fun MoviePosterCard(
                 }
             }
 
-            // Playable indicator (bottom-right)
-            if (item.isPlayableHint) {
-                Surface(
-                    shape = CircleShape,
-                    color = colors.accentPrimary,
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(6.dp)
-                        .size(24.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            painter = painterResource(LaterboxIcons.Play),
-                            contentDescription = "Stream available",
-                            modifier = Modifier.size(12.dp),
-                            tint = colors.onAccentPrimary
-                        )
-                    }
-                }
-            }
-
             // Kind micro-badge (bottom-left)
             val badgeText = when (item.kind) {
                 MediaKind.TV_SERIES -> "SERIES"
