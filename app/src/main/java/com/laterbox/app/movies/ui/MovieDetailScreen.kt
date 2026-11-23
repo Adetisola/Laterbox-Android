@@ -238,6 +238,7 @@ fun MovieDetailScreen(
             seasons = uiState.details.seasons,
             selectedSeasonNumber = uiState.selectedSeasonNumber,
             currentEpisodes = uiState.episodes,
+            seriesSummary = currentDetails.summary,
             isEnqueuing = uiState.isEnqueuingDownload,
             isLoadingEpisodeSizes = uiState.isLoadingEpisodeSizes,
             onSelectSeason = onSelectSeason,

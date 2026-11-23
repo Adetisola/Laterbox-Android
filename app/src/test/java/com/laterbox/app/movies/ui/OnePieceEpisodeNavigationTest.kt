@@ -282,4 +282,102 @@ class OnePieceEpisodeNavigationTest {
         composeTestRule.onNodeWithTag("one_piece_range_chip_range_1_100").assertDoesNotExist()
         assertNull(OnePieceEpisodeRangeBuilder.buildUiState(liveActionDetails, sampleEpisodes(1..8)))
     }
+
+    @Test
+    fun downloadBottomSheet_onePiecePreservesMultiRangeSelectionsAndTriggersBatchDownload() {
+        val summary = onePieceAnimeSummary()
+        val episodes = sampleEpisodes(1..1180)
+        val seasons = listOf(SeasonSummary(seasonNumber = 1, title = "Season 1", episodeCount = 1180))
+        var downloadedSeason: Int? = null
+        var downloadedEpisodes: List<Int> = emptyList()
+
+        composeTestRule.setContent {
+            LaterboxTheme(darkTheme = true) {
+                DownloadOptionsBottomSheet(
+                    title = summary.title,
+                    kind = summary.kind,
+                    sources = emptyList(),
+                    subtitles = emptyList(),
+                    seasons = seasons,
+                    selectedSeasonNumber = 1,
+                    currentEpisodes = episodes,
+                    seriesSummary = summary,
+                    onSelectSource = {},
+                    onDownloadBatch = { s, eps, _ ->
+                        downloadedSeason = s
+                        downloadedEpisodes = eps
+                    },
+                    onDismiss = {}
+                )
+            }
+        }
+
+        // Verify Season selector + divider + range selector pills appear in download sheet
+        composeTestRule.onNodeWithTag("batch_season_chip_1").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("batch_one_piece_range_divider").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("batch_one_piece_range_chip_range_1_100").assertIsDisplayed()
+
+        // Select episodes 1 and 2 in range 1-100
+        composeTestRule.onNodeWithTag("batch_episode_row_1").performClick()
+        composeTestRule.onNodeWithTag("batch_episode_row_2").performClick()
+        composeTestRule.onNodeWithText("Download 2 episodes").assertIsDisplayed()
+
+        // Switch to 101-200 and select episode 105
+        composeTestRule.onNodeWithTag("batch_one_piece_range_chip_range_101_200").performClick()
+        composeTestRule.onNodeWithTag("download_options_list").performScrollToNode(hasTestTag("batch_episode_row_105"))
+        composeTestRule.onNodeWithTag("batch_episode_row_105").performClick()
+        composeTestRule.onNodeWithText("Download 3 episodes").assertIsDisplayed()
+
+        // Jump to distant final range 1101-1200 and select episode 1150
+        composeTestRule.onNodeWithTag("batch_seasons_and_ranges_row").performScrollToIndex(13)
+        composeTestRule.onNodeWithTag("batch_one_piece_range_chip_range_1101_1200").performClick()
+        composeTestRule.onNodeWithTag("download_options_list").performScrollToNode(hasTestTag("batch_episode_row_1150"))
+        composeTestRule.onNodeWithTag("batch_episode_row_1150").performClick()
+        composeTestRule.onNodeWithText("Download 4 episodes").assertIsDisplayed()
+
+        // Switch back to 1-100 and confirm episode 1 & 2 selections are still preserved!
+        composeTestRule.onNodeWithTag("batch_seasons_and_ranges_row").performScrollToIndex(0)
+        composeTestRule.onNodeWithTag("batch_one_piece_range_chip_range_1_100").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Episodes (100) · 4 selected").assertIsDisplayed()
+
+        // Confirm Download enqueues all 4 episodes across all 3 ranges cleanly
+        composeTestRule.onNodeWithText("Download 4 episodes").performClick()
+        assertEquals(1, downloadedSeason)
+        assertEquals(listOf(1, 2, 105, 1150), downloadedEpisodes)
+    }
+
+    @Test
+    fun downloadBottomSheet_liveActionAndOtherSeriesDoNotShowRangeSelectors() {
+        val liveActionSummary = onePieceAnimeSummary(
+            id = "op_la",
+            imdbId = "tt11737520",
+            releaseYear = 2023,
+            genres = listOf("Action", "Adventure")
+        )
+        val seasons = listOf(SeasonSummary(seasonNumber = 1, title = "Season 1", episodeCount = 8))
+
+        composeTestRule.setContent {
+            LaterboxTheme(darkTheme = false) {
+                DownloadOptionsBottomSheet(
+                    title = liveActionSummary.title,
+                    kind = liveActionSummary.kind,
+                    sources = emptyList(),
+                    subtitles = emptyList(),
+                    seasons = seasons,
+                    selectedSeasonNumber = 1,
+                    currentEpisodes = sampleEpisodes(1..8),
+                    seriesSummary = liveActionSummary,
+                    onSelectSource = {},
+                    onDownloadBatch = { _, _, _ -> },
+                    onDismiss = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("batch_season_chip_1").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("batch_one_piece_range_divider").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("batch_one_piece_range_chip_range_1_100").assertDoesNotExist()
+    }
 }
+

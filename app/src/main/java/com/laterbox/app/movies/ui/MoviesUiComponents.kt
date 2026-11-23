@@ -28,6 +28,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -1597,6 +1599,7 @@ fun DownloadOptionsBottomSheet(
     seasons: List<SeasonSummary>,
     selectedSeasonNumber: Int?,
     currentEpisodes: List<EpisodeItem>,
+    seriesSummary: MovieTitleSummary? = null,
     isEnqueuing: Boolean = false,
     isLoadingEpisodeSizes: Boolean = false,
     onSelectSeason: (Int) -> Unit = {},
@@ -1641,18 +1644,74 @@ fun DownloadOptionsBottomSheet(
         mutableStateOf(availableQualityHeights.firstOrNull())
     }
 
-    val seasonEpisodeNumbers = remember(batchSeason, seasons, currentEpisodes, selectedSeasonNumber) {
+    val batchSourceEpisodes = remember(batchSeason, seasons, currentEpisodes, selectedSeasonNumber) {
+        val loadedForSeason = currentEpisodes.filter { it.seasonNumber == batchSeason }
         val seasonObj = seasons.firstOrNull { it.seasonNumber == batchSeason }
         when {
-            seasonObj != null && seasonObj.availableEpisodes.isNotEmpty() -> seasonObj.availableEpisodes
-            batchSeason == selectedSeasonNumber && currentEpisodes.isNotEmpty() ->
-                currentEpisodes.map { it.episodeNumber }.distinct().sorted()
-            seasonObj != null && seasonObj.episodeCount > 0 -> (1..seasonObj.episodeCount).toList()
+            batchSeason == selectedSeasonNumber && loadedForSeason.isNotEmpty() -> loadedForSeason
+            batchSeason == selectedSeasonNumber && currentEpisodes.isNotEmpty() -> currentEpisodes
+            seasonObj != null && seasonObj.availableEpisodes.isNotEmpty() ->
+                seasonObj.availableEpisodes.distinct().sorted().map { epNum ->
+                    EpisodeItem(
+                        id = "batch_${batchSeason}_$epNum",
+                        seasonNumber = batchSeason,
+                        episodeNumber = epNum,
+                        title = "Episode $epNum"
+                    )
+                }
+            seasonObj != null && seasonObj.episodeCount > 0 ->
+                (1..seasonObj.episodeCount).map { epNum ->
+                    EpisodeItem(
+                        id = "batch_${batchSeason}_$epNum",
+                        seasonNumber = batchSeason,
+                        episodeNumber = epNum,
+                        title = "Episode $epNum"
+                    )
+                }
             else -> emptyList()
         }
     }
-    var selectedEpisodes by remember(batchSeason, seasonEpisodeNumbers) {
+
+    val isOnePieceAnime = remember(seriesSummary, seasons, batchSourceEpisodes) {
+        OnePieceEpisodeRangeBuilder.isOnePieceAnime(
+            summary = seriesSummary,
+            seasons = seasons,
+            episodes = batchSourceEpisodes
+        )
+    }
+    val onePieceRanges = remember(isOnePieceAnime, batchSourceEpisodes) {
+        if (isOnePieceAnime && batchSourceEpisodes.isNotEmpty()) {
+            OnePieceEpisodeRangeBuilder.buildRanges(batchSourceEpisodes)
+        } else {
+            emptyList()
+        }
+    }
+    var selectedRangeKey by remember(batchSeason, seriesSummary?.id) {
+        mutableStateOf<String?>(null)
+    }
+    val activeRange = remember(onePieceRanges, selectedRangeKey) {
+        if (onePieceRanges.isEmpty()) {
+            null
+        } else {
+            onePieceRanges.firstOrNull { it.key == selectedRangeKey } ?: onePieceRanges.first()
+        }
+    }
+    val displayedEpisodes = remember(activeRange, batchSourceEpisodes) {
+        activeRange?.episodes ?: batchSourceEpisodes
+    }
+    val displayedEpisodeNumbers = remember(displayedEpisodes) {
+        displayedEpisodes.map { it.episodeNumber }.distinct()
+    }
+
+    // Keyed only by batchSeason / series id so switching episode ranges preserves multi-range selections
+    var selectedEpisodes by remember(batchSeason, seriesSummary?.id) {
         mutableStateOf(emptySet<Int>())
+    }
+    val episodeListState = rememberLazyListState()
+    LaunchedEffect(activeRange?.key) {
+        if (activeRange != null) {
+            episodeListState.scrollToItem(0)
+        }
     }
 
     val isTvSeriesExperience = kind.isEpisodic && seasons.isNotEmpty()
@@ -1689,9 +1748,13 @@ fun DownloadOptionsBottomSheet(
                         )
                     }
 
-                    // Season selector chips
+                    // Season selector chips + (for One Piece anime only) 100-episode range selector pills
                     if (seasons.isNotEmpty()) {
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.testTag("batch_seasons_and_ranges_row")
+                        ) {
                             items(seasons, key = { "batch_s_${it.seasonNumber}" }) { season ->
                                 val selected = batchSeason == season.seasonNumber
                                 Surface(
@@ -1717,6 +1780,53 @@ fun DownloadOptionsBottomSheet(
                                         color = if (selected) colors.onAccentPrimary else colors.textPrimary,
                                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                                     )
+                                }
+                            }
+
+                            if (onePieceRanges.isNotEmpty()) {
+                                item(key = "batch_one_piece_range_divider") {
+                                    Box(
+                                        modifier = Modifier
+                                            .padding(horizontal = 4.dp)
+                                            .width(1.dp)
+                                            .height(20.dp)
+                                            .background(colors.borderSubtle.copy(alpha = 0.85f))
+                                            .testTag("batch_one_piece_range_divider")
+                                    )
+                                }
+
+                                items(
+                                    items = onePieceRanges,
+                                    key = { range -> "batch_one_piece_range_${range.key}" }
+                                ) { range ->
+                                    val isRangeSelected = activeRange?.key == range.key
+                                    Surface(
+                                        shape = RoundedCornerShape(999.dp),
+                                        color = Color.Transparent,
+                                        border = BorderStroke(
+                                            width = if (isRangeSelected) 1.5.dp else 0.75.dp,
+                                            color = if (isRangeSelected) colors.accentPrimary else colors.borderSubtle
+                                        ),
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(999.dp))
+                                            .clickable { selectedRangeKey = range.key }
+                                            .testTag("batch_one_piece_range_chip_${range.key}")
+                                    ) {
+                                        Text(
+                                            text = range.label,
+                                            style = typography.caption.copy(
+                                                fontWeight = if (isRangeSelected) FontWeight.SemiBold else FontWeight.Medium
+                                            ),
+                                            color = if (isRangeSelected) {
+                                                if (colors.isDark) Color.White else Color.Black
+                                            } else {
+                                                colors.textSecondary
+                                            },
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1792,26 +1902,35 @@ fun DownloadOptionsBottomSheet(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        val headerCountText = if (activeRange != null && selectedEpisodes.isNotEmpty()) {
+                            "Episodes (${displayedEpisodes.size}) · ${selectedEpisodes.size} selected"
+                        } else {
+                            "Episodes (${displayedEpisodes.size})"
+                        }
                         Text(
-                            text = "Episodes (${seasonEpisodeNumbers.size})",
+                            text = headerCountText,
                             style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
                             color = colors.textPrimary
                         )
-                        if (seasonEpisodeNumbers.isNotEmpty()) {
-                            val allSelected = selectedEpisodes.size == seasonEpisodeNumbers.size
+                        if (displayedEpisodeNumbers.isNotEmpty()) {
+                            val allDisplayedSelected = displayedEpisodeNumbers.all { it in selectedEpisodes }
                             TextButton(
                                 onClick = {
-                                    selectedEpisodes = if (allSelected) {
-                                        emptySet()
+                                    selectedEpisodes = if (allDisplayedSelected) {
+                                        selectedEpisodes - displayedEpisodeNumbers.toSet()
                                     } else {
-                                        seasonEpisodeNumbers.toSet()
+                                        selectedEpisodes + displayedEpisodeNumbers
                                     }
                                 },
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                                 modifier = Modifier.testTag("batch_select_all_button")
                             ) {
                                 Text(
-                                    text = if (allSelected) "Clear All" else "Select All (${seasonEpisodeNumbers.size})",
+                                    text = if (allDisplayedSelected) {
+                                        if (activeRange != null) "Clear Range" else "Clear All"
+                                    } else {
+                                        "Select All (${displayedEpisodeNumbers.size})"
+                                    },
                                     style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
                                     color = colors.accentPrimary
                                 )
@@ -1824,6 +1943,7 @@ fun DownloadOptionsBottomSheet(
 
                 // Scrollable selectable episode list
                 LazyColumn(
+                    state = episodeListState,
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f, fill = false)
@@ -1832,7 +1952,7 @@ fun DownloadOptionsBottomSheet(
                     contentPadding = PaddingValues(vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    if (seasonEpisodeNumbers.isEmpty()) {
+                    if (displayedEpisodes.isEmpty()) {
                         item(key = "dl_no_episodes") {
                             Text(
                                 text = "No downloadable episodes found for Season $batchSeason.",
@@ -1842,14 +1962,15 @@ fun DownloadOptionsBottomSheet(
                             )
                         }
                     } else {
-                        items(seasonEpisodeNumbers, key = { "batch_ep_${batchSeason}_$it" }) { epNum ->
+                        itemsIndexed(
+                            items = displayedEpisodes,
+                            key = { index, ep -> "batch_ep_${batchSeason}_${ep.id}_${ep.episodeNumber}_$index" }
+                        ) { _, episodeItem ->
+                            val epNum = episodeItem.episodeNumber
                             val checked = epNum in selectedEpisodes
-                            val episodeItem = currentEpisodes.firstOrNull {
-                                it.seasonNumber == batchSeason && it.episodeNumber == epNum
-                            }
                             val targetQ = batchPreferredQualityHeight
                             val exactSizeMb = targetQ?.let { q ->
-                                episodeItem?.sizesMbByQuality?.get(q)
+                                episodeItem.sizesMbByQuality[q]
                                     ?: if (epNum == 1 && batchSeason == (selectedSeasonNumber ?: 1)) {
                                         progressiveSources.firstOrNull { it.qualityHeight == q }?.sizeMb
                                     } else {
@@ -1857,10 +1978,10 @@ fun DownloadOptionsBottomSheet(
                                     }
                             }
                             val fallbackLowerEntry = if (exactSizeMb == null && targetQ != null) {
-                                episodeItem?.sizesMbByQuality
-                                    ?.entries
-                                    ?.filter { it.key <= targetQ && it.value > 0.0 }
-                                    ?.maxByOrNull { it.key }
+                                episodeItem.sizesMbByQuality
+                                    .entries
+                                    .filter { it.key <= targetQ && it.value > 0.0 }
+                                    .maxByOrNull { it.key }
                             } else {
                                 null
                             }
@@ -1870,7 +1991,7 @@ fun DownloadOptionsBottomSheet(
                                     "${targetQ}p · ${formatDownloadSizeMb(exactSizeMb)}"
                                 fallbackLowerEntry != null ->
                                     "${fallbackLowerEntry.key}p · ${formatDownloadSizeMb(fallbackLowerEntry.value)}"
-                                episodeItem != null && episodeItem.sizesMbByQuality.isNotEmpty() && targetQ != null ->
+                                episodeItem.sizesMbByQuality.isNotEmpty() && targetQ != null ->
                                     "Not available in ${targetQ}p"
                                 isLoadingEpisodeSizes ->
                                     "Calculating size..."
@@ -1880,12 +2001,12 @@ fun DownloadOptionsBottomSheet(
                                     "Standard quality"
                             }
 
-                            val epTitleText = episodeItem?.title
-                                ?.takeIf { it.isNotBlank() && !it.equals("Episode $epNum", ignoreCase = true) }
-                            val primaryLabel = if (epTitleText != null) {
-                                "S$batchSeason · E$epNum — $epTitleText"
-                            } else {
-                                "S$batchSeason · E$epNum · Episode $epNum"
+                            val epTitleText = episodeItem.title
+                                .takeIf { it.isNotBlank() && !it.equals("Episode $epNum", ignoreCase = true) }
+                            val primaryLabel = when {
+                                epNum <= 0 -> if (epTitleText != null) "Special — $epTitleText" else "Special"
+                                epTitleText != null -> "S$batchSeason · E$epNum — $epTitleText"
+                                else -> "S$batchSeason · E$epNum · Episode $epNum"
                             }
 
                             Row(
@@ -1969,7 +2090,7 @@ fun DownloadOptionsBottomSheet(
                             onClick = {
                                 onDownloadBatch(
                                     batchSeason,
-                                    selectedEpisodes.toList(),
+                                    selectedEpisodes.sorted(),
                                     batchPreferredQualityHeight
                                 )
                                 onDismiss()
