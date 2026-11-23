@@ -36,7 +36,21 @@ class RemoteConfigClient(
     private val clientVersionName: String,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val clockMs: () -> Long = { System.currentTimeMillis() },
+    private val authHeaderProvider: (suspend (forceRefresh: Boolean) -> Pair<String, String>?)? = null,
 ) {
+    private suspend fun resolveAuthHeader(forceRefresh: Boolean): Pair<String, String>? {
+        val explicit = authHeaderProvider?.invoke(forceRefresh)
+        if (explicit != null && explicit.second.isNotBlank()) {
+            return explicit
+        }
+        if (authHeaderProvider != null) {
+            return null
+        }
+        return appCheckTokenProvider(forceRefresh)?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            com.laterbox.app.auth.LaterboxBackendAuthProvider.HEADER_APP_CHECK to it
+        }
+    }
+
     suspend fun fetchPublishedConfig(
         cachedEtag: String?,
         forceRefresh: Boolean = false,
@@ -56,22 +70,25 @@ class RemoteConfigClient(
             }
             val url = urlBuilder.build()
 
-            val token = appCheckTokenProvider(false)
+            val authHeader = resolveAuthHeader(false)
             val firstAttempt = executeRequest(
                 url = url,
-                appCheckToken = token,
+                authHeader = authHeader,
                 cachedEtag = if (forceRefresh) null else cachedEtag,
             )
 
-            // Retry once with force-refreshed App Check token on 401/403
+            // Retry once with force-refreshed credential on 401 (or 403 when not guest-restricted)
+            val isGuestRestricted403 = firstAttempt is RemoteConfigFetchOutcome.Failed &&
+                firstAttempt.statusCode == 403 &&
+                authHeader?.first == com.laterbox.app.auth.LaterboxBackendAuthProvider.HEADER_GUEST_AUTH
             if (firstAttempt is RemoteConfigFetchOutcome.Failed &&
-                (firstAttempt.statusCode == 401 || firstAttempt.statusCode == 403)
+                (firstAttempt.statusCode == 401 || (firstAttempt.statusCode == 403 && !isGuestRestricted403))
             ) {
-                val refreshedToken = appCheckTokenProvider(true)
-                if (!refreshedToken.isNullOrBlank() && refreshedToken != token) {
+                val refreshedHeader = resolveAuthHeader(true)
+                if (refreshedHeader != null && refreshedHeader != authHeader) {
                     return executeRequest(
                         url = url,
-                        appCheckToken = refreshedToken,
+                        authHeader = refreshedHeader,
                         cachedEtag = if (forceRefresh) null else cachedEtag,
                     )
                 }
@@ -87,7 +104,7 @@ class RemoteConfigClient(
 
     private suspend fun executeRequest(
         url: okhttp3.HttpUrl,
-        appCheckToken: String?,
+        authHeader: Pair<String, String>?,
         cachedEtag: String?,
     ): RemoteConfigFetchOutcome = withContext(ioDispatcher) {
         val requestBuilder = Request.Builder()
@@ -95,8 +112,8 @@ class RemoteConfigClient(
             .get()
             .header("Accept", "application/json")
             .header("Cache-Control", "no-cache")
-        if (!appCheckToken.isNullOrBlank()) {
-            requestBuilder.header("X-Firebase-AppCheck", appCheckToken)
+        if (authHeader != null && authHeader.second.isNotBlank()) {
+            requestBuilder.header(authHeader.first, authHeader.second)
         }
         if (!cachedEtag.isNullOrBlank()) {
             requestBuilder.header("If-None-Match", cachedEtag)

@@ -72,6 +72,7 @@ fun AppUpdateDialog(
     onDismiss: () -> Unit,
     onPostpone: (version: String) -> Unit,
     appCheckTokenProvider: (suspend (Boolean) -> String?)? = null,
+    authHeaderProvider: (suspend (Boolean) -> Pair<String, String>?)? = null,
     dismissible: Boolean = !(policyPrompt?.isBlocking ?: false),
 ) {
     val context = LocalContext.current
@@ -85,6 +86,23 @@ fun AppUpdateDialog(
             (context.applicationContext as? com.laterbox.app.LaterboxApplication)
                 ?.container
                 ?.getBackendAppCheckToken(forceRefresh)
+        }
+    }
+    val effectiveAuthHeaderProvider: suspend (Boolean) -> Pair<String, String>? = remember(
+        context,
+        authHeaderProvider,
+        appCheckTokenProvider
+    ) {
+        authHeaderProvider ?: { forceRefresh ->
+            if (appCheckTokenProvider != null) {
+                appCheckTokenProvider.invoke(forceRefresh)
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { com.laterbox.app.auth.LaterboxBackendAuthProvider.HEADER_APP_CHECK to it }
+            } else {
+                (context.applicationContext as? com.laterbox.app.LaterboxApplication)
+                    ?.container
+                    ?.getBackendAuthHeader(forceRefresh)
+            }
         }
     }
 
@@ -166,6 +184,7 @@ fun AppUpdateDialog(
                 assetName = info.assetName,
                 expectedSizeBytes = info.apkSize,
                 appCheckTokenProvider = effectiveAppCheckProvider,
+                authHeaderProvider = effectiveAuthHeaderProvider,
                 onProgress = { progress ->
                     when (progress) {
                         is ApkInstallerHelper.DownloadProgress.Downloading -> {
@@ -210,6 +229,7 @@ fun AppUpdateDialog(
                     context = context,
                     deltaPatch = delta,
                     appCheckTokenProvider = effectiveAppCheckProvider,
+                    authHeaderProvider = effectiveAuthHeaderProvider,
                     onProgress = { progress ->
                         when (progress) {
                             is ApkInstallerHelper.DownloadProgress.Downloading -> {

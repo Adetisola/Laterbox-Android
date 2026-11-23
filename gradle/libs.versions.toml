@@ -82,6 +82,7 @@ youtubedl-ffmpeg = { group = "io.github.junkfood02.youtubedl-android", name = "f
 # Firebase & AI Logic (Google AI Studio backend)
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-ai = { group = "com.google.firebase", name = "firebase-ai" }
+firebase-auth = { group = "com.google.firebase", name = "firebase-auth" }
 firebase-appcheck-playintegrity = { group = "com.google.firebase", name = "firebase-appcheck-playintegrity" }
 firebase-appcheck-debug = { group = "com.google.firebase", name = "firebase-appcheck-debug" }
 

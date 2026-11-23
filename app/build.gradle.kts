@@ -240,6 +240,7 @@ dependencies {
     // Firebase & Generative AI Logic (Google AI Studio backend)
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.ai)
+    implementation(libs.firebase.auth)
     implementation(libs.firebase.appcheck.playintegrity)
     implementation(libs.firebase.appcheck.debug)
 

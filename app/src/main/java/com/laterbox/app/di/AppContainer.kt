@@ -53,6 +53,7 @@ interface AppContainer {
     val connectivityObserver: com.laterbox.app.network.LaterboxConnectivityObserver
     suspend fun resolveBackendBaseUrl(): String
     suspend fun getBackendAppCheckToken(forceRefresh: Boolean = false): String?
+    suspend fun getBackendAuthHeader(forceRefresh: Boolean = false): Pair<String, String>?
 }
 
 class DefaultAppContainer(private val context: Context) : AppContainer {
@@ -313,7 +314,10 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
                     .ifBlank { com.laterbox.app.BuildConfig.MOVIEBOX_API_BASE_URL }
             },
             appCheckTokenProvider = { forceRefresh ->
-                fetchFirebaseAppCheckToken(forceRefresh)
+                getBackendAppCheckToken(forceRefresh)
+            },
+            authHeaderProvider = { forceRefresh ->
+                getBackendAuthHeader(forceRefresh)
             }
         )
         val iaProvider = com.laterbox.app.movies.data.provider.InternetArchiveMoviesProvider(moviesOkHttpClient)
@@ -392,6 +396,7 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             okHttpClient = rcOkHttp,
             baseUrlProvider = { resolveBackendBaseUrl() },
             appCheckTokenProvider = { forceRefresh -> getBackendAppCheckToken(forceRefresh) },
+            authHeaderProvider = { forceRefresh -> getBackendAuthHeader(forceRefresh) },
             clientVersionCode = versionCode,
             clientVersionName = com.laterbox.app.BuildConfig.VERSION_NAME,
         )
@@ -414,7 +419,8 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
         com.laterbox.app.ai.LaterboxBackendAiClient(
             okHttpClient = aiOkHttp,
             baseUrlProvider = { resolveBackendBaseUrl() },
-            appCheckTokenProvider = { forceRefresh -> getBackendAppCheckToken(forceRefresh) }
+            appCheckTokenProvider = { forceRefresh -> getBackendAppCheckToken(forceRefresh) },
+            authHeaderProvider = { forceRefresh -> getBackendAuthHeader(forceRefresh) }
         )
     }
 
@@ -437,6 +443,7 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             okHttpClient = analyticsOkHttp,
             baseUrlProvider = { resolveBackendBaseUrl() },
             appCheckTokenProvider = { forceRefresh -> getBackendAppCheckToken(forceRefresh) },
+            authHeaderProvider = { forceRefresh -> getBackendAuthHeader(forceRefresh) },
             remoteCollectionEnabledProvider = { remoteConfigManager.currentConfig.analyticsCollectionEnabled },
             remoteCollectionFlow = remoteAnalyticsEnabledFlow,
         )
@@ -451,45 +458,15 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
         return resolved
     }
 
-    override suspend fun getBackendAppCheckToken(forceRefresh: Boolean): String? {
-        return fetchFirebaseAppCheckToken(forceRefresh)
+    private val backendAuthProvider: com.laterbox.app.auth.LaterboxBackendAuthProvider by lazy {
+        com.laterbox.app.auth.LaterboxBackendAuthProvider.createFirebaseBacked(context.applicationContext)
     }
 
-    private suspend fun fetchFirebaseAppCheckToken(forceRefresh: Boolean): String? {
-        if (android.os.Build.FINGERPRINT.equals("robolectric", ignoreCase = true)) {
-            return null
-        }
-        if (com.google.firebase.FirebaseApp.getApps(context).isEmpty()) {
-            return null
-        }
-        return kotlinx.coroutines.withTimeoutOrNull(5_000L) {
-            kotlinx.coroutines.suspendCancellableCoroutine<String?> { cont ->
-                try {
-                    com.google.firebase.appcheck.FirebaseAppCheck.getInstance()
-                        .getAppCheckToken(forceRefresh)
-                        .addOnSuccessListener { result ->
-                            if (cont.isActive) {
-                                cont.resumeWith(Result.success(result.token.takeIf { it.isNotBlank() }))
-                            }
-                        }
-                        .addOnFailureListener { err ->
-                            android.util.Log.w("DefaultAppContainer", "App Check token fetch failed: ${err.message}")
-                            if (cont.isActive) {
-                                cont.resumeWith(Result.success(null))
-                            }
-                        }
-                        .addOnCanceledListener {
-                            if (cont.isActive) {
-                                cont.resumeWith(Result.success(null))
-                            }
-                        }
-                } catch (t: Throwable) {
-                    android.util.Log.w("DefaultAppContainer", "App Check unavailable: ${t.message}")
-                    if (cont.isActive) {
-                        cont.resumeWith(Result.success(null))
-                    }
-                }
-            }
-        }
+    override suspend fun getBackendAppCheckToken(forceRefresh: Boolean): String? {
+        return backendAuthProvider.resolveAppCheckOnlyToken(forceRefresh)
+    }
+
+    override suspend fun getBackendAuthHeader(forceRefresh: Boolean): Pair<String, String>? {
+        return backendAuthProvider.resolveHeaderPair(forceRefresh)
     }
 }

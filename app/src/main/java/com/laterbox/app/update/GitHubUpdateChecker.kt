@@ -224,16 +224,30 @@ object GitHubUpdateChecker {
         val errorDetail: String? = null
     )
 
+    private suspend fun resolveAuthHeader(
+        forceRefresh: Boolean,
+        authHeaderProvider: (suspend (Boolean) -> Pair<String, String>?)?,
+        appCheckTokenProvider: (suspend (Boolean) -> String?)?
+    ): Pair<String, String>? {
+        authHeaderProvider?.invoke(forceRefresh)?.let { (name, value) ->
+            if (name.isNotBlank() && value.isNotBlank()) return name to value
+        }
+        val appCheckToken = appCheckTokenProvider?.invoke(forceRefresh)?.takeIf { it.isNotBlank() }
+        return appCheckToken?.let { com.laterbox.app.auth.LaterboxBackendAuthProvider.HEADER_APP_CHECK to it }
+    }
+
     private suspend fun fetchDeltaManifest(
         manifestAsset: ReleaseAsset,
-        appCheckTokenProvider: (suspend (Boolean) -> String?)? = null
+        appCheckTokenProvider: (suspend (Boolean) -> String?)? = null,
+        authHeaderProvider: (suspend (Boolean) -> Pair<String, String>?)? = null
     ): ManifestFetchOutcome {
         var conn: HttpURLConnection? = null
         return try {
             val targetUrl = if (ApkInstallerHelper.isBackendAssetResolverUrl(manifestAsset.downloadUrl)) {
                 val resolved = ApkInstallerHelper.resolveSignedAssetDownloadUrl(
                     resolverUrl = manifestAsset.downloadUrl,
-                    appCheckTokenProvider = appCheckTokenProvider
+                    appCheckTokenProvider = appCheckTokenProvider,
+                    authHeaderProvider = authHeaderProvider
                 )
                 if (resolved.downloadUrl == null) {
                     return ManifestFetchOutcome(
@@ -314,6 +328,7 @@ object GitHubUpdateChecker {
         forceRefresh: Boolean = false,
         publicFallbackUrl: String? = UpdateNetworkSupport.PUBLIC_RELEASES_LATEST_URL,
         currentVersionCode: Int = 0,
+        authHeaderProvider: (suspend (Boolean) -> Pair<String, String>?)? = null,
     ): UpdateCheckResult {
         val primary = checkForUpdateAt(
             currentVersionName,
@@ -321,6 +336,7 @@ object GitHubUpdateChecker {
             deviceSupportedAbis,
             context,
             appCheckTokenProvider,
+            authHeaderProvider,
             forceRefresh,
             currentVersionCode = currentVersionCode,
         )
@@ -354,6 +370,7 @@ object GitHubUpdateChecker {
             deviceSupportedAbis,
             context,
             null,
+            null,
             false,
             currentVersionCode = currentVersionCode,
         )
@@ -373,22 +390,28 @@ object GitHubUpdateChecker {
         deviceSupportedAbis: Array<String>,
         context: Context?,
         appCheckTokenProvider: (suspend (Boolean) -> String?)?,
+        authHeaderProvider: (suspend (Boolean) -> Pair<String, String>?)?,
         forceRefresh: Boolean,
         currentVersionCode: Int = 0,
     ): UpdateCheckResult = withContext(Dispatchers.IO) {
         val effectiveUrl = withRefreshQueryIfApplicable(releasesUrl, forceRefresh)
         try {
             var responseText: String? = null
+            var pendingHeader = if (isBackendLatestUrl(effectiveUrl)) {
+                resolveAuthHeader(
+                    forceRefresh = false,
+                    authHeaderProvider = authHeaderProvider,
+                    appCheckTokenProvider = appCheckTokenProvider
+                )
+            } else {
+                null
+            }
 
             for (authAttempt in 0..1) {
                 var connection: HttpURLConnection? = null
                 try {
                     val url = URL(effectiveUrl)
-                    val appCheckToken = if (appCheckTokenProvider != null) {
-                        appCheckTokenProvider(authAttempt > 0)
-                    } else {
-                        null
-                    }
+                    val sentHeader = pendingHeader
                     connection = UpdateNetworkSupport.connectionFactory(url).apply {
                         requestMethod = "GET"
                         connectTimeout = 12_000
@@ -401,8 +424,8 @@ object GitHubUpdateChecker {
                             setRequestProperty("X-Laterbox-Version-Code", effectiveVCode.toString())
                             setRequestProperty("X-Laterbox-Version-Name", com.laterbox.app.BuildConfig.VERSION_NAME)
                         }
-                        if (!appCheckToken.isNullOrBlank()) {
-                            setRequestProperty("X-Firebase-AppCheck", appCheckToken)
+                        if (sentHeader != null) {
+                            setRequestProperty(sentHeader.first, sentHeader.second)
                         }
                         instanceFollowRedirects = true
                     }
@@ -417,8 +440,25 @@ object GitHubUpdateChecker {
                     val parsedError = parseErrorBody(rawError)
 
                     if (responseCode == 401) {
-                        if (authAttempt == 0 && appCheckTokenProvider != null) {
-                            continue
+                        if (authAttempt == 0) {
+                            if (authHeaderProvider != null) {
+                                val refreshed = resolveAuthHeader(
+                                    forceRefresh = true,
+                                    authHeaderProvider = authHeaderProvider,
+                                    appCheckTokenProvider = appCheckTokenProvider
+                                )
+                                if (refreshed != null && refreshed != sentHeader) {
+                                    pendingHeader = refreshed
+                                    continue
+                                }
+                            } else if (appCheckTokenProvider != null) {
+                                pendingHeader = resolveAuthHeader(
+                                    forceRefresh = true,
+                                    authHeaderProvider = null,
+                                    appCheckTokenProvider = appCheckTokenProvider
+                                )
+                                continue
+                            }
                         }
                         return@withContext UpdateCheckResult.AuthError(
                             statusCode = 401,
@@ -554,6 +594,7 @@ object GitHubUpdateChecker {
                 deviceSupportedAbis = deviceSupportedAbis,
                 parsedAssets = parsedAssets,
                 appCheckTokenProvider = appCheckTokenProvider,
+                authHeaderProvider = authHeaderProvider,
                 manifestProvider = {
                     val inlineManifestJson = root.optJSONObject("delta_manifest")
                     if (inlineManifestJson != null) {
@@ -568,7 +609,7 @@ object GitHubUpdateChecker {
                             it.name.equals(DeltaManifest.MANIFEST_FILENAME, ignoreCase = true)
                         }
                         if (manifestAsset != null) {
-                            fetchDeltaManifest(manifestAsset, appCheckTokenProvider)
+                            fetchDeltaManifest(manifestAsset, appCheckTokenProvider, authHeaderProvider)
                         } else {
                             val backendError = root.optString("delta_manifest_error", "").trim().ifBlank { null }
                             ManifestFetchOutcome(
@@ -652,6 +693,7 @@ object GitHubUpdateChecker {
         deviceSupportedAbis: Array<String>,
         parsedAssets: List<ReleaseAsset>,
         appCheckTokenProvider: (suspend (Boolean) -> String?)? = null,
+        authHeaderProvider: (suspend (Boolean) -> Pair<String, String>?)? = null,
         manifestProvider: suspend () -> ManifestFetchOutcome,
         patchUrlResolver: (DeltaPatchInfo) -> String?
     ): DeltaResolutionOutcome {

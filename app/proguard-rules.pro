@@ -59,8 +59,9 @@
 -keep class com.laterbox.app.transcript.data.InternalTimeoutException { *; }
 -keep class com.laterbox.app.transcript.data.LaterboxYouTubeTranscriptDataSource$YtDlpExecutionException { *; }
 
-# Application Update System
+# Application Update System & Backend Authentication
 -keep class com.laterbox.app.update.** { *; }
+-keep class com.laterbox.app.auth.** { *; }
 
 # Laterbox Movies Models & Room Tables
 -keep class com.laterbox.app.movies.domain.model.** { *; }

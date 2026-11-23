@@ -1474,4 +1474,144 @@ class MoviesRepositoryTest {
         assertEquals("https://tvmaze.cdn/ep2-filled.jpg", cachedEpisodes[1].stillUrl)
         assertEquals(1, tvMazeEpisodesCalls)
     }
+
+    @Test
+    fun movieBoxGuestAuthHeader_powersHomeFeedAndSearchWithoutAppCheckHeader() = runTest {
+        val observedHeaders = mutableListOf<Pair<String?, String?>>()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                if ((path == "/home" || path.startsWith("/trending") || path.startsWith("/search?")) &&
+                    !path.startsWith("/search/shows")
+                ) {
+                    observedHeaders.add(
+                        request.getHeader("X-Firebase-AppCheck") to request.getHeader("X-Firebase-Auth")
+                    )
+                }
+                return when {
+                    path == "/home" -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "operatingList": [
+                            {
+                              "type": "SUBJECTS_MOVIE",
+                              "title": "Trending Now",
+                              "subjects": [
+                                {"subjectId": "guest_m1", "subjectType": 1, "title": "Guest Movie"}
+                              ]
+                            }
+                          ]
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/trending") -> MockResponse().setResponseCode(200).setBody(
+                        """{"subjectList": [{"subjectId": "guest_m1", "subjectType": 1, "title": "Guest Movie"}]}"""
+                    )
+                    path.startsWith("/search") -> MockResponse().setResponseCode(200).setBody(
+                        """{"query":"Guest","page":1,"results":[{"subject_id":"guest_m2","title":"Guest Search Hit","type":"Movie","subject_type":1}]}"""
+                    )
+                    path.startsWith("/advancedsearch.php") -> MockResponse().setResponseCode(200).setBody(
+                        """{"response":{"numFound":0,"docs":[]}}"""
+                    )
+                    path.startsWith("/shows") || path.startsWith("/schedule") || path.startsWith("/search/shows") ->
+                        MockResponse().setResponseCode(200).setBody("[]")
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val client = OkHttpClient()
+        val base = server.url("/").toString().trimEnd('/')
+        val mbProvider = com.laterbox.app.movies.data.provider.MovieBoxProvider(
+            okHttpClient = client,
+            baseUrlProvider = { base },
+            authHeaderProvider = { "X-Firebase-Auth" to "guest-id-token" }
+        )
+        val repo = MoviesRepositoryImpl(
+            moviesDao = db.moviesDao(),
+            internetArchiveProvider = InternetArchiveMoviesProvider(client, base),
+            tvMazeProvider = TvMazeSeriesProvider(client, base),
+            tmdbProvider = TmdbOptionalMoviesProvider(client, apiKeyProvider = { "" }, baseUrl = base),
+            movieBoxProvider = mbProvider,
+            useSampleFixturesOnlyProvider = { false },
+            nowMs = { fakeClockMs }
+        )
+
+        val feed = repo.getHomeFeed(forceRefresh = true).getOrThrow()
+        assertTrue(feed.featuredBanners.any { it.id == "guest_m1" } || feed.sections.any { sec -> sec.items.any { it.id == "guest_m1" } })
+        val noticeOnHome = feed.activeProviderNotice
+        assertTrue("Notice should be clear when primary catalogue succeeds, got: $noticeOnHome", noticeOnHome.isNullOrBlank())
+
+        val searchPage = repo.search("Guest", page = 1).getOrThrow()
+        assertTrue(searchPage.items.any { it.id == "guest_m2" })
+        assertTrue(searchPage.activeProviderNotice.isNullOrBlank())
+
+        assertTrue(observedHeaders.isNotEmpty())
+        observedHeaders.forEach { (appCheck, guestAuth) ->
+            assertEquals(null, appCheck)
+            assertEquals("guest-id-token", guestAuth)
+        }
+    }
+
+    @Test
+    fun movieBoxFailures_emitDistinctLaterboxNoticesWithoutInternalProviderNames() = runTest {
+        var primaryStatus = 401
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path == "/home" || path.startsWith("/trending") -> MockResponse().setResponseCode(primaryStatus).setBody("""{"detail":"denied"}""")
+                    path.startsWith("/advancedsearch.php") -> MockResponse().setResponseCode(200).setBody(
+                        """{"response":{"numFound":1,"docs":[{"identifier":"ia_fallback","title":"Archive Fallback","year":1960}]}}"""
+                    )
+                    path.startsWith("/shows?page=") -> MockResponse().setResponseCode(200).setBody(
+                        """[{"id":90,"name":"TV Guide Fallback","weight":80,"genres":["Drama"],"premiered":"2021-01-01","rating":{"average":7.8}}]"""
+                    )
+                    path.startsWith("/schedule") -> MockResponse().setResponseCode(200).setBody("[]")
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val client = OkHttpClient()
+        val base = server.url("/").toString().trimEnd('/')
+        val mbProvider = com.laterbox.app.movies.data.provider.MovieBoxProvider(
+            okHttpClient = client,
+            baseUrlProvider = { base },
+            authHeaderProvider = { "X-Firebase-Auth" to "guest-token" }
+        )
+        val repo = MoviesRepositoryImpl(
+            moviesDao = db.moviesDao(),
+            internetArchiveProvider = InternetArchiveMoviesProvider(client, base),
+            tvMazeProvider = TvMazeSeriesProvider(client, base),
+            tmdbProvider = TmdbOptionalMoviesProvider(client, apiKeyProvider = { "" }, baseUrl = base),
+            movieBoxProvider = mbProvider,
+            useSampleFixturesOnlyProvider = { false },
+            nowMs = { fakeClockMs }
+        )
+
+        fun assertSanitized(notice: String?) {
+            assertFalse("Notice must not be blank", notice.isNullOrBlank())
+            val lower = notice!!.lowercase()
+            assertFalse(lower.contains("moviebox"))
+            assertFalse(lower.contains("firebase"))
+            assertFalse(lower.contains("app check"))
+            assertFalse(lower.contains("play integrity"))
+        }
+
+        primaryStatus = 401
+        val authNotice = repo.getHomeFeed(forceRefresh = true).getOrThrow().activeProviderNotice
+        assertSanitized(authNotice)
+        assertTrue(authNotice!!.contains("verification", ignoreCase = true))
+
+        primaryStatus = 429
+        val rateNotice = repo.getHomeFeed(forceRefresh = true).getOrThrow().activeProviderNotice
+        assertSanitized(rateNotice)
+        assertTrue(rateNotice!!.contains("busy", ignoreCase = true))
+
+        primaryStatus = 503
+        val serverNotice = repo.getHomeFeed(forceRefresh = true).getOrThrow().activeProviderNotice
+        assertSanitized(serverNotice)
+        assertTrue(serverNotice!!.contains("unavailable", ignoreCase = true))
+    }
 }

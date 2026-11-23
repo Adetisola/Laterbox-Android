@@ -605,6 +605,34 @@ fun MoviesCatalogueScreen(
 
         Spacer(modifier = Modifier.height(6.dp))
 
+        if (!uiState.activeProviderNotice.isNullOrBlank() && uiState.errorMessage == null) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = colors.accentContainer,
+                border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.25f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .testTag("catalogue_notice_banner")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = uiState.activeProviderNotice,
+                        style = typography.metaText,
+                        color = colors.textPrimary,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = onRetry) {
+                        Text("Retry", color = colors.accentPrimary)
+                    }
+                }
+            }
+        }
+
         val hasNoResults = uiState.items.isEmpty() && uiState.supplementaryItems.isEmpty()
         when {
             uiState.isLoading && hasNoResults -> {

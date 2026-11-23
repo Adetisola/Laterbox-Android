@@ -56,6 +56,8 @@ class MovieBoxApiException(
     val httpCode: Int?,
     message: String,
     val isAuthFailure: Boolean = (httpCode == 401 || httpCode == 403),
+    val isRateLimited: Boolean = (httpCode == 429),
+    val isServerFailure: Boolean = (httpCode != null && httpCode in 500..599),
     cause: Throwable? = null
 ) : IOException(message, cause)
 
@@ -63,13 +65,23 @@ class MovieBoxProvider(
     private val okHttpClient: OkHttpClient,
     private val baseUrlProvider: suspend () -> String,
     private val retryDelayMs: Long = 250L,
-    private val appCheckTokenProvider: suspend (forceRefresh: Boolean) -> String? = { null }
+    private val appCheckTokenProvider: suspend (forceRefresh: Boolean) -> String? = { null },
+    private val authHeaderProvider: (suspend (forceRefresh: Boolean) -> Pair<String, String>?)? = null,
 ) : MoviesCatalogueProvider,
     MoviesSearchProvider,
     MovieDetailsProvider,
     SeriesEpisodeProvider,
     PlaybackSourceProvider,
     SubtitleProvider {
+
+    private suspend fun resolveAuthHeader(forceRefresh: Boolean): Pair<String, String>? {
+        if (authHeaderProvider != null) {
+            return authHeaderProvider.invoke(forceRefresh)?.takeIf { it.second.isNotBlank() }
+        }
+        return appCheckTokenProvider(forceRefresh)?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            com.laterbox.app.auth.LaterboxBackendAuthProvider.HEADER_APP_CHECK to it
+        }
+    }
 
     override val providerId: String = PROVIDER_ID
     override val displayName: String = "Streaming Catalogue"
@@ -1385,12 +1397,12 @@ class MovieBoxProvider(
         val maxTransientAttempts = 2
         var transientAttempt = 1
         var authRefreshAvailable = true
-        var pendingRefreshedToken: String? = null
+        var pendingRefreshedHeader: Pair<String, String>? = null
         var lastError: IOException? = null
 
         while (transientAttempt <= maxTransientAttempts) {
-            val sentAppCheckToken = pendingRefreshedToken?.also { pendingRefreshedToken = null }
-                ?: runCatching { appCheckTokenProvider(false) }.getOrNull()?.trim().orEmpty()
+            val sentHeader = pendingRefreshedHeader?.also { pendingRefreshedHeader = null }
+                ?: runCatching { resolveAuthHeader(false) }.getOrNull()
 
             val requestBuilder = Request.Builder()
                 .url(url)
@@ -1402,8 +1414,8 @@ class MovieBoxProvider(
                 requestBuilder.get()
             }
 
-            if (sentAppCheckToken.isNotBlank()) {
-                requestBuilder.header("X-Firebase-AppCheck", sentAppCheckToken)
+            if (sentHeader != null && sentHeader.second.isNotBlank()) {
+                requestBuilder.header(sentHeader.first, sentHeader.second)
             }
 
             val startNs = System.nanoTime()
@@ -1415,17 +1427,22 @@ class MovieBoxProvider(
                     val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
                     val body = response.body?.string().orEmpty()
                     if (!response.isSuccessful) {
-                        val detail = runCatching { JSONObject(body).optCleanString("detail") }.getOrNull()
+                        val detail = runCatching {
+                            val json = JSONObject(body)
+                            json.optJSONObject("detail")?.optCleanString("message")
+                                ?: json.optCleanString("detail")
+                        }.getOrNull()
                         safeLogWarn("$methodLabel $redactedPath -> HTTP ${response.code} (${elapsedMs}ms)")
 
-                        if (response.code in setOf(401, 403) && authRefreshAvailable) {
+                        val isGuestRestricted403 = response.code == 403 &&
+                            sentHeader?.first == com.laterbox.app.auth.LaterboxBackendAuthProvider.HEADER_GUEST_AUTH
+                        if ((response.code == 401 || (response.code == 403 && !isGuestRestricted403)) &&
+                            authRefreshAvailable
+                        ) {
                             authRefreshAvailable = false
-                            val refreshed = runCatching { appCheckTokenProvider(true) }
-                                .getOrNull()
-                                ?.trim()
-                                .orEmpty()
-                            if (refreshed.isNotBlank() && refreshed != sentAppCheckToken) {
-                                pendingRefreshedToken = refreshed
+                            val refreshed = runCatching { resolveAuthHeader(true) }.getOrNull()
+                            if (refreshed != null && refreshed != sentHeader) {
+                                pendingRefreshedHeader = refreshed
                                 shouldRetryAuthRefresh = true
                                 return@use
                             }
@@ -1442,7 +1459,7 @@ class MovieBoxProvider(
                             message = buildHttpErrorMessage(
                                 code = response.code,
                                 detail = detail,
-                                sentAppCheckToken = sentAppCheckToken.isNotBlank()
+                                sentAppCheckToken = sentHeader != null
                             )
                         )
                     }

@@ -94,8 +94,17 @@ class LaterboxBackendAiClient(
         .writeTimeout(15, TimeUnit.SECONDS)
         .build(),
     private val baseUrlProvider: suspend () -> String,
-    private val appCheckTokenProvider: suspend (forceRefresh: Boolean) -> String?
+    private val appCheckTokenProvider: suspend (forceRefresh: Boolean) -> String?,
+    private val authHeaderProvider: (suspend (forceRefresh: Boolean) -> Pair<String, String>?)? = null,
 ) {
+    private suspend fun resolveAuthHeader(forceRefresh: Boolean): Pair<String, String>? {
+        if (authHeaderProvider != null) {
+            return authHeaderProvider.invoke(forceRefresh)?.takeIf { it.second.isNotBlank() }
+        }
+        return appCheckTokenProvider(forceRefresh)?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            com.laterbox.app.auth.LaterboxBackendAuthProvider.HEADER_APP_CHECK to it
+        }
+    }
 
     fun streamChat(
         conversationId: String,
@@ -175,14 +184,17 @@ class LaterboxBackendAiClient(
         }
 
         try {
-            var token = runCatching { appCheckTokenProvider(false) }.getOrNull()
-            var response = executeStreamCall(url, payload, token, activeCall)
-            if (response != null && (response.code == 401 || response.code == 403)) {
+            var authHeader = runCatching { resolveAuthHeader(false) }.getOrNull()
+            var response = executeStreamCall(url, payload, authHeader, activeCall)
+            val isGuestRestricted403 = response != null &&
+                response.code == 403 &&
+                authHeader?.first == com.laterbox.app.auth.LaterboxBackendAuthProvider.HEADER_GUEST_AUTH
+            if (response != null && (response.code == 401 || (response.code == 403 && !isGuestRestricted403))) {
                 response.close()
-                val refreshed = runCatching { appCheckTokenProvider(true) }.getOrNull()
-                if (!refreshed.isNullOrBlank() && refreshed != token) {
-                    token = refreshed
-                    response = executeStreamCall(url, payload, token, activeCall)
+                val refreshed = runCatching { resolveAuthHeader(true) }.getOrNull()
+                if (refreshed != null && refreshed != authHeader) {
+                    authHeader = refreshed
+                    response = executeStreamCall(url, payload, authHeader, activeCall)
                 }
             }
 
@@ -201,10 +213,15 @@ class LaterboxBackendAiClient(
 
             response.use { resp ->
                 if (!resp.isSuccessful) {
-                    val msg = when (resp.code) {
-                        401, 403 -> "App verification couldn't be completed for this request. Please try again."
-                        426 -> "This version of Laterbox is no longer supported. Please update the app to continue using Assistant."
-                        else -> "Laterbox Assistant is temporarily unavailable (${resp.code})."
+                    val msg = when {
+                        resp.code == 403 && authHeader?.first == com.laterbox.app.auth.LaterboxBackendAuthProvider.HEADER_GUEST_AUTH ->
+                            "Laterbox Assistant cloud mode requires a verified Android device. Add a personal Gemini key in Settings to use Assistant on this device."
+                        resp.code == 401 || resp.code == 403 ->
+                            "App verification couldn't be completed for this request. Please try again."
+                        resp.code == 426 ->
+                            "This version of Laterbox is no longer supported. Please update the app to continue using Assistant."
+                        else ->
+                            "Laterbox Assistant is temporarily unavailable (${resp.code})."
                     }
                     emit(
                         BackendAiStreamEvent.Error(
@@ -334,7 +351,7 @@ class LaterboxBackendAiClient(
     private suspend fun executeStreamCall(
         url: okhttp3.HttpUrl,
         payload: String,
-        appCheckToken: String?,
+        authHeader: Pair<String, String>?,
         activeCall: AtomicReference<Call?>
     ): okhttp3.Response? {
         val requestBuilder = Request.Builder()
@@ -342,8 +359,8 @@ class LaterboxBackendAiClient(
             .post(payload.toRequestBody(JSON_MEDIA_TYPE))
             .header("Accept", "text/event-stream")
             .header("Content-Type", "application/json")
-        if (!appCheckToken.isNullOrBlank()) {
-            requestBuilder.header("X-Firebase-AppCheck", appCheckToken)
+        if (authHeader != null && authHeader.second.isNotBlank()) {
+            requestBuilder.header(authHeader.first, authHeader.second)
         }
         val call = okHttpClient.newCall(requestBuilder.build())
         activeCall.set(call)
@@ -383,11 +400,13 @@ class LaterboxBackendAiClient(
             put("status", status)
             put("detail", detail.take(500))
         }.toString()
-        val token = runCatching { appCheckTokenProvider(false) }.getOrNull()
-        val firstAttempt = executePostJson(url, payload, token)
-        val finalAttempt = if (firstAttempt.statusCode == 401 || firstAttempt.statusCode == 403) {
-            val refreshed = runCatching { appCheckTokenProvider(true) }.getOrNull()
-            if (!refreshed.isNullOrBlank() && refreshed != token) {
+        val authHeader = runCatching { resolveAuthHeader(false) }.getOrNull()
+        val firstAttempt = executePostJson(url, payload, authHeader)
+        val isGuestRestricted403 = firstAttempt.statusCode == 403 &&
+            authHeader?.first == com.laterbox.app.auth.LaterboxBackendAuthProvider.HEADER_GUEST_AUTH
+        val finalAttempt = if (firstAttempt.statusCode == 401 || (firstAttempt.statusCode == 403 && !isGuestRestricted403)) {
+            val refreshed = runCatching { resolveAuthHeader(true) }.getOrNull()
+            if (refreshed != null && refreshed != authHeader) {
                 executePostJson(url, payload, refreshed)
             } else {
                 firstAttempt
@@ -426,11 +445,13 @@ class LaterboxBackendAiClient(
             }
         }
 
-        val token = runCatching { appCheckTokenProvider(false) }.getOrNull()
-        val firstAttempt = executePostJson(url, bodyJson.toString(), token)
-        val finalAttempt = if (firstAttempt.statusCode == 401 || firstAttempt.statusCode == 403) {
-            val refreshed = runCatching { appCheckTokenProvider(true) }.getOrNull()
-            if (!refreshed.isNullOrBlank() && refreshed != token) {
+        val authHeader = runCatching { resolveAuthHeader(false) }.getOrNull()
+        val firstAttempt = executePostJson(url, bodyJson.toString(), authHeader)
+        val isGuestRestricted403 = firstAttempt.statusCode == 403 &&
+            authHeader?.first == com.laterbox.app.auth.LaterboxBackendAuthProvider.HEADER_GUEST_AUTH
+        val finalAttempt = if (firstAttempt.statusCode == 401 || (firstAttempt.statusCode == 403 && !isGuestRestricted403)) {
+            val refreshed = runCatching { resolveAuthHeader(true) }.getOrNull()
+            if (refreshed != null && refreshed != authHeader) {
                 executePostJson(url, bodyJson.toString(), refreshed)
             } else {
                 firstAttempt
@@ -458,13 +479,13 @@ class LaterboxBackendAiClient(
             .addQueryParameter("clientHash", AppCapabilityRegistry.MANIFEST_HASH)
             .build()
 
-        val token = runCatching { appCheckTokenProvider(false) }.getOrNull()
+        val authHeader = runCatching { resolveAuthHeader(false) }.getOrNull()
         val requestBuilder = Request.Builder()
             .url(url)
             .get()
             .header("Accept", "application/json")
-        if (!token.isNullOrBlank()) {
-            requestBuilder.header("X-Firebase-AppCheck", token)
+        if (authHeader != null && authHeader.second.isNotBlank()) {
+            requestBuilder.header(authHeader.first, authHeader.second)
         }
         try {
             okHttpClient.newCall(requestBuilder.build()).execute().use { resp ->
@@ -504,15 +525,15 @@ class LaterboxBackendAiClient(
     private suspend fun executePostJson(
         url: okhttp3.HttpUrl,
         payload: String,
-        appCheckToken: String?
+        authHeader: Pair<String, String>?
     ): PostJsonOutcome = withContext(Dispatchers.IO) {
         val requestBuilder = Request.Builder()
             .url(url)
             .post(payload.toRequestBody(JSON_MEDIA_TYPE))
             .header("Accept", "application/json")
             .header("Content-Type", "application/json")
-        if (!appCheckToken.isNullOrBlank()) {
-            requestBuilder.header("X-Firebase-AppCheck", appCheckToken)
+        if (authHeader != null && authHeader.second.isNotBlank()) {
+            requestBuilder.header(authHeader.first, authHeader.second)
         }
         try {
             okHttpClient.newCall(requestBuilder.build()).execute().use { resp ->

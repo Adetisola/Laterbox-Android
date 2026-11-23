@@ -2575,6 +2575,7 @@ fun LaterboxApp(
                     ),
                     context = context.applicationContext,
                     appCheckTokenProvider = { force -> laterboxApp.container.getBackendAppCheckToken(force) },
+                    authHeaderProvider = { force -> laterboxApp.container.getBackendAuthHeader(force) },
                     forceRefresh = true,
                     currentVersionCode = com.laterbox.app.BuildConfig.VERSION_CODE,
                 )
@@ -2591,6 +2592,9 @@ fun LaterboxApp(
             },
             appCheckTokenProvider = app?.let { laterboxApp ->
                 { forceRefresh -> laterboxApp.container.getBackendAppCheckToken(forceRefresh) }
+            },
+            authHeaderProvider = app?.let { laterboxApp ->
+                { forceRefresh -> laterboxApp.container.getBackendAuthHeader(forceRefresh) }
             },
             dismissible = !prompt.isBlocking,
         )

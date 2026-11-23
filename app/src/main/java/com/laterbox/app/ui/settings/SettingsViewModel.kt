@@ -58,6 +58,7 @@ class SettingsViewModel(
     private val database: com.laterbox.app.data.local.LaterboxDatabase? = null,
     private val backendBaseUrlProvider: (suspend () -> String)? = null,
     private val appCheckTokenProvider: (suspend (Boolean) -> String?)? = null,
+    private val authHeaderProvider: (suspend (Boolean) -> Pair<String, String>?)? = null,
     private val moviesRepository: MoviesRepository? = null,
     private val appStorageManager: com.laterbox.app.storage.AppStorageManager? = null
 ) : ViewModel() {
@@ -373,6 +374,17 @@ class SettingsViewModel(
                         ?.container?.let { container ->
                             { forceRefresh -> container.getBackendAppCheckToken(forceRefresh) }
                         }
+                val resolvedAuthHeaderProvider: (suspend (Boolean) -> Pair<String, String>?)? = authHeaderProvider
+                    ?: appCheckTokenProvider?.let { tokenProvider ->
+                        { forceRefresh ->
+                            tokenProvider(forceRefresh)?.takeIf { it.isNotBlank() }
+                                ?.let { com.laterbox.app.auth.LaterboxBackendAuthProvider.HEADER_APP_CHECK to it }
+                        }
+                    }
+                    ?: (appContext?.applicationContext as? com.laterbox.app.LaterboxApplication)
+                        ?.container?.let { container ->
+                            { forceRefresh -> container.getBackendAuthHeader(forceRefresh) }
+                        }
                 val releasesUrl = com.laterbox.app.update.GitHubUpdateChecker.buildBackendUpdateUrl(
                     baseUrl = baseUrl,
                     forceRefresh = true
@@ -382,6 +394,7 @@ class SettingsViewModel(
                     releasesUrl = releasesUrl,
                     context = appContext,
                     appCheckTokenProvider = resolvedAppCheckProvider,
+                    authHeaderProvider = resolvedAuthHeaderProvider,
                     forceRefresh = true,
                     currentVersionCode = com.laterbox.app.BuildConfig.VERSION_CODE,
                 )

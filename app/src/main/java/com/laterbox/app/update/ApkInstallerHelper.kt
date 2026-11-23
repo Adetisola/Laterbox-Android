@@ -104,9 +104,23 @@ object ApkInstallerHelper {
         return Triple(detailCode, detailMsg, isAuthOrLimit)
     }
 
+    private suspend fun resolveHeader(
+        authHeaderProvider: (suspend (Boolean) -> Pair<String, String>?)?,
+        appCheckTokenProvider: (suspend (Boolean) -> String?)?,
+        forceRefresh: Boolean
+    ): Pair<String, String>? {
+        if (authHeaderProvider != null) {
+            return authHeaderProvider.invoke(forceRefresh)?.takeIf { it.second.isNotBlank() }
+        }
+        return appCheckTokenProvider?.invoke(forceRefresh)?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            com.laterbox.app.auth.LaterboxBackendAuthProvider.HEADER_APP_CHECK to it
+        }
+    }
+
     internal suspend fun resolveSignedAssetDownloadUrl(
         resolverUrl: String,
-        appCheckTokenProvider: (suspend (Boolean) -> String?)? = null
+        appCheckTokenProvider: (suspend (Boolean) -> String?)? = null,
+        authHeaderProvider: (suspend (Boolean) -> Pair<String, String>?)? = null
     ): ResolvedAssetUrlResult = withContext(Dispatchers.IO) {
         val backendHost = UpdateNetworkSupport.safeHost(resolverUrl)
         var attemptsLeft = UpdateNetworkSupport.retryPolicyFor(UpdateFailureKind.DNS).maxConsecutiveAttempts
@@ -120,15 +134,13 @@ object ApkInstallerHelper {
         while (true) {
             transportAttempt++
             try {
+                var pendingRefreshedHeader: Pair<String, String>? = null
                 for (authAttempt in 0..1) {
                     var conn: HttpURLConnection? = null
                     try {
                         val tokenStart = System.nanoTime()
-                        val token = if (appCheckTokenProvider != null) {
-                            appCheckTokenProvider(authAttempt > 0)
-                        } else {
-                            null
-                        }
+                        val sentHeader = pendingRefreshedHeader?.also { pendingRefreshedHeader = null }
+                            ?: resolveHeader(authHeaderProvider, appCheckTokenProvider, forceRefresh = authAttempt > 0)
                         val tokenMs = (System.nanoTime() - tokenStart) / 1_000_000
                         val reqStart = System.nanoTime()
                         conn = UpdateNetworkSupport.connectionFactory(URL(resolverUrl)).apply {
@@ -138,8 +150,11 @@ object ApkInstallerHelper {
                             instanceFollowRedirects = true
                             setRequestProperty("Accept", "application/json")
                             setRequestProperty("User-Agent", "Laterbox-App")
-                            if (!token.isNullOrBlank()) {
-                                setRequestProperty("X-Firebase-AppCheck", token)
+                            setRequestProperty("X-Laterbox-Client", "android")
+                            setRequestProperty("X-Laterbox-Version-Code", com.laterbox.app.BuildConfig.VERSION_CODE.toString())
+                            setRequestProperty("X-Laterbox-Version-Name", com.laterbox.app.BuildConfig.VERSION_NAME)
+                            if (sentHeader != null && sentHeader.second.isNotBlank()) {
+                                setRequestProperty(sentHeader.first, sentHeader.second)
                             }
                         }
 
@@ -160,8 +175,12 @@ object ApkInstallerHelper {
                         }
 
                         val (_, detailMsg, isAuthOrLimit) = extractBackendError(conn)
-                        if (code == 401 && authAttempt == 0 && appCheckTokenProvider != null) {
-                            continue
+                        if (code == 401 && authAttempt == 0 && (authHeaderProvider != null || appCheckTokenProvider != null)) {
+                            val refreshed = resolveHeader(authHeaderProvider, appCheckTokenProvider, forceRefresh = true)
+                            if (refreshed != null && refreshed != sentHeader) {
+                                pendingRefreshedHeader = refreshed
+                                continue
+                            }
                         }
 
                         val fallbackMsg = when (code) {
@@ -190,7 +209,8 @@ object ApkInstallerHelper {
                 return@withContext ResolvedAssetUrlResult(
                     errorMessage = "Authentication failed while preparing asset download.",
                     failureKind = UpdateFailureKind.AUTH,
-                    isAuthOrRateLimit = true
+                    isAuthOrRateLimit = true,
+                    httpCode = 401
                 )
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -261,6 +281,7 @@ object ApkInstallerHelper {
         downloadUrl: String,
         expectedTotalBytes: Long = -1L,
         appCheckTokenProvider: (suspend (Boolean) -> String?)? = null,
+        authHeaderProvider: (suspend (Boolean) -> Pair<String, String>?)? = null,
         publicFallbackUrl: String? = null,
         onProgress: (DownloadProgress) -> Unit
     ): File? = withContext(Dispatchers.IO) {
@@ -285,7 +306,8 @@ object ApkInstallerHelper {
                 if (resolverActive && cachedSignedUrl == null) {
                     val resolved = resolveSignedAssetDownloadUrl(
                         resolverUrl = downloadUrl,
-                        appCheckTokenProvider = appCheckTokenProvider
+                        appCheckTokenProvider = appCheckTokenProvider,
+                        authHeaderProvider = authHeaderProvider
                     )
                     if (resolved.downloadUrl == null) {
                         if (resolved.failureKind.isBackendUnreachable &&
@@ -537,6 +559,7 @@ object ApkInstallerHelper {
         expectedSizeBytes: Long = -1L,
         appCheckTokenProvider: (suspend (Boolean) -> String?)? = null,
         publicFallbackUrl: String? = UpdateNetworkSupport.publicAssetUrl(versionName, assetName),
+        authHeaderProvider: (suspend (Boolean) -> Pair<String, String>?)? = null,
         onProgress: (DownloadProgress) -> Unit
     ): File? = withContext(Dispatchers.IO) {
         val updatesDir = File(context.cacheDir, "updates").apply { mkdirs() }
@@ -556,6 +579,7 @@ object ApkInstallerHelper {
             downloadUrl = downloadUrl,
             expectedTotalBytes = expectedSizeBytes,
             appCheckTokenProvider = appCheckTokenProvider,
+            authHeaderProvider = authHeaderProvider,
             publicFallbackUrl = publicFallbackUrl,
             onProgress = onProgress
         )
@@ -573,6 +597,7 @@ object ApkInstallerHelper {
         publicFallbackUrl: String? = patchTargetVersionRegex.find(deltaPatch.patchFilename)
             ?.groupValues?.get(1)
             ?.let { UpdateNetworkSupport.publicAssetUrl(it, deltaPatch.patchFilename) },
+        authHeaderProvider: (suspend (Boolean) -> Pair<String, String>?)? = null,
         onProgress: (DownloadProgress) -> Unit
     ): File? = withContext(Dispatchers.IO) {
         val updatesDir = File(context.cacheDir, "updates").apply { mkdirs() }
@@ -595,6 +620,7 @@ object ApkInstallerHelper {
             downloadUrl = deltaPatch.downloadUrl,
             expectedTotalBytes = deltaPatch.patchSize,
             appCheckTokenProvider = appCheckTokenProvider,
+            authHeaderProvider = authHeaderProvider,
             publicFallbackUrl = publicFallbackUrl,
             onProgress = onProgress
         )

@@ -209,7 +209,16 @@ class LaterboxAnalyticsTracker(
     private val remoteCollectionEnabledProvider: (() -> Boolean)? = null,
     private val remoteCollectionFlow: StateFlow<Boolean>? = null,
     private val heartbeatIntervalMs: Long = LaterboxAnalyticsSchema.HEARTBEAT_INTERVAL_MS,
+    private val authHeaderProvider: (suspend (forceRefresh: Boolean) -> Pair<String, String>?)? = null,
 ) {
+    private suspend fun resolveAuthHeader(forceRefresh: Boolean): Pair<String, String>? {
+        if (authHeaderProvider != null) {
+            return authHeaderProvider.invoke(forceRefresh)?.takeIf { it.second.isNotBlank() }
+        }
+        return appCheckTokenProvider(forceRefresh)?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            com.laterbox.app.auth.LaterboxBackendAuthProvider.HEADER_APP_CHECK to it
+        }
+    }
     private val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val queueMutex = Mutex()
@@ -568,15 +577,15 @@ class LaterboxAnalyticsTracker(
         }
         val payload = JSONObject().put("events", eventsArray).toString()
 
-        var token = runCatching { appCheckTokenProvider(false) }.getOrNull()
+        var authHeader = runCatching { resolveAuthHeader(false) }.getOrNull()
         for (attempt in 0..1) {
             val requestBuilder = Request.Builder()
                 .url(url)
                 .post(payload.toRequestBody(JSON_MEDIA_TYPE))
                 .header("Accept", "application/json")
                 .header("Content-Type", "application/json")
-            if (!token.isNullOrBlank()) {
-                requestBuilder.header("X-Firebase-AppCheck", token)
+            if (authHeader != null && authHeader.second.isNotBlank()) {
+                requestBuilder.header(authHeader.first, authHeader.second)
             }
             try {
                 okHttpClient.newCall(requestBuilder.build()).execute().use { resp ->
@@ -589,10 +598,12 @@ class LaterboxAnalyticsTracker(
                         }
                         return DispatchResult.Accepted(pausedByServer = paused)
                     }
-                    if ((resp.code == 401 || resp.code == 403) && attempt == 0) {
-                        val refreshed = runCatching { appCheckTokenProvider(true) }.getOrNull()
-                        if (!refreshed.isNullOrBlank() && refreshed != token) {
-                            token = refreshed
+                    val isGuestRestricted403 = resp.code == 403 &&
+                        authHeader?.first == com.laterbox.app.auth.LaterboxBackendAuthProvider.HEADER_GUEST_AUTH
+                    if ((resp.code == 401 || (resp.code == 403 && !isGuestRestricted403)) && attempt == 0) {
+                        val refreshed = runCatching { resolveAuthHeader(true) }.getOrNull()
+                        if (refreshed != null && refreshed != authHeader) {
+                            authHeader = refreshed
                             return@use
                         }
                     }

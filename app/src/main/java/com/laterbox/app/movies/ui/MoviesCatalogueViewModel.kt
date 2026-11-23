@@ -55,7 +55,8 @@ data class MoviesCatalogueUiState(
     val watchlistIds: Set<String> = emptySet(),
     val collections: List<Collection> = emptyList(),
     val actionFeedbackMessage: String? = null,
-    val actionErrorMessage: String? = null
+    val actionErrorMessage: String? = null,
+    val activeProviderNotice: String? = null
 ) {
     companion object {
         val DEFAULT_GENRES = MovieBoxProvider.DEFAULT_GENRES
@@ -777,7 +778,8 @@ class MoviesCatalogueViewModel(
                             hasMore = pageResult.hasMore,
                             isLoading = false,
                             isLoadingMore = false,
-                            errorMessage = null
+                            errorMessage = null,
+                            activeProviderNotice = pageResult.activeProviderNotice
                         )
                     }
                 },
@@ -788,7 +790,8 @@ class MoviesCatalogueViewModel(
                             isLoading = false,
                             isLoadingMore = false,
                             errorMessage = err.message?.takeIf { m -> m.isNotBlank() }
-                                ?: "Unable to load catalogue results."
+                                ?: "Unable to load catalogue results.",
+                            activeProviderNotice = null
                         )
                     }
                 }

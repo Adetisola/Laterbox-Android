@@ -16,6 +16,7 @@ import com.laterbox.app.movies.data.local.entity.MovieViewingReminderEntity
 import com.laterbox.app.movies.data.local.entity.MovieWatchHistoryEntity
 import com.laterbox.app.movies.data.local.entity.MovieWatchlistEntity
 import com.laterbox.app.movies.data.provider.InternetArchiveMoviesProvider
+import com.laterbox.app.movies.data.provider.MovieBoxApiException
 import com.laterbox.app.movies.data.provider.MovieBoxProvider
 import com.laterbox.app.movies.data.provider.TmdbOptionalMoviesProvider
 import com.laterbox.app.movies.data.provider.TvMazeSeriesProvider
@@ -360,7 +361,7 @@ class MoviesRepositoryImpl(
             // MovieBox failed live: attempt live Internet Archive + TVMaze fallback before stale cache.
             val fallbackFeedResult = getOpenArchiveHomeFeed(
                 forceRefresh = true,
-                fallbackNotice = MOVIEBOX_FALLBACK_NOTICE
+                fallbackNotice = buildPrimaryFallbackNotice(mbResult.exceptionOrNull())
             )
             if (fallbackFeedResult.isSuccess) {
                 return@withContext fallbackFeedResult
@@ -553,6 +554,7 @@ class MoviesRepositoryImpl(
         val effectiveCountry = country?.takeUnless { it.equals("All", ignoreCase = true) }
         val effectiveYear = year?.takeUnless { it.equals("All", ignoreCase = true) }
 
+        var mbFailure: Throwable? = null
         val mb = activeMovieBox()
         if (mb != null) {
             if (kind == MediaKind.SHORT_DRAMA) {
@@ -623,9 +625,13 @@ class MoviesRepositoryImpl(
                 )
                 return@withContext Result.success(pageData.copy(items = dedupedItems))
             }
+            mbFailure = mbResult.exceptionOrNull()
         }
 
         if (kind == MediaKind.SHORT_DRAMA) {
+            if (mbFailure != null) {
+                return@withContext Result.failure(mbFailure)
+            }
             return@withContext Result.success(
                 CataloguePage(items = emptyList(), page = page, pageSize = pageSize, totalCount = 0, hasMore = false)
             )
@@ -646,7 +652,8 @@ class MoviesRepositoryImpl(
         val results = listOfNotNull(iaDeferred?.await(), tvDeferred?.await())
         val pages = results.mapNotNull { it.getOrNull() }
         if (pages.isEmpty()) {
-            val err = results.firstNotNullOfOrNull { it.exceptionOrNull() }
+            val err = mbFailure
+                ?: results.firstNotNullOfOrNull { it.exceptionOrNull() }
                 ?: IllegalStateException("Catalogue request failed")
             return@withContext Result.failure(err)
         }
@@ -662,7 +669,8 @@ class MoviesRepositoryImpl(
                 page = page,
                 pageSize = pageSize,
                 totalCount = pages.sumOf { it.totalCount ?: it.items.size },
-                hasMore = pages.any { it.hasMore }
+                hasMore = pages.any { it.hasMore },
+                activeProviderNotice = mbFailure?.let(::buildPrimaryFallbackNotice)
             )
         )
     }
@@ -850,7 +858,8 @@ class MoviesRepositoryImpl(
                 pageSize = pageSize,
                 totalCount = suppPages.sumOf { it.totalCount ?: it.items.size },
                 hasMore = suppPages.any { it.hasMore },
-                primaryCount = items.size
+                primaryCount = items.size,
+                activeProviderNotice = mbResult?.exceptionOrNull()?.let(::buildPrimaryFallbackNotice)
             )
         )
     }
@@ -2886,6 +2895,17 @@ class MoviesRepositoryImpl(
         canonicalId = canonicalId,
         isHiddenTitle = true
     )
+
+    private fun buildPrimaryFallbackNotice(error: Throwable?): String {
+        val apiErr = error as? MovieBoxApiException
+        return when {
+            apiErr?.isAuthFailure == true ->
+                "Access verification is temporarily unavailable — showing archive & TV guide"
+            apiErr?.isRateLimited == true ->
+                "Main catalogue is temporarily busy — showing archive & TV guide"
+            else -> MOVIEBOX_FALLBACK_NOTICE
+        }
+    }
 
     companion object {
         const val CACHE_TTL_MS = 6L * 60 * 60 * 1000L

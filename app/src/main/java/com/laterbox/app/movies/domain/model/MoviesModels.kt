@@ -143,7 +143,8 @@ data class CataloguePage(
     val pageSize: Int = 20,
     val totalCount: Int? = null,
     val hasMore: Boolean = false,
-    val primaryCount: Int = items.size
+    val primaryCount: Int = items.size,
+    val activeProviderNotice: String? = null
 )
 
 data class SearchSuggestion(
