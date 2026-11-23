@@ -54,6 +54,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -207,6 +208,7 @@ fun MovieDetailScreen(
     onEpisodeDownloadClick: (EpisodeItem) -> Unit = {},
     onSelectEpisodeDownloadSource: (seasonNumber: Int, episodeNumber: Int, episodeTitle: String, source: PlaybackSource) -> Unit = { _, _, _, _ -> },
     onDismissEpisodeResolutionPicker: () -> Unit = {},
+    onSelectEpisodeRange: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -541,14 +543,51 @@ fun MovieDetailScreen(
                 val details = uiState.details
                 val summary = details.summary
                 val resolution = uiState.playbackResolution
+                val detailListState = rememberLazyListState()
                 var visibleEpisodeCount by remember(summary.id, uiState.selectedSeasonNumber) {
                     mutableIntStateOf(10)
+                }
+                var fallbackSelectedRangeKey by remember(summary.id, uiState.selectedSeasonNumber) {
+                    mutableStateOf<String?>(null)
+                }
+                val effectiveOnePieceRangeState = remember(
+                    uiState.onePieceRangeState,
+                    uiState.details,
+                    uiState.episodes,
+                    uiState.nextUnwatchedTarget,
+                    fallbackSelectedRangeKey
+                ) {
+                    uiState.onePieceRangeState
+                        ?: OnePieceEpisodeRangeBuilder.buildUiState(
+                            details = uiState.details,
+                            episodes = uiState.episodes,
+                            preferredSelectedKey = fallbackSelectedRangeKey,
+                            targetEpisodeHint = uiState.nextUnwatchedTarget
+                                ?.takeIf { it.first == uiState.selectedSeasonNumber }
+                                ?.second
+                        )
+                }
+                val activeOnePieceRangeKey = effectiveOnePieceRangeState?.selectedRangeKey
+                var lastScrolledOnePieceRangeKey by remember(summary.id, uiState.selectedSeasonNumber) {
+                    mutableStateOf(activeOnePieceRangeKey)
+                }
+                LaunchedEffect(activeOnePieceRangeKey) {
+                    val prevKey = lastScrolledOnePieceRangeKey
+                    lastScrolledOnePieceRangeKey = activeOnePieceRangeKey
+                    if (activeOnePieceRangeKey != null && prevKey != null && prevKey != activeOnePieceRangeKey) {
+                        val seasonsItem = detailListState.layoutInfo.visibleItemsInfo
+                            .firstOrNull { it.key == "detail_seasons" }
+                        if (seasonsItem != null && seasonsItem.offset < 0) {
+                            detailListState.scrollToItem(seasonsItem.index)
+                        }
+                    }
                 }
                 val offlineLookup = remember(uiState.offlineMatches) {
                     OfflineMediaLookup.from(uiState.offlineMatches)
                 }
 
                 LazyColumn(
+                    state = detailListState,
                     modifier = Modifier
                         .fillMaxSize()
                         .testTag("movie_detail_list"),
@@ -1774,7 +1813,9 @@ fun MovieDetailScreen(
                                     )
                                     LazyRow(
                                         contentPadding = PaddingValues(horizontal = 16.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.testTag("detail_seasons_and_ranges_row")
                                     ) {
                                         itemsIndexed(
                                             items = details.seasons,
@@ -1801,6 +1842,58 @@ fun MovieDetailScreen(
                                                     color = if (selected) colors.onAccentPrimary else colors.textPrimary,
                                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
                                                 )
+                                            }
+                                        }
+
+                                        val rangeGroups = effectiveOnePieceRangeState?.ranges.orEmpty()
+                                        if (rangeGroups.isNotEmpty()) {
+                                            item(key = "one_piece_range_divider") {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .padding(horizontal = 4.dp)
+                                                        .width(1.dp)
+                                                        .height(22.dp)
+                                                        .background(colors.borderSubtle.copy(alpha = 0.85f))
+                                                        .testTag("one_piece_range_divider")
+                                                )
+                                            }
+
+                                            items(
+                                                items = rangeGroups,
+                                                key = { range -> "one_piece_range_${range.key}" }
+                                            ) { range ->
+                                                val isRangeSelected = effectiveOnePieceRangeState?.selectedRangeKey == range.key
+                                                Surface(
+                                                    shape = RoundedCornerShape(999.dp),
+                                                    color = Color.Transparent,
+                                                    border = BorderStroke(
+                                                        width = if (isRangeSelected) 1.5.dp else 0.75.dp,
+                                                        color = if (isRangeSelected) colors.accentPrimary else colors.borderSubtle
+                                                    ),
+                                                    modifier = Modifier
+                                                        .clip(RoundedCornerShape(999.dp))
+                                                        .clickable {
+                                                            fallbackSelectedRangeKey = range.key
+                                                            onSelectEpisodeRange?.invoke(range.key)
+                                                        }
+                                                        .testTag("one_piece_range_chip_${range.key}")
+                                                ) {
+                                                    Text(
+                                                        text = range.label,
+                                                        style = typography.uiLabel.copy(
+                                                            fontSize = 12.sp,
+                                                            fontWeight = if (isRangeSelected) FontWeight.SemiBold else FontWeight.Medium
+                                                        ),
+                                                        color = if (isRangeSelected) {
+                                                            if (colors.isDark) Color.White else Color.Black
+                                                        } else {
+                                                            colors.textSecondary
+                                                        },
+                                                        maxLines = 1,
+                                                        softWrap = false,
+                                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                                                    )
+                                                }
                                             }
                                         }
                                     }
@@ -1847,7 +1940,8 @@ fun MovieDetailScreen(
                                     }
                                 }
                                 uiState.episodes.isNotEmpty() -> {
-                                    val visibleEpisodes = uiState.episodes.take(visibleEpisodeCount)
+                                    val onePieceSelectedEpisodes = effectiveOnePieceRangeState?.selectedRange?.episodes
+                                    val visibleEpisodes = onePieceSelectedEpisodes ?: uiState.episodes.take(visibleEpisodeCount)
                                     itemsIndexed(
                                         items = visibleEpisodes,
                                         key = { index, ep -> "ep_${index}_${ep.id}_${ep.seasonNumber}_${ep.episodeNumber}" }
@@ -1878,7 +1972,7 @@ fun MovieDetailScreen(
                                             modifier = Modifier.padding(horizontal = 16.dp)
                                         )
                                     }
-                                    if (uiState.episodes.size > visibleEpisodeCount) {
+                                    if (onePieceSelectedEpisodes == null && uiState.episodes.size > visibleEpisodeCount) {
                                         item(key = "detail_episodes_load_more") {
                                             OutlinedButton(
                                                 onClick = { visibleEpisodeCount += 10 },
@@ -2180,7 +2274,7 @@ private fun EpisodeRowCard(
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = "E${episode.episodeNumber}",
+                                text = if (episode.episodeNumber > 0) "E${episode.episodeNumber}" else "Special",
                                 style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
                                 color = Color.White.copy(alpha = 0.92f)
                             )
@@ -2188,7 +2282,7 @@ private fun EpisodeRowCard(
                     }
                     else -> {
                         Text(
-                            text = "E${episode.episodeNumber}",
+                            text = if (episode.episodeNumber > 0) "E${episode.episodeNumber}" else "Special",
                             style = typography.titleLarge,
                             color = colors.textTertiary
                         )
@@ -2229,7 +2323,7 @@ private fun EpisodeRowCard(
                 verticalArrangement = Arrangement.spacedBy(3.dp)
             ) {
                 Text(
-                    text = "${episode.episodeNumber}. ${episode.title}",
+                    text = if (episode.episodeNumber > 0) "${episode.episodeNumber}. ${episode.title}" else episode.title,
                     style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
                     color = colors.textPrimary,
                     maxLines = 1,

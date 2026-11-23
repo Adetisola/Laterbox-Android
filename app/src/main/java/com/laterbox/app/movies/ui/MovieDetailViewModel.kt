@@ -38,6 +38,7 @@ data class MovieDetailUiState(
     val details: MediaDetails? = null,
     val selectedSeasonNumber: Int? = null,
     val episodes: List<EpisodeItem> = emptyList(),
+    val onePieceRangeState: OnePieceEpisodeRangeUiState? = null,
     val isLoadingEpisodes: Boolean = false,
     val isLoadingEpisodeSizes: Boolean = false,
     val episodesError: String? = null,
@@ -123,6 +124,8 @@ class MovieDetailViewModel(
     private var personJob: Job? = null
     private var currentKey: Pair<String, String>? = null
     private var loadRequestSeq: Long = 0L
+    private var selectedOnePieceRangeKey: String? = null
+    private var onePieceRangeOwnerKey: String? = null
 
     private var observedEpisodeTasks: List<com.laterbox.app.media.domain.model.DownloadTask> = emptyList()
     private val resolvingEpisodes = mutableSetOf<Pair<Int, Int>>()
@@ -357,11 +360,19 @@ class MovieDetailViewModel(
                     } else null
 
                     _uiState.update { current ->
+                        val effectiveSeason = current.selectedSeasonNumber ?: defaultSeason
+                        val updatedRanges = buildOnePieceRangesFor(
+                            details = details,
+                            seasonNumber = effectiveSeason,
+                            episodes = current.episodes,
+                            targetEpisodeHint = current.nextUnwatchedTarget?.second
+                        )
                         current.copy(
                             isLoading = false,
                             isRefreshingDetails = false,
                             details = details,
-                            selectedSeasonNumber = current.selectedSeasonNumber ?: defaultSeason,
+                            selectedSeasonNumber = effectiveSeason,
+                            onePieceRangeState = updatedRanges,
                             errorMessage = null
                         )
                     }
@@ -972,7 +983,8 @@ class MovieDetailViewModel(
         val providerId = _uiState.value.details?.summary?.providerId ?: rawProviderId
         val titleId = _uiState.value.details?.summary?.id ?: rawTitleId
         if (_uiState.value.selectedSeasonNumber == seasonNumber) return
-        _uiState.update { it.copy(selectedSeasonNumber = seasonNumber) }
+        selectedOnePieceRangeKey = null
+        _uiState.update { it.copy(selectedSeasonNumber = seasonNumber, onePieceRangeState = null) }
         loadEpisodes(providerId, titleId, seasonNumber)
         if (_uiState.value.details?.summary?.kind == MediaKind.TV_SERIES) {
             viewModelScope.launch {
@@ -981,6 +993,42 @@ class MovieDetailViewModel(
             }
             checkPlayback(providerId, titleId, seasonNumber, 1)
         }
+    }
+
+    fun selectOnePieceEpisodeRange(rangeKey: String) {
+        selectedOnePieceRangeKey = rangeKey
+        _uiState.update { current ->
+            val rangeState = current.onePieceRangeState ?: return@update current
+            if (rangeState.ranges.none { it.key == rangeKey } || rangeState.selectedRangeKey == rangeKey) {
+                current
+            } else {
+                current.copy(onePieceRangeState = rangeState.copy(selectedRangeKey = rangeKey))
+            }
+        }
+    }
+
+    private fun buildOnePieceRangesFor(
+        details: MediaDetails?,
+        seasonNumber: Int?,
+        episodes: List<EpisodeItem>,
+        targetEpisodeHint: Int?
+    ): OnePieceEpisodeRangeUiState? {
+        val summary = details?.summary ?: return null
+        val ownerKey = "${summary.providerId}:${summary.id}:${seasonNumber ?: 0}"
+        if (onePieceRangeOwnerKey != ownerKey) {
+            selectedOnePieceRangeKey = null
+            onePieceRangeOwnerKey = ownerKey
+        }
+        val state = OnePieceEpisodeRangeBuilder.buildUiState(
+            details = details,
+            episodes = episodes,
+            preferredSelectedKey = selectedOnePieceRangeKey,
+            targetEpisodeHint = targetEpisodeHint
+        )
+        if (state != null) {
+            selectedOnePieceRangeKey = state.selectedRangeKey
+        }
+        return state
     }
 
     fun retryPlaybackCheck() {
@@ -1046,11 +1094,19 @@ class MovieDetailViewModel(
                             episodesBySeason = mapOf(seasonNumber to seededEpisodes)
                         )
                     } else null
-                    _uiState.update {
-                        it.copy(
+                    _uiState.update { current ->
+                        val nextTarget = refinedNext ?: current.nextUnwatchedTarget
+                        val targetEpHint = nextTarget?.takeIf { it.first == seasonNumber }?.second
+                        current.copy(
                             isLoadingEpisodes = false,
                             episodes = seededEpisodes,
-                            nextUnwatchedTarget = refinedNext ?: it.nextUnwatchedTarget,
+                            onePieceRangeState = buildOnePieceRangesFor(
+                                details = current.details,
+                                seasonNumber = seasonNumber,
+                                episodes = seededEpisodes,
+                                targetEpisodeHint = targetEpHint
+                            ),
+                            nextUnwatchedTarget = nextTarget,
                             episodesError = null
                         )
                     }
@@ -1068,6 +1124,7 @@ class MovieDetailViewModel(
                         it.copy(
                             isLoadingEpisodes = false,
                             episodes = emptyList(),
+                            onePieceRangeState = null,
                             episodesError = err.message ?: "Unable to load episodes."
                         )
                     }
@@ -1107,9 +1164,16 @@ class MovieDetailViewModel(
                     } else {
                         current.episodes
                     }
+                    val targetEpHint = current.nextUnwatchedTarget?.takeIf { it.first == seasonNumber }?.second
                     current.copy(
                         isLoadingEpisodeSizes = false,
-                        episodes = updatedEpisodes
+                        episodes = updatedEpisodes,
+                        onePieceRangeState = buildOnePieceRangesFor(
+                            details = current.details,
+                            seasonNumber = seasonNumber,
+                            episodes = updatedEpisodes,
+                            targetEpisodeHint = targetEpHint
+                        )
                     )
                 }
             }
