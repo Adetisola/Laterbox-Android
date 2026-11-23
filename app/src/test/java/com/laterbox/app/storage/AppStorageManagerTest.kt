@@ -304,8 +304,6 @@ class AppStorageManagerTest {
         composeTestRule.setContent {
             LaterboxTheme {
                 com.laterbox.app.ui.settings.DataStorageSettingsScreen(
-                    preferences = com.laterbox.app.data.preferences.UserPreferences(),
-                    onAllowSystemBackupChange = {},
                     onExportBackup = { Result.success(0) },
                     onImportBackup = {
                         Result.success(com.laterbox.app.data.backup.BackupRestoreResult(0, 0, 0))
@@ -320,6 +318,9 @@ class AppStorageManagerTest {
 
         composeTestRule.waitForIdle()
         assertEquals(1, refreshCalls)
+        composeTestRule.onNodeWithText("Export JSON").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Import JSON").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Device Cloud Auto-Backup").assertDoesNotExist()
         composeTestRule.onNodeWithText("Storage Overview").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithTag("storage_overview_card").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithTag("storage_downloaded_card").performScrollTo().assertIsDisplayed()

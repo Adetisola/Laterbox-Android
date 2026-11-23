@@ -15,8 +15,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -28,7 +26,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.laterbox.app.data.backup.BackupRestoreResult
-import com.laterbox.app.data.preferences.UserPreferences
 import com.laterbox.app.storage.AppStorageReport
 import com.laterbox.app.ui.components.LaterboxSecondaryButton
 import com.laterbox.app.ui.theme.LaterboxTheme
@@ -41,8 +38,6 @@ import java.util.Locale
 
 @Composable
 fun DataStorageSettingsScreen(
-    preferences: UserPreferences,
-    onAllowSystemBackupChange: (Boolean) -> Unit,
     onExportBackup: suspend (OutputStream) -> Result<Int>,
     onImportBackup: suspend (InputStream) -> Result<BackupRestoreResult>,
     onBackClick: () -> Unit,
@@ -192,36 +187,6 @@ fun DataStorageSettingsScreen(
                                 importLauncher.launch(arrayOf("application/json", "text/*"))
                             },
                             modifier = Modifier.weight(1f)
-                        )
-                    }
-
-                    SettingsDivider()
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Device Cloud Auto-Backup",
-                                style = typography.uiMedium,
-                                color = colors.textPrimary
-                            )
-                            Text(
-                                text = "Allow encrypted device backup for your saved records",
-                                style = typography.bodySecondary.copy(fontSize = 12.sp),
-                                color = colors.textSecondary
-                            )
-                        }
-
-                        Switch(
-                            checked = preferences.allowSystemBackup,
-                            onCheckedChange = onAllowSystemBackupChange,
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = colors.surfaceElevated,
-                                checkedTrackColor = colors.accentPrimary
-                            )
                         )
                     }
                 }

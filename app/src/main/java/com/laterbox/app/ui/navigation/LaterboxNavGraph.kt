@@ -1872,8 +1872,6 @@ fun LaterboxApp(
                             val storageError by settingsViewModel.storageErrorMessage.collectAsState()
 
                             com.laterbox.app.ui.settings.DataStorageSettingsScreen(
-                                preferences = preferences,
-                                onAllowSystemBackupChange = settingsViewModel::setAllowSystemBackup,
                                 onExportBackup = settingsViewModel::exportBackup,
                                 onImportBackup = settingsViewModel::importBackup,
                                 onBackClick = { navController.popBackStack() },
