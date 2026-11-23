@@ -14,32 +14,42 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
+import androidx.media3.common.PlaybackParameters
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.roundToInt
 
 internal object PlayerAmbientSampler {
     private const val SAMPLE_WIDTH = 16
     private const val SAMPLE_HEIGHT = 9
-    private const val SAMPLE_INTERVAL_MS = 750L
-    const val AMBIENT_CENTER_ALPHA = 0.58f
-    const val AMBIENT_MID_ALPHA = 0.28f
+    internal const val SAMPLE_INTERVAL_PLAYING_MS = 160L
+    internal const val SAMPLE_INTERVAL_FAST_MS = 125L
+    internal const val POST_SEEK_REFRESH_DELAY_MS = 110L
+    internal const val COLOR_BLEND_NORMAL_MS = 220
+    internal const val COLOR_BLEND_SCENE_CUT_MS = 160
+    internal const val SCENE_CUT_DELTA_THRESHOLD = 0.22f
+    const val AMBIENT_CENTER_ALPHA = 0.64f
+    const val AMBIENT_MID_ALPHA = 0.34f
+    const val AMBIENT_OUTER_ALPHA = 0.08f
 
     /**
      * Computes a restrained, atmospheric background tint from sampled ARGB pixels.
-     * Filters out pure black letterbox pixels when non-black content exists and clamps
-     * saturation/brightness so white HUD controls remain legible.
+     * Filters out pure black letterbox pixels when non-black content exists, preserves
+     * genuinely dark scenes without artificial gray wash, and clamps bright scenes so HUD
+     * controls remain legible.
      */
     fun extractAmbientColor(pixels: IntArray): Color {
         if (pixels.isEmpty()) return Color.Black
@@ -79,6 +89,9 @@ internal object PlayerAmbientSampler {
         val gf = avgG / 255f
         val bf = avgB / 255f
         val cMax = max(rf, max(gf, bf))
+        if (cMax <= 0.004f) {
+            return Color.Black
+        }
         val cMin = min(rf, min(gf, bf))
         val delta = cMax - cMin
 
@@ -90,8 +103,12 @@ internal object PlayerAmbientSampler {
         }.let { if (it < 0f) it + 360f else it }
 
         val rawSat = if (cMax <= 0.0001f) 0f else (delta / cMax)
-        val clampedSat = if (rawSat < 0.08f) rawSat * 0.5f else rawSat.coerceIn(0.14f, 0.65f)
-        val clampedVal = cMax.coerceIn(0.14f, 0.52f)
+        val clampedSat = if (rawSat < 0.08f) rawSat * 0.5f else rawSat.coerceIn(0.14f, 0.66f)
+        val clampedVal = if (cMax < 0.14f) {
+            (cMax * 0.85f).coerceIn(0f, 0.14f)
+        } else {
+            cMax.coerceIn(0.14f, 0.54f)
+        }
 
         val (outR, outG, outB) = hsvToRgb(hue, clampedSat, clampedVal)
         return Color(
@@ -102,9 +119,27 @@ internal object PlayerAmbientSampler {
         )
     }
 
+    internal fun resolveSampleIntervalMs(playbackSpeed: Float): Long =
+        if (playbackSpeed >= 1.5f) SAMPLE_INTERVAL_FAST_MS else SAMPLE_INTERVAL_PLAYING_MS
+
+    internal fun computeBlendDurationMs(previous: Color, next: Color): Int {
+        val maxChannelDelta = max(
+            abs(next.red - previous.red),
+            max(abs(next.green - previous.green), abs(next.blue - previous.blue))
+        )
+        val prevLuma = 0.2126f * previous.red + 0.7152f * previous.green + 0.0722f * previous.blue
+        val nextLuma = 0.2126f * next.red + 0.7152f * next.green + 0.0722f * next.blue
+        val lumaDelta = abs(nextLuma - prevLuma)
+        return if (maxChannelDelta >= SCENE_CUT_DELTA_THRESHOLD || lumaDelta >= 0.16f) {
+            COLOR_BLEND_SCENE_CUT_MS
+        } else {
+            COLOR_BLEND_NORMAL_MS
+        }
+    }
+
     private fun hsvToRgb(h: Float, s: Float, v: Float): Triple<Float, Float, Float> {
         val c = v * s
-        val x = c * (1f - kotlin.math.abs(((h / 60f) % 2f) - 1f))
+        val x = c * (1f - abs(((h / 60f) % 2f) - 1f))
         val m = v - c
         val (r1, g1, b1) = when {
             h < 60f -> Triple(c, x, 0f)
@@ -125,8 +160,10 @@ internal object PlayerAmbientSampler {
     @Composable
     fun rememberAmbientColor(
         playerView: PlayerView?,
+        player: Player? = null,
         isEnabled: Boolean,
         isPlaying: Boolean,
+        isBuffering: Boolean = false,
         isInPip: Boolean,
         resizeMode: Int
     ): Color {
@@ -135,6 +172,9 @@ internal object PlayerAmbientSampler {
         val shouldSample = isEnabled && !isInPip && isLetterboxedMode && playerView != null
 
         var targetColor by remember { mutableStateOf(Color.Black) }
+        var previousTargetColor by remember { mutableStateOf(Color.Black) }
+        var seekOrFrameSignal by remember { mutableIntStateOf(0) }
+        var playbackSpeed by remember { mutableFloatStateOf(player?.playbackParameters?.speed ?: 1f) }
         val inFlight = remember { AtomicBoolean(false) }
 
         val samplerState = remember {
@@ -157,13 +197,54 @@ internal object PlayerAmbientSampler {
             }
         }
 
+        DisposableEffect(player, shouldSample) {
+            val activePlayer = if (shouldSample) player else null
+            if (activePlayer == null) {
+                onDispose {}
+            } else {
+                playbackSpeed = activePlayer.playbackParameters.speed
+                val listener = object : Player.Listener {
+                    override fun onPositionDiscontinuity(
+                        oldPosition: Player.PositionInfo,
+                        newPosition: Player.PositionInfo,
+                        reason: Int
+                    ) {
+                        if (reason == Player.DISCONTINUITY_REASON_SEEK ||
+                            reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT ||
+                            reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION
+                        ) {
+                            seekOrFrameSignal++
+                        }
+                    }
+
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        if (playbackState == Player.STATE_READY) {
+                            seekOrFrameSignal++
+                        }
+                    }
+
+                    override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
+                        playbackSpeed = playbackParameters.speed
+                    }
+
+                    override fun onRenderedFirstFrame() {
+                        seekOrFrameSignal++
+                    }
+                }
+                activePlayer.addListener(listener)
+                onDispose {
+                    activePlayer.removeListener(listener)
+                }
+            }
+        }
+
         LaunchedEffect(shouldSample) {
             if (!shouldSample) {
                 targetColor = Color.Black
             }
         }
 
-        LaunchedEffect(shouldSample, isPlaying, playerView) {
+        LaunchedEffect(shouldSample, isPlaying, isBuffering, playerView, seekOrFrameSignal, playbackSpeed) {
             val activeView = if (shouldSample) playerView else null
             if (activeView == null) return@LaunchedEffect
 
@@ -239,17 +320,30 @@ internal object PlayerAmbientSampler {
                 }
             }
 
-            // Capture immediately on attach/play state transition, then throttle every 750ms while playing
+            // Capture immediately on attach/play/seek/ready transition
             requestSample()
-            while (isActive && isPlaying) {
-                delay(SAMPLE_INTERVAL_MS)
+            if (isPlaying && !isBuffering) {
+                val intervalMs = resolveSampleIntervalMs(playbackSpeed)
+                while (isActive) {
+                    delay(intervalMs)
+                    requestSample()
+                }
+            } else if (seekOrFrameSignal > 0 && !isBuffering) {
+                // Follow-up capture once the decoder commits a seeked paused frame to the surface
+                delay(POST_SEEK_REFRESH_DELAY_MS)
                 requestSample()
             }
         }
 
+        val desiredColor = if (shouldSample) targetColor else Color.Black
+        val blendDurationMs = remember(desiredColor) {
+            val ms = computeBlendDurationMs(previousTargetColor, desiredColor)
+            previousTargetColor = desiredColor
+            ms
+        }
         val animatedColor by animateColorAsState(
-            targetValue = if (shouldSample) targetColor else Color.Black,
-            animationSpec = tween(durationMillis = 850),
+            targetValue = desiredColor,
+            animationSpec = tween(durationMillis = blendDurationMs),
             label = "player_ambient_color"
         )
         return animatedColor

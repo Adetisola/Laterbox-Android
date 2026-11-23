@@ -1394,14 +1394,16 @@ private fun ActiveVideoPlayerContent(
             resizeMode != AspectRatioFrameLayout.RESIZE_MODE_FILL
         val ambientColor = com.laterbox.app.movies.ui.player.PlayerAmbientSampler.rememberAmbientColor(
             playerView = attachedPlayerView,
+            player = exoPlayer,
             isEnabled = ambientModeEnabled,
             isPlaying = isPlaying,
+            isBuffering = isBuffering,
             isInPip = isInPip,
             resizeMode = resizeMode
         )
         val ambientAlpha by animateFloatAsState(
             targetValue = if (ambientModeEnabled && !isInPip && isLetterboxedMode && ambientColor != Color.Black) 1f else 0f,
-            animationSpec = tween(durationMillis = 550),
+            animationSpec = tween(durationMillis = 240),
             label = "player_ambient_alpha"
         )
         if (ambientAlpha > 0.01f) {
@@ -1419,6 +1421,9 @@ private fun ActiveVideoPlayerContent(
                         ),
                         0.55f to ambientColor.copy(
                             alpha = com.laterbox.app.movies.ui.player.PlayerAmbientSampler.AMBIENT_MID_ALPHA * ambientAlpha
+                        ),
+                        0.84f to ambientColor.copy(
+                            alpha = com.laterbox.app.movies.ui.player.PlayerAmbientSampler.AMBIENT_OUTER_ALPHA * ambientAlpha
                         ),
                         1.0f to Color.Transparent,
                         center = androidx.compose.ui.geometry.Offset(size.width * 0.5f, size.height * 0.48f),
