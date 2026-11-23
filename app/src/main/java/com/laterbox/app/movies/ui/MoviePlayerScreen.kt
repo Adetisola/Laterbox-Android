@@ -1414,8 +1414,12 @@ private fun ActiveVideoPlayerContent(
                 val maxDim = size.maxDimension.coerceAtLeast(1f)
                 drawRect(
                     brush = Brush.radialGradient(
-                        0.0f to ambientColor.copy(alpha = 0.52f * ambientAlpha),
-                        0.55f to ambientColor.copy(alpha = 0.22f * ambientAlpha),
+                        0.0f to ambientColor.copy(
+                            alpha = com.laterbox.app.movies.ui.player.PlayerAmbientSampler.AMBIENT_CENTER_ALPHA * ambientAlpha
+                        ),
+                        0.55f to ambientColor.copy(
+                            alpha = com.laterbox.app.movies.ui.player.PlayerAmbientSampler.AMBIENT_MID_ALPHA * ambientAlpha
+                        ),
                         1.0f to Color.Transparent,
                         center = androidx.compose.ui.geometry.Offset(size.width * 0.5f, size.height * 0.48f),
                         radius = maxDim * 0.72f

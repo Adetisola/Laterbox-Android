@@ -33,6 +33,8 @@ internal object PlayerAmbientSampler {
     private const val SAMPLE_WIDTH = 16
     private const val SAMPLE_HEIGHT = 9
     private const val SAMPLE_INTERVAL_MS = 750L
+    const val AMBIENT_CENTER_ALPHA = 0.58f
+    const val AMBIENT_MID_ALPHA = 0.28f
 
     /**
      * Computes a restrained, atmospheric background tint from sampled ARGB pixels.

@@ -48,4 +48,12 @@ class PlayerAmbientSamplerTest {
         val defaults = PlayerPlaybackPreferences()
         assertFalse(defaults.ambientModeEnabled)
     }
+
+    @Test
+    fun ambientBackdropAlphas_stayRestrainedWithSlightlyIncreasedProminence() {
+        assertEquals(0.58f, PlayerAmbientSampler.AMBIENT_CENTER_ALPHA, 0.0001f)
+        assertEquals(0.28f, PlayerAmbientSampler.AMBIENT_MID_ALPHA, 0.0001f)
+        assertTrue(PlayerAmbientSampler.AMBIENT_CENTER_ALPHA > PlayerAmbientSampler.AMBIENT_MID_ALPHA)
+        assertTrue(PlayerAmbientSampler.AMBIENT_CENTER_ALPHA <= 0.65f)
+    }
 }
