@@ -1367,4 +1367,111 @@ class MoviesRepositoryTest {
         assertEquals(118, secondPass["moviebox:mb_1"])
         assertEquals(1, batchCalls)
     }
+
+    @Test
+    fun getEpisodes_enrichesMissingMovieBoxStillsFromTvMazeWithoutOverwritingMovieBoxMetadata() = runTest {
+        var tvMazeEpisodesCalls = 0
+        var failTvMaze = false
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/detail/mb_sev") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "subject_id": "mb_sev",
+                          "subject_type": 2,
+                          "title": "Severance",
+                          "release_date": "2022-02-18",
+                          "imdb_id": "tt11280740",
+                          "seasons": [{"season": 1, "episode_count": 2, "all_ep": [1, 2]}]
+                        }
+                        """.trimIndent()
+                    )
+                    path == "/episodes/mb_sev" -> MockResponse().setResponseCode(200).setBody(
+                        """{"seasons": [{"season": 1, "episode_count": 2, "all_ep": [1, 2]}]}"""
+                    )
+                    path.startsWith("/episodes/mb_sev/metadata") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "episodes": [
+                            {
+                              "episode": 1,
+                              "title": "MovieBox Custom Ep 1",
+                              "overview": "Keep MovieBox synopsis 1",
+                              "still_url": "https://moviebox.cdn/ep1-existing.jpg"
+                            },
+                            {
+                              "episode": 2,
+                              "title": "MovieBox Custom Ep 2",
+                              "overview": "Keep MovieBox synopsis 2",
+                              "still_url": null
+                            }
+                          ]
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/lookup/shows?imdb=tt11280740") -> {
+                        if (failTvMaze) return MockResponse().setResponseCode(500)
+                        MockResponse().setResponseCode(200).setBody(
+                            """{"id": 44933, "name": "Severance", "premiered": "2022-02-18", "externals": {"imdb": "tt11280740"}}"""
+                        )
+                    }
+                    path.startsWith("/shows/44933/episodes") -> {
+                        tvMazeEpisodesCalls++
+                        if (failTvMaze) return MockResponse().setResponseCode(500)
+                        MockResponse().setResponseCode(200).setBody(
+                            """
+                            [
+                              {
+                                "id": 1001,
+                                "season": 1,
+                                "number": 1,
+                                "name": "TVMaze Ep 1 Override Should Not Apply",
+                                "summary": "<p>TVMaze summary should not apply</p>",
+                                "runtime": 99,
+                                "airdate": "2022-02-18",
+                                "image": {"medium": "https://tvmaze.cdn/ep1-should-not-overwrite.jpg"}
+                              },
+                              {
+                                "id": 1002,
+                                "season": 1,
+                                "number": 2,
+                                "name": "TVMaze Ep 2 Override Should Not Apply",
+                                "summary": "<p>TVMaze summary 2</p>",
+                                "runtime": 99,
+                                "airdate": "2022-02-18",
+                                "image": {"medium": "https://tvmaze.cdn/ep2-filled.jpg"}
+                              }
+                            ]
+                            """.trimIndent()
+                        )
+                    }
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val repo = createRepositoryWithMovieBox(withMovieBox = true)
+        // Seed details so IMDb + season info are cached
+        repo.getDetails("moviebox", "mb_sev").getOrThrow()
+
+        val episodes = repo.getEpisodes("moviebox", "mb_sev", seasonNumber = 1).getOrThrow()
+        assertEquals(2, episodes.size)
+        // Ep 1 keeps existing MovieBox stillUrl and metadata untouched
+        assertEquals("https://moviebox.cdn/ep1-existing.jpg", episodes[0].stillUrl)
+        assertEquals("MovieBox Custom Ep 1", episodes[0].title)
+        assertEquals("Keep MovieBox synopsis 1", episodes[0].overview)
+        // Ep 2 receives ONLY missing stillUrl from TVMaze while preserving MovieBox title & overview
+        assertEquals("https://tvmaze.cdn/ep2-filled.jpg", episodes[1].stillUrl)
+        assertEquals("MovieBox Custom Ep 2", episodes[1].title)
+        assertEquals("Keep MovieBox synopsis 2", episodes[1].overview)
+        assertEquals(1, tvMazeEpisodesCalls)
+
+        // Cached subsequent load serves stills without hitting TVMaze again
+        failTvMaze = true
+        val cachedEpisodes = repo.getEpisodes("moviebox", "mb_sev", seasonNumber = 1).getOrThrow()
+        assertEquals("https://tvmaze.cdn/ep2-filled.jpg", cachedEpisodes[1].stillUrl)
+        assertEquals(1, tvMazeEpisodesCalls)
+    }
 }

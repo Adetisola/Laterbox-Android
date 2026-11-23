@@ -19,7 +19,10 @@ import com.laterbox.app.movies.data.provider.InternetArchiveMoviesProvider
 import com.laterbox.app.movies.data.provider.MovieBoxProvider
 import com.laterbox.app.movies.data.provider.TmdbOptionalMoviesProvider
 import com.laterbox.app.movies.data.provider.TvMazeSeriesProvider
+import com.laterbox.app.movies.data.resolver.MatchCandidate
+import com.laterbox.app.movies.data.resolver.MediaMatcher
 import com.laterbox.app.movies.data.resolver.MediaResolver
+import com.laterbox.app.movies.domain.engine.MovieBoxPriorityDeduplicator
 import com.laterbox.app.movies.domain.model.CataloguePage
 import com.laterbox.app.movies.domain.model.CatalogueSort
 import com.laterbox.app.movies.domain.model.CollectionMediaItem
@@ -100,6 +103,9 @@ class MoviesRepositoryImpl(
     private val summaryMemoryCache = ConcurrentHashMap<String, MovieTitleSummary>()
     private val durationLookupCache = ConcurrentHashMap<String, CachedDurationEntry>()
     private val inFlightDurationLookups = ConcurrentHashMap<String, CompletableDeferred<Int?>>()
+    private val tvMazeShowIdByMovieBoxSeries = ConcurrentHashMap<String, String>()
+    private val tvMazeShowLookupCooldown = ConcurrentHashMap<String, Long>()
+    private val tvMazeStillCooldownBySeason = ConcurrentHashMap<String, Long>()
     private val totalMoviesObservedCount = AtomicInteger(0)
     private val initialDurationMoviesCount = AtomicInteger(0)
     private val enrichedMoviesCount = AtomicInteger(0)
@@ -460,12 +466,14 @@ class MoviesRepositoryImpl(
             return@withContext Result.failure(firstError)
         }
 
-        val mergedBanners = interleaveLists(
-            listOfNotNull(
-                iaFeed?.featuredBanners,
-                tvFeed?.featuredBanners
+        val mergedBanners = MovieBoxPriorityDeduplicator.deduplicateSummariesPreferringMovieBox(
+            interleaveLists(
+                listOfNotNull(
+                    iaFeed?.featuredBanners,
+                    tvFeed?.featuredBanners
+                )
             )
-        ).distinctBy { it.compositeId }.take(6)
+        ).take(6)
 
         val mergedSections = buildList {
             iaFeed?.sections?.let { addAll(it) }
@@ -593,7 +601,9 @@ class MoviesRepositoryImpl(
                             ?: IllegalStateException("Catalogue request failed.")
                         Result.failure(err)
                     } else {
-                        val combined = interleaveLists(pages.map { it.items }).distinctBy { it.compositeId }
+                        val combined = MovieBoxPriorityDeduplicator.deduplicateSummariesPreferringMovieBox(
+                            interleaveLists(pages.map { it.items })
+                        )
                         Result.success(
                             CataloguePage(
                                 items = combined,
@@ -608,7 +618,10 @@ class MoviesRepositoryImpl(
             }
             if (mbResult.isSuccess) {
                 val pageData = mbResult.getOrThrow()
-                return@withContext Result.success(pageData.copy(items = registerSummariesCanonical(pageData.items)))
+                val dedupedItems = MovieBoxPriorityDeduplicator.deduplicateSummariesPreferringMovieBox(
+                    registerSummariesCanonical(pageData.items)
+                )
+                return@withContext Result.success(pageData.copy(items = dedupedItems))
             }
         }
 
@@ -638,8 +651,10 @@ class MoviesRepositoryImpl(
             return@withContext Result.failure(err)
         }
 
-        val items = registerSummariesCanonical(
-            interleaveLists(pages.map { it.items }).distinctBy { it.compositeId }
+        val items = MovieBoxPriorityDeduplicator.deduplicateSummariesPreferringMovieBox(
+            registerSummariesCanonical(
+                interleaveLists(pages.map { it.items })
+            )
         )
         Result.success(
             CataloguePage(
@@ -664,16 +679,15 @@ class MoviesRepositoryImpl(
         val safePage = page.coerceAtLeast(1)
         val safePageSize = pageSize.coerceIn(1, 50)
         val cleanYear = year?.trim()?.takeIf { Regex("^\\d{4}$").matches(it) }
-        val filtered = (feed.sections.flatMap { it.items } + feed.featuredBanners)
-            .asSequence()
-            .filter { it.kind == MediaKind.SHORT_DRAMA || it.subjectType == 7 }
-            .distinctBy { it.compositeId }
+        val filtered = MovieBoxPriorityDeduplicator.deduplicateSummariesPreferringMovieBox(
+            (feed.sections.flatMap { it.items } + feed.featuredBanners)
+                .filter { it.kind == MediaKind.SHORT_DRAMA || it.subjectType == 7 }
+        )
             .filter { item ->
                 (genre == null || item.genres.any { g -> g.equals(genre, ignoreCase = true) }) &&
                     (country == null || item.country.equals(country, ignoreCase = true)) &&
                     (cleanYear == null || item.releaseYear?.toString() == cleanYear)
             }
-            .toList()
         val sorted = when (sort) {
             CatalogueSort.POPULAR -> filtered
             CatalogueSort.TOP_RATED -> filtered.sortedByDescending { it.rating ?: 0.0 }
@@ -791,14 +805,18 @@ class MoviesRepositoryImpl(
                     item.canonicalId?.let(::add)
                 }
             }
-            val dedupedSupplementary = combinedRegistered
+            val primaryCandidates = registeredPrimary.map { MatchCandidate.fromSummary(it) }
+            val filteredSupplementary = combinedRegistered
                 .drop(mbItems.size)
                 .filter { item ->
-                    item.compositeId !in primaryKeys &&
-                        item.stableMediaKey !in primaryKeys &&
-                        (item.canonicalId == null || item.canonicalId !in primaryKeys)
+                    val hasKeyOverlap = item.compositeId in primaryKeys ||
+                        item.stableMediaKey in primaryKeys ||
+                        (item.canonicalId != null && item.canonicalId in primaryKeys)
+                    if (hasKeyOverlap) return@filter false
+                    val itemCand = MatchCandidate.fromSummary(item)
+                    primaryCandidates.none { primaryCand -> MediaMatcher.evaluate(primaryCand, itemCand).isMatch }
                 }
-                .distinctBy { it.stableMediaKey }
+            val dedupedSupplementary = MovieBoxPriorityDeduplicator.deduplicateSummariesPreferringMovieBox(filteredSupplementary)
 
             val merged = registeredPrimary + dedupedSupplementary
             return@withContext Result.success(
@@ -820,8 +838,10 @@ class MoviesRepositoryImpl(
             return@withContext Result.failure(err)
         }
 
-        val items = registerSummariesCanonical(
-            interleaveLists(suppPages.map { it.items }).distinctBy { it.compositeId }
+        val items = MovieBoxPriorityDeduplicator.deduplicateSummariesPreferringMovieBox(
+            registerSummariesCanonical(
+                interleaveLists(suppPages.map { it.items }).distinctBy { it.compositeId }
+            )
         )
         Result.success(
             CataloguePage(
@@ -844,7 +864,9 @@ class MoviesRepositoryImpl(
 
         val mbResult = activeMovieBox()?.getSuggestions(clean, limit)
         if (mbResult != null && mbResult.isSuccess) {
-            return@withContext mbResult
+            return@withContext mbResult.map {
+                MovieBoxPriorityDeduplicator.deduplicateSuggestionsPreferringMovieBox(it).take(limit)
+            }
         }
 
         val iaDeferred = if (isInternetArchiveEnabled()) {
@@ -861,7 +883,9 @@ class MoviesRepositoryImpl(
                 results.firstNotNullOfOrNull { it.exceptionOrNull() } ?: IllegalStateException("Suggestions unavailable")
             )
         }
-        val merged = interleaveLists(lists).distinctBy { "${it.providerId}:${it.id}" }.take(limit)
+        val merged = MovieBoxPriorityDeduplicator
+            .deduplicateSuggestionsPreferringMovieBox(interleaveLists(lists))
+            .take(limit)
         Result.success(merged)
     }
 
@@ -1082,7 +1106,9 @@ class MoviesRepositoryImpl(
                 mergedSummary,
                 seasonCount = rawDetails.seasons.size.takeIf { it > 0 }
             )
-            val resolvedRelated = registerSummariesCanonical(rawDetails.relatedTitles)
+            val resolvedRelated = MovieBoxPriorityDeduplicator.deduplicateSummariesPreferringMovieBox(
+                registerSummariesCanonical(rawDetails.relatedTitles)
+            )
             val enriched = rawDetails.copy(
                 summary = resolvedSummary,
                 relatedTitles = resolvedRelated
@@ -1114,7 +1140,9 @@ class MoviesRepositoryImpl(
                     altDetails.summary,
                     seasonCount = altDetails.seasons.size.takeIf { it > 0 }
                 )
-                val resolvedRelated = registerSummariesCanonical(altDetails.relatedTitles)
+                val resolvedRelated = MovieBoxPriorityDeduplicator.deduplicateSummariesPreferringMovieBox(
+                    registerSummariesCanonical(altDetails.relatedTitles)
+                )
                 val enrichedAlt = altDetails.copy(
                     summary = resolvedSummary,
                     relatedTitles = resolvedRelated
@@ -1217,7 +1245,26 @@ class MoviesRepositoryImpl(
             val decoded = withContext(defaultDispatcher) {
                 MoviesCacheJsonCodec.decodeEpisodes(cachedEntry.payloadJson)
             }
-            if (decoded != null) return@withContext Result.success(decoded)
+            if (decoded != null) {
+                if (resolvedProviderId == MovieBoxProvider.PROVIDER_ID &&
+                    decoded.isNotEmpty() &&
+                    decoded.any { it.stillUrl.isNullOrBlank() } &&
+                    isTvMazeEnabled() &&
+                    !isTvMazeStillInCooldown(resolvedSeriesId, seasonNumber, currentMs)
+                ) {
+                    val enriched = enrichEpisodesWithTvMazeStills(resolvedSeriesId, seasonNumber, decoded, currentMs)
+                    if (enriched != decoded) {
+                        val encoded = withContext(defaultDispatcher) {
+                            MoviesCacheJsonCodec.encodeEpisodes(enriched)
+                        }
+                        moviesDao.upsertCacheEntry(
+                            cachedEntry.copy(payloadJson = encoded, updatedAt = currentMs)
+                        )
+                        return@withContext Result.success(enriched)
+                    }
+                }
+                return@withContext Result.success(decoded)
+            }
         }
 
         val result = when (resolvedProviderId) {
@@ -1238,7 +1285,8 @@ class MoviesRepositoryImpl(
                 episodes.isNotEmpty() &&
                 episodes.any { it.stillUrl.isNullOrBlank() }
             ) {
-                val cachedEntryDetail = moviesDao.getCacheEntry("detail:$resolvedProviderId:$resolvedSeriesId")
+                val cachedEntryDetail = moviesDao.getCacheEntry("details:$resolvedProviderId:$resolvedSeriesId")
+                    ?: moviesDao.getCacheEntry("detail:$resolvedProviderId:$resolvedSeriesId")
                 val cachedImdb = cachedEntryDetail?.let {
                     withContext(defaultDispatcher) {
                         MoviesCacheJsonCodec.decodeDetails(it.payloadJson)?.summary?.imdbId
@@ -1263,6 +1311,14 @@ class MoviesRepositoryImpl(
                             stillUrl = ep.stillUrl ?: patch.stillUrl
                         )
                     }
+                }
+                if (episodes.any { it.stillUrl.isNullOrBlank() } && isTvMazeEnabled()) {
+                    episodes = enrichEpisodesWithTvMazeStills(
+                        seriesId = resolvedSeriesId,
+                        seasonNumber = seasonNumber,
+                        episodes = episodes,
+                        currentMs = currentMs,
+                    )
                 }
             }
             val encoded = withContext(defaultDispatcher) {
@@ -1294,6 +1350,205 @@ class MoviesRepositoryImpl(
             withContext(defaultDispatcher) { MoviesCacheJsonCodec.decodeEpisodes(entry.payloadJson) }
         }
         staleDecoded?.let { Result.success(it) } ?: Result.failure(error)
+    }
+
+    private fun isTvMazeStillInCooldown(seriesId: String, seasonNumber: Int, currentMs: Long): Boolean {
+        val lastMiss = tvMazeStillCooldownBySeason["$seriesId:$seasonNumber"] ?: return false
+        return (currentMs - lastMiss) in 0L until TVMAZE_STILL_ENRICH_COOLDOWN_MS
+    }
+
+    private suspend fun enrichEpisodesWithTvMazeStills(
+        seriesId: String,
+        seasonNumber: Int,
+        episodes: List<EpisodeItem>,
+        currentMs: Long,
+    ): List<EpisodeItem> {
+        if (episodes.isEmpty() || episodes.none { it.stillUrl.isNullOrBlank() } || !isTvMazeEnabled()) {
+            return episodes
+        }
+        val cooldownKey = "$seriesId:$seasonNumber"
+        if (isTvMazeStillInCooldown(seriesId, seasonNumber, currentMs)) {
+            return episodes
+        }
+
+        val tvMazeShowId = resolveTvMazeShowIdForMovieBox(seriesId, currentMs)
+        if (tvMazeShowId.isNullOrBlank()) {
+            tvMazeStillCooldownBySeason[cooldownKey] = currentMs
+            return episodes
+        }
+
+        val tvEpisodesCacheKey = "episodes:${TvMazeSeriesProvider.PROVIDER_ID}:$tvMazeShowId:$seasonNumber"
+        val cachedTvEntry = moviesDao.getCacheEntry(tvEpisodesCacheKey)
+        var tvEpisodes: List<EpisodeItem>? = if (cachedTvEntry != null && cachedTvEntry.expiresAt > currentMs) {
+            withContext(defaultDispatcher) { MoviesCacheJsonCodec.decodeEpisodes(cachedTvEntry.payloadJson) }
+        } else {
+            null
+        }
+
+        if (tvEpisodes == null) {
+            val fetched = runCatching { tvMazeProvider.getEpisodes(tvMazeShowId, seasonNumber) }
+                .getOrNull()
+                ?.getOrNull()
+            if (fetched != null) {
+                tvEpisodes = fetched
+                val encoded = withContext(defaultDispatcher) { MoviesCacheJsonCodec.encodeEpisodes(fetched) }
+                moviesDao.upsertCacheEntry(
+                    MovieCacheEntryEntity(
+                        cacheKey = tvEpisodesCacheKey,
+                        providerId = TvMazeSeriesProvider.PROVIDER_ID,
+                        payloadJson = encoded,
+                        updatedAt = currentMs,
+                        expiresAt = currentMs + CACHE_TTL_MS
+                    )
+                )
+            } else {
+                // Offline fallback to stale TVMaze episode cache if present
+                tvEpisodes = cachedTvEntry?.let { entry ->
+                    withContext(defaultDispatcher) { MoviesCacheJsonCodec.decodeEpisodes(entry.payloadJson) }
+                }
+            }
+        }
+
+        if (tvEpisodes.isNullOrEmpty()) {
+            tvMazeStillCooldownBySeason[cooldownKey] = currentMs
+            return episodes
+        }
+
+        val stillsBySeasonEpisode = HashMap<Pair<Int, Int>, String>(tvEpisodes.size)
+        for (tvEp in tvEpisodes) {
+            val url = tvEp.stillUrl?.trim()?.takeIf { it.isNotBlank() } ?: continue
+            stillsBySeasonEpisode.putIfAbsent(tvEp.seasonNumber to tvEp.episodeNumber, url)
+        }
+        if (stillsBySeasonEpisode.isEmpty()) {
+            tvMazeStillCooldownBySeason[cooldownKey] = currentMs
+            return episodes
+        }
+
+        var patchedCount = 0
+        val patched = episodes.map { ep ->
+            if (!ep.stillUrl.isNullOrBlank()) {
+                ep
+            } else {
+                val fillUrl = stillsBySeasonEpisode[ep.seasonNumber to ep.episodeNumber]
+                if (!fillUrl.isNullOrBlank()) {
+                    patchedCount++
+                    ep.copy(stillUrl = fillUrl)
+                } else {
+                    ep
+                }
+            }
+        }
+        if (patchedCount == 0) {
+            tvMazeStillCooldownBySeason[cooldownKey] = currentMs
+        }
+        return patched
+    }
+
+    private suspend fun resolveTvMazeShowIdForMovieBox(
+        seriesId: String,
+        currentMs: Long,
+    ): String? {
+        tvMazeShowIdByMovieBoxSeries[seriesId]?.let { return it }
+
+        val linked = mediaResolver.getLinksForTitle(MovieBoxProvider.PROVIDER_ID, seriesId)
+            .firstOrNull { it.providerId == TvMazeSeriesProvider.PROVIDER_ID }
+            ?.providerTitleId
+            ?.takeIf { it.isNotBlank() }
+        if (linked != null) {
+            tvMazeShowIdByMovieBoxSeries[seriesId] = linked
+            return linked
+        }
+
+        val lastShowMiss = tvMazeShowLookupCooldown[seriesId]
+        if (lastShowMiss != null && (currentMs - lastShowMiss) in 0L until TVMAZE_STILL_ENRICH_COOLDOWN_MS) {
+            return null
+        }
+
+        val detailEntry = moviesDao.getCacheEntry("details:${MovieBoxProvider.PROVIDER_ID}:$seriesId")
+            ?: moviesDao.getCacheEntry("detail:${MovieBoxProvider.PROVIDER_ID}:$seriesId")
+        val cachedDetails = detailEntry?.let { entry ->
+            withContext(defaultDispatcher) { MoviesCacheJsonCodec.decodeDetails(entry.payloadJson) }
+        }
+        val mbSummary = cachedDetails?.summary
+            ?: getCachedSummary(MovieBoxProvider.PROVIDER_ID, seriesId)
+
+        val directTvMazeId = mbSummary?.tvmazeId?.takeIf { it.isNotBlank() }
+        if (directTvMazeId != null) {
+            tvMazeShowIdByMovieBoxSeries[seriesId] = directTvMazeId
+            return directTvMazeId
+        }
+
+        val cleanImdb = MediaMatcher.normalizeImdbId(mbSummary?.imdbId)
+        if (cleanImdb != null) {
+            val lookupRes = runCatching { tvMazeProvider.lookupShowByImdb(cleanImdb) }.getOrNull()?.getOrNull()
+            if (lookupRes != null && lookupRes.id.isNotBlank()) {
+                val linkedShow = if (mbSummary != null) {
+                    mediaResolver.resolveOrRegister(
+                        lookupRes.copy(canonicalId = mbSummary.canonicalId),
+                        seasonCount = cachedDetails?.seasons?.size?.takeIf { it > 0 }
+                    )
+                } else {
+                    lookupRes
+                }
+                tvMazeShowIdByMovieBoxSeries[seriesId] = linkedShow.id
+                return linkedShow.id
+            }
+        }
+
+        if (mbSummary == null || mbSummary.title.isBlank()) {
+            tvMazeShowLookupCooldown[seriesId] = currentMs
+            return null
+        }
+
+        val mbSeasonCount = cachedDetails?.seasons?.size?.takeIf { it > 0 }
+        val mbCandidate = MatchCandidate.fromSummary(mbSummary, seasonCount = mbSeasonCount)
+        val searchItems = runCatching {
+            tvMazeProvider.search(mbSummary.title, MediaKind.TV_SERIES, page = 1, pageSize = 8)
+        }.getOrNull()?.getOrNull()?.items.orEmpty()
+
+        val normMbTitle = MediaMatcher.normalizeTitle(mbSummary.title)
+        val shortlisted = searchItems.filter { cand ->
+            MediaMatcher.normalizeTvMazeId(cand.id) != null && (
+                (cleanImdb != null && MediaMatcher.normalizeImdbId(cand.imdbId) == cleanImdb) ||
+                    MediaMatcher.normalizeTitle(cand.title) == normMbTitle
+                )
+        }.take(2)
+
+        for (cand in shortlisted) {
+            val quickEval = MediaMatcher.evaluate(mbCandidate, MatchCandidate.fromSummary(cand))
+            if (quickEval.isMatch) {
+                mediaResolver.resolveOrRegister(
+                    cand.copy(canonicalId = mbSummary.canonicalId),
+                    seasonCount = mbSeasonCount
+                )
+                tvMazeShowIdByMovieBoxSeries[seriesId] = cand.id
+                return cand.id
+            }
+            val yearGapOk = mbSummary.releaseYear != null &&
+                cand.releaseYear != null &&
+                kotlin.math.abs(mbSummary.releaseYear - cand.releaseYear) <= 1
+            if (yearGapOk && (mbSeasonCount != null || mbSummary.durationMinutes != null)) {
+                val candDetails = runCatching { tvMazeProvider.getDetails(cand.id) }
+                    .getOrNull()?.getOrNull()
+                if (candDetails != null) {
+                    val detailedCand = MatchCandidate.fromSummary(
+                        candDetails.summary,
+                        seasonCount = candDetails.seasons.size.takeIf { it > 0 }
+                    )
+                    if (MediaMatcher.evaluate(mbCandidate, detailedCand).isMatch) {
+                        mediaResolver.resolveOrRegister(
+                            candDetails.summary.copy(canonicalId = mbSummary.canonicalId),
+                            seasonCount = candDetails.seasons.size.takeIf { it > 0 }
+                        )
+                        tvMazeShowIdByMovieBoxSeries[seriesId] = candDetails.summary.id
+                        return candDetails.summary.id
+                    }
+                }
+            }
+        }
+
+        tvMazeShowLookupCooldown[seriesId] = currentMs
+        return null
     }
 
     override suspend fun getSeasonEpisodeSizes(
@@ -2445,9 +2700,15 @@ class MoviesRepositoryImpl(
     }
 
     private suspend fun registerFeedCanonical(feed: MoviesHomeFeed): MoviesHomeFeed {
-        val registeredBanners = registerSummariesCanonical(feed.featuredBanners)
+        val registeredBanners = MovieBoxPriorityDeduplicator.deduplicateSummariesPreferringMovieBox(
+            registerSummariesCanonical(feed.featuredBanners)
+        )
         val registeredSections = feed.sections.map { section ->
-            section.copy(items = registerSummariesCanonical(section.items))
+            section.copy(
+                items = MovieBoxPriorityDeduplicator.deduplicateSummariesPreferringMovieBox(
+                    registerSummariesCanonical(section.items)
+                )
+            )
         }
         return feed.copy(
             featuredBanners = registeredBanners,
@@ -2630,6 +2891,7 @@ class MoviesRepositoryImpl(
         const val CACHE_TTL_MS = 6L * 60 * 60 * 1000L
         const val STALE_RETENTION_MS = 7L * 24 * 60 * 60 * 1000L
         const val DURATION_MISS_COOLDOWN_MS = 15L * 60 * 1000L
+        const val TVMAZE_STILL_ENRICH_COOLDOWN_MS = 10L * 60 * 1000L
         const val MOVIEBOX_FALLBACK_NOTICE =
             "Main catalogue temporarily unavailable — showing archive & TV guide"
     }

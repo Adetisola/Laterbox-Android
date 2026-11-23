@@ -1054,12 +1054,13 @@ class MoviesHomeViewModel(
         val hidden = state.hiddenMediaKeys
         val watchlistSnapshot = effectiveWatchlist()
         val recentlyViewedSnapshot = effectiveRecentlyViewed()
-        val candidatePool = (
-            state.feed?.featuredBanners.orEmpty() +
-                state.feed?.sections.orEmpty().flatMap { it.items } +
-                state.topRatedRail +
-                state.newestRail
-            ).distinctBy { it.stableMediaKey }
+        val candidatePool = com.laterbox.app.movies.domain.engine.MovieBoxPriorityDeduplicator
+            .deduplicateSummariesPreferringMovieBox(
+                state.feed?.featuredBanners.orEmpty() +
+                    state.feed?.sections.orEmpty().flatMap { it.items } +
+                    state.topRatedRail +
+                    state.newestRail
+            )
 
         val byw = MoviesDiscoveryEngine.buildBecauseYouWatchedGroups(
             watchHistory = latestNonTrailerHistory,

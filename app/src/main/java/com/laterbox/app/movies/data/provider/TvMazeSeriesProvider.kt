@@ -230,6 +230,30 @@ class TvMazeSeriesProvider(
             }
         }
 
+    suspend fun lookupShowByImdb(imdbId: String): Result<MovieTitleSummary?> = withContext(Dispatchers.IO) {
+        val clean = imdbId.trim()
+        if (clean.isBlank()) return@withContext Result.success(null)
+        runCatching {
+            val url = "$normalizedBaseUrl/lookup/shows".toHttpUrl().newBuilder()
+                .addQueryParameter("imdb", clean)
+                .build()
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", "LaterboxAndroid/1.0 (+https://github.com/Adetisola/Laterbox)")
+                .header("Accept", "application/json")
+                .get()
+                .build()
+            okHttpClient.newCall(request).execute().use { response ->
+                if (response.code == 404) return@use null
+                if (!response.isSuccessful) {
+                    throw IOException("Series guide is temporarily unavailable.")
+                }
+                val raw = response.body?.string()?.takeIf { it.isNotBlank() } ?: return@use null
+                parseShowSummary(JSONObject(raw))
+            }
+        }
+    }
+
     override suspend fun getDetails(titleId: String): Result<MediaDetails> = withContext(Dispatchers.IO) {
         runCatching {
             val url = "$normalizedBaseUrl/shows/$titleId?embed[]=cast&embed[]=seasons&embed[]=episodes"

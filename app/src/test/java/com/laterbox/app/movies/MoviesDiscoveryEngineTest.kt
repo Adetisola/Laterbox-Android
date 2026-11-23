@@ -144,4 +144,58 @@ class MoviesDiscoveryEngineTest {
         assertEquals(0L, MoviesDiscoveryEngine.parseSortableDateKey(null))
         assertNull(MoviesDiscoveryEngine.pickSurpriseMe(emptyList(), emptyList(), emptySet(), emptyList(), emptyList())?.pick)
     }
+
+    @Test
+    fun deduplicator_prefersMovieBoxAcrossStrongMatchesWithoutCollapsingUnrelatedSameTitles() {
+        val tvMazeMatch = MovieTitleSummary(
+            id = "169",
+            providerId = "tvmaze",
+            kind = MediaKind.TV_SERIES,
+            title = "Breaking Bad",
+            releaseYear = 2008,
+            imdbId = "tt0903747",
+            tvmazeId = "169",
+            isPlayableHint = false
+        )
+        val movieBoxMatch = MovieTitleSummary(
+            id = "mb_bb",
+            providerId = "moviebox",
+            kind = MediaKind.TV_SERIES,
+            title = "Breaking Bad",
+            releaseYear = 2008,
+            imdbId = "tt0903747",
+            isPlayableHint = true
+        )
+        val unrelatedSameName = MovieTitleSummary(
+            id = "ia_bb_doc",
+            providerId = "ia",
+            kind = MediaKind.MOVIE,
+            title = "Breaking Bad",
+            releaseYear = 1995,
+            isPlayableHint = true
+        )
+
+        // Even when TVMaze appears first (e.g., watchlist before catalogue), MovieBox replaces it in-place
+        val deduped = com.laterbox.app.movies.domain.engine.MovieBoxPriorityDeduplicator
+            .deduplicateSummariesPreferringMovieBox(listOf(tvMazeMatch, movieBoxMatch, unrelatedSameName))
+
+        assertEquals(2, deduped.size)
+        assertEquals("moviebox", deduped[0].providerId)
+        assertEquals("mb_bb", deduped[0].id)
+        assertEquals("169", deduped[0].tvmazeId)
+        assertEquals("ia_bb_doc", deduped[1].id)
+
+        // Surprise Me picks the MovieBox item instead of the duplicate TVMaze entry
+        val surprise = MoviesDiscoveryEngine.pickSurpriseMe(
+            watchHistory = emptyList(),
+            recentlyViewed = emptyList(),
+            hiddenMediaKeys = emptySet(),
+            watchlist = listOf(tvMazeMatch),
+            candidatePool = listOf(movieBoxMatch),
+            seed = 7L,
+        )
+        assertNotNull(surprise)
+        assertEquals("moviebox", surprise!!.pick.providerId)
+        assertEquals("mb_bb", surprise.pick.id)
+    }
 }

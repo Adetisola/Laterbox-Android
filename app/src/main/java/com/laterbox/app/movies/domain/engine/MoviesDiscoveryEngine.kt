@@ -58,11 +58,9 @@ object MoviesDiscoveryEngine {
 
         if (anchorHistory.isEmpty()) return emptyList()
 
-        val uniquePool = candidatePool
-            .asSequence()
-            .filter { it.stableMediaKey !in hiddenMediaKeys }
-            .distinctBy { it.stableMediaKey }
-            .toList()
+        val uniquePool = MovieBoxPriorityDeduplicator.deduplicateSummariesPreferringMovieBox(
+            candidatePool.filter { it.stableMediaKey !in hiddenMediaKeys }
+        )
 
         val usedCandidateKeys = mutableSetOf<String>()
         val groups = mutableListOf<BecauseYouWatchedGroup>()
@@ -137,11 +135,10 @@ object MoviesDiscoveryEngine {
         val anchorGenres = anchor.genres.map { it.trim().lowercase(Locale.US) }.filter { it.isNotBlank() }.toSet()
         val relatedKeys = relatedTitles.map { it.stableMediaKey }.toSet()
 
-        val mergedPool = (relatedTitles + candidatePool)
-            .asSequence()
-            .filter { it.stableMediaKey != anchorKey && it.stableMediaKey !in hiddenMediaKeys }
-            .distinctBy { it.stableMediaKey }
-            .toList()
+        val mergedPool = MovieBoxPriorityDeduplicator.deduplicateSummariesPreferringMovieBox(
+            (relatedTitles + candidatePool)
+                .filter { it.stableMediaKey != anchorKey && it.stableMediaKey !in hiddenMediaKeys }
+        )
 
         return mergedPool.mapNotNull { candidate ->
             val isExplicitRelated = candidate.stableMediaKey in relatedKeys
@@ -181,14 +178,13 @@ object MoviesDiscoveryEngine {
         seed: Long = System.currentTimeMillis(),
         preferredKind: MediaKind? = null
     ): SurprisePickResult? {
-        val combinedPool = (watchlist + candidatePool)
-            .asSequence()
-            .filter {
-                it.stableMediaKey !in hiddenMediaKeys &&
-                    (preferredKind == null || it.kind == preferredKind)
-            }
-            .distinctBy { it.stableMediaKey }
-            .toList()
+        val combinedPool = MovieBoxPriorityDeduplicator.deduplicateSummariesPreferringMovieBox(
+            (watchlist + candidatePool)
+                .filter {
+                    it.stableMediaKey !in hiddenMediaKeys &&
+                        (preferredKind == null || it.kind == preferredKind)
+                }
+        )
 
         if (combinedPool.isEmpty()) return null
 
@@ -296,21 +292,18 @@ object MoviesDiscoveryEngine {
         hiddenMediaKeys: Set<String> = emptySet(),
         limit: Int = 15
     ): List<MovieTitleSummary> {
-        return items
-            .asSequence()
-            .filter { item ->
-                item.stableMediaKey !in hiddenMediaKeys &&
-                    ((item.addedAtMs != null && item.addedAtMs > 0L) ||
-                        parseSortableDateKey(item.releaseDate) > 0L)
-            }
-            .distinctBy { it.stableMediaKey }
+        val eligible = items.filter { item ->
+            item.stableMediaKey !in hiddenMediaKeys &&
+                ((item.addedAtMs != null && item.addedAtMs > 0L) ||
+                    parseSortableDateKey(item.releaseDate) > 0L)
+        }
+        return MovieBoxPriorityDeduplicator.deduplicateSummariesPreferringMovieBox(eligible)
             .sortedByDescending { item ->
                 val dateKey = parseSortableDateKey(item.releaseDate)
                 val addedKey = item.addedAtMs ?: 0L
                 maxOf(addedKey, dateKey)
             }
             .take(limit)
-            .toList()
     }
 
     fun selectQuickRuntimePicks(
@@ -318,16 +311,13 @@ object MoviesDiscoveryEngine {
         hiddenMediaKeys: Set<String> = emptySet(),
         limit: Int = 12
     ): List<MovieTitleSummary> {
-        return items
-            .asSequence()
-            .filter {
-                it.stableMediaKey !in hiddenMediaKeys &&
-                    RuntimeBucket.QUICK.matches(it.durationMinutes)
-            }
-            .distinctBy { it.stableMediaKey }
+        val eligible = items.filter {
+            it.stableMediaKey !in hiddenMediaKeys &&
+                RuntimeBucket.QUICK.matches(it.durationMinutes)
+        }
+        return MovieBoxPriorityDeduplicator.deduplicateSummariesPreferringMovieBox(eligible)
             .sortedByDescending { it.rating ?: 0.0 }
             .take(limit)
-            .toList()
     }
 
     fun extractAvailableLanguages(items: List<MovieTitleSummary>): List<String> {
