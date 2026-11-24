@@ -773,15 +773,16 @@ internal object DownloadSourceRefresher {
                 !src.url.contains(".mpd", ignoreCase = true) &&
                 !src.url.contains(".m3u8", ignoreCase = true)
         }
-        val normalizedExclude = excludeHost?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
-        val nonExcluded = if (normalizedExclude != null) {
+        val excludedDomain = com.laterbox.app.network.CdnFailureDomainResolver.resolve(excludeHost)
+        val nonExcluded = if (excludedDomain != null) {
             progressiveSources.filter { src ->
-                android.net.Uri.parse(src.url).host?.lowercase() != normalizedExclude
+                com.laterbox.app.network.CdnFailureDomainResolver.resolve(src.url) != excludedDomain
             }
         } else {
             progressiveSources
         }
-        val pool = nonExcluded.ifEmpty { progressiveSources }
+        if (nonExcluded.isEmpty()) return null
+        val pool = nonExcluded
         val selected = pool.firstOrNull {
             parsed.qualityLabel.isNotBlank() && it.qualityLabel.equals(parsed.qualityLabel, ignoreCase = true)
         } ?: pool.maxByOrNull { it.qualityHeight } ?: return null

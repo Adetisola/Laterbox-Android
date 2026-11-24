@@ -326,25 +326,35 @@ class MoviesDownloadBridgeTest {
     }
 
     @Test
-    fun parseUrlExpiryMillis_handlesExplicitExpAndRecentTSafely() {
+    fun parseUrlExpiryMillis_preservesExplicitExpiriesAndIgnoresUnknownT() {
         val nowMs = 1_763_900_000_000L
-        val expSec = 1_763_903_600L // +1 hour
-        assertEquals(
-            expSec * 1_000L,
-            MoviesDownloadBridge.parseUrlExpiryMillis("https://bcdnxw.hakunaymatata.com/v.mp4?sign=s&exp=$expSec", nowMs)
-        )
-        // Recent issue timestamp t= (60s ago) derives remaining 14 min window instead of marking already expired
+        val futureExpSec = 1_763_903_600L // +1 hour
+        val nearExpSec = (nowMs / 1_000L) + 30L // inside 60s expiry buffer
+        val pastExpSec = (nowMs / 1_000L) - 120L // already expired
+
+        // Explicit future, near-expiry, and already-expired exp/expires/Expires are preserved
+        // so isUrlExpiredOrExpiring can detect expiry accurately.
+        val futureParsed = MoviesDownloadBridge.parseUrlExpiryMillis("https://bcdnxw.hakunaymatata.com/v.mp4?sign=s&exp=$futureExpSec")
+        val nearParsed = MoviesDownloadBridge.parseUrlExpiryMillis("https://bcdnxw.hakunaymatata.com/v.mp4?sign=s&expires=$nearExpSec")
+        val pastParsed = MoviesDownloadBridge.parseUrlExpiryMillis("https://bcdnxw.hakunaymatata.com/v.mp4?sign=s&Expires=$pastExpSec")
+
+        assertEquals(futureExpSec * 1_000L, futureParsed)
+        assertEquals(nearExpSec * 1_000L, nearParsed)
+        assertEquals(pastExpSec * 1_000L, pastParsed)
+        assertFalse(com.laterbox.app.media.data.download.DownloadSourceRefresher.isUrlExpiredOrExpiring(futureParsed, nowMs))
+        assertTrue(com.laterbox.app.media.data.download.DownloadSourceRefresher.isUrlExpiredOrExpiring(nearParsed, nowMs))
+        assertTrue(com.laterbox.app.media.data.download.DownloadSourceRefresher.isUrlExpiredOrExpiring(pastParsed, nowMs))
+
+        // Unknown t= parameter must NEVER infer expiry regardless of timestamp
         val recentTSec = (nowMs / 1_000L) - 60L
-        assertEquals(
-            (recentTSec + 15 * 60L) * 1_000L,
-            MoviesDownloadBridge.parseUrlExpiryMillis("https://bcdnxw.hakunaymatata.com/v.mp4?sign=s&t=$recentTSec", nowMs)
-        )
-        // Old t= timestamp (>15m ago) returns null rather than forcing pre-flight refresh failure
-        val oldTSec = (nowMs / 1_000L) - 3_600L
-        assertEquals(
-            null,
-            MoviesDownloadBridge.parseUrlExpiryMillis("https://bcdnxw.hakunaymatata.com/v.mp4?sign=s&t=$oldTSec", nowMs)
-        )
+        val futureTSec = (nowMs / 1_000L) + 600L
+        assertEquals(null, MoviesDownloadBridge.parseUrlExpiryMillis("https://bcdnxw.hakunaymatata.com/v.mp4?sign=s&t=$recentTSec"))
+        assertEquals(null, MoviesDownloadBridge.parseUrlExpiryMillis("https://bcdnxw.hakunaymatata.com/v.mp4?sign=s&t=$futureTSec"))
+
+        // Invalid or non-positive exp values return null
+        assertEquals(null, MoviesDownloadBridge.parseUrlExpiryMillis("https://bcdnxw.hakunaymatata.com/v.mp4?exp=0"))
+        assertEquals(null, MoviesDownloadBridge.parseUrlExpiryMillis("https://bcdnxw.hakunaymatata.com/v.mp4?exp=-100"))
+        assertEquals(null, MoviesDownloadBridge.parseUrlExpiryMillis("https://bcdnxw.hakunaymatata.com/v.mp4?exp=abc"))
     }
 
     @Test

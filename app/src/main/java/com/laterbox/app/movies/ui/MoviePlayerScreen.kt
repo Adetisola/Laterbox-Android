@@ -2995,17 +2995,23 @@ internal fun extractHttpFailureInfo(error: PlaybackException): PlaybackHttpFailu
         if (cause is HttpDataSource.InvalidResponseCodeException) {
             val host = runCatching { cause.dataSpec.uri.host?.lowercase()?.takeIf { it.isNotBlank() } }.getOrNull()
             val safeHeaders = linkedMapOf<String, String>()
-            var retryAfterSec: Long? = null
             cause.headerFields.forEach { (rawKey, vals) ->
                 val key = rawKey?.trim().orEmpty()
                 val firstVal = vals.firstOrNull()?.trim().orEmpty()
-                if (key.equals("Retry-After", ignoreCase = true) && firstVal.isNotEmpty()) {
-                    retryAfterSec = firstVal.toLongOrNull()?.takeIf { it > 0L }
-                    safeHeaders["Retry-After"] = firstVal
-                } else if (key.equals("Content-Type", ignoreCase = true) || key.equals("Server", ignoreCase = true)) {
-                    if (firstVal.isNotEmpty()) safeHeaders[key] = firstVal
+                if (firstVal.isNotEmpty() && (
+                        key.equals("Retry-After", ignoreCase = true) ||
+                            key.equals("Date", ignoreCase = true) ||
+                            key.equals("Content-Type", ignoreCase = true) ||
+                            key.equals("Server", ignoreCase = true)
+                        )
+                ) {
+                    safeHeaders[key] = firstVal
                 }
             }
+            val retryAfterSec = com.laterbox.app.network.RetryAfterParser.parseHeaderFields(
+                headerFields = cause.headerFields,
+                maxDelaySeconds = com.laterbox.app.network.RetryAfterParser.MAX_INTERACTIVE_PLAYBACK_DELAY_SECONDS
+            )
             return PlaybackHttpFailureInfo(
                 statusCode = cause.responseCode,
                 failingHost = host,

@@ -1923,4 +1923,107 @@ class MoviesViewModelsTest {
         advanceUntilIdle()
         assertEquals(1, episodeSizeCalls)
     }
+
+    @Test
+    fun playerViewModel_429OnBcdnxwCoolsBcdnwAcrossRefreshAndKeepsSbcdnwIndependent() = runTest {
+        var fakeClockMs = 1_700_000_000_000L
+        var resolveCalls = 0
+        var refreshedReturnedOnlyBcdnw = false
+
+        val repo = object : MoviesRepository by FakeMoviesRepository() {
+            override suspend fun resolvePlayback(
+                providerId: String,
+                titleId: String,
+                seasonNumber: Int?,
+                episodeNumber: Int?
+            ): Result<PlaybackResolution> {
+                resolveCalls++
+                val sources = if (resolveCalls == 1) {
+                    listOf(
+                        PlaybackSource(
+                            id = "mp4_play_720",
+                            url = "https://bcdnxw.hakunaymatata.com/play/movie_720.mp4",
+                            format = "MP4",
+                            qualityLabel = "720p",
+                            qualityHeight = 720,
+                            providerName = "MovieBox"
+                        ),
+                        PlaybackSource(
+                            id = "mp4_dl_720",
+                            url = "https://bcdnw.hakunaymatata.com/dl/movie_720.mp4",
+                            format = "MP4",
+                            qualityLabel = "720p",
+                            qualityHeight = 720,
+                            providerName = "MovieBox"
+                        ),
+                        PlaybackSource(
+                            id = "dash_sbcdnw",
+                            url = "https://sbcdnw.hakunaymatata.com/dash/index.mpd",
+                            format = "DASH",
+                            qualityLabel = "720p",
+                            qualityHeight = 720,
+                            providerName = "MovieBox"
+                        )
+                    )
+                } else {
+                    refreshedReturnedOnlyBcdnw = true
+                    listOf(
+                        PlaybackSource(
+                            id = "mp4_dl_fresh",
+                            url = "https://bcdnw.hakunaymatata.com/dl/fresh_720.mp4",
+                            format = "MP4",
+                            qualityLabel = "720p",
+                            qualityHeight = 720,
+                            providerName = "MovieBox"
+                        )
+                    )
+                }
+                return Result.success(
+                    PlaybackResolution.Available(
+                        title = "Test Movie",
+                        sources = sources,
+                        subtitles = emptyList(),
+                        providerName = "MovieBox",
+                        sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+                    )
+                )
+            }
+        }
+
+        val vm = MoviePlayerViewModel(repo, clockMs = { fakeClockMs })
+        vm.load("moviebox", "m_1")
+        val initial = vm.uiState.first { !it.isLoading }
+        assertEquals("https://bcdnxw.hakunaymatata.com/play/movie_720.mp4", initial.selectedSource?.url)
+
+        // 429 on bcdnxw (Retry-After: 25s) cools bcdnw alias and switches cleanly to independent sbcdnw, preserving position.
+        val handled1 = vm.handlePlaybackSourceFailure(
+            failedSourceUrl = "https://bcdnxw.hakunaymatata.com/play/movie_720.mp4",
+            currentPositionMs = 67_500L,
+            httpStatusCode = 429,
+            retryAfterSeconds = 25L,
+            failingHost = "bcdnxw.hakunaymatata.com"
+        )
+        assertTrue(handled1)
+        assertEquals("https://sbcdnw.hakunaymatata.com/dash/index.mpd", vm.uiState.value.selectedSource?.url)
+        assertEquals(67_500L, vm.uiState.value.startPositionMs)
+
+        // Now sbcdnw gets 429 too; delayed refresh returns ONLY bcdnw while still cooled -> must NOT select bcdnw.
+        val handled2 = vm.handlePlaybackSourceFailure(
+            failedSourceUrl = "https://sbcdnw.hakunaymatata.com/dash/index.mpd",
+            currentPositionMs = 68_000L,
+            httpStatusCode = 429,
+            retryAfterSeconds = 25L,
+            failingHost = "sbcdnw.hakunaymatata.com"
+        )
+        assertTrue(handled2)
+        fakeClockMs += 5_000L
+        advanceUntilIdle()
+
+        assertTrue(refreshedReturnedOnlyBcdnw)
+        assertEquals(2, resolveCalls)
+        assertEquals("https://sbcdnw.hakunaymatata.com/dash/index.mpd", vm.uiState.value.selectedSource?.url)
+        assertEquals(68_000L, vm.uiState.value.startPositionMs)
+        val err = vm.uiState.value.errorMessage.orEmpty()
+        assertTrue("Expected rate-limit unavailability message, got: $err", err.contains("rate-limited", ignoreCase = true))
+    }
 }

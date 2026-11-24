@@ -1548,10 +1548,10 @@ class MovieBoxProvider(
                             return@use
                         }
 
-                        val retryAfterSeconds = response.header("Retry-After")
-                            ?.trim()
-                            ?.toLongOrNull()
-                            ?.takeIf { it > 0L }
+                        val retryAfterSeconds = com.laterbox.app.network.RetryAfterParser.parseOkHttpResponse(
+                            response = response,
+                            maxDelaySeconds = com.laterbox.app.network.RetryAfterParser.MAX_INTERACTIVE_PLAYBACK_DELAY_SECONDS
+                        )
 
                         throw MovieBoxApiException(
                             httpCode = response.code,

@@ -15,6 +15,8 @@ import com.laterbox.app.movies.domain.model.PlaybackSource
 import com.laterbox.app.movies.domain.model.SeasonSummary
 import com.laterbox.app.movies.domain.model.SubtitleTrack
 import com.laterbox.app.movies.domain.repository.MoviesRepository
+import com.laterbox.app.network.CdnFailureDomainResolver
+import com.laterbox.app.network.RetryAfterParser
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -102,7 +104,8 @@ data class MoviePlayerUiState(
 class MoviePlayerViewModel(
     private val moviesRepository: MoviesRepository,
     private val moviesDownloadBridge: MoviesDownloadBridge? = null,
-    private val userPreferencesRepository: UserPreferencesRepository? = null
+    private val userPreferencesRepository: UserPreferencesRepository? = null,
+    private val clockMs: () -> Long = System::currentTimeMillis
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MoviePlayerUiState())
@@ -111,7 +114,7 @@ class MoviePlayerViewModel(
     private var loadJob: Job? = null
     private var loadedKey: String? = null
     private var activeProviderId: String = ""
-    private val rateLimitedHostsUntilMs = ConcurrentHashMap<String, Long>()
+    private val rateLimitedDomainsUntilMs = ConcurrentHashMap<String, Long>()
 
     init {
         userPreferencesRepository?.let { prefsRepo ->
@@ -186,7 +189,7 @@ class MoviePlayerViewModel(
         if (!forceReload && loadedKey == key && _uiState.value.resolution != null) return
         loadedKey = key
         activeProviderId = providerId
-        rateLimitedHostsUntilMs.clear()
+        rateLimitedDomainsUntilMs.clear()
 
         loadJob?.cancel()
         _uiState.update {
@@ -408,12 +411,12 @@ class MoviePlayerViewModel(
         val current = _uiState.value
         val available = current.resolution as? PlaybackResolution.Available ?: return false
         val cleanUrl = failedSourceUrl.trim()
-        val resolvedHost = failingHost?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
-            ?: cleanUrl.toHttpUrlOrNull()?.host?.lowercase()
-        val nowMs = System.currentTimeMillis()
-        if (httpStatusCode == 429 && resolvedHost != null) {
-            val cooldownSec = (retryAfterSeconds ?: 2L).coerceIn(1L, 30L)
-            rateLimitedHostsUntilMs[resolvedHost] = nowMs + cooldownSec * 1_000L
+        val resolvedDomain = CdnFailureDomainResolver.resolve(failingHost)
+            ?: CdnFailureDomainResolver.resolve(cleanUrl)
+        val nowMs = clockMs()
+        if (httpStatusCode == 429 && resolvedDomain != null) {
+            val cooldownSec = (retryAfterSeconds ?: 2L).coerceIn(1L, RetryAfterParser.MAX_INTERACTIVE_PLAYBACK_DELAY_SECONDS)
+            rateLimitedDomainsUntilMs[resolvedDomain] = nowMs + cooldownSec * 1_000L
         }
 
         val updatedFailed = if (cleanUrl.isNotBlank()) current.failedSourceUrls + cleanUrl else current.failedSourceUrls
@@ -421,7 +424,7 @@ class MoviePlayerViewModel(
             sources = available.sources,
             failedUrls = updatedFailed,
             preferredQualityHeight = current.playbackPreferences.defaultQualityHeight,
-            cooledHosts = activeCooledHosts(nowMs)
+            cooledHosts = activeCooledDomains(nowMs)
         )
         if (fallback != null) {
             _uiState.update {
@@ -452,7 +455,7 @@ class MoviePlayerViewModel(
             val epNum = current.episodeNumber
             val preservedPosMs = currentPositionMs.coerceAtLeast(0L)
             val delayBeforeRefreshMs = if (httpStatusCode == 429) {
-                (retryAfterSeconds ?: 1L).coerceIn(0L, 5L) * 1_000L
+                (retryAfterSeconds ?: 1L).coerceIn(0L, RetryAfterParser.MAX_INLINE_MEDIA3_RETRY_DELAY_SECONDS) * 1_000L
             } else {
                 0L
             }
@@ -465,12 +468,14 @@ class MoviePlayerViewModel(
                     ?.invalidatePlaybackCache(providerId, targetId, seasonNum, epNum)
                 val refreshResult = moviesRepository.resolvePlayback(providerId, targetId, seasonNum, epNum)
                 val refreshed = refreshResult.getOrNull() as? PlaybackResolution.Available
+                val postRefreshNowMs = clockMs()
+                val cooledAfterRefresh = activeCooledDomains(postRefreshNowMs)
                 val freshFallback = refreshed?.let { res ->
                     pickNextFallbackSource(
                         sources = res.sources,
                         failedUrls = updatedFailed,
                         preferredQualityHeight = _uiState.value.playbackPreferences.defaultQualityHeight,
-                        cooledHosts = emptySet()
+                        cooledHosts = cooledAfterRefresh
                     )
                 }
                 if (refreshed != null && freshFallback != null) {
@@ -486,18 +491,29 @@ class MoviePlayerViewModel(
                     }
                 } else {
                     val refreshErr = refreshResult.exceptionOrNull()
+                    val remainingCooldownSec = resolvedDomain?.let { dom ->
+                        rateLimitedDomainsUntilMs[dom]?.let { untilMs ->
+                            val remMs = untilMs - postRefreshNowMs
+                            if (remMs > 0L) ((remMs + 999L) / 1_000L).coerceIn(1L, RetryAfterParser.MAX_INTERACTIVE_PLAYBACK_DELAY_SECONDS) else null
+                        }
+                    }
+                    val waitHintSec = retryAfterSeconds?.coerceIn(1L, RetryAfterParser.MAX_INTERACTIVE_PLAYBACK_DELAY_SECONDS)
+                        ?: remainingCooldownSec
                     val exhaustionMessage = when {
                         refreshErr is MovieBoxApiException && refreshErr.httpCode == 429 ->
                             refreshErr.message ?: "Streaming service is temporarily busy. Please try again shortly."
-                        httpStatusCode == 429 && retryAfterSeconds != null ->
-                            "Streaming server is temporarily busy (rate-limited). Please try again in ${retryAfterSeconds.coerceIn(1L, 60L)}s."
+                        httpStatusCode == 429 && waitHintSec != null ->
+                            "Streaming server is temporarily busy (rate-limited). Please try again in ${waitHintSec}s."
                         httpStatusCode == 429 ->
                             "Streaming server is temporarily busy (rate-limited). Please try again shortly."
                         else ->
                             "Playback access expired or needs verification. Try again or switch quality."
                     }
                     _uiState.update {
-                        it.copy(errorMessage = exhaustionMessage)
+                        it.copy(
+                            startPositionMs = preservedPosMs,
+                            errorMessage = exhaustionMessage
+                        )
                     }
                 }
             }
@@ -506,10 +522,10 @@ class MoviePlayerViewModel(
         return false
     }
 
-    private fun activeCooledHosts(nowMs: Long = System.currentTimeMillis()): Set<String> {
-        val expired = rateLimitedHostsUntilMs.entries.filter { it.value <= nowMs }.map { it.key }
-        expired.forEach { rateLimitedHostsUntilMs.remove(it) }
-        return rateLimitedHostsUntilMs.keys.toSet()
+    private fun activeCooledDomains(nowMs: Long = clockMs()): Set<String> {
+        val expired = rateLimitedDomainsUntilMs.entries.filter { it.value <= nowMs }.map { it.key }
+        expired.forEach { rateLimitedDomainsUntilMs.remove(it) }
+        return rateLimitedDomainsUntilMs.keys.toSet()
     }
 
     fun selectSubtitle(track: SubtitleTrack?, currentPositionMs: Long) {
@@ -793,9 +809,12 @@ class MoviePlayerViewModel(
             val remaining = sources.filter { it.url.isNotBlank() && it.url.trim() !in failedUrls }
             if (remaining.isEmpty()) return null
             if (cooledHosts.isNotEmpty()) {
+                val cooledDomains = cooledHosts
+                    .mapNotNull { CdnFailureDomainResolver.resolve(it) ?: it.trim().lowercase().takeIf { raw -> raw.isNotEmpty() } }
+                    .toSet()
                 val uncooled = remaining.filter { src ->
-                    val host = src.url.toHttpUrlOrNull()?.host?.lowercase()
-                    host == null || host !in cooledHosts
+                    val domain = CdnFailureDomainResolver.resolve(src.url)
+                    domain == null || domain !in cooledDomains
                 }
                 if (uncooled.isNotEmpty()) {
                     return pickPreferredSource(uncooled, preferredQualityHeight) ?: uncooled.firstOrNull()

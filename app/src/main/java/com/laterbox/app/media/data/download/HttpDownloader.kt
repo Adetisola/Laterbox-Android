@@ -87,7 +87,10 @@ class HttpDownloader(
                     }
 
                     if (!resp.isSuccessful && resp.code != 206) {
-                        val retryAfterSec = resp.header("Retry-After")?.trim()?.toLongOrNull()?.takeIf { it > 0L }
+                        val retryAfterSec = com.laterbox.app.network.RetryAfterParser.parseOkHttpResponse(
+                            response = resp,
+                            maxDelaySeconds = com.laterbox.app.network.RetryAfterParser.MAX_BACKGROUND_DOWNLOAD_DELAY_SECONDS
+                        )
                         val code = when (resp.code) {
                             401, 403 -> FailureCode.PRIVATE_CONTENT
                             404, 410 -> FailureCode.UNSUPPORTED_URL

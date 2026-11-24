@@ -338,7 +338,10 @@ class StreamCacheReuseDownloader(
                         DownloadResult.Failure(FailureCode.UNSUPPORTED_URL, "HTTP ${resp.code}: ${resp.message}", resp.code)
                     )
                     429 -> {
-                        val retryAfterSec = resp.header("Retry-After")?.trim()?.toLongOrNull()?.takeIf { it > 0L }
+                        val retryAfterSec = com.laterbox.app.network.RetryAfterParser.parseOkHttpResponse(
+                            response = resp,
+                            maxDelaySeconds = com.laterbox.app.network.RetryAfterParser.MAX_BACKGROUND_DOWNLOAD_DELAY_SECONDS
+                        )
                         return ProbeOutcome.AuthOrNotFoundFailure(
                             DownloadResult.Failure(
                                 FailureCode.RATE_LIMITED,
@@ -382,7 +385,10 @@ class StreamCacheReuseDownloader(
                         DownloadResult.Failure(FailureCode.UNSUPPORTED_URL, "HTTP ${resp.code}: ${resp.message}", resp.code)
                     )
                     429 -> {
-                        val retryAfterSec = resp.header("Retry-After")?.trim()?.toLongOrNull()?.takeIf { it > 0L }
+                        val retryAfterSec = com.laterbox.app.network.RetryAfterParser.parseOkHttpResponse(
+                            response = resp,
+                            maxDelaySeconds = com.laterbox.app.network.RetryAfterParser.MAX_BACKGROUND_DOWNLOAD_DELAY_SECONDS
+                        )
                         ProbeOutcome.AuthOrNotFoundFailure(
                             DownloadResult.Failure(
                                 FailureCode.RATE_LIMITED,

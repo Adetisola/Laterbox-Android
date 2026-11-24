@@ -147,9 +147,11 @@ object MoviesMediaCache {
     fun createMediaSourceFactory(
         context: Context,
         headers: Map<String, String> = emptyMap(),
-        useDiskCache: Boolean = true
+        useDiskCache: Boolean = true,
+        loadErrorHandlingPolicy: androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy = LaterboxLoadErrorHandlingPolicy()
     ): DefaultMediaSourceFactory {
         return DefaultMediaSourceFactory(createDataSourceFactory(context, headers, useDiskCache))
+            .setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
     }
 
     fun cacheDir(context: Context): File =
