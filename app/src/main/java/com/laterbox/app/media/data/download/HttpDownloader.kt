@@ -36,6 +36,7 @@ internal data class ContentRangeSpec(
 
 class HttpDownloader(
     private val client: OkHttpClient = OkHttpClient.Builder()
+        .dns(com.laterbox.app.network.ResilientDns.INSTANCE)
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .followRedirects(true)

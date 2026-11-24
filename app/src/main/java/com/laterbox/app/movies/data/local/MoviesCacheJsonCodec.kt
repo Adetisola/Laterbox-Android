@@ -189,6 +189,7 @@ object MoviesCacheJsonCodec {
             summary = summary,
             fullDescription = obj.optString("fullDescription"),
             directorOrCreator = obj.optNullableString("directorOrCreator"),
+            directorPersonId = obj.optNullableString("directorPersonId"),
             networkOrStudio = obj.optNullableString("networkOrStudio"),
             cast = cast,
             seasons = seasons,

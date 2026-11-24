@@ -7,7 +7,6 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
@@ -91,6 +90,16 @@ object MoviesMediaCache {
         )
     }
 
+    private val streamHttpClient: okhttp3.OkHttpClient by lazy {
+        okhttp3.OkHttpClient.Builder()
+            .dns(com.laterbox.app.network.ResilientDns.INSTANCE)
+            .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .build()
+    }
+
     fun createDataSourceFactory(
         context: Context,
         headers: Map<String, String> = emptyMap(),
@@ -101,11 +110,10 @@ object MoviesMediaCache {
             ?.value
             ?.takeIf { it.isNotBlank() }
             ?: "Mozilla/5.0 (Linux; Android 14; Laterbox) AppleWebKit/537.36"
-        val httpFactory = DefaultHttpDataSource.Factory()
-            .setUserAgent(customUserAgent)
-            .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(15_000)
-            .setReadTimeoutMs(30_000)
+        val httpFactory = OkHttpMediaDataSourceFactory(
+            callFactory = streamHttpClient,
+            userAgent = customUserAgent,
+        )
 
         val extraHeaders = headers.filterKeys { !it.equals("User-Agent", ignoreCase = true) }
         if (extraHeaders.isNotEmpty()) {

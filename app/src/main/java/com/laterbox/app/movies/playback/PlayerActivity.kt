@@ -148,6 +148,7 @@ class PlayerActivity : ComponentActivity() {
                                     )
                                 },
                                 onSelectSource = moviePlayerViewModel::selectSource,
+                                onPlaybackSourceFailed = moviePlayerViewModel::handlePlaybackSourceFailure,
                                 onSelectSubtitle = moviePlayerViewModel::selectSubtitle,
                                 onSaveProgress = moviePlayerViewModel::saveProgress,
                                 onSaveProgressForEpisode = moviePlayerViewModel::saveProgressForEpisode,

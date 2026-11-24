@@ -248,7 +248,9 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
     }
 
     private val sharedOkHttpClient: okhttp3.OkHttpClient by lazy {
-        okhttp3.OkHttpClient()
+        okhttp3.OkHttpClient.Builder()
+            .dns(com.laterbox.app.network.ResilientDns.INSTANCE)
+            .build()
     }
 
     override val platformResolver: com.laterbox.app.media.domain.adapter.PlatformResolver by lazy {

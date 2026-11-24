@@ -399,12 +399,12 @@ class MovieBoxProvider(
                     val title = obj.optCleanString("title") ?: continue
                     val dp = obj.optCleanString("detail_path")
                     cacheMetadata(id, title, dp)
-                    val cover = obj.optJSONObject("cover")?.optCleanString("url") ?: obj.optCleanString("cover")
-                    val coverBlurHash = obj.optJSONObject("cover")?.optCleanString("blurHash")
-                        ?: obj.optCleanString("cover_blur_hash")
+                    val coverObj = obj.optJSONObject("cover")
+                    val cover = coverObj?.optCleanString("url") ?: obj.optCleanString("cover")
+                    val coverBlurHash = parseBlurHash(coverObj, obj, "cover_blur_hash")
                     val stillsObj = obj.optJSONObject("stills")
                     val stillsUrl = stillsObj?.optCleanString("url")
-                    val stillsBlurHash = stillsObj?.optCleanString("blurHash") ?: obj.optCleanString("stills_blur_hash")
+                    val stillsBlurHash = parseBlurHash(stillsObj, obj, "stills_blur_hash")
                     val itemKind = subjectType?.let { parseMediaKind(it, null) } ?: kind
                     val releaseDateStr = obj.optCleanString("release_date")
                     add(
@@ -544,12 +544,12 @@ class MovieBoxProvider(
                     val title = obj.optCleanString("title") ?: continue
                     val dp = obj.optCleanString("detail_path")
                     cacheMetadata(id, title, dp)
-                    val cover = obj.optJSONObject("cover")?.optCleanString("url") ?: obj.optCleanString("cover")
-                    val coverBlurHash = obj.optJSONObject("cover")?.optCleanString("blurHash")
-                        ?: obj.optCleanString("cover_blur_hash")
+                    val coverObj = obj.optJSONObject("cover")
+                    val cover = coverObj?.optCleanString("url") ?: obj.optCleanString("cover")
+                    val coverBlurHash = parseBlurHash(coverObj, obj, "cover_blur_hash")
                     val stillsObj = obj.optJSONObject("stills")
                     val stillsUrl = stillsObj?.optCleanString("url")
-                    val stillsBlurHash = stillsObj?.optCleanString("blurHash") ?: obj.optCleanString("stills_blur_hash")
+                    val stillsBlurHash = parseBlurHash(stillsObj, obj, "stills_blur_hash")
                     val itemKind = parseMediaKind(
                         subjectType,
                         obj.optCleanString("type")
@@ -703,12 +703,12 @@ class MovieBoxProvider(
                 rawSubjectType,
                 root.optCleanString("type")
             )
-            val cover = root.optJSONObject("cover")?.optCleanString("url") ?: root.optCleanString("cover")
-            val coverBlurHash = root.optCleanString("cover_blur_hash")
-                ?: root.optJSONObject("cover")?.optCleanString("blurHash")
+            val coverObj = root.optJSONObject("cover")
+            val cover = coverObj?.optCleanString("url") ?: root.optCleanString("cover")
+            val coverBlurHash = parseBlurHash(coverObj, root, "cover_blur_hash")
             val stillsObj = root.optJSONObject("stills")
             val stillsUrl = stillsObj?.optCleanString("url")
-            val stillsBlurHash = stillsObj?.optCleanString("blurHash") ?: root.optCleanString("stills_blur_hash")
+            val stillsBlurHash = parseBlurHash(stillsObj, root, "stills_blur_hash")
             val description = root.optCleanString("description").orEmpty()
 
             val dubs = buildList {
@@ -782,7 +782,7 @@ class MovieBoxProvider(
                 providerId = PROVIDER_ID,
                 kind = kind,
                 title = title,
-                releaseYear = parseYear(releaseDateStr),
+                releaseYear = parseYear(releaseDateStr, root.optCleanString("year")),
                 rating = root.optRating("imdb_rating", "rating"),
                 durationMinutes = parseSummaryDurationMinutes(root),
                 posterUrl = cover,
@@ -1055,12 +1055,12 @@ class MovieBoxProvider(
         val title = obj.optCleanString("title") ?: return null
         val dp = obj.optCleanString("detail_path")
         cacheMetadata(id, title, dp)
-        val cover = obj.optJSONObject("cover")?.optCleanString("url") ?: obj.optCleanString("cover")
-        val coverBlurHash = obj.optJSONObject("cover")?.optCleanString("blurHash")
-            ?: obj.optCleanString("cover_blur_hash")
+        val coverObj = obj.optJSONObject("cover")
+        val cover = coverObj?.optCleanString("url") ?: obj.optCleanString("cover")
+        val coverBlurHash = parseBlurHash(coverObj, obj, "cover_blur_hash")
         val stillsObj = obj.optJSONObject("stills")
         val stillsUrl = stillsObj?.optCleanString("url")
-        val stillsBlurHash = stillsObj?.optCleanString("blurHash") ?: obj.optCleanString("stills_blur_hash")
+        val stillsBlurHash = parseBlurHash(stillsObj, obj, "stills_blur_hash")
         val kind = parseMediaKind(
             subjectType,
             obj.optCleanString("type")
@@ -1275,13 +1275,12 @@ class MovieBoxProvider(
         val coverUrl = coverObj?.optCleanString("url")
             ?: obj.optCleanString("cover")
             ?: obj.optJSONObject("image")?.optCleanString("url")
-        val coverBlurHash = coverObj?.optCleanString("blurHash")
-            ?: obj.optCleanString("cover_blur_hash")
+        val coverBlurHash = parseBlurHash(coverObj, obj, "cover_blur_hash")
             ?: obj.optCleanString("blurHash")
+            ?: obj.optCleanString("blur_hash")
         val stillsObj = obj.optJSONObject("stills")
         val stillsUrl = stillsObj?.optCleanString("url")
-        val stillsBlurHash = stillsObj?.optCleanString("blurHash")
-            ?: obj.optCleanString("stills_blur_hash")
+        val stillsBlurHash = parseBlurHash(stillsObj, obj, "stills_blur_hash")
         val trailerObj = obj.optJSONObject("trailer")
         val trailerUrl = trailerOverride
             ?: trailerObj?.optCleanString("url")
@@ -1297,7 +1296,7 @@ class MovieBoxProvider(
             providerId = PROVIDER_ID,
             kind = kind,
             title = title,
-            releaseYear = parseYear(releaseDateStr),
+            releaseYear = parseYear(releaseDateStr, obj.optCleanString("year")),
             rating = obj.optRating("imdbRatingValue", "imdb_rating", "rating"),
             durationMinutes = parseSummaryDurationMinutes(obj),
             posterUrl = coverUrl,
@@ -1668,10 +1667,36 @@ class MovieBoxProvider(
             ?.filter { it.isNotBlank() }
             ?: emptyList()
 
+    private fun parseBlurHash(
+        container: JSONObject?,
+        parent: JSONObject? = null,
+        flatKey: String? = null
+    ): String? = container?.optCleanString("blurHash")
+        ?: container?.optCleanString("blur_hash")
+        ?: flatKey?.let { parent?.optCleanString(it) }
+
     private fun parseSummaryDurationMinutes(obj: JSONObject): Int? {
         val explicitMins = obj.optIntOrNull("runtime_minutes")?.takeIf { it in 1..600 }
         if (explicitMins != null) return explicitMins
-        return parseDurationMinutes(obj.optLongOrNull("duration"))
+        val secFromExplicit = obj.optLongOrNull("duration_sec")
+        if (secFromExplicit != null) {
+            return parseDurationMinutes(secFromExplicit)
+        }
+        val rawDuration = obj.optCleanString("duration") ?: obj.optCleanString("runtime") ?: return null
+        rawDuration.toLongOrNull()?.let { return parseDurationMinutes(it) }
+        return parseFormattedDurationMinutes(rawDuration)
+    }
+
+    private fun parseFormattedDurationMinutes(raw: String): Int? {
+        val normalized = raw.trim().lowercase(Locale.US)
+        if (normalized.isEmpty()) return null
+        val hourMatch = Regex("""(\d+)\s*h""").find(normalized)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        val minMatch = Regex("""(\d+)\s*m(?:in(?:s|utes?)?)?""").find(normalized)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        if (hourMatch != null || minMatch != null) {
+            val totalMins = (hourMatch ?: 0) * 60 + (minMatch ?: 0)
+            return totalMins.takeIf { it in 1..600 }
+        }
+        return null
     }
 
     private fun parseDurationMinutes(durationSeconds: Long?): Int? {

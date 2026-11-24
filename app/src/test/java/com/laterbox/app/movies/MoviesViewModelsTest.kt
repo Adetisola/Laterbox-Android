@@ -1686,4 +1686,123 @@ class MoviesViewModelsTest {
         assertEquals(2.0f, loaded.playbackPreferences.swipeSeekSensitivity)
         assertFalse(loaded.playbackPreferences.swipeToSeekEnabled)
     }
+
+    @Test
+    fun moviePlayerViewModel_automaticallyFailsOverAcrossSources_and_classifiesHttp429() = runTest {
+        var resolveCalls = 0
+        val baseFake = FakeMoviesRepository()
+        val customRepo = object : MoviesRepository by baseFake {
+            override suspend fun resolvePlayback(
+                providerId: String,
+                titleId: String,
+                seasonNumber: Int?,
+                episodeNumber: Int?
+            ): Result<PlaybackResolution> {
+                resolveCalls++
+                val sources = if (resolveCalls == 1) {
+                    listOf(
+                        PlaybackSource(
+                            id = "s1080",
+                            url = "https://cdn.example/1080.mp4",
+                            format = "MP4",
+                            qualityLabel = "1080p",
+                            qualityHeight = 1080,
+                            providerName = "MovieBox"
+                        ),
+                        PlaybackSource(
+                            id = "s720",
+                            url = "https://cdn.example/720.mp4",
+                            format = "MP4",
+                            qualityLabel = "720p",
+                            qualityHeight = 720,
+                            providerName = "MovieBox"
+                        ),
+                        PlaybackSource(
+                            id = "sdash",
+                            url = "https://cdn.example/master.mpd",
+                            format = "DASH",
+                            qualityLabel = "Adaptive",
+                            qualityHeight = 999,
+                            providerName = "MovieBox"
+                        )
+                    )
+                } else {
+                    listOf(
+                        PlaybackSource(
+                            id = "s_refreshed",
+                            url = "https://cdn.example/fresh_720.mp4",
+                            format = "MP4",
+                            qualityLabel = "720p",
+                            qualityHeight = 720,
+                            providerName = "MovieBox"
+                        )
+                    )
+                }
+                return Result.success(
+                    PlaybackResolution.Available(
+                        title = "Test Title",
+                        sources = sources,
+                        subtitles = emptyList(),
+                        providerName = "MovieBox",
+                        sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+                    )
+                )
+            }
+        }
+
+        val vm = MoviePlayerViewModel(customRepo)
+        vm.load("moviebox", "999")
+        val initial = vm.uiState.first { !it.isLoading }
+        assertEquals("https://cdn.example/720.mp4", initial.selectedSource?.url)
+
+        // First failure (HTTP 429) switches automatically to nearest available (DASH 999) while preserving position
+        val handled1 = vm.handlePlaybackSourceFailure("https://cdn.example/720.mp4", 42_000L, 429)
+        assertTrue(handled1)
+        assertEquals("https://cdn.example/master.mpd", vm.uiState.value.selectedSource?.url)
+        assertEquals(42_000L, vm.uiState.value.startPositionMs)
+
+        // Second failure switches automatically to remaining 1080p MP4
+        val handled2 = vm.handlePlaybackSourceFailure("https://cdn.example/master.mpd", 42_500L, 429)
+        assertTrue(handled2)
+        assertEquals("https://cdn.example/1080.mp4", vm.uiState.value.selectedSource?.url)
+
+        // Third failure (all exhausted) with HTTP 429 stops without infinite refresh loop
+        val handled3 = vm.handlePlaybackSourceFailure("https://cdn.example/1080.mp4", 43_000L, 429)
+        assertFalse(handled3)
+        assertEquals(1, resolveCalls)
+
+        // With HTTP 403 when exhausted, triggers a one-shot stream refresh and switches to refreshed URL
+        val handled403 = vm.handlePlaybackSourceFailure("https://cdn.example/1080.mp4", 44_000L, 403)
+        assertTrue(handled403)
+        advanceUntilIdle()
+        assertEquals(2, resolveCalls)
+        assertEquals("https://cdn.example/fresh_720.mp4", vm.uiState.value.selectedSource?.url)
+
+        // Selecting a source manually removes it from failedSourceUrls
+        val manualPick = vm.uiState.value.resolution.let { res ->
+            (res as PlaybackResolution.Available).sources.first()
+        }
+        vm.selectSource(manualPick, 10_000L)
+        assertFalse(manualPick.url in vm.uiState.value.failedSourceUrls)
+
+        // Verify HTTP 429 error classification string
+        val dataSpec = androidx.media3.datasource.DataSpec.Builder()
+            .setUri("https://cdn.example/1080.mp4")
+            .build()
+        val http429Cause = androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException(
+            429,
+            "Too Many Requests",
+            null,
+            emptyMap(),
+            dataSpec,
+            ByteArray(0)
+        )
+        val playbackException = androidx.media3.common.PlaybackException(
+            "HTTP 429",
+            http429Cause,
+            androidx.media3.common.PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
+        )
+        val msg = com.laterbox.app.movies.ui.formatPlayerErrorMessage(playbackException)
+        assertTrue("Unexpected message: $msg", msg.contains("rate-limited", ignoreCase = true))
+    }
 }

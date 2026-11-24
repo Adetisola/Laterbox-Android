@@ -1723,4 +1723,93 @@ class MoviesRepositoryTest {
         org.junit.Assert.assertNull(recovered.activeProviderNotice)
         assertEquals(3, analyticsErrors.size)
     }
+
+    @Test
+    fun codecRoundTripsDirectorPersonId_and_getDetailsEnrichesMissingTrailerFromCachedSummary() = runTest {
+        val sampleSummary = com.laterbox.app.movies.domain.model.MovieTitleSummary(
+            id = "8906",
+            providerId = com.laterbox.app.movies.data.provider.MovieBoxProvider.PROVIDER_ID,
+            kind = com.laterbox.app.movies.domain.model.MediaKind.MOVIE,
+            title = "Avatar",
+            trailerUrl = "https://macdn.aoneroom.com/media/avatar-sd.mp4",
+            trailerHeaders = mapOf("Referer" to "https://moviebox.ph/")
+        )
+        val encodedDetails = com.laterbox.app.movies.data.local.MoviesCacheJsonCodec.encodeDetails(
+            com.laterbox.app.movies.domain.model.MediaDetails(
+                summary = sampleSummary,
+                fullDescription = "Full desc",
+                directorOrCreator = "James Cameron",
+                directorPersonId = "staff_42",
+                networkOrStudio = null,
+                cast = emptyList()
+            )
+        )
+        val decodedDetails = com.laterbox.app.movies.data.local.MoviesCacheJsonCodec.decodeDetails(encodedDetails)
+        assertEquals("staff_42", decodedDetails?.directorPersonId)
+
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path == "/home" -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "data": {
+                            "operatingList": [
+                              {
+                                "type": "SUBJECTS_MOVIE",
+                                "title": "Featured",
+                                "subjects": [
+                                  {
+                                    "subjectId": "8906",
+                                    "title": "Avatar",
+                                    "subjectType": 1,
+                                    "trailer": {
+                                      "videoAddress": {"url": "https://macdn.aoneroom.com/media/avatar-sd.mp4"}
+                                    }
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/detail/8906") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "subject_id": "8906",
+                          "title": "Avatar",
+                          "subject_type": 1,
+                          "description": "No trailer on detail"
+                        }
+                        """.trimIndent()
+                    )
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+        val client = OkHttpClient()
+        val base = server.url("/").toString().trimEnd('/')
+        val mbProvider = com.laterbox.app.movies.data.provider.MovieBoxProvider(
+            okHttpClient = client,
+            baseUrlProvider = { base },
+            retryDelayMs = 1L
+        )
+        val repo = MoviesRepositoryImpl(
+            moviesDao = db.moviesDao(),
+            internetArchiveProvider = InternetArchiveMoviesProvider(client, base),
+            tvMazeProvider = TvMazeSeriesProvider(client, base),
+            tmdbProvider = TmdbOptionalMoviesProvider(client, apiKeyProvider = { "" }, baseUrl = base),
+            movieBoxProvider = mbProvider,
+            useSampleFixturesOnlyProvider = { false },
+            nowMs = { fakeClockMs },
+            isMovieBoxEnabled = { true }
+        )
+        // Warm summary cache from /home
+        repo.getHomeFeed(forceRefresh = true).getOrThrow()
+        // Detail response omits trailer, repository should preserve cached summary trailerUrl
+        val detail = repo.getDetails(com.laterbox.app.movies.data.provider.MovieBoxProvider.PROVIDER_ID, "8906").getOrThrow()
+        assertEquals("https://macdn.aoneroom.com/media/avatar-sd.mp4", detail.summary.trailerUrl)
+    }
 }

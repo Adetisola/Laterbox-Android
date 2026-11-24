@@ -803,6 +803,7 @@ object LaterboxPlaybackArtworkHelper {
 
     private val artworkClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
+            .dns(com.laterbox.app.network.ResilientDns.INSTANCE)
             .connectTimeout(6, TimeUnit.SECONDS)
             .readTimeout(8, TimeUnit.SECONDS)
             .followRedirects(true)

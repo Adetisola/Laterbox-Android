@@ -1451,4 +1451,110 @@ class MovieBoxProviderTest {
             assertEquals(listOf(firstToken, refreshedToken), seenTokens)
         }
     }
+
+    @Test
+    fun parseFormattedDuration_durationSec_snakeCaseBlurHash_yearFallback_and_searchPreserved() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/detail/8906") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "subject_id": "8906",
+                          "title": "Avatar Test",
+                          "subject_type": 1,
+                          "duration": "2h 42m",
+                          "duration_sec": 9720,
+                          "year": "2009",
+                          "cover": {"url": "https://cdn.example/avatar.jpg", "blur_hash": "U123Cover"},
+                          "stills": {"url": "https://cdn.example/avatar_stills.jpg", "blur_hash": "U456Stills"},
+                          "trailer": {
+                            "url": "https://macdn.aoneroom.com/media/avatar-sd.mp4",
+                            "headers": {"Referer": "https://moviebox.ph/"}
+                          }
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/movies") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "items": [
+                            {
+                              "subject_id": "555",
+                              "title": "Flat Movie",
+                              "subject_type": 1,
+                              "duration": "1h 35m",
+                              "year": "2022",
+                              "cover": {"url": "https://cdn.example/flat.jpg", "blur_hash": "UFlatBlur"}
+                            }
+                          ]
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/home") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "data": {
+                            "operatingList": [
+                              {
+                                "type": "SUBJECTS_MOVIE",
+                                "title": "Trending",
+                                "subjects": [
+                                  {
+                                    "subjectId": "777",
+                                    "title": "Subject Year Fallback",
+                                    "subjectType": 1,
+                                    "year": "2024",
+                                    "cover": {"url": "https://cdn.example/sub.jpg", "blur_hash": "USubBlur"},
+                                    "duration": "45m"
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/search/suggest") -> MockResponse().setResponseCode(200).setBody(
+                        """{"suggestions":[{"title":"Avatar","slug":"avatar","subject_id":"8906"}]}"""
+                    )
+                    path.startsWith("/search") -> MockResponse().setResponseCode(200).setBody(
+                        """{"results":[{"subject_id":"8906","title":"Avatar","type":"Movie"}]}"""
+                    )
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val provider = MovieBoxProvider(
+            okHttpClient = OkHttpClient(),
+            baseUrlProvider = { server.url("/").toString().trimEnd('/') }
+        )
+
+        val detail = provider.getDetails("8906").getOrThrow()
+        assertEquals(162, detail.summary.durationMinutes)
+        assertEquals(2009, detail.summary.releaseYear)
+        assertEquals("U123Cover", detail.summary.posterBlurHash)
+        assertEquals("U456Stills", detail.summary.backdropBlurHash)
+        assertEquals("https://macdn.aoneroom.com/media/avatar-sd.mp4", detail.summary.trailerUrl)
+        assertEquals("https://moviebox.ph/", detail.summary.trailerHeaders["Referer"])
+
+        val catalogue = provider.getCatalogue(kind = MediaKind.MOVIE, page = 1).getOrThrow()
+        assertEquals(1, catalogue.items.size)
+        assertEquals(95, catalogue.items[0].durationMinutes)
+        assertEquals(2022, catalogue.items[0].releaseYear)
+        assertEquals("UFlatBlur", catalogue.items[0].posterBlurHash)
+
+        val home = provider.getHomeFeed().getOrThrow()
+        val homeItem = home.sections.first().items.first()
+        assertEquals(2024, homeItem.releaseYear)
+        assertEquals(45, homeItem.durationMinutes)
+        assertEquals("USubBlur", homeItem.posterBlurHash)
+
+        val suggestions = provider.getSuggestions("av").getOrThrow()
+        assertEquals(listOf("Avatar"), suggestions.map { it.title })
+        val searchResults = provider.search("avatar").getOrThrow()
+        assertEquals(listOf("8906"), searchResults.items.map { it.id })
+    }
 }

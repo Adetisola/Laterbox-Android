@@ -67,7 +67,9 @@ data class MoviePlayerUiState(
     val recapWindow: PlaybackMarkerWindow? = null,
     val isEnqueuingDownload: Boolean = false,
     val downloadStatusMessage: String? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val failedSourceUrls: Set<String> = emptySet(),
+    val hasAttemptedStreamRefresh: Boolean = false
 ) {
     val episodeKey: String
         get() = "${activeTitleId}:${seasonNumber ?: 0}:${episodeNumber ?: 0}"
@@ -373,9 +375,87 @@ class MoviePlayerViewModel(
             it.copy(
                 selectedSource = source,
                 isPlayingOffline = source.isOfflineLocal,
-                startPositionMs = currentPositionMs.coerceAtLeast(0L)
+                startPositionMs = currentPositionMs.coerceAtLeast(0L),
+                failedSourceUrls = it.failedSourceUrls - source.url.trim()
             )
         }
+    }
+
+    fun handlePlaybackSourceFailure(
+        failedSourceUrl: String,
+        currentPositionMs: Long,
+        httpStatusCode: Int?
+    ): Boolean {
+        val current = _uiState.value
+        val available = current.resolution as? PlaybackResolution.Available ?: return false
+        val cleanUrl = failedSourceUrl.trim()
+        val updatedFailed = if (cleanUrl.isNotBlank()) current.failedSourceUrls + cleanUrl else current.failedSourceUrls
+        val fallback = pickNextFallbackSource(
+            sources = available.sources,
+            failedUrls = updatedFailed,
+            preferredQualityHeight = current.playbackPreferences.defaultQualityHeight
+        )
+        if (fallback != null) {
+            _uiState.update {
+                it.copy(
+                    selectedSource = fallback,
+                    isPlayingOffline = fallback.isOfflineLocal,
+                    startPositionMs = currentPositionMs.coerceAtLeast(0L),
+                    failedSourceUrls = updatedFailed
+                )
+            }
+            return true
+        }
+        val canRefreshStreams = !current.isPlayingOffline &&
+            !current.hasAttemptedStreamRefresh &&
+            httpStatusCode in setOf(401, 403, 404, 410) &&
+            activeProviderId.isNotBlank() &&
+            current.activeTitleId.isNotBlank()
+        _uiState.update {
+            it.copy(
+                failedSourceUrls = updatedFailed,
+                hasAttemptedStreamRefresh = it.hasAttemptedStreamRefresh || canRefreshStreams
+            )
+        }
+        if (canRefreshStreams) {
+            val providerId = current.summary?.providerId ?: activeProviderId
+            val targetId = current.summary?.id ?: current.activeTitleId
+            val seasonNum = current.seasonNumber
+            val epNum = current.episodeNumber
+            val preservedPosMs = currentPositionMs.coerceAtLeast(0L)
+            loadJob?.cancel()
+            loadJob = viewModelScope.launch {
+                val refreshed = moviesRepository.resolvePlayback(providerId, targetId, seasonNum, epNum)
+                    .getOrNull() as? PlaybackResolution.Available
+                val freshFallback = refreshed?.let { res ->
+                    pickNextFallbackSource(
+                        sources = res.sources,
+                        failedUrls = emptySet(),
+                        preferredQualityHeight = _uiState.value.playbackPreferences.defaultQualityHeight
+                    )
+                }
+                if (refreshed != null && freshFallback != null) {
+                    _uiState.update {
+                        it.copy(
+                            resolution = refreshed,
+                            selectedSource = freshFallback,
+                            isPlayingOffline = freshFallback.isOfflineLocal,
+                            startPositionMs = preservedPosMs,
+                            failedSourceUrls = emptySet(),
+                            errorMessage = null
+                        )
+                    }
+                } else {
+                    _uiState.update {
+                        it.copy(
+                            errorMessage = "Playback access expired or needs verification. Try again or switch quality."
+                        )
+                    }
+                }
+            }
+            return true
+        }
+        return false
     }
 
     fun selectSubtitle(track: SubtitleTrack?, currentPositionMs: Long) {
@@ -485,7 +565,9 @@ class MoviePlayerViewModel(
                                     isPlayingOffline = matchedSource?.isOfflineLocal == true,
                                     introWindow = resolution.introWindow,
                                     recapWindow = resolution.recapWindow,
-                                    errorMessage = null
+                                    errorMessage = null,
+                                    failedSourceUrls = emptySet(),
+                                    hasAttemptedStreamRefresh = false
                                 )
                             }
                         }
@@ -644,6 +726,16 @@ class MoviePlayerViewModel(
                 .maxByOrNull { it.qualityHeight }
                 ?: sources.minByOrNull { abs(it.qualityHeight - target) }
                 ?: sources.firstOrNull()
+        }
+
+        fun pickNextFallbackSource(
+            sources: List<PlaybackSource>,
+            failedUrls: Set<String>,
+            preferredQualityHeight: Int
+        ): PlaybackSource? {
+            val remaining = sources.filter { it.url.isNotBlank() && it.url.trim() !in failedUrls }
+            if (remaining.isEmpty()) return null
+            return pickPreferredSource(remaining, preferredQualityHeight) ?: remaining.firstOrNull()
         }
 
         private fun computeNextEpisodeTarget(

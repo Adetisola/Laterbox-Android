@@ -1172,6 +1172,7 @@ class MoviesRepositoryImpl(
         }
 
         val currentMs = nowMs()
+        val cachedSummarySnapshot = getCachedSummary(resolvedProviderId, resolvedTitleId)
         val cacheKey = "details:$resolvedProviderId:$resolvedTitleId"
         val cachedEntry = moviesDao.getCacheEntry(cacheKey)
         if (!forceRefresh && cachedEntry != null && cachedEntry.expiresAt > currentMs) {
@@ -1179,8 +1180,23 @@ class MoviesRepositoryImpl(
                 MoviesCacheJsonCodec.decodeDetails(cachedEntry.payloadJson)
             }
             if (decoded != null) {
+                val patchedSummary = decoded.summary.let { sum ->
+                    var next = sum
+                    if (next.trailerUrl.isNullOrBlank() && !cachedSummarySnapshot?.trailerUrl.isNullOrBlank()) {
+                        next = next.copy(
+                            trailerUrl = cachedSummarySnapshot?.trailerUrl,
+                            trailerHeaders = cachedSummarySnapshot?.trailerHeaders.orEmpty()
+                        )
+                    }
+                    if (next.kind == MediaKind.MOVIE && (next.durationMinutes ?: 0) <= 0 &&
+                        (cachedSummarySnapshot?.durationMinutes ?: 0) > 0
+                    ) {
+                        next = next.copy(durationMinutes = cachedSummarySnapshot?.durationMinutes)
+                    }
+                    next
+                }
                 val resolvedSummary = mediaResolver.resolveOrRegister(
-                    decoded.summary,
+                    patchedSummary,
                     seasonCount = decoded.seasons.size.takeIf { it > 0 }
                 )
                 val finalDetails = decoded.copy(summary = resolvedSummary)
@@ -1192,10 +1208,11 @@ class MoviesRepositoryImpl(
         val primaryResult = fetchProviderDetails(resolvedProviderId, resolvedTitleId)
         if (primaryResult.isSuccess) {
             val rawDetails = primaryResult.getOrThrow()
-            val previousDecodedDuration = cachedEntry?.let { entry ->
+            val previousDecodedSummary = cachedEntry?.let { entry ->
                 withContext(defaultDispatcher) { MoviesCacheJsonCodec.decodeDetails(entry.payloadJson) }
-            }?.summary?.durationMinutes
-            val cachedSummaryDuration = getCachedSummary(resolvedProviderId, resolvedTitleId)?.durationMinutes
+            }?.summary
+            val previousDecodedDuration = previousDecodedSummary?.durationMinutes
+            val cachedSummaryDuration = cachedSummarySnapshot?.durationMinutes
             val preservedDuration = if (rawDetails.summary.kind == MediaKind.MOVIE) {
                 rawDetails.summary.durationMinutes?.takeIf { it > 0 }
                     ?: cachedSummaryDuration?.takeIf { it > 0 }
@@ -1203,11 +1220,20 @@ class MoviesRepositoryImpl(
             } else {
                 null
             }
-            val mergedSummary = if (rawDetails.summary.durationMinutes != preservedDuration) {
-                rawDetails.summary.copy(durationMinutes = preservedDuration)
-            } else {
-                rawDetails.summary
+            val preservedTrailerUrl = rawDetails.summary.trailerUrl?.takeIf { it.isNotBlank() }
+                ?: cachedSummarySnapshot?.trailerUrl?.takeIf { it.isNotBlank() }
+                ?: previousDecodedSummary?.trailerUrl?.takeIf { it.isNotBlank() }
+            val preservedTrailerHeaders = when {
+                !rawDetails.summary.trailerUrl.isNullOrBlank() -> rawDetails.summary.trailerHeaders
+                !cachedSummarySnapshot?.trailerUrl.isNullOrBlank() -> cachedSummarySnapshot?.trailerHeaders.orEmpty()
+                !previousDecodedSummary?.trailerUrl.isNullOrBlank() -> previousDecodedSummary?.trailerHeaders.orEmpty()
+                else -> rawDetails.summary.trailerHeaders
             }
+            val mergedSummary = rawDetails.summary.copy(
+                durationMinutes = preservedDuration,
+                trailerUrl = preservedTrailerUrl,
+                trailerHeaders = preservedTrailerHeaders
+            )
             val resolvedSummary = mediaResolver.resolveOrRegister(
                 mergedSummary,
                 seasonCount = rawDetails.seasons.size.takeIf { it > 0 }
