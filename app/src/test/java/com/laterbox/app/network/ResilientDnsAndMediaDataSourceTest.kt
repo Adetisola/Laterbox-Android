@@ -166,4 +166,111 @@ class ResilientDnsAndMediaDataSourceTest {
             ds2.close()
         }
     }
+
+    @Test
+    @androidx.annotation.OptIn(UnstableApi::class)
+    fun okHttpMediaDataSource_capturesSetCookieAndMergesWithInitialCookies() {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Set-Cookie", "Edge-Cache-Cookie=rotated-2; Path=/dash")
+                .setBody("manifest")
+        )
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody("segment")
+        )
+
+        val factory = OkHttpMediaDataSourceFactory(
+            callFactory = OkHttpClient(),
+            userAgent = "LaterboxPlayer/1.0",
+        ).setDefaultRequestProperties(
+            mapOf(
+                "Cookie" to "Edge-Cache-Cookie=initial-1; session=keep",
+                "Referer" to "https://api3.aoneroom.com/",
+            )
+        )
+
+        val ds1 = factory.createDataSource()
+        try {
+            ds1.open(DataSpec(Uri.parse(server.url("/dash/index.mpd").toString())))
+        } finally {
+            ds1.close()
+        }
+        val manifestReq = server.takeRequest()
+        assertEquals("Edge-Cache-Cookie=initial-1; session=keep", manifestReq.getHeader("Cookie"))
+
+        val ds2 = factory.createDataSource()
+        try {
+            ds2.open(DataSpec(Uri.parse(server.url("/dash/seg-1.m4s").toString())))
+        } finally {
+            ds2.close()
+        }
+        val segmentReq = server.takeRequest()
+        assertEquals("Edge-Cache-Cookie=rotated-2; session=keep", segmentReq.getHeader("Cookie"))
+    }
+
+    @Test
+    @androidx.annotation.OptIn(UnstableApi::class)
+    fun okHttpMediaDataSource_stripsVideoAuthHeadersOnSubtitleRequestsAndCrossHostRedirects() {
+        val secondaryServer = MockWebServer()
+        secondaryServer.start()
+        try {
+            server.enqueue(MockResponse().setResponseCode(200).setBody("1\n00:00:00,000 --> 00:00:01,000\nHi"))
+            val redirectTarget = secondaryServer.url("/redirected/video.mp4").toString()
+                .replace("localhost", "127.0.0.1")
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(302)
+                    .setHeader("Location", redirectTarget)
+            )
+            secondaryServer.enqueue(MockResponse().setResponseCode(200).setBody("ok"))
+
+            val factory = OkHttpMediaDataSourceFactory(
+                callFactory = OkHttpClient(),
+                userAgent = "LaterboxPlayer/1.0",
+            ).setDefaultRequestProperties(
+                mapOf(
+                    "Cookie" to "Edge-Cache-Cookie=secret-cookie",
+                    "X-MB-Token" to "tok-secret",
+                    "Referer" to "https://moviebox.ph/",
+                    "Origin" to "https://moviebox.ph",
+                )
+            )
+
+            // 1. Subtitle request omits stream auth/referrer headers
+            val subDs = factory.createDataSource()
+            try {
+                subDs.open(DataSpec(Uri.parse(server.url("/captions/en.srt?sign=abc").toString())))
+            } finally {
+                subDs.close()
+            }
+            val subReq = server.takeRequest()
+            assertEquals("LaterboxPlayer/1.0", subReq.getHeader("User-Agent"))
+            assertEquals(null, subReq.getHeader("Cookie"))
+            assertEquals(null, subReq.getHeader("X-MB-Token"))
+            assertEquals(null, subReq.getHeader("Referer"))
+            assertEquals(null, subReq.getHeader("Origin"))
+
+            // 2. Cross-host 302 redirect (localhost -> 127.0.0.1) strips stream auth/referrer headers
+            val localhostUrl = server.url("/stream/video.mp4").toString().replace("127.0.0.1", "localhost")
+            val mediaDs = factory.createDataSource()
+            try {
+                mediaDs.open(DataSpec(Uri.parse(localhostUrl)))
+            } finally {
+                mediaDs.close()
+            }
+            val initialMediaReq = server.takeRequest()
+            assertEquals("Edge-Cache-Cookie=secret-cookie", initialMediaReq.getHeader("Cookie"))
+
+            val redirectedReq = secondaryServer.takeRequest()
+            assertEquals(null, redirectedReq.getHeader("Cookie"))
+            assertEquals(null, redirectedReq.getHeader("X-MB-Token"))
+            assertEquals(null, redirectedReq.getHeader("Referer"))
+            assertEquals(null, redirectedReq.getHeader("Origin"))
+        } finally {
+            secondaryServer.shutdown()
+        }
+    }
 }

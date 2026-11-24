@@ -10,8 +10,12 @@ import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.HttpUtil
 import okhttp3.Call
 import okhttp3.CacheControl
+import okhttp3.Cookie
+import okhttp3.CookieJar
 import okhttp3.Headers
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -21,19 +25,39 @@ import java.io.EOFException
 import java.io.IOException
 import java.io.InputStream
 import java.io.InterruptedIOException
+import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.min
 
 /**
  * Media3 [HttpDataSource.Factory] backed by [OkHttpClient] so ExoPlayer media playback
- * benefits from [com.laterbox.app.network.ResilientDns] DoH fallback and consistent
- * HTTP headers/timeouts without requiring an external media3-datasource-okhttp artifact.
+ * benefits from [com.laterbox.app.network.ResilientDns] DoH fallback, session cookie
+ * handling across manifest/segment requests, and consistent HTTP headers/timeouts without
+ * requiring an external media3-datasource-okhttp artifact.
  */
 @UnstableApi
 class OkHttpMediaDataSourceFactory(
-    private val callFactory: Call.Factory,
+    callFactory: Call.Factory,
     private val userAgent: String? = null,
     private val cacheControl: CacheControl? = null,
 ) : HttpDataSource.Factory {
+
+    private val sessionCookieJar = MediaSessionCookieJar()
+    private val callFactory: Call.Factory = if (callFactory is OkHttpClient) {
+        val builder = callFactory.newBuilder()
+        if (callFactory.cookieJar === CookieJar.NO_COOKIES) {
+            // Save-only: BridgeInterceptor must not overwrite the Cookie header built in makeRequest().
+            builder.cookieJar(object : CookieJar {
+                override fun saveFromResponse(url: okhttp3.HttpUrl, cookies: List<okhttp3.Cookie>) =
+                    sessionCookieJar.saveFromResponse(url, cookies)
+                override fun loadForRequest(url: okhttp3.HttpUrl): List<okhttp3.Cookie> = emptyList()
+            })
+        }
+        builder.addNetworkInterceptor(CrossDomainAuthHeaderGuardInterceptor())
+        builder.build()
+    } else {
+        callFactory
+    }
 
     private val defaultRequestProperties = HttpDataSource.RequestProperties()
 
@@ -45,6 +69,7 @@ class OkHttpMediaDataSourceFactory(
     override fun createDataSource(): HttpDataSource {
         return OkHttpMediaDataSource(
             callFactory = callFactory,
+            sessionCookieJar = sessionCookieJar,
             userAgent = userAgent,
             cacheControl = cacheControl,
             defaultRequestProperties = defaultRequestProperties,
@@ -53,6 +78,7 @@ class OkHttpMediaDataSourceFactory(
 
     private class OkHttpMediaDataSource(
         private val callFactory: Call.Factory,
+        private val sessionCookieJar: MediaSessionCookieJar,
         private val userAgent: String?,
         private val cacheControl: CacheControl?,
         private val defaultRequestProperties: HttpDataSource.RequestProperties,
@@ -196,16 +222,43 @@ class OkHttpMediaDataSourceFactory(
             val builder = Request.Builder().url(url)
             cacheControl?.let { builder.cacheControl(it) }
 
+            val lowerPath = url.encodedPath.lowercase(Locale.ROOT)
+            val isSubtitleAsset = lowerPath.endsWith(".srt") ||
+                lowerPath.endsWith(".vtt") ||
+                lowerPath.endsWith(".ass") ||
+                lowerPath.endsWith(".ssa") ||
+                lowerPath.endsWith(".ttml")
+
             val mergedHeaders = LinkedHashMap<String, String>()
-            mergedHeaders.putAll(defaultRequestProperties.snapshot)
-            mergedHeaders.putAll(requestProperties.snapshot)
+            defaultRequestProperties.snapshot.forEach { (k, v) ->
+                if (!isSubtitleAsset || !isStreamScopedAuthHeader(k)) {
+                    mergedHeaders[k] = v
+                }
+            }
+            requestProperties.snapshot.forEach { (k, v) ->
+                if (!isSubtitleAsset || !isStreamScopedAuthHeader(k)) {
+                    mergedHeaders[k] = v
+                }
+            }
             mergedHeaders.putAll(dataSpec.httpRequestHeaders)
 
+            val jarCookies = sessionCookieJar.loadForRequest(url)
             val headersBuilder = Headers.Builder()
             var hasUserAgent = false
+            var explicitCookieHeader: String? = null
             for ((k, v) in mergedHeaders) {
-                if (k.equals("User-Agent", ignoreCase = true)) hasUserAgent = true
+                if (k.equals("User-Agent", ignoreCase = true)) {
+                    hasUserAgent = true
+                }
+                if (k.equals("Cookie", ignoreCase = true)) {
+                    explicitCookieHeader = v
+                    continue
+                }
                 headersBuilder.set(k, v)
+            }
+            val mergedCookieHeader = mergeCookieHeaders(explicitCookieHeader, jarCookies)
+            if (!mergedCookieHeader.isNullOrBlank()) {
+                headersBuilder.set("Cookie", mergedCookieHeader)
             }
             if (!hasUserAgent && !userAgent.isNullOrBlank()) {
                 headersBuilder.set("User-Agent", userAgent)
@@ -218,6 +271,7 @@ class OkHttpMediaDataSourceFactory(
                 headersBuilder.set("Range", rangeHeader)
             }
             builder.headers(headersBuilder.build())
+            builder.tag(InitialMediaHost::class.java, InitialMediaHost(url.host))
 
             val body = dataSpec.httpBody?.let { bytes ->
                 val contentType = mergedHeaders.entries
@@ -298,6 +352,128 @@ class OkHttpMediaDataSourceFactory(
             runCatching { response?.close() }
             responseByteStream = null
             response = null
+        }
+    }
+
+    private data class InitialMediaHost(val host: String)
+
+    private class MediaSessionCookieJar : CookieJar {
+        private val lock = Any()
+        private val store = ConcurrentHashMap<String, MutableList<Cookie>>()
+
+        override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+            if (cookies.isEmpty()) return
+            synchronized(lock) {
+                val now = System.currentTimeMillis()
+                for (cookie in cookies) {
+                    val key = cookie.domain.lowercase(Locale.ROOT)
+                    val list = store.getOrPut(key) { mutableListOf() }
+                    list.removeAll { existing ->
+                        existing.expiresAt <= now ||
+                            (existing.name == cookie.name &&
+                                existing.domain.equals(cookie.domain, ignoreCase = true) &&
+                                existing.path == cookie.path)
+                    }
+                    if (cookie.expiresAt > now) {
+                        list.add(cookie)
+                    }
+                }
+            }
+        }
+
+        override fun loadForRequest(url: HttpUrl): List<Cookie> {
+            val now = System.currentTimeMillis()
+            synchronized(lock) {
+                val matching = mutableListOf<Cookie>()
+                val iterator = store.entries.iterator()
+                while (iterator.hasNext()) {
+                    val entry = iterator.next()
+                    entry.value.removeAll { it.expiresAt <= now }
+                    if (entry.value.isEmpty()) {
+                        iterator.remove()
+                        continue
+                    }
+                    for (cookie in entry.value) {
+                        if (cookie.matches(url)) {
+                            matching.add(cookie)
+                        }
+                    }
+                }
+                return matching
+            }
+        }
+    }
+
+    private inner class CrossDomainAuthHeaderGuardInterceptor : Interceptor {
+        override fun intercept(chain: Interceptor.Chain): Response {
+            val req = chain.request()
+            val initialHost = req.tag(InitialMediaHost::class.java)?.host
+            if (initialHost == null || isSameSiteHost(initialHost, req.url.host)) {
+                return chain.proceed(req)
+            }
+            val cleanedBuilder = req.newBuilder()
+            for (name in req.headers.names()) {
+                if (isStreamScopedAuthHeader(name) || name.equals("Authorization", ignoreCase = true)) {
+                    cleanedBuilder.removeHeader(name)
+                }
+            }
+            val targetCookies = sessionCookieJar.loadForRequest(req.url)
+            if (targetCookies.isNotEmpty()) {
+                cleanedBuilder.header(
+                    "Cookie",
+                    targetCookies.joinToString("; ") { "${it.name}=${it.value}" }
+                )
+            }
+            return chain.proceed(cleanedBuilder.build())
+        }
+    }
+
+    private companion object {
+        fun isStreamScopedAuthHeader(name: String): Boolean {
+            val lower = name.trim().lowercase(Locale.ROOT)
+            return lower == "cookie" ||
+                lower == "x-mb-token" ||
+                lower == "referer" ||
+                lower == "origin" ||
+                (lower.startsWith("x-") && lower.endsWith("-token"))
+        }
+
+        fun mergeCookieHeaders(explicitHeader: String?, jarCookies: List<Cookie>): String? {
+            if (jarCookies.isEmpty()) return explicitHeader?.takeIf { it.isNotBlank() }
+            if (explicitHeader.isNullOrBlank()) {
+                return jarCookies.joinToString("; ") { "${it.name}=${it.value}" }
+            }
+            val ordered = LinkedHashMap<String, String>()
+            explicitHeader.split(";").forEach { rawPair ->
+                val pair = rawPair.trim()
+                val eq = pair.indexOf('=')
+                if (eq > 0) {
+                    val name = pair.substring(0, eq).trim()
+                    val value = pair.substring(eq + 1).trim()
+                    if (name.isNotEmpty()) ordered[name] = value
+                }
+            }
+            for (cookie in jarCookies) {
+                ordered[cookie.name] = cookie.value
+            }
+            return if (ordered.isEmpty()) null else ordered.entries.joinToString("; ") { "${it.key}=${it.value}" }
+        }
+
+        fun isSameSiteHost(hostA: String, hostB: String): Boolean {
+            val a = hostA.trim().trimEnd('.').lowercase(Locale.ROOT)
+            val b = hostB.trim().trimEnd('.').lowercase(Locale.ROOT)
+            if (a == b) return true
+            if (a.all { it.isDigit() || it == '.' } || b.all { it.isDigit() || it == '.' } || ':' in a || ':' in b) {
+                return false
+            }
+            val partsA = a.split('.')
+            val partsB = b.split('.')
+            if (partsA.size >= 2 && partsB.size >= 2) {
+                val siteA = "${partsA[partsA.size - 2]}.${partsA[partsA.size - 1]}"
+                val siteB = "${partsB[partsB.size - 2]}.${partsB[partsB.size - 1]}"
+                return siteA == siteB
+            }
+            return false
         }
     }
 }
