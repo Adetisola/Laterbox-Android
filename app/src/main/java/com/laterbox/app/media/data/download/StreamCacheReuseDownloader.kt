@@ -135,6 +135,33 @@ class StreamCacheReuseDownloader(
         val buffer = ByteArray(32 * 1024)
 
         onTelemetry?.invoke(null, null, meta.etag)
+        onProgress(0L, totalBytes, 0, DownloadStage.DOWNLOADING)
+
+        fun abortUnsafeAssembly(): DownloadResult? {
+            runCatching { if (destinationFile.exists()) destinationFile.delete() }
+            return null
+        }
+
+        suspend fun preservePrefixAndFail(
+            code: FailureCode,
+            message: String,
+            httpStatus: Int? = null,
+            retryAfterSeconds: Long? = null
+        ): DownloadResult.Failure {
+            val verifiedFileSize = runCatching { destinationFile.length() }.getOrDefault(-1L)
+            if (cursor > 0L && verifiedFileSize == cursor) {
+                val pct = ((cursor * 100L) / totalBytes).toInt().coerceIn(0, 99)
+                onProgress(cursor, totalBytes, pct, DownloadStage.DOWNLOADING)
+            } else {
+                runCatching { if (destinationFile.exists()) destinationFile.delete() }
+            }
+            return DownloadResult.Failure(
+                code = code,
+                message = message,
+                httpStatus = httpStatus,
+                retryAfterSeconds = retryAfterSeconds
+            )
+        }
 
         FileOutputStream(destinationFile, false).use { output ->
             var spanIdx = 0
@@ -150,9 +177,10 @@ class StreamCacheReuseDownloader(
                     val spanEnd = (currentSpan.position + currentSpan.length).coerceAtMost(totalBytes)
                     val offsetInSpan = cursor - currentSpan.position
                     val bytesToCopy = spanEnd - cursor
-                    val spanFile = currentSpan.file ?: return null
-                    if (!spanFile.exists() || spanFile.length() < offsetInSpan + bytesToCopy) {
-                        return null
+                    val spanFile = currentSpan.file
+                    if (spanFile == null || !spanFile.exists() || spanFile.length() < offsetInSpan + bytesToCopy) {
+                        output.close()
+                        return abortUnsafeAssembly()
                     }
                     FileInputStream(spanFile).use { input ->
                         var skipped = 0L
@@ -160,7 +188,10 @@ class StreamCacheReuseDownloader(
                             val s = input.skip(offsetInSpan - skipped)
                             if (s <= 0L) {
                                 val byteRead = input.read()
-                                if (byteRead == -1) return null
+                                if (byteRead == -1) {
+                                    output.close()
+                                    return abortUnsafeAssembly()
+                                }
                                 skipped++
                             } else {
                                 skipped += s
@@ -170,7 +201,10 @@ class StreamCacheReuseDownloader(
                         while (remaining > 0L) {
                             coroutineContext.ensureActive()
                             val chunk = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
-                            if (chunk <= 0) return null
+                            if (chunk <= 0) {
+                                output.close()
+                                return abortUnsafeAssembly()
+                            }
                             output.write(buffer, 0, chunk)
                             remaining -= chunk
                             cursor += chunk
@@ -187,7 +221,10 @@ class StreamCacheReuseDownloader(
                     }
                 } else {
                     val gapEnd = (currentSpan?.position ?: totalBytes).coerceAtMost(totalBytes)
-                    if (gapEnd <= cursor) return null
+                    if (gapEnd <= cursor) {
+                        output.close()
+                        return abortUnsafeAssembly()
+                    }
 
                     val reqBuilder = Request.Builder()
                         .url(url)
@@ -198,18 +235,67 @@ class StreamCacheReuseDownloader(
 
                     val response = client.newCall(reqBuilder.build()).execute()
                     response.use { resp ->
+                        when (resp.code) {
+                            429 -> {
+                                val retryAfterSec = com.laterbox.app.network.RetryAfterParser.parseOkHttpResponse(
+                                    response = resp,
+                                    maxDelaySeconds = com.laterbox.app.network.RetryAfterParser.MAX_BACKGROUND_DOWNLOAD_DELAY_SECONDS
+                                )
+                                output.flush()
+                                output.close()
+                                val msg = if (retryAfterSec != null) {
+                                    "Streaming server is rate-limiting downloads (HTTP 429). Retry in ${retryAfterSec}s."
+                                } else {
+                                    "Streaming server is temporarily busy (HTTP 429). Please retry shortly."
+                                }
+                                return preservePrefixAndFail(
+                                    code = FailureCode.RATE_LIMITED,
+                                    message = msg,
+                                    httpStatus = 429,
+                                    retryAfterSeconds = retryAfterSec
+                                )
+                            }
+                            401, 403 -> {
+                                output.flush()
+                                output.close()
+                                return preservePrefixAndFail(
+                                    code = FailureCode.PRIVATE_CONTENT,
+                                    message = "HTTP ${resp.code}: ${resp.message}",
+                                    httpStatus = resp.code
+                                )
+                            }
+                            404, 410 -> {
+                                output.flush()
+                                output.close()
+                                return preservePrefixAndFail(
+                                    code = FailureCode.UNSUPPORTED_URL,
+                                    message = "HTTP ${resp.code}: ${resp.message}",
+                                    httpStatus = resp.code
+                                )
+                            }
+                        }
                         if (resp.code != 206) {
-                            return null
+                            output.close()
+                            return abortUnsafeAssembly()
                         }
                         val respEtag = resp.header("ETag")?.trim()?.takeIf { it.isNotEmpty() }
                         if (meta.etag != null && respEtag != null && meta.etag != respEtag) {
-                            return null
+                            output.close()
+                            return abortUnsafeAssembly()
                         }
                         val parsedRange = HttpDownloader.parseContentRange(resp.header("Content-Range"))
-                        if (parsedRange == null || parsedRange.start != cursor) {
-                            return null
+                        if (parsedRange == null ||
+                            parsedRange.start != cursor ||
+                            parsedRange.end < cursor ||
+                            (parsedRange.total != null && parsedRange.total != totalBytes)
+                        ) {
+                            output.close()
+                            return abortUnsafeAssembly()
                         }
-                        val body = resp.body ?: return null
+                        val body = resp.body ?: run {
+                            output.close()
+                            return abortUnsafeAssembly()
+                        }
                         var remaining = gapEnd - cursor
                         body.byteStream().use { input ->
                             while (remaining > 0L) {
@@ -230,13 +316,21 @@ class StreamCacheReuseDownloader(
                                 }
                             }
                         }
-                        if (remaining > 0L) return null
+                        if (remaining > 0L) {
+                            // Mid-gap network stream cut short after verified contiguous writes up to cursor.
+                            output.flush()
+                            output.close()
+                            return preservePrefixAndFail(
+                                code = FailureCode.NETWORK_ERROR,
+                                message = "Incomplete transfer during stream assembly ($cursor of $totalBytes bytes)"
+                            )
+                        }
                     }
                 }
             }
         }
 
-        if (cursor != totalBytes) return null
+        if (cursor != totalBytes) return abortUnsafeAssembly()
         onTelemetry?.invoke(null, 0L, meta.etag)
         onProgress(totalBytes, totalBytes, 100, DownloadStage.FINALIZING)
         return DownloadResult.Success(

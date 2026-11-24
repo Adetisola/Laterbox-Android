@@ -200,6 +200,18 @@ class DownloadWorker(
 
                 var activeTask = task
                 var refreshedSourceThisAttempt = false
+                var latestObservedBytes = activeTask.downloadedBytes
+                var latestObservedTotalBytes = activeTask.totalBytes?.takeIf { it > 0L }
+                var latestObservedPercent = activeTask.progress
+
+                val trackingProgressCallback: (Long, Long?, Int, DownloadStage?) -> Unit = { bytes, total, percent, stage ->
+                    latestObservedBytes = bytes
+                    if (total != null && total > 0L) {
+                        latestObservedTotalBytes = total
+                    }
+                    latestObservedPercent = percent
+                    onProgressCallback(bytes, total, percent, stage)
+                }
 
                 val result = if (activeTask.formatSelector != null) {
                     val ytDlpDownloader = YtDlpDownloader(appContext)
@@ -210,17 +222,33 @@ class DownloadWorker(
                         destinationFile = partFile,
                         taskId = taskId,
                         infoJsonFile = infoJsonFile,
-                        onProgress = onProgressCallback
+                        onProgress = trackingProgressCallback
                     )
                 } else {
+                    var lastPersistedEtag = activeTask.etag
+                    var lastPersistedTotalBytes = activeTask.totalBytes?.takeIf {
+                        it > 0L && (activeTask.downloadedBytes > 0L || !activeTask.etag.isNullOrBlank())
+                    }
+
+                    val httpTrackingProgressCallback: (Long, Long?, Int, DownloadStage?) -> Unit = { bytes, total, percent, stage ->
+                        if (total != null && total > 0L) {
+                            lastPersistedTotalBytes = total
+                        }
+                        trackingProgressCallback(bytes, total, percent, stage)
+                    }
+
                     val moviesRepo = container?.moviesRepository
                     if (moviesRepo != null &&
                         activeTask.sourceRef != null &&
                         DownloadSourceRefresher.isUrlExpiredOrExpiring(activeTask.urlExpiresAt)
                     ) {
                         val refreshed = DownloadSourceRefresher.refreshTaskSource(
-                            task = activeTask,
+                            task = activeTask.copy(
+                                etag = lastPersistedEtag,
+                                totalBytes = lastPersistedTotalBytes
+                            ),
                             taskDao = taskDao,
+                            partFile = partFile,
                             resolvePlayback = { pId, tId, se, ep ->
                                 (moviesRepo as? com.laterbox.app.movies.data.repository.MoviesRepositoryImpl)
                                     ?.invalidatePlaybackCache(pId, tId, se, ep)
@@ -229,12 +257,16 @@ class DownloadWorker(
                         )
                         if (refreshed != null) {
                             activeTask = refreshed
+                            lastPersistedEtag = refreshed.etag
+                            lastPersistedTotalBytes = refreshed.totalBytes?.takeIf { it > 0L }
+                            latestObservedBytes = refreshed.downloadedBytes
+                            latestObservedTotalBytes = refreshed.totalBytes?.takeIf { it > 0L }
+                            latestObservedPercent = refreshed.progress
                             refreshedSourceThisAttempt = true
                         }
                     }
 
                     val httpDownloader = HttpDownloader()
-                    var lastPersistedEtag = activeTask.etag
                     var lastTelemetryPersistTime = 0L
 
                     suspend fun handleTelemetry(speedBps: Long?, etaSeconds: Long?, etag: String?) {
@@ -261,7 +293,7 @@ class DownloadWorker(
                                     headers = currentTask.toDomain().headers,
                                     onTelemetry = ::handleTelemetry,
                                     onProgress = { bytes, total, percent, stage ->
-                                        onProgressCallback(bytes, total, percent, stage)
+                                        httpTrackingProgressCallback(bytes, total, percent, stage)
                                     }
                                 )
                             if (reusedResult != null) {
@@ -279,10 +311,11 @@ class DownloadWorker(
                             url = currentTask.sourceUrl,
                             destinationFile = partFile,
                             headers = currentTask.toDomain().headers,
-                            expectedETag = currentTask.etag,
+                            expectedETag = lastPersistedEtag ?: currentTask.etag,
+                            expectedTotalBytes = lastPersistedTotalBytes,
                             onTelemetry = ::handleTelemetry,
                             onProgress = { bytes, total, percent, stage ->
-                                onProgressCallback(bytes, total, percent, stage)
+                                httpTrackingProgressCallback(bytes, total, percent, stage)
                             }
                         )
                     }
@@ -312,9 +345,13 @@ class DownloadWorker(
                             kotlinx.coroutines.delay(waitMs)
                         }
                         val refreshed = DownloadSourceRefresher.refreshTaskSource(
-                            task = activeTask,
+                            task = activeTask.copy(
+                                etag = lastPersistedEtag,
+                                totalBytes = lastPersistedTotalBytes
+                            ),
                             taskDao = taskDao,
                             excludeHost = if (initialResult.httpStatus == 429) failedHost else null,
+                            partFile = partFile,
                             resolvePlayback = { pId, tId, se, ep ->
                                 (moviesRepo as? com.laterbox.app.movies.data.repository.MoviesRepositoryImpl)
                                     ?.invalidatePlaybackCache(pId, tId, se, ep)
@@ -323,6 +360,11 @@ class DownloadWorker(
                         )
                         if (refreshed != null && refreshed.sourceUrl != activeTask.sourceUrl) {
                             activeTask = refreshed
+                            lastPersistedEtag = refreshed.etag
+                            lastPersistedTotalBytes = refreshed.totalBytes?.takeIf { it > 0L }
+                            latestObservedBytes = refreshed.downloadedBytes
+                            latestObservedTotalBytes = refreshed.totalBytes?.takeIf { it > 0L }
+                            latestObservedPercent = refreshed.progress
                             refreshedSourceThisAttempt = true
                             executeHttpDownload(activeTask)
                         } else {
@@ -335,6 +377,22 @@ class DownloadWorker(
 
                 progressChannel.close()
                 progressJob.join()
+
+                if (result is DownloadResult.Failure && activeTask.formatSelector == null) {
+                    val diskBytes = if (partFile.exists()) partFile.length() else 0L
+                    val effectiveTotal = latestObservedTotalBytes?.takeIf { it > 0L }
+                    val pct = if (effectiveTotal != null && effectiveTotal > 0L) {
+                        ((diskBytes * 100L) / effectiveTotal).toInt().coerceIn(0, 99)
+                    } else {
+                        latestObservedPercent.coerceIn(0, 99)
+                    }
+                    taskDao.updateProgress(
+                        id = taskId,
+                        progress = pct,
+                        downloadedBytes = diskBytes,
+                        totalBytes = effectiveTotal
+                    )
+                }
 
                 // Cancellation check before finalizing
                 val checkCancel = taskDao.getEntityById(taskId)
@@ -756,6 +814,7 @@ internal object DownloadSourceRefresher {
         task: com.laterbox.app.media.data.db.entity.DownloadTaskEntity,
         taskDao: com.laterbox.app.media.data.db.dao.DownloadTaskDao,
         excludeHost: String? = null,
+        partFile: java.io.File? = null,
         resolvePlayback: suspend (providerId: String, titleId: String, seasonNumber: Int?, episodeNumber: Int?) -> Result<com.laterbox.app.movies.domain.model.PlaybackResolution>
     ): com.laterbox.app.media.data.db.entity.DownloadTaskEntity? {
         val parsed = parseSourceRef(task.sourceRef) ?: return null
@@ -794,16 +853,69 @@ internal object DownloadSourceRefresher {
         } else null
         val newExpiresAt = com.laterbox.app.movies.data.download.MoviesDownloadBridge.parseUrlExpiryMillis(selected.url)
 
-        taskDao.updateResolvedSource(
-            id = task.id,
-            sourceUrl = selected.url,
-            headersJson = headersJson,
-            urlExpiresAt = newExpiresAt
-        )
-        return task.copy(
-            sourceUrl = selected.url,
-            headersJson = headersJson,
-            urlExpiresAt = newExpiresAt
-        )
+        val expectedQuality = parsed.qualityLabel.takeIf { it.isNotBlank() }
+            ?: task.versionTag?.takeIf { it.isNotBlank() }
+        val sameQuality = expectedQuality != null &&
+            selected.qualityLabel.isNotBlank() &&
+            selected.qualityLabel.equals(expectedQuality, ignoreCase = true)
+
+        val previousPath = StreamCacheReuseDownloader.normalizeUrlPath(task.sourceUrl)
+        val nextPath = StreamCacheReuseDownloader.normalizeUrlPath(selected.url)
+        val sameNormalizedPath = previousPath != null && nextPath != null && previousPath == nextPath
+
+        val selectedEstimatedBytes = selected.sizeMb
+            ?.takeIf { it > 0.0 }
+            ?.let { (it * 1024.0 * 1024.0).toLong() }
+        val existingTotalBytes = task.totalBytes?.takeIf { it > 0L }
+        val sizeCompatible = if (selectedEstimatedBytes != null && existingTotalBytes != null) {
+            val tolerance = maxOf(2L * 1024L * 1024L, existingTotalBytes / 50L)
+            kotlin.math.abs(selectedEstimatedBytes - existingTotalBytes) <= tolerance
+        } else {
+            true
+        }
+
+        val representationCompatible = sameQuality && sameNormalizedPath && sizeCompatible
+
+        return if (representationCompatible) {
+            taskDao.updateResolvedSource(
+                id = task.id,
+                sourceUrl = selected.url,
+                headersJson = headersJson,
+                urlExpiresAt = newExpiresAt
+            )
+            task.copy(
+                sourceUrl = selected.url,
+                headersJson = headersJson,
+                urlExpiresAt = newExpiresAt
+            )
+        } else {
+            runCatching {
+                if (partFile != null && partFile.exists()) {
+                    partFile.delete()
+                }
+            }
+            val newQualityLabel = selected.qualityLabel.takeIf { it.isNotBlank() }?.let { "$it · ${selected.format}" }
+            val newVersionTag = selected.qualityLabel.takeIf { it.isNotBlank() }
+            taskDao.resetAndUpdateResolvedSource(
+                id = task.id,
+                sourceUrl = selected.url,
+                headersJson = headersJson,
+                urlExpiresAt = newExpiresAt,
+                totalBytes = selectedEstimatedBytes,
+                qualityLabel = newQualityLabel,
+                versionTag = newVersionTag
+            )
+            task.copy(
+                sourceUrl = selected.url,
+                headersJson = headersJson,
+                urlExpiresAt = newExpiresAt,
+                etag = null,
+                downloadedBytes = 0L,
+                progress = 0,
+                totalBytes = selectedEstimatedBytes,
+                qualityLabel = newQualityLabel ?: task.qualityLabel,
+                versionTag = newVersionTag ?: task.versionTag
+            )
+        }
     }
 }

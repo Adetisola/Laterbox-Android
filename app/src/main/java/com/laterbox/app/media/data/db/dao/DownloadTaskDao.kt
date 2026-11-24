@@ -89,6 +89,31 @@ interface DownloadTaskDao {
     )
 
     @Query("""
+        UPDATE download_task
+        SET sourceUrl = :sourceUrl,
+            headersJson = :headersJson,
+            urlExpiresAt = :urlExpiresAt,
+            etag = NULL,
+            downloadedBytes = 0,
+            progress = 0,
+            totalBytes = :totalBytes,
+            qualityLabel = COALESCE(:qualityLabel, qualityLabel),
+            versionTag = COALESCE(:versionTag, versionTag),
+            updatedAt = :updatedAt
+        WHERE id = :id
+    """)
+    suspend fun resetAndUpdateResolvedSource(
+        id: String,
+        sourceUrl: String,
+        headersJson: String?,
+        urlExpiresAt: Long?,
+        totalBytes: Long?,
+        qualityLabel: String?,
+        versionTag: String?,
+        updatedAt: Long = System.currentTimeMillis()
+    )
+
+    @Query("""
         UPDATE download_task 
         SET status = :status, errorCode = :errorCode, errorMessage = :errorMessage, retryCount = :retryCount, speedBps = NULL, etaSeconds = NULL, updatedAt = :updatedAt 
         WHERE id = :id

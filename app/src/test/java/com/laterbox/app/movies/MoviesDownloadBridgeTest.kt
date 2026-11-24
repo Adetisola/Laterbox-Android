@@ -386,4 +386,151 @@ class MoviesDownloadBridgeTest {
             mockServer.shutdown()
         }
     }
+
+    @Test
+    fun downloadSourceRefresher_preservesPartialAndEtagWhenPathAndQualityMatch() = runTest {
+        val now = 1_750_000_000_000L
+        val taskDao = database.downloadTaskDao()
+        val partFile = java.io.File.createTempFile("refresh_compat", ".part").apply {
+            writeText("ValidPrefixBytes")
+        }
+        try {
+            val task = com.laterbox.app.media.data.db.entity.DownloadTaskEntity(
+                id = "task_compat_1",
+                savedLinkId = null,
+                sourceUrl = "https://bcdnxw.hakunaymatata.com/resource/movie_720.mp4?sign=old&exp=1750000010",
+                sourcePlatform = "MovieBox",
+                candidateId = "c1",
+                formatSelector = null,
+                mediaType = MediaType.VIDEO.name,
+                qualityLabel = "720p · MP4",
+                title = "Sample Movie (720p)",
+                status = com.laterbox.app.media.domain.model.DownloadState.DOWNLOADING.name,
+                progress = 25,
+                downloadedBytes = partFile.length(),
+                totalBytes = 100L * 1024L * 1024L,
+                etag = "\"etag-same\"",
+                versionTag = "720p",
+                createdAt = now - 5_000L,
+                updatedAt = now - 5_000L,
+                sourceRef = "moviebox|mb_1|0|0|720p",
+                urlExpiresAt = 1_750_000_010_000L
+            )
+            taskDao.insertTask(task)
+
+            val refreshed = com.laterbox.app.media.data.download.DownloadSourceRefresher.refreshTaskSource(
+                task = task,
+                taskDao = taskDao,
+                partFile = partFile,
+                resolvePlayback = { _, _, _, _ ->
+                    Result.success(
+                        com.laterbox.app.movies.domain.model.PlaybackResolution.Available(
+                            title = "Sample Movie",
+                            sources = listOf(
+                                PlaybackSource(
+                                    id = "s720",
+                                    url = "https://bcdnxw.hakunaymatata.com/resource/movie_720.mp4?sign=new&exp=1850000000",
+                                    format = "MP4",
+                                    qualityLabel = "720p",
+                                    qualityHeight = 720,
+                                    sizeMb = 100.0,
+                                    providerName = "MovieBox",
+                                    isAuthorised = true
+                                )
+                            )
+                        )
+                    )
+                }
+            )!!
+
+            assertTrue(partFile.exists())
+            assertEquals("ValidPrefixBytes", partFile.readText())
+            assertEquals("\"etag-same\"", refreshed.etag)
+            assertEquals(partFile.length(), refreshed.downloadedBytes)
+            assertEquals(25, refreshed.progress)
+            val persisted = taskDao.getEntityById("task_compat_1")!!
+            assertEquals("\"etag-same\"", persisted.etag)
+            assertEquals(partFile.length(), persisted.downloadedBytes)
+            assertEquals(25, persisted.progress)
+        } finally {
+            partFile.delete()
+        }
+    }
+
+    @Test
+    fun downloadSourceRefresher_resetsPartAndMetadataWhenQualityOrPathChanges() = runTest {
+        val now = 1_750_000_000_000L
+        val taskDao = database.downloadTaskDao()
+        val partFile = java.io.File.createTempFile("refresh_incompat", ".part").apply {
+            writeText("Old720pPartialData")
+        }
+        try {
+            val task = com.laterbox.app.media.data.db.entity.DownloadTaskEntity(
+                id = "task_incompat_1",
+                savedLinkId = null,
+                sourceUrl = "https://bcdnxw.hakunaymatata.com/resource/movie_720.mp4?sign=old",
+                sourcePlatform = "MovieBox",
+                candidateId = "c1",
+                formatSelector = null,
+                mediaType = MediaType.VIDEO.name,
+                qualityLabel = "720p · MP4",
+                title = "Sample Movie (720p)",
+                status = com.laterbox.app.media.domain.model.DownloadState.DOWNLOADING.name,
+                progress = 40,
+                downloadedBytes = partFile.length(),
+                totalBytes = 800L * 1024L * 1024L,
+                etag = "\"etag-720p\"",
+                versionTag = "720p",
+                createdAt = now - 5_000L,
+                updatedAt = now - 5_000L,
+                sourceRef = "moviebox|mb_1|0|0|720p"
+            )
+            taskDao.insertTask(task)
+
+            // Fallback returns a different quality (480p) on a different host/path
+            val refreshed = com.laterbox.app.media.data.download.DownloadSourceRefresher.refreshTaskSource(
+                task = task,
+                taskDao = taskDao,
+                excludeHost = "bcdnxw.hakunaymatata.com",
+                partFile = partFile,
+                resolvePlayback = { _, _, _, _ ->
+                    Result.success(
+                        com.laterbox.app.movies.domain.model.PlaybackResolution.Available(
+                            title = "Sample Movie",
+                            sources = listOf(
+                                PlaybackSource(
+                                    id = "s480_mirror",
+                                    url = "https://mirror.example.net/resource/movie_480.mp4?sign=new",
+                                    format = "MP4",
+                                    qualityLabel = "480p",
+                                    qualityHeight = 480,
+                                    sizeMb = 350.0,
+                                    providerName = "MovieBox",
+                                    isAuthorised = true
+                                )
+                            )
+                        )
+                    )
+                }
+            )!!
+
+            assertFalse(partFile.exists())
+            assertEquals(null, refreshed.etag)
+            assertEquals(0L, refreshed.downloadedBytes)
+            assertEquals(0, refreshed.progress)
+            assertEquals("480p · MP4", refreshed.qualityLabel)
+            assertEquals("480p", refreshed.versionTag)
+            assertEquals((350.0 * 1024.0 * 1024.0).toLong(), refreshed.totalBytes)
+
+            val persisted = taskDao.getEntityById("task_incompat_1")!!
+            assertEquals(null, persisted.etag)
+            assertEquals(0L, persisted.downloadedBytes)
+            assertEquals(0, persisted.progress)
+            assertEquals("480p · MP4", persisted.qualityLabel)
+            assertEquals("480p", persisted.versionTag)
+            assertEquals((350.0 * 1024.0 * 1024.0).toLong(), persisted.totalBytes)
+        } finally {
+            partFile.delete()
+        }
+    }
 }

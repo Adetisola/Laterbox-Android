@@ -251,4 +251,109 @@ class StreamCacheReuseDownloaderTest {
         assertEquals(429, result.httpStatus)
         assertEquals(19L, result.retryAfterSeconds)
     }
+
+    @Test
+    fun midAssembly429_preservesContiguousSequentialPrefixAndReturnsRateLimitedWithRetryAfter() = runTest {
+        val totalBytes = 1024L
+        val fullPayload = ByteArray(totalBytes.toInt()) { idx -> ((idx * 7 + 13) and 0xFF).toByte() }
+        val cachedPrefix = fullPayload.copyOfRange(0, 384)
+        val url = server.url("/streams/mid_429.mp4").toString()
+        seedCacheRange(url, totalBytes = totalBytes, start = 0L, bytes = cachedPrefix)
+
+        var headCalls = 0
+        var rangeCalls = 0
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.method == "HEAD") {
+                    headCalls++
+                    return MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Length", totalBytes.toString())
+                        .setHeader("ETag", "\"etag-prefix\"")
+                        .setHeader("Accept-Ranges", "bytes")
+                }
+                rangeCalls++
+                val rangeHeader = request.getHeader("Range")
+                return if (rangeCalls == 1 && rangeHeader == "bytes=384-1023") {
+                    MockResponse()
+                        .setResponseCode(429)
+                        .addHeader("Retry-After", "23")
+                } else {
+                    MockResponse()
+                        .setResponseCode(206)
+                        .setHeader("ETag", "\"etag-prefix\"")
+                        .setHeader("Content-Range", "bytes 384-1023/1024")
+                        .setBody(Buffer().write(fullPayload.copyOfRange(384, 1024)))
+                }
+            }
+        }
+
+        val dest = tempFolder.newFile("mid_429.part").apply { delete() }
+        var telemetryEtag: String? = null
+        val progressEvents = mutableListOf<Triple<Long, Long?, Int>>()
+        val result = StreamCacheReuseDownloader(cache, OkHttpClient()).tryDownloadReusingCache(
+            url = url,
+            destinationFile = dest,
+            onTelemetry = { _, _, etag -> if (!etag.isNullOrBlank()) telemetryEtag = etag },
+            onProgress = { bytes, total, pct, _ -> progressEvents.add(Triple(bytes, total, pct)) }
+        ) as DownloadResult.Failure
+
+        assertEquals(1, headCalls)
+        assertEquals(1, rangeCalls)
+        assertEquals(com.laterbox.app.media.domain.model.FailureCode.RATE_LIMITED, result.code)
+        assertEquals(429, result.httpStatus)
+        assertEquals(23L, result.retryAfterSeconds)
+        assertEquals("\"etag-prefix\"", telemetryEtag)
+        assertTrue(progressEvents.any { it.first == 0L && it.second == totalBytes })
+        assertTrue(progressEvents.any { it.first == 384L && it.second == totalBytes })
+        assertTrue(dest.exists())
+        assertEquals(384L, dest.length())
+        assertArrayEquals(cachedPrefix, dest.readBytes())
+
+        // Standard HttpDownloader resumes cleanly from the preserved contiguous prefix.
+        val resumed = HttpDownloader(OkHttpClient()).download(
+            url = url,
+            destinationFile = dest,
+            expectedETag = telemetryEtag,
+            expectedTotalBytes = totalBytes,
+            onProgress = { _, _, _, _ -> }
+        )
+        assertTrue(resumed is DownloadResult.Success)
+        assertArrayEquals(fullPayload, dest.readBytes())
+    }
+
+    @Test
+    fun midAssemblyGapEtagMismatch_deletesUnsafePartAndFallsBackToNull() = runTest {
+        val totalBytes = 1024L
+        val cachedPrefix = ByteArray(256) { 5 }
+        val url = server.url("/streams/gap_etag_mismatch.mp4").toString()
+        seedCacheRange(url, totalBytes = totalBytes, start = 0L, bytes = cachedPrefix)
+
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.method == "HEAD") {
+                    return MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Length", totalBytes.toString())
+                        .setHeader("ETag", "\"etag-a\"")
+                        .setHeader("Accept-Ranges", "bytes")
+                }
+                return MockResponse()
+                    .setResponseCode(206)
+                    .setHeader("ETag", "\"etag-b\"")
+                    .setHeader("Content-Range", "bytes 256-1023/1024")
+                    .setBody(Buffer().write(ByteArray(768)))
+            }
+        }
+
+        val dest = tempFolder.newFile("gap_etag.part").apply { delete() }
+        val result = StreamCacheReuseDownloader(cache, OkHttpClient()).tryDownloadReusingCache(
+            url = url,
+            destinationFile = dest,
+            onProgress = { _, _, _, _ -> }
+        )
+
+        assertNull(result)
+        assertFalse(dest.exists())
+    }
 }

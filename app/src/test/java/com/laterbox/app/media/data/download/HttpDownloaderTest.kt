@@ -7,6 +7,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -245,5 +246,137 @@ class HttpDownloaderTest {
         assertTrue(telemetryEvents.any { it.third == "\"speed-v1\"" })
         assertTrue(telemetryEvents.any { (it.first ?: 0L) > 0L })
         assertEquals(0L, telemetryEvents.last().second)
+    }
+
+    @Test
+    fun download_failsCleanlyWhenInitial206HasNonZeroContentRangeStart() = runTest {
+        val destFile = File(tempFolder.root, "bad_init_206.part")
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(206)
+                .setHeader("ETag", "\"v1\"")
+                .setHeader("Content-Range", "bytes 5-14/50")
+                .setBody("0123456789")
+        )
+
+        val result = downloader.download(
+            url = server.url("/bad_init_206.mp4").toString(),
+            destinationFile = destFile,
+            onProgress = { _, _, _, _ -> }
+        )
+
+        assertTrue(result is DownloadResult.Failure)
+        assertEquals(com.laterbox.app.media.domain.model.FailureCode.HTTP_ERROR, (result as DownloadResult.Failure).code)
+        assertFalse(destFile.exists())
+    }
+
+    @Test
+    fun download_restartsFromZeroWhen206SliceContentLengthMismatchesRange() = runTest {
+        val fullContent = "CompleteFreshPayloadForSliceMismatch"
+        val destFile = File(tempFolder.root, "slice_mismatch.part")
+        destFile.writeText("0123456789")
+
+        // Claims 10..29 (20 bytes) but sends Content-Length: 5
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(206)
+                .setHeader("ETag", "\"v1\"")
+                .setHeader("Content-Range", "bytes 10-29/${fullContent.length}")
+                .setBody("12345")
+        )
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("ETag", "\"v1\"")
+                .setBody(fullContent)
+        )
+
+        val result = downloader.download(
+            url = server.url("/slice_mismatch.mp4").toString(),
+            destinationFile = destFile,
+            expectedETag = "\"v1\"",
+            onProgress = { _, _, _, _ -> }
+        )
+
+        assertTrue(result is DownloadResult.Success)
+        assertEquals(fullContent, destFile.readText())
+    }
+
+    @Test
+    fun download_restartsFromZeroWhen206TotalMismatchesExpectedTotalBytes() = runTest {
+        val fullContent = "NewEncodingDifferentTotalBytesPayload"
+        val destFile = File(tempFolder.root, "total_mismatch.part")
+        destFile.writeText("OldPrefix")
+
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(206)
+                .setHeader("ETag", "\"v1\"")
+                .setHeader("Content-Range", "bytes 9-${fullContent.length - 1}/${fullContent.length}")
+                .setBody(fullContent.substring(9))
+        )
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("ETag", "\"v2\"")
+                .setBody(fullContent)
+        )
+
+        val result = downloader.download(
+            url = server.url("/total_mismatch.mp4").toString(),
+            destinationFile = destFile,
+            expectedETag = "\"v1\"",
+            expectedTotalBytes = 999L,
+            onProgress = { _, _, _, _ -> }
+        )
+
+        assertTrue(result is DownloadResult.Success)
+        assertEquals(fullContent, destFile.readText())
+        assertEquals("\"v2\"", (result as DownloadResult.Success).etag)
+    }
+
+    @Test
+    fun download_rejectsIncompleteTransferWhenTotalBytesNotReachedAndPreservesPartForResume() = runTest {
+        val destFile = File(tempFolder.root, "short_206.part")
+        // Valid 206 slice of 10 bytes for a 30-byte resource -> cannot complete as Success
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(206)
+                .setHeader("ETag", "\"v1\"")
+                .setHeader("Content-Range", "bytes 0-9/30")
+                .setBody("0123456789")
+        )
+
+        val progressUpdates = mutableListOf<Triple<Long, Long?, Int>>()
+        val result = downloader.download(
+            url = server.url("/short_206.mp4").toString(),
+            destinationFile = destFile,
+            onProgress = { bytes, total, pct, _ ->
+                progressUpdates.add(Triple(bytes, total, pct))
+            }
+        )
+
+        assertTrue(result is DownloadResult.Failure)
+        assertEquals(com.laterbox.app.media.domain.model.FailureCode.NETWORK_ERROR, (result as DownloadResult.Failure).code)
+        assertEquals(10L, destFile.length())
+        assertTrue(progressUpdates.any { it.first == 10L && it.second == 30L && it.third < 100 })
+
+        // Subsequent resume with matching ETag and expectedTotalBytes completes cleanly
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(206)
+                .setHeader("ETag", "\"v1\"")
+                .setHeader("Content-Range", "bytes 10-29/30")
+                .setBody("ABCDEFGHIJKLMNOPQRST")
+        )
+        val resumed = downloader.download(
+            url = server.url("/short_206.mp4").toString(),
+            destinationFile = destFile,
+            expectedETag = "\"v1\"",
+            expectedTotalBytes = 30L,
+            onProgress = { _, _, _, _ -> }
+        )
+        assertTrue(resumed is DownloadResult.Success)
+        assertEquals("0123456789ABCDEFGHIJKLMNOPQRST", destFile.readText())
     }
 }

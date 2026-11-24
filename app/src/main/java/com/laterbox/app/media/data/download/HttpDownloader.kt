@@ -49,6 +49,7 @@ class HttpDownloader(
         destinationFile: File,
         headers: Map<String, String> = emptyMap(),
         expectedETag: String? = null,
+        expectedTotalBytes: Long? = null,
         onTelemetry: (suspend (speedBps: Long?, etaSeconds: Long?, etag: String?) -> Unit)? = null,
         onProgress: suspend (bytesDownloaded: Long, totalBytes: Long?, percent: Int, stage: DownloadStage?) -> Unit
     ): DownloadResult = withContext(Dispatchers.IO) {
@@ -56,10 +57,22 @@ class HttpDownloader(
         var finalResult: DownloadResult? = null
 
         while (finalResult == null) {
-            val existingLength = if (!restartedFromZero && destinationFile.exists()) {
+            val rawExistingLength = if (!restartedFromZero && destinationFile.exists()) {
                 destinationFile.length()
             } else {
                 0L
+            }
+            val existingLength = if (
+                rawExistingLength > 0L &&
+                expectedTotalBytes != null &&
+                expectedTotalBytes > 0L &&
+                rawExistingLength > expectedTotalBytes
+            ) {
+                destinationFile.delete()
+                restartedFromZero = true
+                0L
+            } else {
+                rawExistingLength
             }
 
             val requestBuilder = Request.Builder()
@@ -117,44 +130,60 @@ class HttpDownloader(
 
                     val responseETag = resp.header("ETag")?.trim()?.takeIf { it.isNotEmpty() }
                     val isPartial = resp.code == 206
+                    val parsedRange = if (isPartial) parseContentRange(resp.header("Content-Range")) else null
 
-                    if (isPartial && existingLength > 0L) {
-                        val parsedRange = parseContentRange(resp.header("Content-Range"))
-                        val eTagMismatch = !expectedETag.isNullOrBlank() &&
+                    val body = resp.body ?: return@use DownloadResult.Failure(
+                        code = FailureCode.HTTP_ERROR,
+                        message = "Response body is empty"
+                    )
+                    val contentLength = body.contentLength()
+
+                    if (isPartial) {
+                        val eTagMismatch = existingLength > 0L &&
+                            !expectedETag.isNullOrBlank() &&
                             !responseETag.isNullOrBlank() &&
                             expectedETag != responseETag
                         val rangeInvalid = parsedRange == null ||
                             parsedRange.start != existingLength ||
                             parsedRange.end < parsedRange.start
+                        val totalMismatch = existingLength > 0L &&
+                            parsedRange?.total != null &&
+                            expectedTotalBytes != null &&
+                            expectedTotalBytes > 0L &&
+                            parsedRange.total != expectedTotalBytes
+                        val expectedSliceLength = parsedRange?.let { it.end - it.start + 1L }
+                        val sliceContentLengthMismatch = contentLength > 0L &&
+                            expectedSliceLength != null &&
+                            contentLength != expectedSliceLength
 
-                        if (eTagMismatch || rangeInvalid) {
-                            if (!restartedFromZero) {
+                        if (eTagMismatch || rangeInvalid || totalMismatch || sliceContentLengthMismatch) {
+                            if (existingLength > 0L && !restartedFromZero) {
                                 destinationFile.delete()
                                 restartedFromZero = true
                                 return@use null
                             }
                             return@use DownloadResult.Failure(
                                 code = FailureCode.HTTP_ERROR,
-                                message = "Invalid 206 Content-Range or ETag mismatch on resume"
+                                message = "Invalid HTTP 206 Content-Range or representation mismatch"
                             )
                         }
                     }
-
-                    val body = resp.body ?: return@use DownloadResult.Failure(
-                        code = FailureCode.HTTP_ERROR,
-                        message = "Response body is empty"
-                    )
 
                     val appendMode = isPartial && existingLength > 0L
                     if (!appendMode && existingLength > 0L && destinationFile.exists()) {
                         destinationFile.delete()
                     }
 
-                    val parsedRange = if (isPartial) parseContentRange(resp.header("Content-Range")) else null
-                    val contentLength = body.contentLength()
                     val totalBytes = when {
                         isPartial && parsedRange?.total != null -> parsedRange.total
+                        isPartial && parsedRange != null -> parsedRange.end + 1L
                         contentLength > 0L && appendMode -> existingLength + contentLength
+                        contentLength > 0L -> contentLength
+                        expectedTotalBytes != null && expectedTotalBytes > 0L -> expectedTotalBytes
+                        else -> null
+                    }
+                    val expectedResponseBytes = when {
+                        isPartial && parsedRange != null -> parsedRange.end - parsedRange.start + 1L
                         contentLength > 0L -> contentLength
                         else -> null
                     }
@@ -162,6 +191,7 @@ class HttpDownloader(
                     onTelemetry?.invoke(null, null, responseETag)
 
                     var bytesDownloaded = if (appendMode) existingLength else 0L
+                    var responseBytesRead = 0L
                     destinationFile.parentFile?.let { if (!it.exists()) it.mkdirs() }
 
                     val buffer = ByteArray(32 * 1024)
@@ -178,6 +208,7 @@ class HttpDownloader(
                                 coroutineContext.ensureActive()
                                 output.write(buffer, 0, read)
                                 bytesDownloaded += read
+                                responseBytesRead += read
 
                                 val now = System.currentTimeMillis()
                                 val percent = if (totalBytes != null && totalBytes > 0L) {
@@ -210,6 +241,26 @@ class HttpDownloader(
                                 }
                             }
                         }
+                    }
+
+                    val shortResponseTransfer = expectedResponseBytes != null &&
+                        responseBytesRead != expectedResponseBytes
+                    val shortTotalTransfer = totalBytes != null &&
+                        totalBytes > 0L &&
+                        bytesDownloaded != totalBytes
+                    if (shortResponseTransfer || shortTotalTransfer) {
+                        val currentPercent = if (totalBytes != null && totalBytes > 0L) {
+                            ((bytesDownloaded * 100) / totalBytes).toInt().coerceIn(0, 99)
+                        } else 0
+                        onProgress(bytesDownloaded, totalBytes, currentPercent, DownloadStage.DOWNLOADING)
+                        return@use DownloadResult.Failure(
+                            code = FailureCode.NETWORK_ERROR,
+                            message = if (totalBytes != null) {
+                                "Incomplete transfer: received $bytesDownloaded of $totalBytes bytes"
+                            } else {
+                                "Incomplete transfer: response stream ended prematurely"
+                            }
+                        )
                     }
 
                     onTelemetry?.invoke(null, 0L, responseETag)
