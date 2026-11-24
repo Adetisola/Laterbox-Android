@@ -222,6 +222,8 @@ class DownloadWorker(
                             task = activeTask,
                             taskDao = taskDao,
                             resolvePlayback = { pId, tId, se, ep ->
+                                (moviesRepo as? com.laterbox.app.movies.data.repository.MoviesRepositoryImpl)
+                                    ?.invalidatePlaybackCache(pId, tId, se, ep)
                                 moviesRepo.resolvePlayback(pId, tId, se, ep)
                             }
                         )
@@ -286,20 +288,40 @@ class DownloadWorker(
                     }
 
                     val initialResult = executeHttpDownload(activeTask)
+                    val refreshableStatus = initialResult is DownloadResult.Failure &&
+                        initialResult.httpStatus in setOf(401, 403, 404, 410, 429)
+                    val retryAfterSec = (initialResult as? DownloadResult.Failure)?.retryAfterSeconds
+                    val shouldDeferRetryWithoutRefresh = initialResult is DownloadResult.Failure &&
+                        initialResult.httpStatus == 429 &&
+                        retryAfterSec != null &&
+                        retryAfterSec > 10L
                     if (initialResult is DownloadResult.Failure &&
-                        (initialResult.httpStatus == 403 || initialResult.httpStatus == 410) &&
+                        refreshableStatus &&
+                        !shouldDeferRetryWithoutRefresh &&
                         !refreshedSourceThisAttempt &&
                         moviesRepo != null &&
                         activeTask.sourceRef != null
                     ) {
+                        val failedHost = android.net.Uri.parse(activeTask.sourceUrl).host?.lowercase()
+                        android.util.Log.w(
+                            "DownloadWorker",
+                            "Download HTTP ${initialResult.httpStatus} from host=${failedHost ?: "unknown"} retryAfter=${retryAfterSec ?: "none"}; refreshing source"
+                        )
+                        if (initialResult.httpStatus == 429) {
+                            val waitMs = ((retryAfterSec ?: 2L).coerceIn(1L, 10L)) * 1_000L
+                            kotlinx.coroutines.delay(waitMs)
+                        }
                         val refreshed = DownloadSourceRefresher.refreshTaskSource(
                             task = activeTask,
                             taskDao = taskDao,
+                            excludeHost = if (initialResult.httpStatus == 429) failedHost else null,
                             resolvePlayback = { pId, tId, se, ep ->
+                                (moviesRepo as? com.laterbox.app.movies.data.repository.MoviesRepositoryImpl)
+                                    ?.invalidatePlaybackCache(pId, tId, se, ep)
                                 moviesRepo.resolvePlayback(pId, tId, se, ep)
                             }
                         )
-                        if (refreshed != null) {
+                        if (refreshed != null && refreshed.sourceUrl != activeTask.sourceUrl) {
                             activeTask = refreshed
                             refreshedSourceThisAttempt = true
                             executeHttpDownload(activeTask)
@@ -733,6 +755,7 @@ internal object DownloadSourceRefresher {
     suspend fun refreshTaskSource(
         task: com.laterbox.app.media.data.db.entity.DownloadTaskEntity,
         taskDao: com.laterbox.app.media.data.db.dao.DownloadTaskDao,
+        excludeHost: String? = null,
         resolvePlayback: suspend (providerId: String, titleId: String, seasonNumber: Int?, episodeNumber: Int?) -> Result<com.laterbox.app.movies.domain.model.PlaybackResolution>
     ): com.laterbox.app.media.data.db.entity.DownloadTaskEntity? {
         val parsed = parseSourceRef(task.sourceRef) ?: return null
@@ -750,9 +773,18 @@ internal object DownloadSourceRefresher {
                 !src.url.contains(".mpd", ignoreCase = true) &&
                 !src.url.contains(".m3u8", ignoreCase = true)
         }
-        val selected = progressiveSources.firstOrNull {
+        val normalizedExclude = excludeHost?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+        val nonExcluded = if (normalizedExclude != null) {
+            progressiveSources.filter { src ->
+                android.net.Uri.parse(src.url).host?.lowercase() != normalizedExclude
+            }
+        } else {
+            progressiveSources
+        }
+        val pool = nonExcluded.ifEmpty { progressiveSources }
+        val selected = pool.firstOrNull {
             parsed.qualityLabel.isNotBlank() && it.qualityLabel.equals(parsed.qualityLabel, ignoreCase = true)
-        } ?: progressiveSources.maxByOrNull { it.qualityHeight } ?: return null
+        } ?: pool.maxByOrNull { it.qualityHeight } ?: return null
 
         val headersJson = if (selected.headers.isNotEmpty()) {
             val obj = org.json.JSONObject()

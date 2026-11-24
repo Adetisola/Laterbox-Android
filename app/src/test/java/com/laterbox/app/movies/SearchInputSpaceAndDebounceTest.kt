@@ -550,4 +550,131 @@ class SearchInputSpaceAndDebounceTest {
         composeTestRule.onNodeWithTag("catalogue_suggestions_box_your_searches").assertIsDisplayed()
         composeTestRule.onNodeWithTag("catalogue_suggestions_box_your_library").assertIsDisplayed()
     }
+
+    @Test
+    fun `deduplicateSuggestionsPreferringMovieBox preserves multiple keyword suggestions and merges exact duplicates`() {
+        val raw = listOf(
+            SearchSuggestion(id = "", providerId = "", title = "Avatar: Seven Havens", kind = null),
+            SearchSuggestion(id = "", providerId = "", title = "Avatar Aang: The Last Airbender", kind = null),
+            SearchSuggestion(id = "", providerId = "", title = "avatar the way of water", kind = null),
+            SearchSuggestion(id = "", providerId = "", title = "Avatar: Fire and Ash", kind = null),
+            SearchSuggestion(id = "", providerId = "", title = "avatar: seven havens", kind = null), // duplicate keyword
+            SearchSuggestion(id = "8906", providerId = "moviebox", title = "Avatar", kind = MediaKind.MOVIE, releaseYear = 2009),
+            SearchSuggestion(id = "ia_av", providerId = "ia", title = "Avatar", kind = MediaKind.MOVIE, releaseYear = 2009)
+        )
+
+        val deduped = com.laterbox.app.movies.domain.engine.MovieBoxPriorityDeduplicator
+            .deduplicateSuggestionsPreferringMovieBox(raw)
+
+        assertEquals(
+            listOf(
+                "Avatar: Seven Havens",
+                "Avatar Aang: The Last Airbender",
+                "avatar the way of water",
+                "Avatar: Fire and Ash",
+                "Avatar"
+            ),
+            deduped.map { it.title }
+        )
+        assertEquals("moviebox", deduped.last().providerId)
+    }
+
+    @Test
+    fun `laterboxSearchField backspaces cleanly across spaces even when StateFlow conflates intermediate echoes`() {
+        val queryFlow = MutableStateFlow("iron")
+        val dispatched = mutableListOf<String>()
+
+        composeTestRule.setContent {
+            val q by queryFlow.collectAsState()
+            LaterboxTheme {
+                LaterboxSearchField(
+                    query = q,
+                    onQueryChange = { next ->
+                        dispatched += next
+                        // Deliberately do NOT update queryFlow with trailing-space intermediate ("iron ")
+                        // to simulate StateFlow conflation when space + backspace happen faster than UI emission.
+                        if (!next.endsWith(" ")) {
+                            queryFlow.value = next
+                        }
+                    },
+                    placeholder = "Search..."
+                )
+            }
+        }
+
+        val input = composeTestRule.onNodeWithTag("laterbox_search_input")
+        input.performTextInput(" ")
+        composeTestRule.waitForIdle()
+        // Delete trailing space by replacing text back to "iron" while keeping local state intact
+        input.performTextInputSelection(TextRange(0, 5))
+        input.performTextInput("iron")
+        composeTestRule.waitForIdle()
+
+        // Delayed echo of intermediate space emission must NOT overwrite current local text if already confirmed/superseded,
+        // and typing a subsequent word with spaces works cleanly.
+        input.performTextInput(" man")
+        composeTestRule.waitForIdle()
+        input.assertTextEquals("iron man")
+        assertEquals("iron man", queryFlow.value)
+
+        // Genuine external suggestion selection still updates the field
+        queryFlow.value = "Avatar: Fire and Ash"
+        composeTestRule.waitForIdle()
+        input.assertTextEquals("Avatar: Fire and Ash")
+    }
+
+    @Test
+    fun `syncedTextFieldController supports repeated backspace through spaces, middle edits, selection replace, paste, and cursor preservation`() {
+        val edits = mutableListOf<String>()
+        val controller = com.laterbox.app.ui.components.SyncedTextFieldController("star wars rebels")
+
+        // 1. Repeated Backspace deleting back through internal space ("rebels" -> "reb" -> "" -> "wars ")
+        var current = "star wars rebels"
+        while (current.length > "star wars".length) {
+            current = current.dropLast(1)
+            controller.onLocalValueChange(
+                androidx.compose.ui.text.input.TextFieldValue(current, TextRange(current.length)),
+                onExternalChange = { edits += it }
+            )
+            // Simulated delayed echo of previous space-containing string must never block or revert deletion
+            if (current == "star wars") {
+                controller.syncExternal("star wars ")
+            }
+        }
+        assertEquals("star wars", controller.value.text)
+        assertEquals(TextRange(9), controller.value.selection)
+
+        // 2. Delete character immediately BEFORE internal space: "star| wars" -> "sta| wars"
+        controller.onLocalValueChange(
+            androidx.compose.ui.text.input.TextFieldValue("sta wars", TextRange(3)),
+            onExternalChange = { edits += it }
+        )
+        // Asynchronous StateFlow confirmation preserves middle cursor position (index 3)
+        controller.syncExternal("sta wars")
+        assertEquals("sta wars", controller.value.text)
+        assertEquals(TextRange(3), controller.value.selection)
+
+        // 3. Delete character immediately AFTER internal space: "sta |wars" -> "sta |ars"
+        controller.onLocalValueChange(
+            androidx.compose.ui.text.input.TextFieldValue("sta ars", TextRange(4)),
+            onExternalChange = { edits += it }
+        )
+        controller.syncExternal("sta ars")
+        assertEquals("sta ars", controller.value.text)
+        assertEquals(TextRange(4), controller.value.selection)
+
+        // 4. Select substring ("ars") and replace / paste multi-word query mid-edit
+        controller.onLocalValueChange(
+            androidx.compose.ui.text.input.TextFieldValue("sta ars", TextRange(4, 7)),
+            onExternalChange = { edits += it }
+        )
+        controller.onLocalValueChange(
+            androidx.compose.ui.text.input.TextFieldValue("sta trek beyond", TextRange(15)),
+            onExternalChange = { edits += it }
+        )
+        // 5. Out-of-order delayed intermediate echo from earlier typing does NOT clobber pasted text
+        controller.syncExternal("sta wars")
+        controller.syncExternal("sta ars")
+        assertEquals("sta trek beyond", controller.value.text)
+    }
 }

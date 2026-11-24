@@ -209,6 +209,7 @@ fun MovieDetailScreen(
     onSelectEpisodeDownloadSource: (seasonNumber: Int, episodeNumber: Int, episodeTitle: String, source: PlaybackSource) -> Unit = { _, _, _, _ -> },
     onDismissEpisodeResolutionPicker: () -> Unit = {},
     onSelectEpisodeRange: ((String) -> Unit)? = null,
+    onRequestEpisodeSizes: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -230,6 +231,11 @@ fun MovieDetailScreen(
         )
     if (showDownloadDialog && canShowDownloadSheet) {
         val currentDetails = uiState.details!!
+        androidx.compose.runtime.LaunchedEffect(showDownloadDialog, uiState.selectedSeasonNumber) {
+            if (currentDetails.summary.kind.isEpisodic) {
+                onRequestEpisodeSizes()
+            }
+        }
         DownloadOptionsBottomSheet(
             title = currentDetails.summary.title,
             kind = currentDetails.summary.kind,

@@ -217,4 +217,38 @@ class StreamCacheReuseDownloaderTest {
         assertEquals(0, getCalls)
         assertArrayEquals(fullPayload, dest.readBytes())
     }
+
+    @Test
+    fun head429_returnsRateLimitedWithRetryAfterImmediately_withoutRangeProbe() = runTest {
+        val url = server.url("/streams/rate_limited.mp4").toString()
+        seedCacheRange(url, totalBytes = 1024L, start = 0L, bytes = ByteArray(256) { 1 })
+
+        var headCalls = 0
+        var rangeCalls = 0
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.method == "HEAD") {
+                    headCalls++
+                    return MockResponse()
+                        .setResponseCode(429)
+                        .addHeader("Retry-After", "19")
+                }
+                rangeCalls++
+                return MockResponse().setResponseCode(500)
+            }
+        }
+
+        val dest = tempFolder.newFile("ratelimited.part").apply { delete() }
+        val result = StreamCacheReuseDownloader(cache, OkHttpClient()).tryDownloadReusingCache(
+            url = url,
+            destinationFile = dest,
+            onProgress = { _, _, _, _ -> }
+        ) as DownloadResult.Failure
+
+        assertEquals(1, headCalls)
+        assertEquals(0, rangeCalls)
+        assertEquals(com.laterbox.app.media.domain.model.FailureCode.RATE_LIMITED, result.code)
+        assertEquals(429, result.httpStatus)
+        assertEquals(19L, result.retryAfterSeconds)
+    }
 }

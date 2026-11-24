@@ -165,6 +165,7 @@ fun MoviePlayerScreen(
     onRetry: () -> Unit,
     onSelectSource: (source: PlaybackSource, currentPosMs: Long) -> Unit,
     onPlaybackSourceFailed: (failedUrl: String, currentPosMs: Long, httpStatusCode: Int?) -> Boolean = { _, _, _ -> false },
+    onPlaybackSourceFailedDetailed: ((failedUrl: String, currentPosMs: Long, info: PlaybackHttpFailureInfo?) -> Boolean)? = null,
     onSelectSubtitle: (track: SubtitleTrack?, currentPosMs: Long) -> Unit,
     onSaveProgress: (positionMs: Long, durationMs: Long) -> Unit,
     onOpenExternalUrl: (String) -> Unit,
@@ -289,6 +290,7 @@ fun MoviePlayerScreen(
                     onTryEnterPipOnBack = onTryEnterPipOnBack,
                     onSelectSource = onSelectSource,
                     onPlaybackSourceFailed = onPlaybackSourceFailed,
+                    onPlaybackSourceFailedDetailed = onPlaybackSourceFailedDetailed,
                     onSelectSubtitle = onSelectSubtitle,
                     onSelectAudioDub = onSelectAudioDub,
                     onSelectInStreamAudio = onSelectInStreamAudio,
@@ -591,6 +593,7 @@ private fun ActiveVideoPlayerContent(
     onTryEnterPipOnBack: () -> Boolean = { false },
     onSelectSource: (PlaybackSource, Long) -> Unit,
     onPlaybackSourceFailed: (String, Long, Int?) -> Boolean = { _, _, _ -> false },
+    onPlaybackSourceFailedDetailed: ((String, Long, PlaybackHttpFailureInfo?) -> Boolean)? = null,
     onSelectSubtitle: (SubtitleTrack?, Long) -> Unit,
     onSelectAudioDub: (AudioDubInfo, Long) -> Unit,
     onSelectInStreamAudio: (String?, String?) -> Unit,
@@ -658,6 +661,7 @@ private fun ActiveVideoPlayerContent(
     val latestOnNextEpisode by rememberUpdatedState(onNextEpisode)
     val latestSelectedSourceUrl by rememberUpdatedState(selectedSource.url)
     val latestOnPlaybackSourceFailed by rememberUpdatedState(onPlaybackSourceFailed)
+    val latestOnPlaybackSourceFailedDetailed by rememberUpdatedState(onPlaybackSourceFailedDetailed)
 
     val brightnessHelper = remember(activity) { PlayerBrightnessHelper(activity) }
     var brightnessFraction by remember { mutableFloatStateOf(brightnessHelper.currentNormalizedBrightness) }
@@ -1055,9 +1059,20 @@ private fun ActiveVideoPlayerContent(
                 val failedPosMs = exoPlayer.currentPosition
                     .takeIf { it > 0L }
                     ?: clockState.positionMs.coerceAtLeast(0L)
-                val httpCode = extractHttpResponseCode(error)
+                val httpInfo = extractHttpFailureInfo(error)
+                val httpCode = httpInfo?.statusCode ?: extractHttpResponseCode(error)
+                if (httpInfo != null) {
+                    Log.w(
+                        "MoviePlayerScreen",
+                        "Media CDN playback error status=${httpInfo.statusCode} host=${httpInfo.failingHost ?: "unknown"} retryAfter=${httpInfo.retryAfterSeconds ?: "none"}"
+                    )
+                }
                 val switched = if (!isLocalFile) {
-                    latestOnPlaybackSourceFailed(latestSelectedSourceUrl, failedPosMs, httpCode)
+                    latestOnPlaybackSourceFailedDetailed?.invoke(
+                        latestSelectedSourceUrl,
+                        failedPosMs,
+                        httpInfo
+                    ) ?: latestOnPlaybackSourceFailed(latestSelectedSourceUrl, failedPosMs, httpCode)
                 } else {
                     false
                 }
@@ -2966,25 +2981,59 @@ private fun extractAudioTracks(tracks: Tracks): List<PlayerAudioTrackOption> {
     return options
 }
 
-internal fun extractHttpResponseCode(error: PlaybackException): Int? {
+data class PlaybackHttpFailureInfo(
+    val statusCode: Int,
+    val failingHost: String?,
+    val retryAfterSeconds: Long?,
+    val safeHeaders: Map<String, String> = emptyMap()
+)
+
+@OptIn(UnstableApi::class)
+internal fun extractHttpFailureInfo(error: PlaybackException): PlaybackHttpFailureInfo? {
     var cause: Throwable? = error.cause
     while (cause != null) {
         if (cause is HttpDataSource.InvalidResponseCodeException) {
-            return cause.responseCode
+            val host = runCatching { cause.dataSpec.uri.host?.lowercase()?.takeIf { it.isNotBlank() } }.getOrNull()
+            val safeHeaders = linkedMapOf<String, String>()
+            var retryAfterSec: Long? = null
+            cause.headerFields.forEach { (rawKey, vals) ->
+                val key = rawKey?.trim().orEmpty()
+                val firstVal = vals.firstOrNull()?.trim().orEmpty()
+                if (key.equals("Retry-After", ignoreCase = true) && firstVal.isNotEmpty()) {
+                    retryAfterSec = firstVal.toLongOrNull()?.takeIf { it > 0L }
+                    safeHeaders["Retry-After"] = firstVal
+                } else if (key.equals("Content-Type", ignoreCase = true) || key.equals("Server", ignoreCase = true)) {
+                    if (firstVal.isNotEmpty()) safeHeaders[key] = firstVal
+                }
+            }
+            return PlaybackHttpFailureInfo(
+                statusCode = cause.responseCode,
+                failingHost = host,
+                retryAfterSeconds = retryAfterSec,
+                safeHeaders = safeHeaders
+            )
         }
         cause = cause.cause
     }
     return null
 }
 
+internal fun extractHttpResponseCode(error: PlaybackException): Int? =
+    extractHttpFailureInfo(error)?.statusCode
+
 internal fun formatPlayerErrorMessage(error: PlaybackException): String {
     var cause: Throwable? = error.cause
     while (cause != null) {
         if (cause is HttpDataSource.InvalidResponseCodeException) {
+            val info = extractHttpFailureInfo(error)
             return when (cause.responseCode) {
                 401, 403 -> "Playback access expired or needs verification. Try again or switch quality."
                 404, 410 -> "This video link expired or is no longer available. Retry or switch quality."
-                429 -> "Streaming server is temporarily busy (rate-limited). Please try again shortly."
+                429 -> if (info?.retryAfterSeconds != null) {
+                    "Streaming server is temporarily busy (rate-limited). Please try again in ${info.retryAfterSeconds.coerceIn(1L, 60L)}s."
+                } else {
+                    "Streaming server is temporarily busy (rate-limited). Please try again shortly."
+                }
                 else -> "Unable to load this video right now. Please try again or switch quality."
             }
         }

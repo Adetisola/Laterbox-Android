@@ -25,7 +25,12 @@ sealed class DownloadResult {
         val cacheReusedBytes: Long = 0L,
         val networkBytesFetched: Long = downloadedBytes
     ) : DownloadResult()
-    data class Failure(val code: FailureCode, val message: String, val httpStatus: Int? = null) : DownloadResult()
+    data class Failure(
+        val code: FailureCode,
+        val message: String,
+        val httpStatus: Int? = null,
+        val retryAfterSeconds: Long? = null
+    ) : DownloadResult()
 }
 
 internal data class ContentRangeSpec(
@@ -35,13 +40,7 @@ internal data class ContentRangeSpec(
 )
 
 class HttpDownloader(
-    private val client: OkHttpClient = OkHttpClient.Builder()
-        .dns(com.laterbox.app.network.ResilientDns.INSTANCE)
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .followRedirects(true)
-        .followSslRedirects(true)
-        .build()
+    private val client: OkHttpClient = sharedClient
 ) {
     internal val httpClient: OkHttpClient get() = client
 
@@ -65,7 +64,7 @@ class HttpDownloader(
 
             val requestBuilder = Request.Builder()
                 .url(url)
-                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; Laterbox) AppleWebKit/537.36")
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36")
 
             headers.forEach { (k, v) -> requestBuilder.header(k, v) }
 
@@ -88,6 +87,7 @@ class HttpDownloader(
                     }
 
                     if (!resp.isSuccessful && resp.code != 206) {
+                        val retryAfterSec = resp.header("Retry-After")?.trim()?.toLongOrNull()?.takeIf { it > 0L }
                         val code = when (resp.code) {
                             401, 403 -> FailureCode.PRIVATE_CONTENT
                             404, 410 -> FailureCode.UNSUPPORTED_URL
@@ -95,10 +95,20 @@ class HttpDownloader(
                             in 500..599 -> FailureCode.HTTP_ERROR
                             else -> FailureCode.HTTP_ERROR
                         }
+                        val msg = if (resp.code == 429) {
+                            if (retryAfterSec != null) {
+                                "Streaming server is rate-limiting downloads (HTTP 429). Retry in ${retryAfterSec}s."
+                            } else {
+                                "Streaming server is temporarily busy (HTTP 429). Please retry shortly."
+                            }
+                        } else {
+                            "HTTP ${resp.code}: ${resp.message}"
+                        }
                         return@use DownloadResult.Failure(
                             code = code,
-                            message = "HTTP ${resp.code}: ${resp.message}",
-                            httpStatus = resp.code
+                            message = msg,
+                            httpStatus = resp.code,
+                            retryAfterSeconds = retryAfterSec
                         )
                     }
 
@@ -226,6 +236,16 @@ class HttpDownloader(
     }
 
     internal companion object {
+        private val sharedClient: OkHttpClient by lazy {
+            OkHttpClient.Builder()
+                .dns(com.laterbox.app.network.ResilientDns.INSTANCE)
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(30, TimeUnit.SECONDS)
+                .followRedirects(true)
+                .followSslRedirects(true)
+                .build()
+        }
+
         private val CONTENT_RANGE_REGEX = Regex("""^\s*bytes\s+(\d+)-(\d+)/(\d+|\*)\s*$""", RegexOption.IGNORE_CASE)
 
         fun parseContentRange(header: String?): ContentRangeSpec? {

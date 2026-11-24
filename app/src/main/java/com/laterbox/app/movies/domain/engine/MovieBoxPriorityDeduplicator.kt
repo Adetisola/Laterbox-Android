@@ -129,21 +129,30 @@ object MovieBoxPriorityDeduplicator {
         val indexByComposite = HashMap<String, Int>(suggestions.size)
         val indexByKindTitleYear = HashMap<Triple<String, String, Int>, Int>(suggestions.size)
 
+        fun compositeKeyFor(s: SearchSuggestion, normTitle: String): String {
+            return if (s.providerId.isNotBlank() && s.id.isNotBlank()) {
+                "${s.providerId}:${s.id}"
+            } else {
+                val cleanKey = normTitle.ifBlank { s.title.trim().lowercase() }
+                "kw:$cleanKey:${s.kind?.wireValue.orEmpty()}"
+            }
+        }
+
         fun record(idx: Int, s: SearchSuggestion) {
-            indexByComposite["${s.providerId}:${s.id}"] = idx
             val year = s.releaseYear
             val kind = s.kind
             val normTitle = MediaMatcher.normalizeTitle(s.title)
+            indexByComposite[compositeKeyFor(s, normTitle)] = idx
             if (kind != null && year != null && normTitle.isNotBlank()) {
                 indexByKindTitleYear[Triple(kind.wireValue, normTitle, year)] = idx
             }
         }
 
         for (suggestion in suggestions) {
-            val compositeKey = "${suggestion.providerId}:${suggestion.id}"
             val year = suggestion.releaseYear
             val kind = suggestion.kind
             val normTitle = MediaMatcher.normalizeTitle(suggestion.title)
+            val compositeKey = compositeKeyFor(suggestion, normTitle)
             val keyIndex = indexByComposite[compositeKey]
                 ?: if (kind != null && year != null && normTitle.isNotBlank()) {
                     indexByKindTitleYear[Triple(kind.wireValue, normTitle, year)]

@@ -1110,14 +1110,6 @@ class MovieDetailViewModel(
                             episodesError = null
                         )
                     }
-                    if (seededEpisodes.isNotEmpty()) {
-                        loadSeasonEpisodeSizes(
-                            providerId = providerId,
-                            seriesId = seriesId,
-                            seasonNumber = seasonNumber,
-                            episodeNumbers = seededEpisodes.map { it.episodeNumber }
-                        )
-                    }
                 },
                 onFailure = { err ->
                     _uiState.update {
@@ -1131,6 +1123,26 @@ class MovieDetailViewModel(
                 }
             )
         }
+    }
+
+    /**
+     * Lazily loads progressive quality size hints for the currently selected season only when
+     * the user explicitly opens batch download / quality size options and sizes are not yet populated.
+     */
+    fun requestSeasonEpisodeSizes() {
+        val state = _uiState.value
+        val summary = state.details?.summary ?: return
+        val seasonNumber = state.selectedSeasonNumber ?: return
+        val episodes = state.episodes
+        if (episodes.isEmpty() || state.isLoadingEpisodeSizes) return
+        val missing = episodes.filter { it.sizesMbByQuality.isEmpty() }.map { it.episodeNumber }
+        if (missing.isEmpty()) return
+        loadSeasonEpisodeSizes(
+            providerId = summary.providerId,
+            seriesId = summary.id,
+            seasonNumber = seasonNumber,
+            episodeNumbers = missing
+        )
     }
 
     private fun loadSeasonEpisodeSizes(

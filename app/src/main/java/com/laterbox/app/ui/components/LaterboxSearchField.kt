@@ -17,6 +17,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -27,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextRange
@@ -36,9 +38,9 @@ import androidx.compose.ui.unit.dp
 import com.laterbox.app.ui.theme.LaterboxTheme
 
 /**
- * Synchronizes an external string [StateFlow] with a Compose [TextFieldValue] without capturing stale
- * text or reverting fast multi-word deletions / trailing spaces when upstream emissions lag or echo
- * out of order.
+ * Synchronizes an external string [StateFlow] with a Compose [TextFieldValue] without mutating state
+ * during composition or reverting fast multi-word edits / trailing spaces when upstream emissions
+ * conflate or echo out of order.
  */
 @Stable
 class SyncedTextFieldController internal constructor(
@@ -54,8 +56,23 @@ class SyncedTextFieldController internal constructor(
 
     private var lastObservedExternalText: String = initialText
     private val unconfirmedLocalTexts = ArrayDeque<String>()
+    private val seenTextHistory = ArrayDeque<String>().apply { addLast(initialText) }
+
+    private fun recordSeenText(text: String) {
+        if (seenTextHistory.lastOrNull() == text) return
+        if (seenTextHistory.size >= 64) {
+            seenTextHistory.removeFirst()
+        }
+        seenTextHistory.addLast(text)
+    }
 
     internal fun syncExternal(externalText: String) {
+        if (externalText == value.text) {
+            lastObservedExternalText = externalText
+            unconfirmedLocalTexts.clear()
+            recordSeenText(externalText)
+            return
+        }
         if (externalText == lastObservedExternalText) return
         lastObservedExternalText = externalText
 
@@ -64,19 +81,22 @@ class SyncedTextFieldController internal constructor(
             repeat(echoIndex + 1) {
                 unconfirmedLocalTexts.removeFirst()
             }
-            if (unconfirmedLocalTexts.isNotEmpty()) {
-                return
-            }
-        } else {
-            unconfirmedLocalTexts.clear()
+            return
         }
 
-        if (externalText != value.text) {
-            value = TextFieldValue(
-                text = externalText,
-                selection = TextRange(externalText.length)
-            )
+        if (externalText.isNotEmpty() &&
+            unconfirmedLocalTexts.isNotEmpty() &&
+            seenTextHistory.contains(externalText)
+        ) {
+            return
         }
+
+        unconfirmedLocalTexts.clear()
+        recordSeenText(externalText)
+        value = TextFieldValue(
+            text = externalText,
+            selection = TextRange(externalText.length)
+        )
     }
 
     fun onLocalValueChange(next: TextFieldValue, onExternalChange: (String) -> Unit) {
@@ -87,6 +107,7 @@ class SyncedTextFieldController internal constructor(
                 unconfirmedLocalTexts.removeFirst()
             }
             unconfirmedLocalTexts.addLast(next.text)
+            recordSeenText(next.text)
             onExternalChange(next.text)
         }
     }
@@ -102,7 +123,9 @@ class SyncedTextFieldController internal constructor(
 @Composable
 fun rememberSyncedTextFieldController(externalText: String): SyncedTextFieldController {
     val controller = remember { SyncedTextFieldController(externalText) }
-    controller.syncExternal(externalText)
+    LaunchedEffect(controller, externalText) {
+        controller.syncExternal(externalText)
+    }
     return controller
 }
 
@@ -164,7 +187,9 @@ fun LaterboxSearchField(
                     cursorBrush = SolidColor(colors.accentPrimary),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                     keyboardActions = KeyboardActions(onSearch = { keyboardController?.hide() }),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("laterbox_search_input")
                 )
             }
 

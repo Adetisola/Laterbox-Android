@@ -204,6 +204,12 @@ class MoviesCatalogueViewModel(
         val seq = ++librarySuggestSeq
         librarySuggestJob?.cancel()
         librarySuggestJob = viewModelScope.launch {
+            if (!force && normalized.isNotEmpty()) {
+                delay(160L)
+                if (seq != librarySuggestSeq || normalizeQuery(_uiState.value.query) != normalized) {
+                    return@launch
+                }
+            }
             val matches = runCatching {
                 moviesRepository.searchLibrarySuggestions(normalized, limit = 6)
             }.getOrDefault(emptyList())

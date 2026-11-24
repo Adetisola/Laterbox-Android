@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.laterbox.app.data.preferences.SubtitleStyleConfig
 import com.laterbox.app.data.preferences.UserPreferencesRepository
 import com.laterbox.app.movies.data.download.MoviesDownloadBridge
+import com.laterbox.app.movies.data.provider.MovieBoxApiException
 import com.laterbox.app.movies.domain.model.AudioDubInfo
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
@@ -15,12 +16,15 @@ import com.laterbox.app.movies.domain.model.SeasonSummary
 import com.laterbox.app.movies.domain.model.SubtitleTrack
 import com.laterbox.app.movies.domain.repository.MoviesRepository
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 
 data class PlayerPlaybackPreferences(
@@ -107,6 +111,7 @@ class MoviePlayerViewModel(
     private var loadJob: Job? = null
     private var loadedKey: String? = null
     private var activeProviderId: String = ""
+    private val rateLimitedHostsUntilMs = ConcurrentHashMap<String, Long>()
 
     init {
         userPreferencesRepository?.let { prefsRepo ->
@@ -181,6 +186,7 @@ class MoviePlayerViewModel(
         if (!forceReload && loadedKey == key && _uiState.value.resolution != null) return
         loadedKey = key
         activeProviderId = providerId
+        rateLimitedHostsUntilMs.clear()
 
         loadJob?.cancel()
         _uiState.update {
@@ -357,12 +363,23 @@ class MoviePlayerViewModel(
                     }
                 },
                 onFailure = { error ->
+                    val backendMsg = when {
+                        error is MovieBoxApiException && error.httpCode == 429 -> {
+                            val waitHint = error.retryAfterSeconds?.coerceIn(1L, 60L)
+                            if (waitHint != null) {
+                                "Catalogue service is temporarily busy. Please try again in ${waitHint}s."
+                            } else {
+                                "Catalogue service is temporarily busy. Please try again shortly."
+                            }
+                        }
+                        else -> error.message?.takeIf { m -> m.isNotBlank() }
+                            ?: "Unable to resolve playback stream."
+                    }
                     _uiState.update {
                         it.copy(
                             isLoading = false,
                             activeTitleId = effectiveTitleId,
-                            errorMessage = error.message?.takeIf { m -> m.isNotBlank() }
-                                ?: "Unable to resolve playback stream."
+                            errorMessage = backendMsg
                         )
                     }
                 }
@@ -384,16 +401,27 @@ class MoviePlayerViewModel(
     fun handlePlaybackSourceFailure(
         failedSourceUrl: String,
         currentPositionMs: Long,
-        httpStatusCode: Int?
+        httpStatusCode: Int?,
+        retryAfterSeconds: Long? = null,
+        failingHost: String? = null
     ): Boolean {
         val current = _uiState.value
         val available = current.resolution as? PlaybackResolution.Available ?: return false
         val cleanUrl = failedSourceUrl.trim()
+        val resolvedHost = failingHost?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+            ?: cleanUrl.toHttpUrlOrNull()?.host?.lowercase()
+        val nowMs = System.currentTimeMillis()
+        if (httpStatusCode == 429 && resolvedHost != null) {
+            val cooldownSec = (retryAfterSeconds ?: 2L).coerceIn(1L, 30L)
+            rateLimitedHostsUntilMs[resolvedHost] = nowMs + cooldownSec * 1_000L
+        }
+
         val updatedFailed = if (cleanUrl.isNotBlank()) current.failedSourceUrls + cleanUrl else current.failedSourceUrls
         val fallback = pickNextFallbackSource(
             sources = available.sources,
             failedUrls = updatedFailed,
-            preferredQualityHeight = current.playbackPreferences.defaultQualityHeight
+            preferredQualityHeight = current.playbackPreferences.defaultQualityHeight,
+            cooledHosts = activeCooledHosts(nowMs)
         )
         if (fallback != null) {
             _uiState.update {
@@ -408,7 +436,7 @@ class MoviePlayerViewModel(
         }
         val canRefreshStreams = !current.isPlayingOffline &&
             !current.hasAttemptedStreamRefresh &&
-            httpStatusCode in setOf(401, 403, 404, 410) &&
+            httpStatusCode in setOf(401, 403, 404, 410, 429) &&
             activeProviderId.isNotBlank() &&
             current.activeTitleId.isNotBlank()
         _uiState.update {
@@ -423,15 +451,26 @@ class MoviePlayerViewModel(
             val seasonNum = current.seasonNumber
             val epNum = current.episodeNumber
             val preservedPosMs = currentPositionMs.coerceAtLeast(0L)
+            val delayBeforeRefreshMs = if (httpStatusCode == 429) {
+                (retryAfterSeconds ?: 1L).coerceIn(0L, 5L) * 1_000L
+            } else {
+                0L
+            }
             loadJob?.cancel()
             loadJob = viewModelScope.launch {
-                val refreshed = moviesRepository.resolvePlayback(providerId, targetId, seasonNum, epNum)
-                    .getOrNull() as? PlaybackResolution.Available
+                if (delayBeforeRefreshMs > 0L) {
+                    delay(delayBeforeRefreshMs)
+                }
+                (moviesRepository as? com.laterbox.app.movies.data.repository.MoviesRepositoryImpl)
+                    ?.invalidatePlaybackCache(providerId, targetId, seasonNum, epNum)
+                val refreshResult = moviesRepository.resolvePlayback(providerId, targetId, seasonNum, epNum)
+                val refreshed = refreshResult.getOrNull() as? PlaybackResolution.Available
                 val freshFallback = refreshed?.let { res ->
                     pickNextFallbackSource(
                         sources = res.sources,
-                        failedUrls = emptySet(),
-                        preferredQualityHeight = _uiState.value.playbackPreferences.defaultQualityHeight
+                        failedUrls = updatedFailed,
+                        preferredQualityHeight = _uiState.value.playbackPreferences.defaultQualityHeight,
+                        cooledHosts = emptySet()
                     )
                 }
                 if (refreshed != null && freshFallback != null) {
@@ -441,21 +480,36 @@ class MoviePlayerViewModel(
                             selectedSource = freshFallback,
                             isPlayingOffline = freshFallback.isOfflineLocal,
                             startPositionMs = preservedPosMs,
-                            failedSourceUrls = emptySet(),
+                            failedSourceUrls = updatedFailed,
                             errorMessage = null
                         )
                     }
                 } else {
+                    val refreshErr = refreshResult.exceptionOrNull()
+                    val exhaustionMessage = when {
+                        refreshErr is MovieBoxApiException && refreshErr.httpCode == 429 ->
+                            refreshErr.message ?: "Streaming service is temporarily busy. Please try again shortly."
+                        httpStatusCode == 429 && retryAfterSeconds != null ->
+                            "Streaming server is temporarily busy (rate-limited). Please try again in ${retryAfterSeconds.coerceIn(1L, 60L)}s."
+                        httpStatusCode == 429 ->
+                            "Streaming server is temporarily busy (rate-limited). Please try again shortly."
+                        else ->
+                            "Playback access expired or needs verification. Try again or switch quality."
+                    }
                     _uiState.update {
-                        it.copy(
-                            errorMessage = "Playback access expired or needs verification. Try again or switch quality."
-                        )
+                        it.copy(errorMessage = exhaustionMessage)
                     }
                 }
             }
             return true
         }
         return false
+    }
+
+    private fun activeCooledHosts(nowMs: Long = System.currentTimeMillis()): Set<String> {
+        val expired = rateLimitedHostsUntilMs.entries.filter { it.value <= nowMs }.map { it.key }
+        expired.forEach { rateLimitedHostsUntilMs.remove(it) }
+        return rateLimitedHostsUntilMs.keys.toSet()
     }
 
     fun selectSubtitle(track: SubtitleTrack?, currentPositionMs: Long) {
@@ -688,6 +742,8 @@ class MoviePlayerViewModel(
             bridge.enqueueAuthorisedDownload(
                 summary = summary,
                 source = source,
+                seasonNumber = state.seasonNumber,
+                episodeNumber = state.episodeNumber,
                 episodeLabel = state.episodeLabel
             ).fold(
                 onSuccess = {
@@ -731,10 +787,21 @@ class MoviePlayerViewModel(
         fun pickNextFallbackSource(
             sources: List<PlaybackSource>,
             failedUrls: Set<String>,
-            preferredQualityHeight: Int
+            preferredQualityHeight: Int,
+            cooledHosts: Set<String> = emptySet()
         ): PlaybackSource? {
             val remaining = sources.filter { it.url.isNotBlank() && it.url.trim() !in failedUrls }
             if (remaining.isEmpty()) return null
+            if (cooledHosts.isNotEmpty()) {
+                val uncooled = remaining.filter { src ->
+                    val host = src.url.toHttpUrlOrNull()?.host?.lowercase()
+                    host == null || host !in cooledHosts
+                }
+                if (uncooled.isNotEmpty()) {
+                    return pickPreferredSource(uncooled, preferredQualityHeight) ?: uncooled.firstOrNull()
+                }
+                return null
+            }
             return pickPreferredSource(remaining, preferredQualityHeight) ?: remaining.firstOrNull()
         }
 

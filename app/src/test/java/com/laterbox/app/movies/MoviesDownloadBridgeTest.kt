@@ -324,4 +324,56 @@ class MoviesDownloadBridgeTest {
         assertEquals("moviebox|sd_777|1|3|720p", call.sourceRef)
         assertEquals("Secret Billionaire · S1 · E3 (720p)", call.title)
     }
+
+    @Test
+    fun parseUrlExpiryMillis_handlesExplicitExpAndRecentTSafely() {
+        val nowMs = 1_763_900_000_000L
+        val expSec = 1_763_903_600L // +1 hour
+        assertEquals(
+            expSec * 1_000L,
+            MoviesDownloadBridge.parseUrlExpiryMillis("https://bcdnxw.hakunaymatata.com/v.mp4?sign=s&exp=$expSec", nowMs)
+        )
+        // Recent issue timestamp t= (60s ago) derives remaining 14 min window instead of marking already expired
+        val recentTSec = (nowMs / 1_000L) - 60L
+        assertEquals(
+            (recentTSec + 15 * 60L) * 1_000L,
+            MoviesDownloadBridge.parseUrlExpiryMillis("https://bcdnxw.hakunaymatata.com/v.mp4?sign=s&t=$recentTSec", nowMs)
+        )
+        // Old t= timestamp (>15m ago) returns null rather than forcing pre-flight refresh failure
+        val oldTSec = (nowMs / 1_000L) - 3_600L
+        assertEquals(
+            null,
+            MoviesDownloadBridge.parseUrlExpiryMillis("https://bcdnxw.hakunaymatata.com/v.mp4?sign=s&t=$oldTSec", nowMs)
+        )
+    }
+
+    @Test
+    fun httpDownloader_propagatesRetryAfterOn429() = runTest {
+        val mockServer = okhttp3.mockwebserver.MockWebServer()
+        mockServer.start()
+        try {
+            mockServer.enqueue(
+                okhttp3.mockwebserver.MockResponse()
+                    .setResponseCode(429)
+                    .addHeader("Retry-After", "17")
+            )
+            val dest = java.io.File.createTempFile("dl_429_test", ".mp4").apply { delete() }
+            try {
+                val res = com.laterbox.app.media.data.download.HttpDownloader(okhttp3.OkHttpClient()).download(
+                    url = mockServer.url("/movie.mp4").toString(),
+                    destinationFile = dest,
+                    onProgress = { _, _, _, _ -> }
+                )
+                assertTrue(res is com.laterbox.app.media.data.download.DownloadResult.Failure)
+                val fail = res as com.laterbox.app.media.data.download.DownloadResult.Failure
+                assertEquals(com.laterbox.app.media.domain.model.FailureCode.RATE_LIMITED, fail.code)
+                assertEquals(429, fail.httpStatus)
+                assertEquals(17L, fail.retryAfterSeconds)
+            } finally {
+                dest.delete()
+            }
+        } finally {
+            mockServer.shutdown()
+        }
+    }
 }

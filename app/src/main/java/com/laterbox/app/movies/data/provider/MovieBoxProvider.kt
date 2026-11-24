@@ -28,6 +28,7 @@ import com.laterbox.app.movies.domain.provider.MoviesSearchProvider
 import com.laterbox.app.movies.domain.provider.PlaybackSourceProvider
 import com.laterbox.app.movies.domain.provider.SubtitleProvider
 import com.laterbox.app.movies.domain.provider.SeriesEpisodeProvider
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -74,6 +75,7 @@ class MovieBoxApiException(
     val isServerFailure: Boolean = (httpCode != null && httpCode in 500..599),
     val failureCategory: MovieBoxFailureCategory = inferCategory(httpCode, message, null),
     val diagnosticReason: String? = null,
+    val retryAfterSeconds: Long? = null,
     cause: Throwable? = null
 ) : IOException(message, cause) {
     companion object {
@@ -136,6 +138,14 @@ class MovieBoxProvider(
     private val episodeMetadataCache = ConcurrentHashMap<String, Map<Int, EpisodeMetadataEnrichment>>()
     private val markerWindowCache = ConcurrentHashMap<String, Pair<PlaybackMarkerWindow?, PlaybackMarkerWindow?>>()
     private val searchUpstreamCursor = ConcurrentHashMap<String, Int>()
+    private val playbackCache = ConcurrentHashMap<String, Pair<Long, PlaybackResolution.Available>>()
+    private val inflightPlayback = ConcurrentHashMap<String, CompletableDeferred<Result<PlaybackResolution>>>()
+
+    fun invalidatePlaybackCache(titleId: String, seasonNumber: Int? = null, episodeNumber: Int? = null) {
+        val se = seasonNumber?.takeIf { it > 0 } ?: 0
+        val ep = episodeNumber?.takeIf { it > 0 } ?: 0
+        playbackCache.remove("$titleId:$se:$ep")
+    }
 
     data class EpisodeMetadataEnrichment(
         val episodeNumber: Int,
@@ -911,18 +921,8 @@ class MovieBoxProvider(
                 }
                 seasonMap.toMap()
             } catch (apiErr: MovieBoxApiException) {
-                if (apiErr.httpCode == 404 && episodeNumbers.isNotEmpty()) {
-                    val semaphore = Semaphore(3)
-                    val missing = episodeNumbers.filter { seasonMap[it].isNullOrEmpty() }.take(12)
-                    coroutineScope {
-                        missing.map { epNum ->
-                            async {
-                                semaphore.withPermit {
-                                    resolvePlaybackSources(seriesId, seasonNumber, epNum)
-                                }
-                            }
-                        }.awaitAll()
-                    }
+                safeLogWarn("episode sizes lookup failed id=$seriesId se=$seasonNumber status=${apiErr.httpCode} category=${apiErr.failureCategory}")
+                if (apiErr.httpCode == 404) {
                     seasonMap.toMap()
                 } else {
                     throw apiErr
@@ -1095,110 +1095,146 @@ class MovieBoxProvider(
         seasonNumber: Int?,
         episodeNumber: Int?
     ): Result<PlaybackResolution> = withContext(Dispatchers.IO) {
-        runCatching {
-            val se = seasonNumber?.takeIf { it > 0 } ?: 0
-            val ep = episodeNumber?.takeIf { it > 0 } ?: 0
-            val builder = requireBaseHttpUrl().newBuilder()
-                .addPathSegment("api")
-                .addPathSegment("stream")
-                .addPathSegment(titleId)
-                .addQueryParameter("se", se.toString())
-                .addQueryParameter("ep", ep.toString())
-
-            detailPathCache[titleId]?.takeIf { it.isNotBlank() }?.let { dp ->
-                builder.addQueryParameter("detail_path", dp)
+        val se = seasonNumber?.takeIf { it > 0 } ?: 0
+        val ep = episodeNumber?.takeIf { it > 0 } ?: 0
+        val cacheKey = "$titleId:$se:$ep"
+        val nowMs = System.currentTimeMillis()
+        playbackCache[cacheKey]?.let { (expiresAt, cached) ->
+            if (expiresAt > nowMs) {
+                safeLogInfo("playback resolve cache_hit=true id=$titleId se=$se ep=$ep count=${cached.sources.size}")
+                return@withContext Result.success(cached)
             }
+            playbackCache.remove(cacheKey)
+        }
 
-            val body = executeGet(builder.build())
-            val root = JSONObject(body)
-            val streamsArray = root.optJSONArray("streams") ?: JSONArray()
+        val leader = CompletableDeferred<Result<PlaybackResolution>>()
+        val existing = inflightPlayback.putIfAbsent(cacheKey, leader)
+        if (existing != null) {
+            return@withContext existing.await()
+        }
 
-            val sources = buildList {
-                for (i in 0 until streamsArray.length()) {
-                    val obj = streamsArray.optJSONObject(i) ?: continue
-                    val streamUrl = obj.optCleanString("url") ?: continue
-                    val format = (obj.optCleanString("format") ?: inferFormatFromUrl(streamUrl))
-                        .uppercase(Locale.US)
-                    val qualityLabel = obj.optCleanString("quality")
-                        ?: obj.optCleanString("resolution_tag")
-                        ?: "Stream"
-                    val qualityHeight = obj.optIntOrNull("quality_value")?.takeIf { it > 0 }
-                        ?: parseQualityHeight(qualityLabel)
+        val outcome = try {
+            val result = resolvePlaybackSourcesUncached(titleId, seasonNumber, episodeNumber)
+            result.getOrNull()?.let { res ->
+                if (res is PlaybackResolution.Available && res.sources.isNotEmpty()) {
+                    playbackCache[cacheKey] = (System.currentTimeMillis() + 45_000L) to res
+                }
+            }
+            result
+        } finally {
+            inflightPlayback.remove(cacheKey, leader)
+        }
+        leader.complete(outcome)
+        outcome
+    }
 
-                    val headersMap = linkedMapOf<String, String>()
-                    val headersObj = obj.optJSONObject("headers")
-                    if (headersObj != null) {
-                        val keys = headersObj.keys()
-                        while (keys.hasNext()) {
-                            val key = keys.next()
-                            headersObj.optCleanString(key)?.let { value ->
-                                headersMap[key] = value
-                            }
+    private suspend fun resolvePlaybackSourcesUncached(
+        titleId: String,
+        seasonNumber: Int?,
+        episodeNumber: Int?
+    ): Result<PlaybackResolution> = runCatching {
+        val se = seasonNumber?.takeIf { it > 0 } ?: 0
+        val ep = episodeNumber?.takeIf { it > 0 } ?: 0
+        val builder = requireBaseHttpUrl().newBuilder()
+            .addPathSegment("api")
+            .addPathSegment("stream")
+            .addPathSegment(titleId)
+            .addQueryParameter("se", se.toString())
+            .addQueryParameter("ep", ep.toString())
+
+        detailPathCache[titleId]?.takeIf { it.isNotBlank() }?.let { dp ->
+            builder.addQueryParameter("detail_path", dp)
+        }
+
+        val body = executeGet(builder.build())
+        val root = JSONObject(body)
+        val streamsArray = root.optJSONArray("streams") ?: JSONArray()
+
+        val sources = buildList {
+            for (i in 0 until streamsArray.length()) {
+                val obj = streamsArray.optJSONObject(i) ?: continue
+                val streamUrl = obj.optCleanString("url") ?: continue
+                val format = (obj.optCleanString("format") ?: inferFormatFromUrl(streamUrl))
+                    .uppercase(Locale.US)
+                val qualityLabel = obj.optCleanString("quality")
+                    ?: obj.optCleanString("resolution_tag")
+                    ?: "Stream"
+                val qualityHeight = obj.optIntOrNull("quality_value")?.takeIf { it > 0 }
+                    ?: parseQualityHeight(qualityLabel)
+
+                val headersMap = linkedMapOf<String, String>()
+                val headersObj = obj.optJSONObject("headers")
+                if (headersObj != null) {
+                    val keys = headersObj.keys()
+                    while (keys.hasNext()) {
+                        val key = keys.next()
+                        headersObj.optCleanString(key)?.let { value ->
+                            headersMap[key] = value
                         }
                     }
-                    val topCookie = obj.optCleanString("cookie")
-                    if (topCookie != null && headersMap.keys.none { it.equals("Cookie", ignoreCase = true) }) {
-                        headersMap["Cookie"] = topCookie
-                    }
+                }
+                val topCookie = obj.optCleanString("cookie")
+                if (topCookie != null && headersMap.keys.none { it.equals("Cookie", ignoreCase = true) }) {
+                    headersMap["Cookie"] = topCookie
+                }
 
-                    add(
-                        PlaybackSource(
-                            id = "mb_${i}_${qualityHeight}_${format.lowercase(Locale.US)}",
-                            url = streamUrl,
-                            format = format,
-                            qualityLabel = qualityLabel,
-                            qualityHeight = qualityHeight,
-                            sizeMb = obj.optDoubleOrNull("size_mb")?.takeIf { it > 0.0 },
-                            codec = obj.optCleanString("codec"),
-                            durationSeconds = obj.optLongOrNull("duration_sec")?.takeIf { it > 0L },
-                            headers = headersMap,
-                            isAuthorised = true,
-                            providerName = obj.optCleanString("source") ?: displayName
-                        )
+                add(
+                    PlaybackSource(
+                        id = "mb_${i}_${qualityHeight}_${format.lowercase(Locale.US)}",
+                        url = streamUrl,
+                        format = format,
+                        qualityLabel = qualityLabel,
+                        qualityHeight = qualityHeight,
+                        sizeMb = obj.optDoubleOrNull("size_mb")?.takeIf { it > 0.0 },
+                        codec = obj.optCleanString("codec"),
+                        durationSeconds = obj.optLongOrNull("duration_sec")?.takeIf { it > 0L },
+                        headers = headersMap,
+                        isAuthorised = true,
+                        providerName = obj.optCleanString("source") ?: displayName
                     )
-                }
-            }.sortedWith(
-                compareByDescending<PlaybackSource> { it.qualityHeight }
-                    .thenBy { it.format == "DASH" || it.format == "HLS" }
+                )
+            }
+        }.sortedWith(
+            compareByDescending<PlaybackSource> { it.qualityHeight }
+                .thenBy { it.format == "DASH" || it.format == "HLS" }
+        )
+
+        if (se > 0 && ep > 0) {
+            val epSizes = sources
+                .filter { it.format != "DASH" && it.format != "HLS" && it.qualityHeight > 0 && (it.sizeMb ?: 0.0) > 0.0 }
+                .associate { it.qualityHeight to (it.sizeMb ?: 0.0) }
+            if (epSizes.isNotEmpty()) {
+                episodeSizesCache.getOrPut("$titleId:$se") { ConcurrentHashMap() }[ep] = epSizes
+            }
+        }
+
+        val resolvedTitle = titleCache[titleId]
+            ?: root.optCleanString("title")
+            ?: "Video"
+        if (sources.isEmpty()) {
+            PlaybackResolution.Unavailable(
+                title = resolvedTitle,
+                reason = "This title is not currently available to play.",
+                providerName = displayName,
+                sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
             )
-
-            if (se > 0 && ep > 0) {
-                val epSizes = sources
-                    .filter { it.format != "DASH" && it.format != "HLS" && it.qualityHeight > 0 && (it.sizeMb ?: 0.0) > 0.0 }
-                    .associate { it.qualityHeight to (it.sizeMb ?: 0.0) }
-                if (epSizes.isNotEmpty()) {
-                    episodeSizesCache.getOrPut("$titleId:$se") { ConcurrentHashMap() }[ep] = epSizes
-                }
-            }
-
-            val resolvedTitle = titleCache[titleId]
-                ?: root.optCleanString("title")
-                ?: "Video"
-            if (sources.isEmpty()) {
-                PlaybackResolution.Unavailable(
-                    title = resolvedTitle,
-                    reason = "This title is not currently available to play.",
-                    providerName = displayName,
-                    sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
-                )
-            } else {
-                val subtitles = getSubtitles(titleId, seasonNumber, episodeNumber)
-                    .getOrDefault(emptyList())
-                val heading = if (se > 0 && ep > 0) "Season $se · Episode $ep" else null
-                val cachedDetailMarkers = markerWindowCache[titleId]
-                val introWindow = parseMarkerWindow(root, "intro") ?: cachedDetailMarkers?.first
-                val recapWindow = parseMarkerWindow(root, "recap") ?: cachedDetailMarkers?.second
-                PlaybackResolution.Available(
-                    title = resolvedTitle,
-                    subtitleHeading = heading,
-                    sources = sources,
-                    subtitles = subtitles,
-                    providerName = displayName,
-                    sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
-                    introWindow = introWindow,
-                    recapWindow = recapWindow
-                )
-            }
+        } else {
+            val subtitles = getSubtitles(titleId, seasonNumber, episodeNumber)
+                .getOrDefault(emptyList())
+            val heading = if (se > 0 && ep > 0) "Season $se · Episode $ep" else null
+            val cachedDetailMarkers = markerWindowCache[titleId]
+            val introWindow = parseMarkerWindow(root, "intro") ?: cachedDetailMarkers?.first
+            val recapWindow = parseMarkerWindow(root, "recap") ?: cachedDetailMarkers?.second
+            PlaybackResolution.Available(
+                title = resolvedTitle,
+                subtitleHeading = heading,
+                sources = sources,
+                subtitles = subtitles,
+                providerName = displayName,
+                sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+                introWindow = introWindow,
+                recapWindow = recapWindow
+            )
         }
     }
 
@@ -1512,15 +1548,22 @@ class MovieBoxProvider(
                             return@use
                         }
 
+                        val retryAfterSeconds = response.header("Retry-After")
+                            ?.trim()
+                            ?.toLongOrNull()
+                            ?.takeIf { it > 0L }
+
                         throw MovieBoxApiException(
                             httpCode = response.code,
                             message = buildHttpErrorMessage(
                                 code = response.code,
                                 detail = detail,
-                                sentAppCheckToken = sentHeader != null
+                                sentAppCheckToken = sentHeader != null,
+                                retryAfterSeconds = retryAfterSeconds
                             ),
                             failureCategory = category,
                             diagnosticReason = diagReason,
+                            retryAfterSeconds = retryAfterSeconds,
                         )
                     }
 
@@ -1579,7 +1622,8 @@ class MovieBoxProvider(
     private fun buildHttpErrorMessage(
         code: Int,
         detail: String?,
-        sentAppCheckToken: Boolean = false
+        sentAppCheckToken: Boolean = false,
+        retryAfterSeconds: Long? = null
     ): String {
         val safeDetail = sanitizeDetailForUser(detail)
         return when (code) {
@@ -1595,7 +1639,11 @@ class MovieBoxProvider(
                 }
             }
             404 -> safeDetail ?: "This title is not currently available."
-            429 -> "Too many requests right now. Please try again in a moment."
+            429 -> if (retryAfterSeconds != null) {
+                "Too many requests right now. Please try again in ${retryAfterSeconds.coerceIn(1L, 60L)}s."
+            } else {
+                "Too many requests right now. Please try again in a moment."
+            }
             502, 503, 504 -> safeDetail ?: "The streaming service is temporarily unavailable. Please retry shortly."
             else -> safeDetail ?: "Could not load catalogue data right now."
         }

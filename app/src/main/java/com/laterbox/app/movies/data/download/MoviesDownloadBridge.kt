@@ -129,15 +129,26 @@ class MoviesDownloadBridge(
             qualityLabel.trim()
         ).joinToString("|")
 
-        fun parseUrlExpiryMillis(url: String): Long? {
+        fun parseUrlExpiryMillis(url: String, nowMs: Long = System.currentTimeMillis()): Long? {
             val httpUrl = url.toHttpUrlOrNull() ?: return null
             val rawExp = httpUrl.queryParameter("exp")
                 ?: httpUrl.queryParameter("expires")
                 ?: httpUrl.queryParameter("Expires")
-                ?: return null
-            val sec = rawExp.trim().toLongOrNull() ?: return null
-            if (sec <= 0L) return null
-            return if (sec < 10_000_000_000L) sec * 1_000L else sec
+            if (rawExp != null) {
+                val sec = rawExp.trim().toLongOrNull() ?: return null
+                if (sec <= 0L) return null
+                return if (sec < 10_000_000_000L) sec * 1_000L else sec
+            }
+            val rawT = httpUrl.queryParameter("t")?.trim()?.toLongOrNull() ?: return null
+            if (rawT <= 0L) return null
+            val tMs = if (rawT < 10_000_000_000L) rawT * 1_000L else rawT
+            return if (tMs > nowMs + 60_000L) {
+                tMs
+            } else {
+                // EdgeNext signed URLs encode issue-time in `t=`; assume a 15-minute signed window if recent.
+                val derivedExpiry = tMs + 15 * 60_000L
+                derivedExpiry.takeIf { it > nowMs + 60_000L }
+            }
         }
     }
 }

@@ -337,6 +337,17 @@ class StreamCacheReuseDownloader(
                     404, 410 -> return ProbeOutcome.AuthOrNotFoundFailure(
                         DownloadResult.Failure(FailureCode.UNSUPPORTED_URL, "HTTP ${resp.code}: ${resp.message}", resp.code)
                     )
+                    429 -> {
+                        val retryAfterSec = resp.header("Retry-After")?.trim()?.toLongOrNull()?.takeIf { it > 0L }
+                        return ProbeOutcome.AuthOrNotFoundFailure(
+                            DownloadResult.Failure(
+                                FailureCode.RATE_LIMITED,
+                                "HTTP 429: ${resp.message}",
+                                429,
+                                retryAfterSeconds = retryAfterSec
+                            )
+                        )
+                    }
                     in 200..299 -> {
                         val len = resp.header("Content-Length")?.trim()?.toLongOrNull() ?: -1L
                         val acceptRanges = resp.header("Accept-Ranges")
@@ -370,6 +381,17 @@ class StreamCacheReuseDownloader(
                     404, 410 -> ProbeOutcome.AuthOrNotFoundFailure(
                         DownloadResult.Failure(FailureCode.UNSUPPORTED_URL, "HTTP ${resp.code}: ${resp.message}", resp.code)
                     )
+                    429 -> {
+                        val retryAfterSec = resp.header("Retry-After")?.trim()?.toLongOrNull()?.takeIf { it > 0L }
+                        ProbeOutcome.AuthOrNotFoundFailure(
+                            DownloadResult.Failure(
+                                FailureCode.RATE_LIMITED,
+                                "HTTP 429: ${resp.message}",
+                                429,
+                                retryAfterSeconds = retryAfterSec
+                            )
+                        )
+                    }
                     206 -> {
                         val parsed = HttpDownloader.parseContentRange(resp.header("Content-Range"))
                         val total = parsed?.total ?: -1L

@@ -6,6 +6,8 @@ import com.laterbox.app.movies.domain.model.DataSourceBadge
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.PlaybackResolution
 import com.laterbox.app.movies.domain.model.SectionStyle
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.test.runTest
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.Dispatcher
@@ -1556,5 +1558,69 @@ class MovieBoxProviderTest {
         assertEquals(listOf("Avatar"), suggestions.map { it.title })
         val searchResults = provider.search("avatar").getOrThrow()
         assertEquals(listOf("8906"), searchResults.items.map { it.id })
+    }
+
+    @Test
+    fun resolvePlaybackSources_coalescesConcurrentCalls_cachesBriefly_invalidates_andParsesRetryAfter() = runTest {
+        val streamCalls = java.util.concurrent.atomic.AtomicInteger(0)
+        var return429 = false
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.contains("/captions") ->
+                        MockResponse().setResponseCode(200).setBody("""{"captions":[]}""")
+                    path.startsWith("/api/stream/9001") -> {
+                        val callNum = streamCalls.incrementAndGet()
+                        if (return429) {
+                            MockResponse()
+                                .setResponseCode(429)
+                                .addHeader("Retry-After", "21")
+                                .setBody("""{"detail":"Rate limited"}""")
+                        } else {
+                            Thread.sleep(60L)
+                            MockResponse().setResponseCode(200).setBody(
+                                """{"streams":[{"url":"https://bcdnxw.hakunaymatata.com/v_${callNum}.mp4?sign=s1","quality":"720p","quality_value":720,"format":"MP4"}]}"""
+                            )
+                        }
+                    }
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val provider = MovieBoxProvider(
+            okHttpClient = OkHttpClient(),
+            baseUrlProvider = { server.url("/").toString().trimEnd('/') },
+            retryDelayMs = 0L
+        )
+
+        val concurrent = kotlinx.coroutines.coroutineScope {
+            (1..4).map {
+                async(kotlinx.coroutines.Dispatchers.IO) {
+                    provider.resolvePlaybackSources("9001", 1, 2).getOrThrow()
+                }
+            }.awaitAll()
+        }
+        assertEquals(1, streamCalls.get())
+        assertTrue(concurrent.all { it is PlaybackResolution.Available })
+
+        // Immediate follow-up hits short 45s cache
+        val cached = provider.resolvePlaybackSources("9001", 1, 2).getOrThrow()
+        assertEquals(1, streamCalls.get())
+        assertEquals(
+            "https://bcdnxw.hakunaymatata.com/v_1.mp4?sign=s1",
+            (cached as com.laterbox.app.movies.domain.model.PlaybackResolution.Available).sources.first().url
+        )
+
+        // After invalidation + 429 response, surfaces MovieBoxApiException with retryAfterSeconds
+        provider.invalidatePlaybackCache("9001", 1, 2)
+        return429 = true
+        val failed = provider.resolvePlaybackSources("9001", 1, 2)
+        assertTrue(failed.isFailure)
+        val err = failed.exceptionOrNull() as com.laterbox.app.movies.data.provider.MovieBoxApiException
+        assertEquals(429, err.httpCode)
+        assertEquals(21L, err.retryAfterSeconds)
+        assertEquals(2, streamCalls.get())
     }
 }

@@ -1827,6 +1827,22 @@ class MoviesRepositoryImpl(
         )
     }
 
+    suspend fun invalidatePlaybackCache(
+        providerId: String,
+        titleId: String,
+        seasonNumber: Int? = null,
+        episodeNumber: Int? = null
+    ) {
+        val (resolvedProviderId, resolvedTitleId) = mediaResolver.resolveConcreteTarget(
+            providerId = providerId,
+            titleId = titleId,
+            preferPlayable = true
+        )
+        if (resolvedProviderId == MovieBoxProvider.PROVIDER_ID) {
+            activeMovieBox()?.invalidatePlaybackCache(resolvedTitleId, seasonNumber, episodeNumber)
+        }
+    }
+
     override suspend fun getSubtitles(
         providerId: String,
         titleId: String,
