@@ -509,6 +509,7 @@ class SettingsViewModel(
     fun getDiagnosticsReportText(): String {
         val runtimeText = runtimeManager?.captureDiagnosticReport()?.toFormattedString() ?: "No runtime diagnostic report available."
         val inspectionsText = diagnosticsBuffer?.exportAsText() ?: "No inspection timings recorded yet."
+        val mediaNetworkText = com.laterbox.app.diagnostics.MediaNetworkDiagnostics.default.exportText()
         return """
             $runtimeText
 
@@ -517,6 +518,9 @@ class SettingsViewModel(
             ========================================
 
             $inspectionsText
+
+            ========================================
+            $mediaNetworkText
         """.trimIndent()
     }
 

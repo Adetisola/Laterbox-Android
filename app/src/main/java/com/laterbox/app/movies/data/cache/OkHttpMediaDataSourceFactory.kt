@@ -15,7 +15,6 @@ import okhttp3.CookieJar
 import okhttp3.Headers
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
-import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -25,6 +24,11 @@ import java.io.EOFException
 import java.io.IOException
 import java.io.InputStream
 import java.io.InterruptedIOException
+import com.laterbox.app.diagnostics.MediaDiagContext
+import com.laterbox.app.diagnostics.MediaRequestKind
+import com.laterbox.app.diagnostics.withMediaDiagnostics
+import com.laterbox.app.network.InitialMediaHost
+import com.laterbox.app.network.MediaHeaderScope
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.min
@@ -53,8 +57,13 @@ class OkHttpMediaDataSourceFactory(
                 override fun loadForRequest(url: okhttp3.HttpUrl): List<okhttp3.Cookie> = emptyList()
             })
         }
-        builder.addNetworkInterceptor(CrossDomainAuthHeaderGuardInterceptor())
-        builder.build()
+        builder.build().withMediaDiagnostics(
+            defaultKind = MediaRequestKind.PLAYBACK,
+            cookieFor = { url ->
+                sessionCookieJar.loadForRequest(url).takeIf { it.isNotEmpty() }
+                    ?.joinToString("; ") { "${it.name}=${it.value}" }
+            },
+        )
     } else {
         callFactory
     }
@@ -272,6 +281,14 @@ class OkHttpMediaDataSourceFactory(
             }
             builder.headers(headersBuilder.build())
             builder.tag(InitialMediaHost::class.java, InitialMediaHost(url.host))
+            builder.tag(
+                MediaDiagContext::class.java,
+                MediaDiagContext(
+                    kind = MediaRequestKind.PLAYBACK,
+                    format = MediaDiagContext.inferFormat(url),
+                    signedCookieExpected = !explicitCookieHeader.isNullOrBlank(),
+                ),
+            )
 
             val body = dataSpec.httpBody?.let { bytes ->
                 val contentType = mergedHeaders.entries
@@ -355,8 +372,6 @@ class OkHttpMediaDataSourceFactory(
         }
     }
 
-    private data class InitialMediaHost(val host: String)
-
     private class MediaSessionCookieJar : CookieJar {
         private val lock = Any()
         private val store = ConcurrentHashMap<String, MutableList<Cookie>>()
@@ -404,39 +419,8 @@ class OkHttpMediaDataSourceFactory(
         }
     }
 
-    private inner class CrossDomainAuthHeaderGuardInterceptor : Interceptor {
-        override fun intercept(chain: Interceptor.Chain): Response {
-            val req = chain.request()
-            val initialHost = req.tag(InitialMediaHost::class.java)?.host
-            if (initialHost == null || isSameSiteHost(initialHost, req.url.host)) {
-                return chain.proceed(req)
-            }
-            val cleanedBuilder = req.newBuilder()
-            for (name in req.headers.names()) {
-                if (isStreamScopedAuthHeader(name) || name.equals("Authorization", ignoreCase = true)) {
-                    cleanedBuilder.removeHeader(name)
-                }
-            }
-            val targetCookies = sessionCookieJar.loadForRequest(req.url)
-            if (targetCookies.isNotEmpty()) {
-                cleanedBuilder.header(
-                    "Cookie",
-                    targetCookies.joinToString("; ") { "${it.name}=${it.value}" }
-                )
-            }
-            return chain.proceed(cleanedBuilder.build())
-        }
-    }
-
     private companion object {
-        fun isStreamScopedAuthHeader(name: String): Boolean {
-            val lower = name.trim().lowercase(Locale.ROOT)
-            return lower == "cookie" ||
-                lower == "x-mb-token" ||
-                lower == "referer" ||
-                lower == "origin" ||
-                (lower.startsWith("x-") && lower.endsWith("-token"))
-        }
+        fun isStreamScopedAuthHeader(name: String): Boolean = MediaHeaderScope.isStreamScopedAuthHeader(name)
 
         fun mergeCookieHeaders(explicitHeader: String?, jarCookies: List<Cookie>): String? {
             if (jarCookies.isEmpty()) return explicitHeader?.takeIf { it.isNotBlank() }
@@ -457,23 +441,6 @@ class OkHttpMediaDataSourceFactory(
                 ordered[cookie.name] = cookie.value
             }
             return if (ordered.isEmpty()) null else ordered.entries.joinToString("; ") { "${it.key}=${it.value}" }
-        }
-
-        fun isSameSiteHost(hostA: String, hostB: String): Boolean {
-            val a = hostA.trim().trimEnd('.').lowercase(Locale.ROOT)
-            val b = hostB.trim().trimEnd('.').lowercase(Locale.ROOT)
-            if (a == b) return true
-            if (a.all { it.isDigit() || it == '.' } || b.all { it.isDigit() || it == '.' } || ':' in a || ':' in b) {
-                return false
-            }
-            val partsA = a.split('.')
-            val partsB = b.split('.')
-            if (partsA.size >= 2 && partsB.size >= 2) {
-                val siteA = "${partsA[partsA.size - 2]}.${partsA[partsA.size - 1]}"
-                val siteB = "${partsB[partsB.size - 2]}.${partsB[partsB.size - 1]}"
-                return siteA == siteB
-            }
-            return false
         }
     }
 }

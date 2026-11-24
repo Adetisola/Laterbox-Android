@@ -7,6 +7,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import com.laterbox.app.diagnostics.MediaDiagContext
+import com.laterbox.app.diagnostics.MediaRequestKind
+import com.laterbox.app.diagnostics.withMediaDiagnostics
 import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
@@ -40,8 +44,10 @@ internal data class ContentRangeSpec(
 )
 
 class HttpDownloader(
-    private val client: OkHttpClient = sharedClient
+    baseClient: OkHttpClient = sharedClient
 ) {
+    /** Adds redirect-safe credential scoping + media network diagnostics to every download hop. */
+    private val client: OkHttpClient = baseClient.withMediaDiagnostics(MediaRequestKind.DOWNLOAD)
     internal val httpClient: OkHttpClient get() = client
 
     suspend fun download(
@@ -88,6 +94,14 @@ class HttpDownloader(
                 }
             }
 
+            requestBuilder.tag(
+                MediaDiagContext::class.java,
+                MediaDiagContext(
+                    kind = MediaRequestKind.DOWNLOAD,
+                    format = url.toHttpUrlOrNull()?.let { MediaDiagContext.inferFormat(it) } ?: "UNKNOWN",
+                    signedCookieExpected = headers.keys.any { it.equals("Cookie", ignoreCase = true) && headers[it].orEmpty().isNotBlank() },
+                )
+            )
             val request = requestBuilder.build()
 
             try {

@@ -14,6 +14,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
+import com.laterbox.app.diagnostics.withMediaDiagnostics
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
@@ -70,8 +71,11 @@ data class AssetSubtitleSummary(
 
 class SubtitleDownloadManager(
     private val subtitlesRootDir: File,
-    private val okHttpClient: OkHttpClient = OkHttpClient()
+    okHttpClient: OkHttpClient = OkHttpClient()
 ) {
+    /** Redirect-safe credential scoping + media network diagnostics for subtitle retrieval. */
+    private val hardenedClient: OkHttpClient =
+        okHttpClient.withMediaDiagnostics(com.laterbox.app.diagnostics.MediaRequestKind.SUBTITLE)
     constructor(context: Context, okHttpClient: OkHttpClient = OkHttpClient()) : this(
         subtitlesRootDir = File(context.applicationContext.filesDir, "media/subtitles"),
         okHttpClient = okHttpClient
@@ -310,7 +314,15 @@ class SubtitleDownloadManager(
                     reqBuilder.header("User-Agent", DEFAULT_USER_AGENT)
                 }
 
-                okHttpClient.newCall(reqBuilder.build()).execute().use { response ->
+                reqBuilder.tag(
+                    com.laterbox.app.diagnostics.MediaDiagContext::class.java,
+                    com.laterbox.app.diagnostics.MediaDiagContext(
+                        kind = com.laterbox.app.diagnostics.MediaRequestKind.SUBTITLE,
+                        format = "SUBTITLE",
+                        signedCookieExpected = headers.keys.any { it.equals("Cookie", ignoreCase = true) && headers[it].orEmpty().isNotBlank() },
+                    )
+                )
+                hardenedClient.newCall(reqBuilder.build()).execute().use { response ->
                     if (!response.isSuccessful) {
                         lastError = "HTTP ${response.code}"
                     } else {
