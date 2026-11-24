@@ -2098,4 +2098,41 @@ class LaterboxDatabaseTest {
             context.deleteDatabase(dbName)
         }
     }
+
+    @Test
+    fun migration19To20_addsNextRetryAtMsColumnToDownloadTask() {
+        val instrumentation = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+        val helper = androidx.room.testing.MigrationTestHelper(
+            instrumentation,
+            LaterboxDatabase::class.java
+        )
+        val dbName = "migration_19_20_test.db"
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        context.deleteDatabase(dbName)
+
+        helper.createDatabase(dbName, 19).use { v19Db ->
+            v19Db.execSQL(
+                "INSERT INTO `download_task` (`id`, `sourceUrl`, `sourcePlatform`, `mediaType`, `status`, `progress`, `downloadedBytes`, `allowCellularOverride`, `supportsRange`, `retryCount`, `createdAt`, `updatedAt`) " +
+                    "VALUES ('task_19', 'https://cdn.example/video.mp4', 'MovieBox', 'VIDEO', 'QUEUED', 25, 1024, 0, 1, 1, 1000, 2000)"
+            )
+        }
+
+        val migratedDb = helper.runMigrationsAndValidate(
+            dbName,
+            20,
+            true,
+            LaterboxDatabase.MIGRATION_19_20
+        )
+        try {
+            migratedDb.query("SELECT `downloadedBytes`, `retryCount`, `nextRetryAtMs` FROM `download_task` WHERE `id` = 'task_19'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals(1024L, c.getLong(0))
+                assertEquals(1, c.getInt(1))
+                assertTrue(c.isNull(2))
+            }
+        } finally {
+            migratedDb.close()
+            context.deleteDatabase(dbName)
+        }
+    }
 }

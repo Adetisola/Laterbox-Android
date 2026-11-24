@@ -35,7 +35,7 @@ interface DownloadTaskDao {
     @Query("DELETE FROM download_task WHERE status IN ('COMPLETED', 'FAILED', 'CANCELLED')")
     suspend fun clearTerminalTasks()
 
-    @Query("UPDATE download_task SET status = :status, speedBps = NULL, etaSeconds = NULL, updatedAt = :updatedAt WHERE id = :id")
+    @Query("UPDATE download_task SET status = :status, nextRetryAtMs = NULL, speedBps = NULL, etaSeconds = NULL, updatedAt = :updatedAt WHERE id = :id")
     suspend fun updateStatus(id: String, status: String, updatedAt: Long = System.currentTimeMillis())
 
     @Query("UPDATE download_task SET status = :status, updatedAt = :updatedAt WHERE id = :id AND status != 'CANCELLED'")
@@ -44,7 +44,7 @@ interface DownloadTaskDao {
     @Query("UPDATE download_task SET stage = :stage, stageDetail = :stageDetail, updatedAt = :updatedAt WHERE id = :id")
     suspend fun updateStage(id: String, stage: String?, stageDetail: String?, updatedAt: Long = System.currentTimeMillis())
 
-    @Query("UPDATE download_task SET status = :status, stage = :stage, stageDetail = :stageDetail, updatedAt = :updatedAt WHERE id = :id AND status != 'CANCELLED'")
+    @Query("UPDATE download_task SET status = :status, stage = :stage, stageDetail = :stageDetail, nextRetryAtMs = NULL, updatedAt = :updatedAt WHERE id = :id AND status != 'CANCELLED'")
     suspend fun updateStatusAndStage(id: String, status: String, stage: String?, stageDetail: String?, updatedAt: Long = System.currentTimeMillis()): Int
 
     @Query("""
@@ -115,7 +115,7 @@ interface DownloadTaskDao {
 
     @Query("""
         UPDATE download_task 
-        SET status = :status, errorCode = :errorCode, errorMessage = :errorMessage, retryCount = :retryCount, speedBps = NULL, etaSeconds = NULL, updatedAt = :updatedAt 
+        SET status = :status, errorCode = :errorCode, errorMessage = :errorMessage, retryCount = :retryCount, nextRetryAtMs = NULL, speedBps = NULL, etaSeconds = NULL, updatedAt = :updatedAt 
         WHERE id = :id
     """)
     suspend fun updateError(
@@ -127,10 +127,28 @@ interface DownloadTaskDao {
         updatedAt: Long = System.currentTimeMillis()
     )
 
+    @Query("""
+        UPDATE download_task 
+        SET status = :status, errorCode = :errorCode, errorMessage = :errorMessage, retryCount = :retryCount, nextRetryAtMs = :nextRetryAtMs, speedBps = NULL, etaSeconds = NULL, updatedAt = :updatedAt 
+        WHERE id = :id
+    """)
+    suspend fun updateScheduledRetry(
+        id: String,
+        status: String,
+        errorCode: String?,
+        errorMessage: String?,
+        retryCount: Int,
+        nextRetryAtMs: Long?,
+        updatedAt: Long = System.currentTimeMillis()
+    )
+
+    @Query("UPDATE download_task SET nextRetryAtMs = NULL, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun clearNextRetryAt(id: String, updatedAt: Long = System.currentTimeMillis())
+
     @Query("UPDATE download_task SET allowCellularOverride = :allow, updatedAt = :updatedAt WHERE id = :id")
     suspend fun updateCellularOverride(id: String, allow: Boolean, updatedAt: Long = System.currentTimeMillis())
 
-    @Query("UPDATE download_task SET status = 'COMPLETED', assetId = :assetId, progress = 100, speedBps = NULL, etaSeconds = NULL, updatedAt = :updatedAt WHERE id = :id")
+    @Query("UPDATE download_task SET status = 'COMPLETED', assetId = :assetId, progress = 100, nextRetryAtMs = NULL, speedBps = NULL, etaSeconds = NULL, updatedAt = :updatedAt WHERE id = :id")
     suspend fun markCompleted(id: String, assetId: String, updatedAt: Long = System.currentTimeMillis())
 
     @Query("DELETE FROM download_task WHERE id = :id")

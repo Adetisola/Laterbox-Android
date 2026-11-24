@@ -35,5 +35,6 @@ data class DownloadTask(
     val etaSeconds: Long? = null,
     val etag: String? = null,
     val urlExpiresAt: Long? = null,
-    val sourceRef: String? = null
+    val sourceRef: String? = null,
+    val nextRetryAtMs: Long? = null
 )

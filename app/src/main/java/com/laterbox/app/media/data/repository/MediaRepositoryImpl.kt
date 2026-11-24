@@ -39,6 +39,7 @@ class MediaRepositoryImpl(
     private val inspectionManager: MediaInspectionManager? = null,
     private val subtitleDownloadManager: com.laterbox.app.movies.data.download.SubtitleDownloadManager? = null,
     private val onDownloadStarted: (() -> Unit)? = null,
+    private val clockMs: () -> Long = { System.currentTimeMillis() },
 ) : MediaRepository {
 
     override fun getAssetsForLink(linkId: Long): Flow<List<MediaAsset>> {
@@ -304,10 +305,41 @@ class MediaRepositoryImpl(
     }
 
     override suspend fun recoverInterruptedTasks(): Unit = withContext(Dispatchers.IO) {
-        taskDao.resetInterruptedTasksToQueued()
+        val nowMs = clockMs()
+        taskDao.resetInterruptedTasksToQueued(updatedAt = nowMs)
         val queued = taskDao.getQueuedTasks()
+        val workManager = WorkManager.getInstance(context)
         for (task in queued) {
-            enqueueWorkManagerTask(task.id, allowCellular = task.allowCellularOverride)
+            val scheduledAt = task.nextRetryAtMs
+            val remainingDelayMs = if (scheduledAt != null) scheduledAt - nowMs else 0L
+            if (remainingDelayMs > 0L) {
+                val cappedDelayMs = remainingDelayMs.coerceAtMost(
+                    com.laterbox.app.network.RetryAfterParser.MAX_BACKGROUND_DOWNLOAD_DELAY_SECONDS * 1_000L
+                )
+                enqueueWorkManagerTask(
+                    taskId = task.id,
+                    allowCellular = task.allowCellularOverride,
+                    initialDelayMs = cappedDelayMs,
+                    policy = ExistingWorkPolicy.KEEP
+                )
+            } else {
+                if (scheduledAt != null) {
+                    taskDao.clearNextRetryAt(task.id, updatedAt = nowMs)
+                }
+                val hasPendingWork = runCatching {
+                    workManager.getWorkInfosForUniqueWork(DownloadWorker.uniqueWorkName(task.id))
+                        .get()
+                        .any { !it.state.isFinished }
+                }.getOrDefault(false)
+                if (!hasPendingWork) {
+                    enqueueWorkManagerTask(
+                        taskId = task.id,
+                        allowCellular = task.allowCellularOverride,
+                        initialDelayMs = 0L,
+                        policy = ExistingWorkPolicy.REPLACE
+                    )
+                }
+            }
         }
     }
 
@@ -331,21 +363,28 @@ class MediaRepositoryImpl(
         }
     }
 
-    private fun enqueueWorkManagerTask(taskId: String, allowCellular: Boolean) {
+    private fun enqueueWorkManagerTask(
+        taskId: String,
+        allowCellular: Boolean,
+        initialDelayMs: Long = 0L,
+        policy: ExistingWorkPolicy = ExistingWorkPolicy.REPLACE
+    ) {
         val networkType = if (allowCellular) NetworkType.CONNECTED else NetworkType.NOT_ROAMING
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(networkType)
             .build()
 
-        val request = OneTimeWorkRequestBuilder<DownloadWorker>()
+        val requestBuilder = OneTimeWorkRequestBuilder<DownloadWorker>()
             .setConstraints(constraints)
             .setInputData(workDataOf(DownloadWorker.KEY_TASK_ID to taskId))
-            .build()
+        if (initialDelayMs > 0L) {
+            requestBuilder.setInitialDelay(initialDelayMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+        }
 
         WorkManager.getInstance(context).enqueueUniqueWork(
             DownloadWorker.uniqueWorkName(taskId),
-            ExistingWorkPolicy.REPLACE,
-            request
+            policy,
+            requestBuilder.build()
         )
     }
 

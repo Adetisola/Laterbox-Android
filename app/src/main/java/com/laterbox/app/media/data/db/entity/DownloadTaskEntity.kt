@@ -60,7 +60,8 @@ data class DownloadTaskEntity(
     val etaSeconds: Long? = null,
     val etag: String? = null,
     val urlExpiresAt: Long? = null,
-    val sourceRef: String? = null
+    val sourceRef: String? = null,
+    val nextRetryAtMs: Long? = null
 ) {
     fun toDomain(): DownloadTask = DownloadTask(
         id = id,
@@ -97,7 +98,8 @@ data class DownloadTaskEntity(
         etaSeconds = etaSeconds,
         etag = etag,
         urlExpiresAt = urlExpiresAt,
-        sourceRef = sourceRef
+        sourceRef = sourceRef,
+        nextRetryAtMs = nextRetryAtMs
     )
 
     companion object {
@@ -153,7 +155,8 @@ data class DownloadTaskEntity(
             etaSeconds = task.etaSeconds,
             etag = task.etag,
             urlExpiresAt = task.urlExpiresAt,
-            sourceRef = task.sourceRef
+            sourceRef = task.sourceRef,
+            nextRetryAtMs = task.nextRetryAtMs
         )
     }
 }

@@ -64,7 +64,10 @@ class DownloadWorker(
         val storageManager = MediaStorageManager(appContext)
 
         val task = taskDao.getEntityById(taskId) ?: return Result.failure()
-        if (task.status == DownloadState.COMPLETED.name || task.status == DownloadState.CANCELLED.name) {
+        if (task.status == DownloadState.COMPLETED.name ||
+            task.status == DownloadState.CANCELLED.name ||
+            task.status == DownloadState.PAUSED.name
+        ) {
             return Result.success()
         }
 
@@ -79,6 +82,26 @@ class DownloadWorker(
                 retryCount = task.retryCount
             )
             return Result.failure()
+        }
+
+        val nowMs = clockMsProvider()
+        val scheduledRetryAtMs = task.nextRetryAtMs
+        if (task.status == DownloadState.QUEUED.name &&
+            scheduledRetryAtMs != null &&
+            scheduledRetryAtMs > nowMs + 1_000L
+        ) {
+            val remainingDelayMs = (scheduledRetryAtMs - nowMs).coerceIn(
+                1_000L,
+                com.laterbox.app.network.RetryAfterParser.MAX_BACKGROUND_DOWNLOAD_DELAY_SECONDS * 1_000L
+            )
+            scheduleUniqueDelayedRetry(
+                context = appContext,
+                taskId = taskId,
+                allowCellular = task.allowCellularOverride,
+                delayMs = remainingDelayMs,
+                policy = androidx.work.ExistingWorkPolicy.APPEND_OR_REPLACE
+            )
+            return Result.success()
         }
 
         // 1. Network policy evaluation
@@ -97,17 +120,13 @@ class DownloadWorker(
 
             if (isBlocked) {
                 taskDao.updateStatus(taskId, DownloadState.WAITING_FOR_WIFI.name)
-                val constraints = Constraints.Builder()
-                    .setRequiredNetworkType(NetworkType.UNMETERED)
-                    .build()
-                val retryRequest = OneTimeWorkRequestBuilder<DownloadWorker>()
-                    .setConstraints(constraints)
-                    .setInputData(inputData)
-                    .build()
-                WorkManager.getInstance(appContext).enqueueUniqueWork(
-                    uniqueWorkName(taskId),
-                    androidx.work.ExistingWorkPolicy.REPLACE,
-                    retryRequest
+                scheduleUniqueDelayedRetry(
+                    context = appContext,
+                    taskId = taskId,
+                    allowCellular = task.allowCellularOverride,
+                    delayMs = 0L,
+                    unmeteredOnly = true,
+                    policy = androidx.work.ExistingWorkPolicy.APPEND_OR_REPLACE
                 )
                 return Result.success()
             }
@@ -605,18 +624,45 @@ class DownloadWorker(
                             storageManager.deletePartFile(taskId)
                             return Result.success()
                         }
+                        if (current?.status == DownloadState.PAUSED.name) {
+                            return Result.success()
+                        }
 
                         val isRetryable = result.code.isRetryable
                         val newRetry = task.retryCount + 1
                         if (isRetryable && newRetry <= 3) {
-                            taskDao.updateError(
-                                id = taskId,
-                                status = DownloadState.QUEUED.name,
-                                errorCode = result.code.name,
-                                errorMessage = result.message,
-                                retryCount = newRetry
-                            )
-                            Result.retry()
+                            val retryAfterSec = result.retryAfterSeconds
+                                ?.takeIf { it > 0L }
+                                ?.coerceAtMost(com.laterbox.app.network.RetryAfterParser.MAX_BACKGROUND_DOWNLOAD_DELAY_SECONDS)
+                            if (result.code == FailureCode.RATE_LIMITED && retryAfterSec != null) {
+                                val delayMs = retryAfterSec * 1_000L
+                                val nextRetryAtMs = clockMsProvider() + delayMs
+                                taskDao.updateScheduledRetry(
+                                    id = taskId,
+                                    status = DownloadState.QUEUED.name,
+                                    errorCode = result.code.name,
+                                    errorMessage = result.message,
+                                    retryCount = newRetry,
+                                    nextRetryAtMs = nextRetryAtMs
+                                )
+                                scheduleUniqueDelayedRetry(
+                                    context = appContext,
+                                    taskId = taskId,
+                                    allowCellular = activeTask.allowCellularOverride,
+                                    delayMs = delayMs,
+                                    policy = androidx.work.ExistingWorkPolicy.APPEND_OR_REPLACE
+                                )
+                                Result.success()
+                            } else {
+                                taskDao.updateError(
+                                    id = taskId,
+                                    status = DownloadState.QUEUED.name,
+                                    errorCode = result.code.name,
+                                    errorMessage = result.message,
+                                    retryCount = newRetry
+                                )
+                                Result.retry()
+                            }
                         } else {
                             taskDao.updateError(
                                 id = taskId,
@@ -770,7 +816,38 @@ class DownloadWorker(
         const val CHANNEL_ID = "laterbox_media_downloads"
         val downloadSemaphore = Semaphore(permits = 2)
 
+        internal var clockMsProvider: () -> Long = { System.currentTimeMillis() }
+
         fun uniqueWorkName(taskId: String): String = "media_download_$taskId"
+
+        internal fun scheduleUniqueDelayedRetry(
+            context: Context,
+            taskId: String,
+            allowCellular: Boolean,
+            delayMs: Long,
+            unmeteredOnly: Boolean = false,
+            policy: androidx.work.ExistingWorkPolicy = androidx.work.ExistingWorkPolicy.APPEND_OR_REPLACE
+        ) {
+            val networkType = when {
+                unmeteredOnly -> NetworkType.UNMETERED
+                allowCellular -> NetworkType.CONNECTED
+                else -> NetworkType.NOT_ROAMING
+            }
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(networkType)
+                .build()
+            val builder = OneTimeWorkRequestBuilder<DownloadWorker>()
+                .setConstraints(constraints)
+                .setInputData(androidx.work.workDataOf(KEY_TASK_ID to taskId))
+            if (delayMs > 0L) {
+                builder.setInitialDelay(delayMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+            }
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                uniqueWorkName(taskId),
+                policy,
+                builder.build()
+            )
+        }
     }
 }
 
