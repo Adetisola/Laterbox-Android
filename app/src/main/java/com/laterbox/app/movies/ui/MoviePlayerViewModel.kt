@@ -115,6 +115,7 @@ class MoviePlayerViewModel(
     private var loadedKey: String? = null
     private var activeProviderId: String = ""
     private val rateLimitedDomainsUntilMs = ConcurrentHashMap<String, Long>()
+    private val failedSourceAuthFingerprints = ConcurrentHashMap<String, String>()
 
     init {
         userPreferencesRepository?.let { prefsRepo ->
@@ -190,6 +191,7 @@ class MoviePlayerViewModel(
         loadedKey = key
         activeProviderId = providerId
         rateLimitedDomainsUntilMs.clear()
+        failedSourceAuthFingerprints.clear()
 
         loadJob?.cancel()
         _uiState.update {
@@ -391,12 +393,16 @@ class MoviePlayerViewModel(
     }
 
     fun selectSource(source: PlaybackSource, currentPositionMs: Long) {
+        val cleanUrl = source.url.trim()
+        if (cleanUrl.isNotEmpty()) {
+            failedSourceAuthFingerprints.remove(cleanUrl)
+        }
         _uiState.update {
             it.copy(
                 selectedSource = source,
                 isPlayingOffline = source.isOfflineLocal,
                 startPositionMs = currentPositionMs.coerceAtLeast(0L),
-                failedSourceUrls = it.failedSourceUrls - source.url.trim()
+                failedSourceUrls = it.failedSourceUrls - cleanUrl
             )
         }
     }
@@ -411,6 +417,13 @@ class MoviePlayerViewModel(
         val current = _uiState.value
         val available = current.resolution as? PlaybackResolution.Available ?: return false
         val cleanUrl = failedSourceUrl.trim()
+        if (cleanUrl.isNotEmpty()) {
+            val failedSrc = current.selectedSource?.takeIf { it.url.trim() == cleanUrl }
+                ?: available.sources.firstOrNull { it.url.trim() == cleanUrl }
+            failedSrc?.let { src ->
+                sourceAuthFingerprint(src)?.let { fp -> failedSourceAuthFingerprints[cleanUrl] = fp }
+            }
+        }
         val resolvedDomain = CdnFailureDomainResolver.resolve(failingHost)
             ?: CdnFailureDomainResolver.resolve(cleanUrl)
         val nowMs = clockMs()
@@ -470,22 +483,33 @@ class MoviePlayerViewModel(
                 val refreshed = refreshResult.getOrNull() as? PlaybackResolution.Available
                 val postRefreshNowMs = clockMs()
                 val cooledAfterRefresh = activeCooledDomains(postRefreshNowMs)
+                val refreshedFailedUrls = if (refreshed == null) {
+                    updatedFailed
+                } else {
+                    updatedFailed.filterNot { failedUrl ->
+                        val candidate = refreshed.sources.firstOrNull { it.url.trim() == failedUrl } ?: return@filterNot false
+                        val prevFp = failedSourceAuthFingerprints[failedUrl] ?: return@filterNot false
+                        val nextFp = sourceAuthFingerprint(candidate) ?: return@filterNot false
+                        prevFp != nextFp
+                    }.toSet()
+                }
                 val freshFallback = refreshed?.let { res ->
                     pickNextFallbackSource(
                         sources = res.sources,
-                        failedUrls = updatedFailed,
+                        failedUrls = refreshedFailedUrls,
                         preferredQualityHeight = _uiState.value.playbackPreferences.defaultQualityHeight,
                         cooledHosts = cooledAfterRefresh
                     )
                 }
                 if (refreshed != null && freshFallback != null) {
+                    failedSourceAuthFingerprints.remove(freshFallback.url.trim())
                     _uiState.update {
                         it.copy(
                             resolution = refreshed,
                             selectedSource = freshFallback,
                             isPlayingOffline = freshFallback.isOfflineLocal,
                             startPositionMs = preservedPosMs,
-                            failedSourceUrls = updatedFailed,
+                            failedSourceUrls = refreshedFailedUrls,
                             errorMessage = null
                         )
                     }
@@ -822,6 +846,19 @@ class MoviePlayerViewModel(
                 return null
             }
             return pickPreferredSource(remaining, preferredQualityHeight) ?: remaining.firstOrNull()
+        }
+
+        private fun sourceAuthFingerprint(source: PlaybackSource): String? {
+            val authEntries = source.headers.entries
+                .filter { (key, value) ->
+                    value.isNotBlank() && (
+                        com.laterbox.app.network.MediaHeaderScope.isStreamScopedAuthHeader(key) ||
+                            key.equals("Authorization", ignoreCase = true)
+                        )
+                }
+                .sortedBy { it.key.lowercase(java.util.Locale.ROOT) }
+            if (authEntries.isEmpty()) return null
+            return authEntries.joinToString("\n") { "${it.key.lowercase(java.util.Locale.ROOT)}=${it.value.trim()}" }
         }
 
         private fun computeNextEpisodeTarget(

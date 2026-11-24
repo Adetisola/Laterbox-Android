@@ -2026,4 +2026,58 @@ class MoviesViewModelsTest {
         val err = vm.uiState.value.errorMessage.orEmpty()
         assertTrue("Expected rate-limit unavailability message, got: $err", err.contains("rate-limited", ignoreCase = true))
     }
+
+    @Test
+    fun playerViewModel_403OnCookieSignedDashAllowsRefreshRetryWithUpdatedCookieOnSameManifestUrl() = runTest {
+        var resolveCalls = 0
+        val manifestUrl = "https://sbcdnw.hakunaymatata.com/dash/movie_1/index_web.mpd"
+        val repo = object : MoviesRepository by FakeMoviesRepository() {
+            override suspend fun resolvePlayback(
+                providerId: String,
+                titleId: String,
+                seasonNumber: Int?,
+                episodeNumber: Int?
+            ): Result<PlaybackResolution> {
+                resolveCalls++
+                val cookie = if (resolveCalls == 1) "Edge-Cache-Cookie=old_sig" else "Edge-Cache-Cookie=fresh_sig"
+                return Result.success(
+                    PlaybackResolution.Available(
+                        title = "The Beast",
+                        sources = listOf(
+                            PlaybackSource(
+                                id = "dash_$resolveCalls",
+                                url = manifestUrl,
+                                format = "DASH",
+                                qualityLabel = "1080p (Adaptive)",
+                                qualityHeight = 1080,
+                                headers = mapOf("Cookie" to cookie, "X-MB-Token" to cookie),
+                                providerName = "MovieBox"
+                            )
+                        ),
+                        subtitles = emptyList(),
+                        providerName = "MovieBox",
+                        sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+                    )
+                )
+            }
+        }
+
+        val vm = MoviePlayerViewModel(repo)
+        vm.load("moviebox", "3595914877702915152")
+        val initial = vm.uiState.first { !it.isLoading }
+        assertEquals("Edge-Cache-Cookie=old_sig", initial.selectedSource?.headers?.get("Cookie"))
+
+        val handled = vm.handlePlaybackSourceFailure(
+            failedSourceUrl = manifestUrl,
+            currentPositionMs = 15_000L,
+            httpStatusCode = 403,
+            failingHost = "sbcdnw.hakunaymatata.com"
+        )
+        assertTrue(handled)
+        advanceUntilIdle()
+        assertEquals(2, resolveCalls)
+        assertEquals(manifestUrl, vm.uiState.value.selectedSource?.url)
+        assertEquals("Edge-Cache-Cookie=fresh_sig", vm.uiState.value.selectedSource?.headers?.get("Cookie"))
+        assertNull(vm.uiState.value.errorMessage)
+    }
 }

@@ -51,7 +51,7 @@ data class SignedCookieInfo(
     val expiry: String,
 ) {
     companion object {
-        private val EXPIRES = Regex("""(?:^|[^A-Za-z])Expires=(\d{9,11})""")
+        private val EXPIRES = Regex("""(?:^|[^A-Za-z])(?:Expires|exp)=(\d{9,13})""", RegexOption.IGNORE_CASE)
 
         fun inspect(cookieHeader: String?, nowMs: Long): SignedCookieInfo {
             if (cookieHeader.isNullOrBlank()) return SignedCookieInfo(false, emptyList(), "none")
@@ -63,7 +63,8 @@ data class SignedCookieInfo(
                 if (eq > 0) {
                     names += pair.substring(0, eq).trim()
                     EXPIRES.find(pair.substring(eq + 1))?.let { m ->
-                        val v = m.groupValues[1].toLongOrNull()
+                        val rawNum = m.groupValues[1].toLongOrNull()
+                        val v = if (rawNum != null && rawNum > 10_000_000_000L) rawNum / 1000L else rawNum
                         if (v != null && (expiresAtSec == null || v < expiresAtSec!!)) expiresAtSec = v
                     }
                 }

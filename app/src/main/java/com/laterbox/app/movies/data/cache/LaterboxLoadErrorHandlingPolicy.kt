@@ -24,6 +24,9 @@ class LaterboxLoadErrorHandlingPolicy(
 
     override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
         val httpError = findInvalidResponseCodeException(loadErrorInfo.exception)
+        if (httpError?.responseCode == 401 || httpError?.responseCode == 403) {
+            return C.TIME_UNSET
+        }
         if (httpError?.responseCode == 429) {
             if (loadErrorInfo.errorCount > 1) {
                 return C.TIME_UNSET

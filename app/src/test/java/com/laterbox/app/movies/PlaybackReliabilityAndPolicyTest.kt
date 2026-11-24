@@ -153,6 +153,16 @@ class PlaybackReliabilityAndPolicyTest {
             )
         )
 
+        // Auth/signature failures (401, 403) fail immediately so ViewModel can switch or refresh once
+        assertEquals(
+            C.TIME_UNSET,
+            policy.getRetryDelayMsFor(buildLoadErrorInfo(httpException(401), errorCount = 1))
+        )
+        assertEquals(
+            C.TIME_UNSET,
+            policy.getRetryDelayMsFor(buildLoadErrorInfo(httpException(403), errorCount = 1))
+        )
+
         // Ordinary 503 and IOException preserve default Media3 retry behavior
         assertEquals(
             0L,
