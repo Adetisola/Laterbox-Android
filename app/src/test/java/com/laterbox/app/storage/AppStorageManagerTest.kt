@@ -41,6 +41,7 @@ class AppStorageManagerTest {
 
     @Before
     fun setUp() {
+        com.laterbox.app.movies.data.cache.MoviesMediaCache.releaseForTesting()
         context = ApplicationProvider.getApplicationContext()
         db = Room.inMemoryDatabaseBuilder(context, LaterboxDatabase::class.java)
             .allowMainThreadQueries()
@@ -50,6 +51,7 @@ class AppStorageManagerTest {
 
     @After
     fun tearDown() {
+        com.laterbox.app.movies.data.cache.MoviesMediaCache.releaseForTesting()
         db.close()
         cleanAppStorageDirs()
     }

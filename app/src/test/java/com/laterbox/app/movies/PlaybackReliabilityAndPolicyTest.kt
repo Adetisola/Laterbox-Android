@@ -70,6 +70,7 @@ class PlaybackReliabilityAndPolicyTest {
 
     @After
     fun tearDown() {
+        MoviesMediaCache.releaseForTesting()
         Dispatchers.resetMain()
     }
 
