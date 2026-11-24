@@ -300,4 +300,92 @@ class RemoteConfigLayoutAndFlagsTest {
             threeCustom.drop(3).map { (it as HeroCarouselEntry.CustomSlide).slide.id },
         )
     }
+
+    @Test
+    fun versionEnforcement_min63Rec72_boundaryMatrix_andNumericComparison() {
+        val policy = RemoteVersionPolicy(
+            minimumSupportedVersionCode = 63,
+            recommendedVersionCode = 72,
+            enforcementEnabled = true,
+            enforcementMode = RemoteVersionPolicy.MODE_ENFORCE,
+            minimumSupportedTag = "v1.0.63",
+            recommendedTag = "v1.0.72",
+            updateMessage = "Please update to build 72 to continue.",
+        )
+
+        // Boundary versions 62 (<min), 63 (==min, <rec), 64 (between), 71 (<rec), 72 (==rec), 73 (>rec)
+        for (versionCode in listOf(62, 63, 64, 71)) {
+            assertTrue(
+                "Expected build $versionCode to show blocking dialog",
+                RemoteConfigLayoutHelper.shouldShowBlockingUpdateDialog(policy, versionCode),
+            )
+            val prompt = RemoteConfigLayoutHelper.resolveAdaptiveUpdatePrompt(
+                versionPolicy = policy,
+                currentVersionCode = versionCode,
+                dismissedInSession = true,
+            )
+            assertEquals(RemoteConfigLayoutHelper.AdaptiveUpdateModalMode.REQUIRED, prompt?.mode)
+            assertTrue(prompt?.isBlocking == true)
+            assertEquals("v1.0.72", prompt?.targetTag)
+        }
+
+        for (versionCode in listOf(72, 73, 206)) {
+            assertFalse(
+                "Expected build $versionCode to NOT be blocked",
+                RemoteConfigLayoutHelper.shouldShowBlockingUpdateDialog(policy, versionCode),
+            )
+            assertEquals(
+                null,
+                RemoteConfigLayoutHelper.resolveAdaptiveUpdatePrompt(
+                    versionPolicy = policy,
+                    currentVersionCode = versionCode,
+                    dismissedInSession = false,
+                ),
+            )
+        }
+
+        // Numeric vs lexicographical edge cases ("9" < 10 and "72" < 100)
+        val numericEdgePolicy = policy.copy(
+            minimumSupportedVersionCode = 10,
+            recommendedVersionCode = 100,
+        )
+        assertTrue(RemoteConfigLayoutHelper.shouldShowBlockingUpdateDialog(numericEdgePolicy, 9))
+        assertTrue(RemoteConfigLayoutHelper.shouldShowBlockingUpdateDialog(numericEdgePolicy, 72))
+        assertFalse(RemoteConfigLayoutHelper.shouldShowBlockingUpdateDialog(numericEdgePolicy, 100))
+    }
+
+    @Test
+    fun remoteConfigValidator_rejectsMalformedAndExpiredPayloadsCleanly() {
+        val malformed = RemoteConfigValidator.parseAndValidate(
+            rawJson = "{not-valid-json",
+            clientVersionCode = 72,
+            source = RemoteConfigSource.NETWORK,
+        )
+        assertTrue(malformed is RemoteConfigParseResult.Rejected)
+
+        val expiredJson = """
+            {
+              "schemaVersion": 1,
+              "revision": 35,
+              "publishedAt": "2026-11-23T00:00:00Z",
+              "expiresAt": "2020-01-01T00:00:00Z",
+              "general": { "minRefreshIntervalSeconds": 60, "staleCacheMaxAgeSeconds": 86400 },
+              "versionPolicy": {
+                "minimumSupportedVersionCode": 63,
+                "recommendedVersionCode": 72,
+                "enforcementEnabled": true,
+                "enforcementMode": "enforce"
+              }
+            }
+        """.trimIndent()
+        val expired = RemoteConfigValidator.parseAndValidate(
+            rawJson = expiredJson,
+            clientVersionCode = 72,
+            source = RemoteConfigSource.CACHE,
+            nowEpochMs = 1_795_400_000_000L,
+            enforceExpiry = true,
+        )
+        assertTrue(expired is RemoteConfigParseResult.Rejected)
+    }
 }
+
