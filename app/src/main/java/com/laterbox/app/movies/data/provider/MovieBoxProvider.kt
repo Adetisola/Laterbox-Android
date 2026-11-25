@@ -1551,6 +1551,7 @@ class MovieBoxProvider(
                 requestBuilder.header(sentHeader.first, sentHeader.second)
             }
 
+            val startElapsedMs = com.laterbox.app.diagnostics.NetworkWaterfallLogger.nowWallMs()
             val startNs = System.nanoTime()
             try {
                 var shouldRetryAuthRefresh = false
@@ -1611,6 +1612,15 @@ class MovieBoxProvider(
                             maxDelaySeconds = com.laterbox.app.network.RetryAfterParser.MAX_INTERACTIVE_PLAYBACK_DELAY_SECONDS
                         )
 
+                        com.laterbox.app.diagnostics.NetworkWaterfallLogger.recordCall(
+                            callGroup = callGroupForPath(redactedPath),
+                            startElapsedMs = startElapsedMs,
+                            durationMs = elapsedMs,
+                            cacheStatus = com.laterbox.app.diagnostics.NetworkWaterfallLogger.CacheStatus.FAILED,
+                            payloadBytes = body.toByteArray().size,
+                            blockingFirstPaint = isBlockingFirstPaintPath(redactedPath)
+                        )
+
                         throw MovieBoxApiException(
                             httpCode = response.code,
                             message = buildHttpErrorMessage(
@@ -1635,6 +1645,19 @@ class MovieBoxProvider(
                         )
                     }
 
+                    val cacheSrc = if (response.cacheResponse != null && response.networkResponse == null) {
+                        com.laterbox.app.diagnostics.NetworkWaterfallLogger.CacheStatus.HTTP_CACHE_HIT
+                    } else {
+                        com.laterbox.app.diagnostics.NetworkWaterfallLogger.CacheStatus.NETWORK
+                    }
+                    com.laterbox.app.diagnostics.NetworkWaterfallLogger.recordCall(
+                        callGroup = callGroupForPath(redactedPath),
+                        startElapsedMs = startElapsedMs,
+                        durationMs = elapsedMs,
+                        cacheStatus = cacheSrc,
+                        payloadBytes = body.toByteArray().size,
+                        blockingFirstPaint = isBlockingFirstPaintPath(redactedPath)
+                    )
                     safeLogInfo("$methodLabel $redactedPath -> HTTP ${response.code} (${elapsedMs}ms)")
                     return body
                 }
@@ -1776,6 +1799,23 @@ class MovieBoxProvider(
     private fun safeLogWarn(message: String) {
         runCatching { Log.w(TAG, message) }
     }
+
+    private fun callGroupForPath(path: String): String = when {
+        path.startsWith("/detail/") -> "detail"
+        path.startsWith("/episodes/") && path.endsWith("/sizes") -> "episode_sizes"
+        path.startsWith("/episodes/") && path.endsWith("/metadata") -> "episode_metadata"
+        path.startsWith("/episodes/") -> "episodes"
+        path.startsWith("/api/stream/") && path.endsWith("/captions") -> "captions"
+        path.startsWith("/api/stream/") -> "stream_fallback"
+        path.startsWith("/home") -> "home"
+        path.startsWith("/search/suggest") -> "search_suggest"
+        path.startsWith("/search") -> "search"
+        path.startsWith("/movies") || path.startsWith("/tv-series") -> "catalogue"
+        else -> path.trimStart('/').substringBefore('/').ifBlank { "other" }
+    }
+
+    private fun isBlockingFirstPaintPath(path: String): Boolean =
+        path.startsWith("/detail/") || path.startsWith("/home")
 
     private fun parseMediaKind(subjectType: Int?, typeLabel: String?): MediaKind = when {
         subjectType == 1 -> MediaKind.MOVIE

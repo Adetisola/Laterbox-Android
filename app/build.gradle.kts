@@ -130,6 +130,22 @@ android {
             val debugMovieBoxUrl = configuredMovieBoxUrl.ifBlank { defaultMovieBoxBaseUrl }
             buildConfigField("String", "MOVIEBOX_API_BASE_URL", "\"${escapeBuildConfigString(debugMovieBoxUrl)}\"")
         }
+        create("benchmark") {
+            initWith(buildTypes.getByName("release"))
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+            isDebuggable = false
+            val benchmarkMovieBoxUrl = if (configuredMovieBoxUrl.startsWith("https://", ignoreCase = true)) {
+                configuredMovieBoxUrl
+            } else {
+                defaultMovieBoxBaseUrl
+            }
+            buildConfigField("String", "MOVIEBOX_API_BASE_URL", "\"${escapeBuildConfigString(benchmarkMovieBoxUrl)}\"")
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
     }
 
     compileOptions {
@@ -201,6 +217,8 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.browser)
+    implementation(libs.androidx.profileinstaller)
+    implementation(libs.androidx.tracing)
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
     implementation(libs.compose.ui.graphics)

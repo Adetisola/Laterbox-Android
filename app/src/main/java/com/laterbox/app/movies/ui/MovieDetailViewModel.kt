@@ -301,6 +301,7 @@ class MovieDetailViewModel(
         episodeSizesJob?.cancel()
         personJob?.cancel()
         val requestSeq = ++loadRequestSeq
+        val traceId = com.laterbox.app.diagnostics.NetworkWaterfallLogger.beginDetailOpen("$providerId:$titleId")
         val cachedSummary = moviesRepository.getCachedSummary(providerId, titleId)
         loadJob = viewModelScope.launch {
             val prev = _uiState.value
@@ -327,6 +328,7 @@ class MovieDetailViewModel(
                         episodeDownloads = prev.episodeDownloads
                     )
                 }
+                com.laterbox.app.diagnostics.NetworkWaterfallLogger.markDetailFirstPaint(traceId)
                 if (cachedIsSeries && prefillSeason != null) {
                     startedEpisodesSeason = prefillSeason
                     loadEpisodes(cachedSummary.providerId, cachedSummary.id, prefillSeason)
@@ -350,10 +352,20 @@ class MovieDetailViewModel(
                 }
             }
 
+            val detailsStartMs = com.laterbox.app.diagnostics.NetworkWaterfallLogger.nowWallMs()
             val result = moviesRepository.getDetails(providerId, titleId, forceRefresh)
+            val detailsDurMs = (com.laterbox.app.diagnostics.NetworkWaterfallLogger.nowWallMs() - detailsStartMs).coerceAtLeast(0L)
             if (loadRequestSeq != requestSeq) return@launch
             result.fold(
                 onSuccess = { details ->
+                    com.laterbox.app.diagnostics.NetworkWaterfallLogger.recordCall(
+                        callGroup = "repository.getDetails",
+                        startElapsedMs = detailsStartMs,
+                        durationMs = detailsDurMs,
+                        cacheStatus = com.laterbox.app.diagnostics.NetworkWaterfallLogger.CacheStatus.NETWORK,
+                        blockingFirstPaint = cachedSummary == null,
+                        explicitTraceId = traceId
+                    )
                     val isSeries = details.summary.kind.isEpisodic
                     val defaultSeason = if (isSeries) {
                         details.seasons.firstOrNull()?.seasonNumber ?: 1
@@ -376,6 +388,7 @@ class MovieDetailViewModel(
                             errorMessage = null
                         )
                     }
+                    com.laterbox.app.diagnostics.NetworkWaterfallLogger.markDetailFirstPaint(traceId)
 
                     if (details.summary.kind == MediaKind.MOVIE &&
                         (details.summary.durationMinutes == null || details.summary.durationMinutes <= 0)
@@ -484,6 +497,11 @@ class MovieDetailViewModel(
                         }.getOrDefault(0L)
                         if (loadRequestSeq == requestSeq) {
                             _uiState.update { it.copy(savedPositionMs = savedPos) }
+                        }
+                        episodesJob?.join()
+                        playbackJob?.join()
+                        if (loadRequestSeq == requestSeq) {
+                            com.laterbox.app.diagnostics.NetworkWaterfallLogger.markDetailFullDisplay(traceId)
                         }
                     }
                 },
