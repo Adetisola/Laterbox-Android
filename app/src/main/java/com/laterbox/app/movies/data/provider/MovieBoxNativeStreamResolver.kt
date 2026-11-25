@@ -13,10 +13,13 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URLDecoder
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
@@ -148,6 +151,17 @@ class MovieBoxNativeStreamResolver(
                         )
                     )
                     logger("native play-info host=$apiHost status=200 throttle=${parsed.cdnThrottleLevel} raw=${parsed.rawStreamCount} usable=${parsed.sources.size} stub=${parsed.stubFilteredCount} cdnHosts=$returnedHosts rawHosts=$rawHostsStr")
+                    if (parsed.sources.isEmpty() && !token.isNullOrBlank()) {
+                        runCatching {
+                            probeNativeResourceRoute(
+                                subjectId = cleanId,
+                                seasonNumber = seasonNumber,
+                                episodeNumber = episodeNumber,
+                                bearerToken = token,
+                                preferredBaseUrl = cleanBase,
+                            )
+                        }
+                    }
                     return@withContext parsed
                 }
             }
@@ -181,6 +195,652 @@ class MovieBoxNativeStreamResolver(
             httpStatus = lastStatus,
             regionBlocked = allForbidden && lastStatus == 403,
         )
+    }
+
+    /**
+     * Diagnostic-only probe of `/wefeed-mobile-bff/subject-api/resource` plus one bounded
+     * `Range: bytes=0-1023` fetch when a non-stub URL is returned. Never mutates or replaces
+     * production playback sources; records only sanitized metadata (no queries/tokens/cookies).
+     */
+    internal suspend fun probeNativeResourceRoute(
+        subjectId: String,
+        seasonNumber: Int,
+        episodeNumber: Int,
+        bearerToken: String?,
+        preferredBaseUrl: String? = null,
+    ): ResourceProbeSummary? = withContext(Dispatchers.IO) {
+        val cleanId = subjectId.trim()
+        if (cleanId.isEmpty()) return@withContext null
+        var activeToken = bearerToken?.takeIf { it.isNotBlank() } ?: getOrBootstrapToken(forceRefresh = false)
+        if (activeToken.isNullOrBlank()) return@withContext null
+
+        val candidateBases = buildList {
+            preferredBaseUrl?.trim()?.trimEnd('/')?.takeIf { it.isNotEmpty() }?.let { add(it) }
+            nativeApiBaseUrls.map { it.trim().trimEnd('/') }
+                .firstOrNull { it.contains("api3.aoneroom.com") }
+                ?.let { if (it !in this) add(it) }
+            if (isEmpty()) {
+                nativeApiBaseUrls.firstOrNull()?.trim()?.trimEnd('/')?.takeIf { it.isNotEmpty() }?.let { add(it) }
+            }
+        }.take(2)
+
+        var lastSummary: ResourceProbeSummary? = null
+
+        for (cleanBase in candidateBases) {
+            val baseHttpUrl = cleanBase.toHttpUrlOrNull() ?: continue
+            val apiHost = baseHttpUrl.host
+
+            val variants = listOf(
+                ResourceProbeVariant(
+                    name = "official",
+                    playMode = PLAY_MODE_DOWNLOAD,
+                    perPage = 8,
+                    resolution = 0,
+                    includePagingExtras = true,
+                ),
+                ResourceProbeVariant(
+                    name = "r720_stream",
+                    playMode = PLAY_MODE_STREAM,
+                    perPage = 10,
+                    resolution = 720,
+                    includePagingExtras = false,
+                ),
+            )
+
+            for (variant in variants) {
+                val urlBuilder = baseHttpUrl.newBuilder()
+                    .addPathSegments("wefeed-mobile-bff/subject-api/resource")
+                    .addQueryParameter("host", apiHost)
+                    .addQueryParameter("subjectId", cleanId)
+                    .addQueryParameter("page", "1")
+                    .addQueryParameter("perPage", variant.perPage.toString())
+                    .addQueryParameter("se", seasonNumber.toString())
+                    .addQueryParameter("epFrom", episodeNumber.toString())
+                    .addQueryParameter("epTo", episodeNumber.toString())
+                if (variant.includePagingExtras) {
+                    urlBuilder
+                        .addQueryParameter("all", "0")
+                        .addQueryParameter("startPosition", "1")
+                        .addQueryParameter("endPosition", "1")
+                        .addQueryParameter("pagerMode", "0")
+                        .addQueryParameter("resolution", variant.resolution.toString())
+                } else {
+                    urlBuilder
+                        .addQueryParameter("resolution", variant.resolution.toString())
+                        .addQueryParameter("ep", episodeNumber.toString())
+                }
+                val probeUrl = urlBuilder.build()
+
+                var resp = executeSignedGet(probeUrl, activeToken, playMode = variant.playMode)
+                if (resp.statusCode in setOf(401, 441)) {
+                    val refreshed = getOrBootstrapToken(forceRefresh = true, staleToken = activeToken)
+                    if (!refreshed.isNullOrBlank()) {
+                        activeToken = refreshed
+                        resp = executeSignedGet(probeUrl, activeToken, playMode = variant.playMode)
+                    }
+                }
+
+                val parsed = if (resp.statusCode == 200 && !resp.body.isNullOrBlank()) {
+                    parseResourceListResponse(resp.body)
+                } else {
+                    null
+                }
+                val bestItem = parsed?.items?.firstOrNull { !it.isStub } ?: parsed?.items?.firstOrNull()
+                val bestHttpUrl = bestItem?.url?.toHttpUrlOrNull()
+                val safeHost = bestHttpUrl?.host ?: "none"
+                val safePath = bestHttpUrl?.let { sanitizePathForDiagnostics(it.encodedPath) } ?: "none"
+                val nonStubCount = parsed?.items?.count { !it.isStub } ?: 0
+                val distinctHosts = parsed?.items
+                    ?.mapNotNull { it.url.toHttpUrlOrNull()?.host }
+                    ?.distinct()
+                    ?.joinToString("|")
+                    ?.ifEmpty { "none" }
+                    ?: "none"
+                val safeResId = bestItem?.resourceId
+                    ?.takeIf { it.isNotBlank() && it.length <= 32 }
+                    ?: "none"
+
+                val failureCat = if (resp.statusCode != 200) {
+                    classifyNativeFailure(resp.statusCode, resp.errorName)
+                } else if (parsed == null) {
+                    "resource_parse_error"
+                } else if (parsed.apiCode != null && parsed.apiCode != 0) {
+                    "resource_api_code_${parsed.apiCode}"
+                } else if (nonStubCount == 0) {
+                    if (parsed.items.isEmpty()) "resource_empty_list" else "resource_stub_only"
+                } else {
+                    null
+                }
+
+                val note = buildString {
+                    append("endpoint=/wefeed-mobile-bff/subject-api/resource")
+                    append(" variant=${variant.name}")
+                    append(" apiCode=${parsed?.apiCode ?: -1}")
+                    append(" items=${parsed?.items?.size ?: 0}")
+                    append(" nonStub=$nonStubCount")
+                    append(" urlHost=$safeHost")
+                    append(" urlPath=$safePath")
+                    append(" resId=$safeResId")
+                    append(" res=${bestItem?.resolution ?: 0}")
+                    append(" size=${bestItem?.sizeBytes ?: 0L}")
+                    append(" dur=${bestItem?.durationSec ?: 0L}")
+                    append(" linkType=${bestItem?.linkType ?: -1}")
+                    append(" stub=${bestItem?.isStub ?: false}")
+                    append(" cdnHosts=$distinctHosts")
+                    resp.errorName?.let { append(" err=$it") }
+                }
+
+                diagnosticsStore.recordLifecycle(
+                    MediaLifecycleEvent(
+                        timestampMs = clockMs(),
+                        kind = MediaRequestKind.PLAYBACK,
+                        stage = "NATIVE_RESOURCE_PROBE",
+                        host = apiHost,
+                        statusCode = resp.statusCode,
+                        refreshRequested = false,
+                        failureCategory = failureCat,
+                        note = note,
+                    )
+                )
+                logger("native resource probe host=$apiHost status=${resp.statusCode} $note")
+
+                var rangeResult: ResourceRangeProbeResult? = null
+                if (bestItem != null && !bestItem.isStub && bestHttpUrl != null) {
+                    val cookieCandidate = resp.setCookies
+                        .mapNotNull { it.substringBefore(';').trim().takeIf(String::isNotEmpty) }
+                        .joinToString("; ")
+                        .takeIf { it.isNotEmpty() }
+                    rangeResult = executeBoundedRangeProbe(bestHttpUrl, fallbackCookie = cookieCandidate)
+                }
+
+                val summary = ResourceProbeSummary(
+                    apiHost = apiHost,
+                    variant = variant.name,
+                    httpStatus = resp.statusCode,
+                    totalItems = parsed?.items?.size ?: 0,
+                    nonStubItems = nonStubCount,
+                    selectedHost = bestHttpUrl?.host,
+                    selectedSanitizedPath = bestHttpUrl?.let { sanitizePathForDiagnostics(it.encodedPath) },
+                    rangeProbe = rangeResult,
+                )
+                lastSummary = summary
+
+                if (rangeResult != null || (resp.statusCode == 200 && nonStubCount > 0)) {
+                    return@withContext summary
+                }
+                if (resp.statusCode == 403 || resp.statusCode == -1) {
+                    break
+                }
+            }
+        }
+
+        val recoveryHost = candidateBases.firstOrNull { base ->
+            // Prefer a host that did not fail with 403/transport error if possible; fallback to first.
+            lastSummary?.apiHost != base.toHttpUrlOrNull()?.host || (lastSummary?.httpStatus != 403 && lastSummary?.httpStatus != -1)
+        } ?: candidateBases.firstOrNull()
+        if (recoveryHost != null) {
+            val recoverySummary = probeV2AndRecoveryDiagnostics(
+                apiBase = recoveryHost,
+                subjectId = cleanId,
+                seasonNumber = seasonNumber,
+                episodeNumber = episodeNumber,
+                fallbackToken = activeToken,
+            )
+            if (recoverySummary != null) {
+                return@withContext recoverySummary
+            }
+        }
+        lastSummary
+    }
+
+    private suspend fun probeV2AndRecoveryDiagnostics(
+        apiBase: String,
+        subjectId: String,
+        seasonNumber: Int,
+        episodeNumber: Int,
+        fallbackToken: String?,
+    ): ResourceProbeSummary? {
+        val baseHttpUrl = apiBase.toHttpUrlOrNull() ?: return null
+        val apiHost = baseHttpUrl.host
+        val visitorToken = bootstrapVisitorLoginToken()
+        val diagToken = visitorToken ?: fallbackToken
+        val stubCandidates = mutableListOf<Pair<String, String>>()
+
+        // 1. play-info/v2 (omitting se/ep for movies, se==0 && ep==0)
+        val playV2Builder = baseHttpUrl.newBuilder()
+            .addPathSegments("wefeed-mobile-bff/subject-api/play-info/v2")
+            .addQueryParameter("host", apiHost)
+            .addQueryParameter("subjectId", subjectId)
+        val isMovie = seasonNumber == 0 && episodeNumber == 0
+        if (!isMovie) {
+            playV2Builder
+                .addQueryParameter("se", seasonNumber.toString())
+                .addQueryParameter("ep", episodeNumber.toString())
+        }
+        val playV2Resp = executeSignedRequest(
+            method = "GET",
+            url = playV2Builder.build(),
+            bearerToken = diagToken,
+            playMode = PLAY_MODE_STREAM,
+            useV4Profile = true,
+        )
+        val playV2Summary = evaluateAndRecordDiagnosticResponse(
+            apiHost = apiHost,
+            variant = if (isMovie) "play_info_v2_no_se_ep" else "play_info_v2",
+            endpointPath = "/wefeed-mobile-bff/subject-api/play-info/v2",
+            resp = playV2Resp,
+            arrayKeys = listOf("streams", "streamList"),
+            stubCollector = stubCandidates,
+            allowPolicyExtraction = true,
+        )
+        if (playV2Summary != null && (playV2Summary.rangeProbe != null || playV2Summary.nonStubItems > 0)) {
+            return playV2Summary
+        }
+
+        // 2. resource/v2 with isVip=true
+        val resV2Builder = baseHttpUrl.newBuilder()
+            .addPathSegments("wefeed-mobile-bff/subject-api/resource/v2")
+            .addQueryParameter("host", apiHost)
+            .addQueryParameter("subjectId", subjectId)
+            .addQueryParameter("page", "1")
+            .addQueryParameter("perPage", "20")
+            .addQueryParameter("all", "0")
+            .addQueryParameter("startPosition", "1")
+            .addQueryParameter("endPosition", "1")
+            .addQueryParameter("pagerMode", "2")
+            .addQueryParameter("resolution", "0")
+            .addQueryParameter("isVip", "true")
+        if (!isMovie) {
+            resV2Builder
+                .addQueryParameter("se", seasonNumber.toString())
+                .addQueryParameter("epFrom", episodeNumber.toString())
+                .addQueryParameter("epTo", episodeNumber.toString())
+        }
+        val resV2Resp = executeSignedRequest(
+            method = "GET",
+            url = resV2Builder.build(),
+            bearerToken = diagToken,
+            playMode = PLAY_MODE_DOWNLOAD,
+            useV4Profile = true,
+        )
+        val resV2Collector = mutableListOf<Pair<String, String>>()
+        val resV2Summary = evaluateAndRecordDiagnosticResponse(
+            apiHost = apiHost,
+            variant = "resource_v2_vip",
+            endpointPath = "/wefeed-mobile-bff/subject-api/resource/v2",
+            resp = resV2Resp,
+            arrayKeys = listOf("list", "items", "resources"),
+            stubCollector = resV2Collector,
+            allowPolicyExtraction = false,
+        )
+        if (resV2Summary != null && (resV2Summary.rangeProbe != null || resV2Summary.nonStubItems > 0)) {
+            return resV2Summary
+        }
+
+        // Prefer resource/v2 resourceIds over play-info streamIds (play-info IDs return 404 on resource-position).
+        val targetStub = resV2Collector.firstOrNull() ?: stubCandidates.firstOrNull() ?: return null
+        val (stubRid, stubUrl) = targetStub
+
+        // 3. resource-position/v2 (isVip=true) and resource-position (v1) trap-clip recovery
+        val posV2Url = baseHttpUrl.newBuilder()
+            .addPathSegments("wefeed-mobile-bff/subject-api/resource-position/v2")
+            .addQueryParameter("host", apiHost)
+            .addQueryParameter("subjectId", subjectId)
+            .addQueryParameter("resourceId", stubRid)
+            .addQueryParameter("failUrl", stubUrl)
+            .addQueryParameter("failCode", "404")
+            .addQueryParameter("resourceNum", "0")
+            .addQueryParameter("isVip", "true")
+            .build()
+        val posV2Resp = executeSignedRequest(
+            method = "GET",
+            url = posV2Url,
+            bearerToken = diagToken,
+            playMode = PLAY_MODE_DOWNLOAD,
+            useV4Profile = true,
+        )
+        val posV2Summary = evaluateAndRecordDiagnosticResponse(
+            apiHost = apiHost,
+            variant = "resource_position_v2_vip",
+            endpointPath = "/wefeed-mobile-bff/subject-api/resource-position/v2",
+            resp = posV2Resp,
+            arrayKeys = listOf("list", "items", "resources"),
+            stubCollector = null,
+            allowPolicyExtraction = false,
+        )
+        if (posV2Summary != null && (posV2Summary.rangeProbe != null || posV2Summary.nonStubItems > 0)) {
+            return posV2Summary
+        }
+
+        val posV1Url = baseHttpUrl.newBuilder()
+            .addPathSegments("wefeed-mobile-bff/subject-api/resource-position")
+            .addQueryParameter("host", apiHost)
+            .addQueryParameter("subjectId", subjectId)
+            .addQueryParameter("resourceId", stubRid)
+            .addQueryParameter("failUrl", stubUrl)
+            .addQueryParameter("failCode", "404")
+            .addQueryParameter("resourceNum", "0")
+            .build()
+        val posV1Resp = executeSignedRequest(
+            method = "GET",
+            url = posV1Url,
+            bearerToken = diagToken,
+            playMode = PLAY_MODE_DOWNLOAD,
+            useV4Profile = false,
+        )
+        val posV1Summary = evaluateAndRecordDiagnosticResponse(
+            apiHost = apiHost,
+            variant = "resource_position_v1",
+            endpointPath = "/wefeed-mobile-bff/subject-api/resource-position",
+            resp = posV1Resp,
+            arrayKeys = listOf("list", "items", "resources"),
+            stubCollector = null,
+            allowPolicyExtraction = false,
+        )
+        if (posV1Summary != null && (posV1Summary.rangeProbe != null || posV1Summary.nonStubItems > 0)) {
+            return posV1Summary
+        }
+        return null
+    }
+
+    private fun bootstrapVisitorLoginToken(): String? {
+        val bootBase = bootstrapBaseUrl.trim().trimEnd('/').toHttpUrlOrNull() ?: return null
+        val loginUrl = bootBase.newBuilder()
+            .addPathSegments("wefeed-mobile-bff/user-api/visitor-login")
+            .addQueryParameter("host", bootBase.host)
+            .build()
+        val resp = executeSignedRequest(
+            method = "POST",
+            url = loginUrl,
+            bearerToken = null,
+            playMode = PLAY_MODE_STREAM,
+            bodyJson = "{}",
+            useV4Profile = true,
+        )
+        val token = if (resp.statusCode == 200 && !resp.body.isNullOrBlank()) {
+            runCatching {
+                JSONObject(resp.body).optJSONObject("data")?.optCleanString("token")
+            }.getOrNull()
+        } else {
+            null
+        }
+        val apiCode = if (!resp.body.isNullOrBlank()) {
+            runCatching { JSONObject(resp.body).optInt("code", -1) }.getOrNull()
+        } else {
+            null
+        }
+        diagnosticsStore.recordLifecycle(
+            MediaLifecycleEvent(
+                timestampMs = clockMs(),
+                kind = MediaRequestKind.PLAYBACK,
+                stage = "NATIVE_VISITOR_LOGIN",
+                host = bootBase.host,
+                statusCode = resp.statusCode,
+                refreshRequested = false,
+                failureCategory = if (token == null) classifyNativeFailure(resp.statusCode, resp.errorName) else null,
+                note = "apiCode=${apiCode ?: -1} hasToken=${!token.isNullOrBlank()}" + (resp.errorName?.let { " err=$it" } ?: ""),
+            )
+        )
+        logger("native visitor-login host=${bootBase.host} status=${resp.statusCode} hasToken=${!token.isNullOrBlank()}")
+        return token
+    }
+
+    private fun evaluateAndRecordDiagnosticResponse(
+        apiHost: String,
+        variant: String,
+        endpointPath: String,
+        resp: NativeHttpResponse,
+        arrayKeys: List<String>,
+        stubCollector: MutableList<Pair<String, String>>?,
+        allowPolicyExtraction: Boolean,
+    ): ResourceProbeSummary? {
+        val parsed = if (resp.statusCode == 200 && !resp.body.isNullOrBlank()) {
+            parseResourceListResponse(
+                rawBody = resp.body,
+                arrayKeys = arrayKeys,
+                allowPolicyExtraction = allowPolicyExtraction,
+            )
+        } else {
+            null
+        }
+        if (stubCollector != null && parsed != null) {
+            parsed.items.filter { it.isStub && !it.resourceId.isNullOrBlank() }
+                .forEach { stubCollector += it.resourceId!! to it.url }
+        }
+
+        val bestItem = parsed?.items?.firstOrNull { !it.isStub } ?: parsed?.items?.firstOrNull()
+        val bestHttpUrl = bestItem?.url?.toHttpUrlOrNull()
+        val safeHost = bestHttpUrl?.host ?: "none"
+        val safePath = bestHttpUrl?.let { sanitizePathForDiagnostics(it.encodedPath) } ?: "none"
+        val nonStubCount = parsed?.items?.count { !it.isStub } ?: 0
+        val distinctHosts = parsed?.items
+            ?.mapNotNull { it.url.toHttpUrlOrNull()?.host }
+            ?.distinct()
+            ?.joinToString("|")
+            ?.ifEmpty { "none" }
+            ?: "none"
+        val safeResId = bestItem?.resourceId
+            ?.takeIf { it.isNotBlank() && it.length <= 32 }
+            ?: "none"
+
+        val failureCat = if (resp.statusCode != 200) {
+            classifyNativeFailure(resp.statusCode, resp.errorName)
+        } else if (parsed == null) {
+            "resource_parse_error"
+        } else if (parsed.apiCode != null && parsed.apiCode != 0) {
+            "resource_api_code_${parsed.apiCode}"
+        } else if (nonStubCount == 0) {
+            if (parsed.items.isEmpty()) "resource_empty_list" else "resource_stub_only"
+        } else {
+            null
+        }
+
+        val note = buildString {
+            append("endpoint=$endpointPath")
+            append(" variant=$variant")
+            append(" apiCode=${parsed?.apiCode ?: -1}")
+            append(" items=${parsed?.items?.size ?: 0}")
+            append(" nonStub=$nonStubCount")
+            append(" urlHost=$safeHost")
+            append(" urlPath=$safePath")
+            append(" resId=$safeResId")
+            append(" res=${bestItem?.resolution ?: 0}")
+            append(" size=${bestItem?.sizeBytes ?: 0L}")
+            append(" dur=${bestItem?.durationSec ?: 0L}")
+            append(" linkType=${bestItem?.linkType ?: -1}")
+            append(" stub=${bestItem?.isStub ?: false}")
+            append(" cdnHosts=$distinctHosts")
+            resp.errorName?.let { append(" err=$it") }
+        }
+
+        diagnosticsStore.recordLifecycle(
+            MediaLifecycleEvent(
+                timestampMs = clockMs(),
+                kind = MediaRequestKind.PLAYBACK,
+                stage = "NATIVE_RESOURCE_PROBE",
+                host = apiHost,
+                statusCode = resp.statusCode,
+                refreshRequested = false,
+                failureCategory = failureCat,
+                note = note,
+            )
+        )
+        logger("native resource probe host=$apiHost status=${resp.statusCode} $note")
+
+        var rangeResult: ResourceRangeProbeResult? = null
+        if (bestItem != null && !bestItem.isStub && bestHttpUrl != null) {
+            val itemCookie = bestItem.signCookie?.takeIf { it.isNotBlank() }
+            val respCookie = resp.setCookies
+                .mapNotNull { it.substringBefore(';').trim().takeIf(String::isNotEmpty) }
+                .joinToString("; ")
+                .takeIf { it.isNotEmpty() }
+            rangeResult = executeBoundedRangeProbe(bestHttpUrl, fallbackCookie = itemCookie ?: respCookie)
+        }
+
+        return ResourceProbeSummary(
+            apiHost = apiHost,
+            variant = variant,
+            httpStatus = resp.statusCode,
+            totalItems = parsed?.items?.size ?: 0,
+            nonStubItems = nonStubCount,
+            selectedHost = bestHttpUrl?.host,
+            selectedSanitizedPath = bestHttpUrl?.let { sanitizePathForDiagnostics(it.encodedPath) },
+            rangeProbe = rangeResult,
+        )
+    }
+
+    private fun parseResourceListResponse(
+        rawBody: String,
+        arrayKeys: List<String> = listOf("list", "items", "resources"),
+        allowPolicyExtraction: Boolean = false,
+    ): ParsedResourceList? {
+        val root = runCatching { JSONObject(rawBody) }.getOrNull() ?: return null
+        val apiCode = if (root.has("code") && !root.isNull("code")) root.optInt("code", -1) else null
+        val data = root.optJSONObject("data") ?: return ParsedResourceList(apiCode, emptyList())
+        val rawArray = arrayKeys.asSequence()
+            .mapNotNull { key -> data.optJSONArray(key) }
+            .firstOrNull()
+            ?: JSONArray()
+        val parsed = mutableListOf<ResourceProbeItem>()
+        for (i in 0 until rawArray.length()) {
+            val item = rawArray.optJSONObject(i) ?: continue
+            val rawUrl = item.optCleanString("resourceLink")
+                ?: item.optCleanString("url")
+                ?: item.optCleanString("sourceUrl")
+                ?: item.optCleanString("downloadUrl")
+            val signCookie = item.optCleanString("signCookie")
+            val sizeBytes = item.optCleanString("size")?.toLongOrNull() ?: item.optLong("size", 0L)
+            val durationSec = item.optLong("duration", 0L)
+            val resolution = item.optInt("resolution", 0)
+            val resourceId = item.optCleanString("resourceId") ?: item.optCleanString("id")
+            val linkType = item.optInt("linkType", -1)
+            val rawIsStub = isKnownStubStream(rawUrl, sizeBytes, durationSec)
+            val policyUrl = if (allowPolicyExtraction && (rawUrl.isNullOrBlank() || rawIsStub)) {
+                extractPolicyResource(signCookie)
+            } else {
+                null
+            }
+            val effectiveUrl = policyUrl ?: rawUrl ?: continue
+            val isStub = policyUrl == null && rawIsStub
+            parsed += ResourceProbeItem(
+                url = effectiveUrl,
+                resourceId = resourceId,
+                resolution = resolution,
+                sizeBytes = sizeBytes,
+                durationSec = durationSec,
+                linkType = linkType,
+                isStub = isStub,
+                signCookie = signCookie,
+            )
+        }
+        val sorted = parsed.sortedWith(
+            compareBy<ResourceProbeItem> { it.isStub }
+                .thenByDescending { it.resolution }
+                .thenByDescending { it.sizeBytes }
+        )
+        return ParsedResourceList(apiCode, sorted)
+    }
+
+    private fun executeBoundedRangeProbe(
+        targetUrl: HttpUrl,
+        fallbackCookie: String?,
+    ): ResourceRangeProbeResult {
+        fun doSingle(cookieHeader: String?): ResourceRangeProbeResult {
+            val reqBuilder = Request.Builder()
+                .url(targetUrl)
+                .get()
+                .header("User-Agent", "okhttp/4.9.3")
+                .header("Range", RESOURCE_PROBE_RANGE)
+            if (!cookieHeader.isNullOrBlank()) {
+                reqBuilder.header("Cookie", cookieHeader)
+            }
+            return try {
+                okHttpClient.newCall(reqBuilder.build()).execute().use { resp ->
+                    val bytesRead = runCatching {
+                        resp.body?.source()?.let { src ->
+                            val buf = okio.Buffer()
+                            var total = 0L
+                            while (total < RESOURCE_PROBE_MAX_BYTES) {
+                                val n = src.read(buf, RESOURCE_PROBE_MAX_BYTES - total)
+                                if (n <= 0L) break
+                                total += n
+                            }
+                            buf.clear()
+                            total
+                        } ?: 0L
+                    }.getOrDefault(0L)
+                    val prior = resp.priorResponse
+                    val redirectHost = prior?.request?.url?.host?.takeIf { it != targetUrl.host }
+                        ?: resp.request.url.host.takeIf { it != targetUrl.host }
+                    val redirectStatus = prior?.code
+                    val contentRange = resp.header("Content-Range")?.take(64)
+                    val contentLength = resp.header("Content-Length")?.take(32)
+                    val serverHeader = resp.header("Server")?.take(32)
+                    ResourceRangeProbeResult(
+                        statusCode = resp.code,
+                        finalHost = resp.request.url.host,
+                        redirectHost = redirectHost,
+                        redirectStatus = redirectStatus,
+                        contentRange = contentRange,
+                        contentLength = contentLength,
+                        serverHeader = serverHeader,
+                        bytesRead = bytesRead,
+                        cookieRequired = resp.code in setOf(401, 403),
+                        cookieApplied = !cookieHeader.isNullOrBlank(),
+                    )
+                }
+            } catch (e: Exception) {
+                ResourceRangeProbeResult(
+                    statusCode = -1,
+                    finalHost = targetUrl.host,
+                    errorName = e.javaClass.simpleName,
+                )
+            }
+        }
+
+        var result = doSingle(cookieHeader = null)
+        if (result.statusCode in setOf(401, 403) && !fallbackCookie.isNullOrBlank()) {
+            val retried = doSingle(cookieHeader = fallbackCookie)
+            result = retried.copy(cookieRequired = retried.statusCode in setOf(200, 206))
+        }
+
+        val safePath = sanitizePathForDiagnostics(targetUrl.encodedPath)
+        val redirectInfo = when {
+            result.redirectHost != null && result.redirectStatus != null -> "${result.redirectStatus}->${result.redirectHost}"
+            result.redirectHost != null -> result.redirectHost
+            else -> "none"
+        }
+        val valid = result.statusCode in setOf(200, 206) && result.bytesRead > 0L
+        val failureCat = if (valid) null else classifyNativeFailure(result.statusCode, result.errorName)
+        val note = buildString {
+            append("path=$safePath")
+            append(" finalHost=${result.finalHost}")
+            append(" redirect=$redirectInfo")
+            append(" range=$RESOURCE_PROBE_RANGE")
+            append(" contentRange=${result.contentRange ?: "none"}")
+            append(" contentLength=${result.contentLength ?: "none"}")
+            append(" server=${result.serverHeader ?: "none"}")
+            append(" bytesRead=${result.bytesRead}")
+            append(" cookieRequired=${result.cookieRequired}")
+            append(" cookieApplied=${result.cookieApplied}")
+            append(" valid=$valid")
+            result.errorName?.let { append(" err=$it") }
+        }
+        diagnosticsStore.recordLifecycle(
+            MediaLifecycleEvent(
+                timestampMs = clockMs(),
+                kind = MediaRequestKind.PLAYBACK,
+                stage = "NATIVE_RESOURCE_RANGE",
+                host = targetUrl.host,
+                statusCode = result.statusCode,
+                refreshRequested = result.cookieApplied,
+                refreshedCredentialsApplied = if (result.cookieApplied) true else null,
+                failureCategory = failureCat,
+                note = note,
+            )
+        )
+        logger("native resource range host=${targetUrl.host} status=${result.statusCode} $note")
+        return result
     }
 
     private suspend fun getOrBootstrapToken(
@@ -372,23 +1032,60 @@ class MovieBoxNativeStreamResolver(
         )
     }
 
-    private fun executeSignedGet(url: HttpUrl, bearerToken: String?): NativeHttpResponse {
+    private fun executeSignedGet(
+        url: HttpUrl,
+        bearerToken: String?,
+        playMode: String = PLAY_MODE_STREAM,
+    ): NativeHttpResponse = executeSignedRequest(
+        method = "GET",
+        url = url,
+        bearerToken = bearerToken,
+        playMode = playMode,
+        bodyJson = null,
+        useV4Profile = false,
+    )
+
+    private fun executeSignedRequest(
+        method: String,
+        url: HttpUrl,
+        bearerToken: String?,
+        playMode: String = PLAY_MODE_STREAM,
+        bodyJson: String? = null,
+        useV4Profile: Boolean = false,
+    ): NativeHttpResponse {
         val ts = clockMs()
-        val clientInfo = buildClientInfoJson(randomDeviceId)
+        val accept = "application/json"
+        val contentType = if (useV4Profile) "application/json;charset=UTF-8" else "application/json"
+        val bodyBytes = bodyJson?.toByteArray(Charsets.UTF_8)
+        val clientInfo = buildClientInfoJson(randomDeviceId, playMode, useV4Profile)
         val reqBuilder = Request.Builder()
             .url(url)
-            .get()
-            .header("User-Agent", buildUserAgent())
-            .header("Accept", "application/json")
-            .header("Content-Type", "application/json")
+            .header("User-Agent", buildUserAgent(useV4Profile))
+            .header("Accept", accept)
+            .header("Content-Type", contentType)
             .header("Connection", "keep-alive")
             .header("X-Client-Token", generateClientToken(ts))
-            .header("X-Tr-Signature", generateTrSignature("GET", "application/json", "application/json", url, null, ts))
+            .header("X-Tr-Signature", generateTrSignature(method, accept, contentType, url, bodyBytes, ts))
             .header("X-Client-Info", clientInfo)
             .header("X-Client-Status", "0")
+            .header("X-Play-Mode", playMode)
+
+        if (useV4Profile) {
+            reqBuilder
+                .header("X-M-Version", V4_VERSION_NAME)
+                .header("X-Sign-Version", "2.0")
+                .header("Referer", "https://${url.host}/")
+        }
 
         if (!bearerToken.isNullOrBlank()) {
             reqBuilder.header("Authorization", "Bearer $bearerToken")
+        }
+
+        if (method.equals("POST", ignoreCase = true)) {
+            val payload = (bodyJson ?: "{}").toRequestBody(contentType.toMediaType())
+            reqBuilder.post(payload)
+        } else {
+            reqBuilder.get()
         }
 
         return try {
@@ -411,7 +1108,11 @@ class MovieBoxNativeStreamResolver(
         }
     }
 
-    private fun buildClientInfoJson(deviceId: String): String {
+    private fun buildClientInfoJson(
+        deviceId: String,
+        playMode: String = PLAY_MODE_STREAM,
+        useV4Profile: Boolean = false,
+    ): String {
         val osVersion = runCatching { Build.VERSION.RELEASE }.getOrNull()?.takeIf { it.isNotBlank() } ?: "12"
         val model = runCatching { Build.MODEL }.getOrNull()?.takeIf { it.isNotBlank() } ?: "Android"
         val brand = runCatching { Build.BRAND }.getOrNull()?.takeIf { it.isNotBlank() } ?: "Android"
@@ -420,28 +1121,33 @@ class MovieBoxNativeStreamResolver(
 
         val ordered = linkedMapOf<String, Any>(
             "package_name" to PACKAGE_NAME,
-            "version_name" to VERSION_NAME,
-            "version_code" to VERSION_CODE,
+            "version_name" to if (useV4Profile) V4_VERSION_NAME else VERSION_NAME,
+            "version_code" to if (useV4Profile) V4_VERSION_CODE else VERSION_CODE,
             "os" to "android",
             "os_version" to osVersion,
             "device_id" to deviceId,
-            "install_store" to "official",
+            "install_store" to if (useV4Profile) "ps" else "official",
             "brand" to brand,
             "model" to model,
             "system_language" to "en",
             "net" to "NETWORK_WIFI",
             "region" to region,
             "timezone" to timezone,
-            "sp_code" to "",
+            "sp_code" to if (useV4Profile) "404" else "",
+            "X-Play-Mode" to playMode,
         )
+        if (useV4Profile) {
+            ordered["install_ch"] = "ps"
+        }
         return JSONObject(ordered).toString()
     }
 
-    private fun buildUserAgent(): String {
+    private fun buildUserAgent(useV4Profile: Boolean = false): String {
         val osVersion = runCatching { Build.VERSION.RELEASE }.getOrNull()?.takeIf { it.isNotBlank() } ?: "12"
         val model = runCatching { Build.MODEL }.getOrNull()?.takeIf { it.isNotBlank() } ?: "Android"
         val region = Locale.getDefault().country.takeIf { it.length == 2 }?.uppercase(Locale.US) ?: "NG"
-        return "$PACKAGE_NAME/$VERSION_CODE (Linux; U; Android $osVersion; en_$region; $model; Build/SP1A.210812.016; Cronet/145.0.7582.0)"
+        val vCode = if (useV4Profile) V4_VERSION_CODE else VERSION_CODE
+        return "$PACKAGE_NAME/$vCode (Linux; U; Android $osVersion; en_$region; $model; Build/SP1A.210812.016; Cronet/145.0.7582.0)"
     }
 
     private data class NativeHttpResponse(
@@ -450,6 +1156,55 @@ class MovieBoxNativeStreamResolver(
         val xUserHeader: String? = null,
         val setCookies: List<String> = emptyList(),
         val errorName: String? = null,
+    )
+
+    private data class ResourceProbeVariant(
+        val name: String,
+        val playMode: String,
+        val perPage: Int,
+        val resolution: Int,
+        val includePagingExtras: Boolean,
+    )
+
+    private data class ResourceProbeItem(
+        val url: String,
+        val resourceId: String?,
+        val resolution: Int,
+        val sizeBytes: Long,
+        val durationSec: Long,
+        val linkType: Int,
+        val isStub: Boolean,
+        val signCookie: String? = null,
+    )
+
+    private data class ParsedResourceList(
+        val apiCode: Int?,
+        val items: List<ResourceProbeItem>,
+    )
+
+    internal data class ResourceRangeProbeResult(
+        val statusCode: Int,
+        val finalHost: String,
+        val redirectHost: String? = null,
+        val redirectStatus: Int? = null,
+        val contentRange: String? = null,
+        val contentLength: String? = null,
+        val serverHeader: String? = null,
+        val bytesRead: Long = 0L,
+        val cookieRequired: Boolean = false,
+        val cookieApplied: Boolean = false,
+        val errorName: String? = null,
+    )
+
+    internal data class ResourceProbeSummary(
+        val apiHost: String,
+        val variant: String,
+        val httpStatus: Int,
+        val totalItems: Int,
+        val nonStubItems: Int,
+        val selectedHost: String? = null,
+        val selectedSanitizedPath: String? = null,
+        val rangeProbe: ResourceRangeProbeResult? = null,
     )
 
     companion object {
@@ -464,9 +1219,28 @@ class MovieBoxNativeStreamResolver(
 
         private const val PACKAGE_NAME = "com.community.oneroom"
         private const val VERSION_NAME = "3.0.01.0411.03"
-        private const val VERSION_CODE = 30010411
+        private const val VERSION_CODE = 50020038
+        private const val V4_VERSION_NAME = "4.0.02"
+        private const val V4_VERSION_CODE = 50020126
+        private const val PLAY_MODE_DOWNLOAD = "1"
+        private const val PLAY_MODE_STREAM = "2"
+        private const val RESOURCE_PROBE_RANGE = "bytes=0-1023"
+        private const val RESOURCE_PROBE_MAX_BYTES = 1024L
         private const val SECRET_KEY_DEFAULT_B64 = "NzZpUmwwN3MweFNOOWpxbUVXQXQ3OUVCSlp1bElRSXNWNjRGWnIyTw=="
         private const val REGION_BLOCK_COOLDOWN_MS = 15 * 60_000L
+
+        internal fun sanitizePathForDiagnostics(encodedPath: String): String {
+            val trimmed = encodedPath.trim()
+            if (trimmed.isEmpty() || trimmed == "/") return "/"
+            return trimmed.split('/')
+                .filter { it.isNotEmpty() }
+                .joinToString("/", prefix = "/") { seg ->
+                    val dotIdx = seg.lastIndexOf('.')
+                    val base = if (dotIdx > 0) seg.substring(0, dotIdx) else seg
+                    val ext = if (dotIdx > 0 && seg.length - dotIdx <= 6) seg.substring(dotIdx) else ""
+                    if (base.length > 24 || '=' in base || '+' in base) "<id>$ext" else seg
+                }
+        }
 
         private val TOKEN_COOKIE_REGEX = Regex("""(?:^|;\s*)token=([^;]+)""", RegexOption.IGNORE_CASE)
         private val EDGE_URLPREFIX_REGEX = Regex("""Edge-Cache-Cookie=.*?urlprefix=([^:;\s]+)""", RegexOption.IGNORE_CASE)
@@ -515,8 +1289,13 @@ class MovieBoxNativeStreamResolver(
                     .filter { it.isNotEmpty() }
                     .map { seg ->
                         val idx = seg.indexOf('=')
-                        if (idx >= 0) seg.substring(0, idx) to seg.substring(idx + 1) else seg to ""
+                        val rawKey = if (idx >= 0) seg.substring(0, idx) else seg
+                        val rawVal = if (idx >= 0) seg.substring(idx + 1) else ""
+                        val decKey = runCatching { URLDecoder.decode(rawKey, "UTF-8") }.getOrDefault(rawKey)
+                        val decVal = runCatching { URLDecoder.decode(rawVal, "UTF-8") }.getOrDefault(rawVal)
+                        decKey to decVal
                     }
+                    .filter { it.first.isNotEmpty() }
                     .sortedBy { it.first }
                 "$path?${pairs.joinToString("&") { "${it.first}=${it.second}" }}"
             } else {
