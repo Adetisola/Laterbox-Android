@@ -424,6 +424,10 @@ class MoviePlayerViewModel(
                 sourceAuthFingerprint(src)?.let { fp -> failedSourceAuthFingerprints[cleanUrl] = fp }
             }
         }
+        val failedHost = CdnFailureDomainResolver.extractNormalizedHost(failingHost)
+            ?: CdnFailureDomainResolver.extractNormalizedHost(cleanUrl)
+        val failedFormat = available.sources.firstOrNull { it.url.trim() == cleanUrl }?.format
+            ?: current.selectedSource?.format
         val resolvedDomain = CdnFailureDomainResolver.resolve(failingHost)
             ?: CdnFailureDomainResolver.resolve(cleanUrl)
         val nowMs = clockMs()
@@ -440,6 +444,20 @@ class MoviePlayerViewModel(
             cooledHosts = activeCooledDomains(nowMs)
         )
         if (fallback != null) {
+            val fallbackHost = CdnFailureDomainResolver.extractNormalizedHost(fallback.url)
+            com.laterbox.app.diagnostics.MediaNetworkDiagnostics.default.recordLifecycle(
+                com.laterbox.app.diagnostics.MediaLifecycleEvent(
+                    timestampMs = nowMs,
+                    kind = com.laterbox.app.diagnostics.MediaRequestKind.PLAYBACK,
+                    stage = "FALLBACK_SWITCH",
+                    host = failedHost,
+                    format = failedFormat,
+                    statusCode = httpStatusCode,
+                    refreshRequested = false,
+                    failureCategory = classifyPlaybackFailureCategory(httpStatusCode),
+                    note = "switchedTo=${fallbackHost ?: "unknown"}(${fallback.format})",
+                )
+            )
             _uiState.update {
                 it.copy(
                     selectedSource = fallback,
@@ -462,6 +480,18 @@ class MoviePlayerViewModel(
             )
         }
         if (canRefreshStreams) {
+            com.laterbox.app.diagnostics.MediaNetworkDiagnostics.default.recordLifecycle(
+                com.laterbox.app.diagnostics.MediaLifecycleEvent(
+                    timestampMs = nowMs,
+                    kind = com.laterbox.app.diagnostics.MediaRequestKind.PLAYBACK,
+                    stage = "REFRESH_REQUESTED",
+                    host = failedHost,
+                    format = failedFormat,
+                    statusCode = httpStatusCode,
+                    refreshRequested = true,
+                    failureCategory = classifyPlaybackFailureCategory(httpStatusCode),
+                )
+            )
             val providerId = current.summary?.providerId ?: activeProviderId
             val targetId = current.summary?.id ?: current.activeTitleId
             val seasonNum = current.seasonNumber
@@ -502,7 +532,26 @@ class MoviePlayerViewModel(
                     )
                 }
                 if (refreshed != null && freshFallback != null) {
-                    failedSourceAuthFingerprints.remove(freshFallback.url.trim())
+                    val freshUrl = freshFallback.url.trim()
+                    val prevFp = failedSourceAuthFingerprints[freshUrl]
+                    val nextFp = sourceAuthFingerprint(freshFallback)
+                    val credsChanged = (prevFp != null && nextFp != null && prevFp != nextFp) ||
+                        (freshUrl !in updatedFailed && nextFp != null)
+                    val targetHost = CdnFailureDomainResolver.extractNormalizedHost(freshUrl)
+                    com.laterbox.app.diagnostics.MediaNetworkDiagnostics.default.recordLifecycle(
+                        com.laterbox.app.diagnostics.MediaLifecycleEvent(
+                            timestampMs = postRefreshNowMs,
+                            kind = com.laterbox.app.diagnostics.MediaRequestKind.PLAYBACK,
+                            stage = "REFRESH_APPLIED",
+                            host = targetHost,
+                            format = freshFallback.format,
+                            statusCode = httpStatusCode,
+                            refreshRequested = true,
+                            refreshedCredentialsApplied = credsChanged,
+                            note = if (freshUrl in updatedFailed) "sameUrlUpdatedCredentials" else "alternateUrl",
+                        )
+                    )
+                    failedSourceAuthFingerprints.remove(freshUrl)
                     _uiState.update {
                         it.copy(
                             resolution = refreshed,
@@ -533,6 +582,25 @@ class MoviePlayerViewModel(
                         else ->
                             "Playback access expired or needs verification. Try again or switch quality."
                     }
+                    val finalCategory = if (refreshErr is MovieBoxApiException) {
+                        refreshErr.failureCategory.name
+                    } else {
+                        classifyPlaybackFailureCategory(httpStatusCode)
+                    }
+                    com.laterbox.app.diagnostics.MediaNetworkDiagnostics.default.recordLifecycle(
+                        com.laterbox.app.diagnostics.MediaLifecycleEvent(
+                            timestampMs = postRefreshNowMs,
+                            kind = com.laterbox.app.diagnostics.MediaRequestKind.PLAYBACK,
+                            stage = "FINAL_FAILURE",
+                            host = failedHost,
+                            format = failedFormat,
+                            statusCode = (refreshErr as? MovieBoxApiException)?.httpCode ?: httpStatusCode,
+                            refreshRequested = true,
+                            refreshedCredentialsApplied = false,
+                            failureCategory = finalCategory,
+                            note = if (refreshed != null) "allSourcesExhaustedOrCooled" else "refreshFailed",
+                        )
+                    )
                     _uiState.update {
                         it.copy(
                             startPositionMs = preservedPosMs,
@@ -543,6 +611,19 @@ class MoviePlayerViewModel(
             }
             return true
         }
+        com.laterbox.app.diagnostics.MediaNetworkDiagnostics.default.recordLifecycle(
+            com.laterbox.app.diagnostics.MediaLifecycleEvent(
+                timestampMs = nowMs,
+                kind = com.laterbox.app.diagnostics.MediaRequestKind.PLAYBACK,
+                stage = "FINAL_FAILURE",
+                host = failedHost,
+                format = failedFormat,
+                statusCode = httpStatusCode,
+                refreshRequested = current.hasAttemptedStreamRefresh,
+                refreshedCredentialsApplied = if (current.hasAttemptedStreamRefresh) false else null,
+                failureCategory = classifyPlaybackFailureCategory(httpStatusCode),
+            )
+        )
         return false
     }
 
@@ -846,6 +927,15 @@ class MoviePlayerViewModel(
                 return null
             }
             return pickPreferredSource(remaining, preferredQualityHeight) ?: remaining.firstOrNull()
+        }
+
+        private fun classifyPlaybackFailureCategory(httpStatusCode: Int?): String = when (httpStatusCode) {
+            429 -> "RATE_LIMITED"
+            401, 403 -> "AUTH_EXPIRED_OR_FORBIDDEN"
+            404, 410 -> "URL_EXPIRED_OR_NOT_FOUND"
+            in 500..599 -> "UPSTREAM_SERVER_ERROR"
+            null -> "NETWORK_OR_IO_ERROR"
+            else -> "HTTP_$httpStatusCode"
         }
 
         private fun sourceAuthFingerprint(source: PlaybackSource): String? {

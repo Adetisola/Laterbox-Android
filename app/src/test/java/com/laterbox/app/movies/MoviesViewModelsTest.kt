@@ -2079,5 +2079,9 @@ class MoviesViewModelsTest {
         assertEquals(manifestUrl, vm.uiState.value.selectedSource?.url)
         assertEquals("Edge-Cache-Cookie=fresh_sig", vm.uiState.value.selectedSource?.headers?.get("Cookie"))
         assertNull(vm.uiState.value.errorMessage)
+
+        val lifecycle = com.laterbox.app.diagnostics.MediaNetworkDiagnostics.default.snapshotLifecycle()
+        assertTrue(lifecycle.any { it.stage == "REFRESH_REQUESTED" && it.refreshRequested && it.statusCode == 403 })
+        assertTrue(lifecycle.any { it.stage == "REFRESH_APPLIED" && it.refreshedCredentialsApplied == true && it.host == "sbcdnw.hakunaymatata.com" })
     }
 }

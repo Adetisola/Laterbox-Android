@@ -359,6 +359,18 @@ class DownloadWorker(
                             "DownloadWorker",
                             "Download HTTP ${initialResult.httpStatus} from host=${failedHost ?: "unknown"} retryAfter=${retryAfterSec ?: "none"}; refreshing source"
                         )
+                        com.laterbox.app.diagnostics.MediaNetworkDiagnostics.default.recordLifecycle(
+                            com.laterbox.app.diagnostics.MediaLifecycleEvent(
+                                timestampMs = System.currentTimeMillis(),
+                                kind = com.laterbox.app.diagnostics.MediaRequestKind.DOWNLOAD,
+                                stage = "REFRESH_REQUESTED",
+                                host = failedHost,
+                                format = "PROGRESSIVE",
+                                statusCode = initialResult.httpStatus,
+                                refreshRequested = true,
+                                failureCategory = initialResult.code.name,
+                            )
+                        )
                         if (initialResult.httpStatus == 429) {
                             val waitMs = ((retryAfterSec ?: 2L).coerceIn(1L, 10L)) * 1_000L
                             kotlinx.coroutines.delay(waitMs)
@@ -378,6 +390,20 @@ class DownloadWorker(
                             }
                         )
                         if (refreshed != null && refreshed.sourceUrl != activeTask.sourceUrl) {
+                            val newHost = android.net.Uri.parse(refreshed.sourceUrl).host?.lowercase()
+                            com.laterbox.app.diagnostics.MediaNetworkDiagnostics.default.recordLifecycle(
+                                com.laterbox.app.diagnostics.MediaLifecycleEvent(
+                                    timestampMs = System.currentTimeMillis(),
+                                    kind = com.laterbox.app.diagnostics.MediaRequestKind.DOWNLOAD,
+                                    stage = "REFRESH_APPLIED",
+                                    host = newHost,
+                                    format = "PROGRESSIVE",
+                                    statusCode = initialResult.httpStatus,
+                                    refreshRequested = true,
+                                    refreshedCredentialsApplied = !refreshed.headersJson.isNullOrBlank() ||
+                                        refreshed.sourceUrl != activeTask.sourceUrl,
+                                )
+                            )
                             activeTask = refreshed
                             lastPersistedEtag = refreshed.etag
                             lastPersistedTotalBytes = refreshed.totalBytes?.takeIf { it > 0L }
@@ -619,6 +645,20 @@ class DownloadWorker(
                         Result.success()
                     }
                     is DownloadResult.Failure -> {
+                        val finalHost = runCatching { android.net.Uri.parse(activeTask.sourceUrl).host?.lowercase() }.getOrNull()
+                        com.laterbox.app.diagnostics.MediaNetworkDiagnostics.default.recordLifecycle(
+                            com.laterbox.app.diagnostics.MediaLifecycleEvent(
+                                timestampMs = System.currentTimeMillis(),
+                                kind = com.laterbox.app.diagnostics.MediaRequestKind.DOWNLOAD,
+                                stage = "FINAL_FAILURE",
+                                host = finalHost,
+                                format = "PROGRESSIVE",
+                                statusCode = result.httpStatus,
+                                refreshRequested = refreshedSourceThisAttempt,
+                                refreshedCredentialsApplied = if (refreshedSourceThisAttempt) true else null,
+                                failureCategory = result.code.name,
+                            )
+                        )
                         val current = taskDao.getEntityById(taskId)
                         if (current?.status == DownloadState.CANCELLED.name) {
                             storageManager.deletePartFile(taskId)

@@ -195,4 +195,55 @@ class MediaNetworkDiagnosticsTest {
         assertEquals("unknown", SignedCookieInfo.inspect("session=abc", now).expiry)
         assertFalse(SignedCookieInfo.inspect(null, now).present)
     }
+
+    @Test
+    fun diagnostics_recordsDashManifestVariantAndDownloadContentRangeWithoutSecrets() = runTest {
+        origin.enqueue(
+            MockResponse().setResponseCode(206)
+                .setHeader("Content-Range", "bytes 4-9/10")
+                .setHeader("Content-Length", "6")
+                .setBody("456789")
+        )
+        val partial = File(tmp.root, "resume.mp4").apply { writeText("0123") }
+        val dlResult = HttpDownloader(OkHttpClient()).download(
+            url = originUrl("/resource/h265/secret_id.mp4?sign=SECRET_SIGN&t=123").toString(),
+            destinationFile = partial,
+        ) { _, _, _, _ -> }
+        assertTrue(dlResult is com.laterbox.app.media.data.download.DownloadResult.Success)
+
+        origin.enqueue(MockResponse().setResponseCode(403).setBody("denied"))
+        val dashClient = OkHttpClient().withMediaDiagnostics(MediaRequestKind.PLAYBACK)
+        dashClient.newCall(
+            Request.Builder()
+                .url(originUrl("/dash/3595914877702915152/index_web.mpd"))
+                .header("Cookie", secretCookie.format(future))
+                .build()
+        ).execute().close()
+
+        MediaNetworkDiagnostics.default.recordLifecycle(
+            MediaLifecycleEvent(
+                timestampMs = 1_700_000_000_000L,
+                kind = MediaRequestKind.PLAYBACK,
+                stage = "REFRESH_APPLIED",
+                host = "sbcdnw.hakunaymatata.com",
+                format = "DASH",
+                statusCode = 403,
+                refreshRequested = true,
+                refreshedCredentialsApplied = true,
+                failureCategory = "AUTH_EXPIRED_OR_FORBIDDEN",
+            )
+        )
+
+        val text = MediaNetworkDiagnostics.default.exportText()
+        assertTrue(text.contains("manifest=index_web.mpd"))
+        assertTrue(text.contains("Content-Range=bytes 4-9/10"))
+        assertTrue(text.contains("DOWNLOAD / PROGRESSIVE / localhost: 206x1"))
+        assertTrue(text.contains("PLAYBACK / DASH_MANIFEST / localhost: 403x1"))
+        assertTrue(text.contains("STATE & REFRESH TRAIL"))
+        assertTrue(text.contains("refreshRequested=true refreshedCredentialsApplied=true"))
+        assertFalse(text.contains("SECRET_SIGN"))
+        assertFalse(text.contains("3595914877702915152"))
+        assertFalse(text.contains("secret_id"))
+        assertFalse(text.contains("SUPERSECRETSIGNATURE"))
+    }
 }

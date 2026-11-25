@@ -32,10 +32,11 @@ data class MediaDiagContext(
             return when {
                 path.endsWith(".mpd") -> "DASH_MANIFEST"
                 path.endsWith(".m3u8") -> "HLS_MANIFEST"
-                path.endsWith(".m4s") -> "DASH_SEGMENT"
+                path.endsWith(".m4s") || path.endsWith(".cmfv") || path.endsWith(".cmfa") -> "DASH_SEGMENT"
                 path.endsWith(".ts") -> "HLS_SEGMENT"
                 path.endsWith(".srt") || path.endsWith(".vtt") || path.endsWith(".ass") ||
                     path.endsWith(".ssa") || path.endsWith(".ttml") -> "SUBTITLE"
+                path.endsWith(".mp4") && path.contains("/dash/") -> "DASH_SEGMENT"
                 path.endsWith(".mp4") || path.endsWith(".m4v") || path.endsWith(".mkv") ||
                     path.endsWith(".webm") -> "PROGRESSIVE"
                 else -> "UNKNOWN"
@@ -121,69 +122,118 @@ data class MediaNetworkEvent(
     val redirectCount: Int get() = hops.count { it.redirectToHost != null }
 }
 
+data class MediaLifecycleEvent(
+    val timestampMs: Long,
+    val kind: MediaRequestKind,
+    val stage: String,
+    val host: String? = null,
+    val format: String? = null,
+    val statusCode: Int? = null,
+    val refreshRequested: Boolean = false,
+    val refreshedCredentialsApplied: Boolean? = null,
+    val failureCategory: String? = null,
+    val note: String? = null,
+)
+
 /** Mutable per-call trace shared between the application and network interceptors. */
 class MediaTrace(val ctx: MediaDiagContext) {
     val hops = CopyOnWriteArrayList<MediaHop>()
 }
 
-class MediaNetworkDiagnosticsStore(private val maxEvents: Int = 100) {
+class MediaNetworkDiagnosticsStore(
+    private val maxEvents: Int = 100,
+    private val maxLifecycleEvents: Int = 60,
+) {
     private val lock = Any()
     private val events = ArrayDeque<MediaNetworkEvent>()
+    private val lifecycleEvents = ArrayDeque<MediaLifecycleEvent>()
 
     fun record(event: MediaNetworkEvent) = synchronized(lock) {
         events.addLast(event)
         while (events.size > maxEvents) events.removeFirst()
     }
 
+    fun recordLifecycle(event: MediaLifecycleEvent) = synchronized(lock) {
+        lifecycleEvents.addLast(event)
+        while (lifecycleEvents.size > maxLifecycleEvents) lifecycleEvents.removeFirst()
+    }
+
     fun snapshot(): List<MediaNetworkEvent> = synchronized(lock) { events.toList() }
 
-    fun clear() = synchronized(lock) { events.clear() }
+    fun snapshotLifecycle(): List<MediaLifecycleEvent> = synchronized(lock) { lifecycleEvents.toList() }
+
+    fun clear() = synchronized(lock) {
+        events.clear()
+        lifecycleEvents.clear()
+    }
 
     /**
      * Human-readable report. Contains only hostnames, header NAMES, status codes, safe response
-     * headers and cookie metadata (names/expiry). It never contains URLs with paths/queries,
-     * cookie values, tokens, signatures or authorization values.
+     * headers, refresh/failure categories and cookie metadata (names/expiry). It never contains
+     * URLs with paths/queries, cookie values, tokens, signatures or authorization values.
      */
     fun exportText(nowMs: Long = System.currentTimeMillis(), limit: Int = 40): String {
         val all = snapshot()
+        val lifecycle = snapshotLifecycle()
         val sb = StringBuilder()
         sb.appendLine("MEDIA NETWORK DIAGNOSTICS")
         sb.appendLine("Generated: ${formatTime(nowMs)}")
-        sb.appendLine("Events recorded this session: ${all.size} (showing latest ${minOf(limit, all.size)})")
+        sb.appendLine("Events recorded this session: ${all.size} network, ${lifecycle.size} state/refresh (showing latest ${minOf(limit, all.size)})")
         sb.appendLine("Engine: Laterbox media stack uses OkHttp for playback, downloads and subtitles (no Cronet).")
         sb.appendLine("Credentials are never recorded: only header names, cookie names/expiry and presence flags.")
-        if (all.isEmpty()) {
+        if (all.isEmpty() && lifecycle.isEmpty()) {
             sb.appendLine()
             sb.appendLine("No media requests captured yet. Reproduce the playback/download failure, then reopen this report.")
             return sb.toString().trimEnd()
         }
-        sb.appendLine()
-        sb.appendLine("SUMMARY (kind / format / host -> status counts)")
-        all.groupBy { Triple(it.kind, it.format, it.finalHost) }.forEach { (k, list) ->
-            val counts = list.groupingBy { it.outcome }.eachCount().entries.joinToString(", ") { "${it.key}x${it.value}" }
-            sb.appendLine("- ${k.first} / ${k.second} / ${k.third}: $counts")
-        }
-        sb.appendLine()
-        all.asReversed().take(limit).forEachIndexed { idx, e ->
-            sb.appendLine("#${idx + 1} ${formatTime(e.timestampMs)} ${e.kind} ${e.format} engine=${e.engine} outcome=${e.outcome} (${e.durationMs}ms)")
-            sb.appendLine("   path=${e.pathShape} initialHost=${e.initialHost} finalHost=${e.finalHost} redirects=${e.redirectCount}")
-            sb.appendLine("   signedCookieExpected=${e.signedCookieExpected}")
-            e.hops.forEachIndexed { h, hop ->
-                sb.appendLine("   hop${h + 1}: ${hop.method} ${hop.host} range=${hop.range ?: "none"} -> ${if (hop.status >= 0) hop.status else "FAILED"}" +
-                    (hop.redirectToHost?.let { " redirectTo=$it" } ?: "") + " (${hop.durationMs}ms)")
-                sb.appendLine("      reqHeaders=${hop.requestHeaderNames.joinToString(",")}")
-                sb.appendLine("      attached: cookie=${hop.cookie.present}${if (hop.cookie.present) " names=${hop.cookie.names.joinToString("|")} expiry=${hop.cookie.expiry}" else ""} referer=${hop.refererPresent} origin=${hop.originPresent} userAgent=${hop.userAgentPresent} tokenHeader=${hop.tokenHeaderPresent} authorization=${hop.authorizationPresent}")
-                if (hop.responseHeaders.isNotEmpty()) {
-                    sb.appendLine("      resp: " + hop.responseHeaders.entries.joinToString("; ") { "${it.key}=${it.value}" })
-                }
-                if (hop.responseHeaderNames.isNotEmpty()) {
-                    sb.appendLine("      respHeaderNames=${hop.responseHeaderNames.joinToString(",")}")
-                }
-                if (hop.setCookieNames.isNotEmpty()) sb.appendLine("      setCookieNames=${hop.setCookieNames.joinToString("|")}")
-                hop.bodyPreview?.let { sb.appendLine("      bodyPreview=\"$it\"") }
-                hop.error?.let { sb.appendLine("      error=$it") }
-            }
+        if (all.isNotEmpty()) {
             sb.appendLine()
+            sb.appendLine("SUMMARY (kind / format / host -> status counts)")
+            all.groupBy { Triple(it.kind, it.format, it.finalHost) }.forEach { (k, list) ->
+                val counts = list.groupingBy { it.outcome }.eachCount().entries.joinToString(", ") { "${it.key}x${it.value}" }
+                sb.appendLine("- ${k.first} / ${k.second} / ${k.third}: $counts")
+            }
+        }
+        if (lifecycle.isNotEmpty()) {
+            sb.appendLine()
+            sb.appendLine("STATE & REFRESH TRAIL (fallback, refresh requested, credentials applied, failure category)")
+            lifecycle.asReversed().take(25).forEachIndexed { idx, le ->
+                val parts = buildList {
+                    add("${formatTime(le.timestampMs)} ${le.kind} ${le.stage}")
+                    le.host?.let { add("host=$it") }
+                    le.format?.let { add("format=$it") }
+                    le.statusCode?.let { add("status=$it") }
+                    add("refreshRequested=${le.refreshRequested}")
+                    le.refreshedCredentialsApplied?.let { add("refreshedCredentialsApplied=$it") }
+                    le.failureCategory?.let { add("failureCategory=$it") }
+                    le.note?.let { add("note=$it") }
+                }
+                sb.appendLine("- #${idx + 1} ${parts.joinToString(" ")}")
+            }
+        }
+        if (all.isNotEmpty()) {
+            sb.appendLine()
+            all.asReversed().take(limit).forEachIndexed { idx, e ->
+                sb.appendLine("#${idx + 1} ${formatTime(e.timestampMs)} ${e.kind} ${e.format} engine=${e.engine} outcome=${e.outcome} (${e.durationMs}ms)")
+                sb.appendLine("   path=${e.pathShape} initialHost=${e.initialHost} finalHost=${e.finalHost} redirects=${e.redirectCount}")
+                sb.appendLine("   signedCookieExpected=${e.signedCookieExpected}")
+                e.hops.forEachIndexed { h, hop ->
+                    sb.appendLine("   hop${h + 1}: ${hop.method} ${hop.host} range=${hop.range ?: "none"} -> ${if (hop.status >= 0) hop.status else "FAILED"}" +
+                        (hop.redirectToHost?.let { " redirectTo=$it" } ?: "") + " (${hop.durationMs}ms)")
+                    sb.appendLine("      reqHeaders=${hop.requestHeaderNames.joinToString(",")}")
+                    sb.appendLine("      attached: cookie=${hop.cookie.present}${if (hop.cookie.present) " names=${hop.cookie.names.joinToString("|")} expiry=${hop.cookie.expiry}" else ""} referer=${hop.refererPresent} origin=${hop.originPresent} userAgent=${hop.userAgentPresent} tokenHeader=${hop.tokenHeaderPresent} authorization=${hop.authorizationPresent}")
+                    if (hop.responseHeaders.isNotEmpty()) {
+                        sb.appendLine("      resp: " + hop.responseHeaders.entries.joinToString("; ") { "${it.key}=${it.value}" })
+                    }
+                    if (hop.responseHeaderNames.isNotEmpty()) {
+                        sb.appendLine("      respHeaderNames=${hop.responseHeaderNames.joinToString(",")}")
+                    }
+                    if (hop.setCookieNames.isNotEmpty()) sb.appendLine("      setCookieNames=${hop.setCookieNames.joinToString("|")}")
+                    hop.bodyPreview?.let { sb.appendLine("      bodyPreview=\"$it\"") }
+                    hop.error?.let { sb.appendLine("      error=$it") }
+                }
+                sb.appendLine()
+            }
         }
         return sb.toString().trimEnd()
     }
@@ -203,6 +253,10 @@ object MediaNetworkDiagnostics {
         "Server", "Via", "Age", "X-Cache", "Cache-Control", "X-Request-Id", "CF-Ray", "ETag",
     )
     private val LONG_TOKEN = Regex("""[A-Za-z0-9_\-=:%.~]{40,}""")
+    private val SAFE_MANIFEST_BASENAMES = setOf(
+        "index_web.mpd", "index.mpd", "index_native.mpd", "master.mpd", "manifest.mpd",
+        "playlist.m3u8", "index.m3u8", "master.m3u8",
+    )
 
     internal fun sanitizeBody(raw: String): String {
         val flat = raw.replace(Regex("""\s+"""), " ").filter { it.code in 32..126 }.trim()
@@ -212,8 +266,10 @@ object MediaNetworkDiagnostics {
     internal fun pathShape(url: HttpUrl): String {
         val segs = url.pathSegments.filter { it.isNotEmpty() }
         val last = segs.lastOrNull().orEmpty()
+        val lowerLast = last.lowercase(Locale.ROOT)
         val ext = last.substringAfterLast('.', "").takeIf { it.length in 1..5 && last.contains('.') }
-        return "${segs.size} segments${ext?.let { ", ext .$it" } ?: ""}"
+        val manifestTag = if (lowerLast in SAFE_MANIFEST_BASENAMES) ", manifest=$lowerLast" else ""
+        return "${segs.size} segments${ext?.let { ", ext .$it" } ?: ""}$manifestTag"
     }
 
     internal fun buildHop(
