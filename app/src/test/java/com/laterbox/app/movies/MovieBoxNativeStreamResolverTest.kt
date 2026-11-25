@@ -162,7 +162,7 @@ class MovieBoxNativeStreamResolverTest {
                             .setResponseCode(200)
                             .addHeader("x-user", """{"token":"tok_abc"}""")
                             .setBody("""{"code":0}""")
-                        path.startsWith("/wefeed-mobile-bff/subject-api/play-info") -> {
+                        path.startsWith("/wefeed-mobile-bff/subject-api/play-info?") -> {
                             val callIdx = nativePlayCalls.incrementAndGet()
                             if (callIdx == 1) {
                                 MockResponse().setResponseCode(200).setBody(
@@ -789,6 +789,90 @@ class MovieBoxNativeStreamResolverTest {
             assertFalse(report.contains("visitor_tok_secret_777"))
             assertFalse(report.contains("sig_hidden_999"))
             assertFalse(report.contains("tok_initial_secret"))
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun resolveStreamsAttachesClientBuildTagAndReturnsRecoveredMp4FromResourcePositionV2() = runBlocking {
+        val server = MockWebServer()
+        val diagStore = MediaNetworkDiagnosticsStore()
+        var capturedBuildHeader: String? = null
+        var capturedClientInfo: String? = null
+
+        try {
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    val path = request.path.orEmpty()
+                    val baseUrl = server.url("/").toString().trimEnd('/')
+                    return when {
+                        path.startsWith("/wefeed-mobile-bff/tab/ranking-list") -> MockResponse()
+                            .setResponseCode(200)
+                            .addHeader("x-user", """{"token":"tok_v1_init"}""")
+                            .setBody("""{"code":0}""")
+                        path.startsWith("/wefeed-mobile-bff/user-api/visitor-login") -> {
+                            capturedBuildHeader = request.getHeader("X-Client-Build")
+                            capturedClientInfo = request.getHeader("X-Client-Info")
+                            MockResponse().setResponseCode(200).setBody(
+                                """{"code":0,"data":{"token":"tok_v4_vis"}}"""
+                            )
+                        }
+                        path.startsWith("/wefeed-mobile-bff/subject-api/play-info/v2") -> MockResponse()
+                            .setResponseCode(200)
+                            .setBody(
+                                """{"code":0,"data":{"streams":[{"id":"st1","size":"824720","duration":23,"url":"https://macdn.aoneroom.com/other/2026/10/10/80da52722ee7de7a4303290af6783424.mp4"}]}}"""
+                            )
+                        path.startsWith("/wefeed-mobile-bff/subject-api/play-info") -> MockResponse()
+                            .setResponseCode(200)
+                            .setBody(
+                                """{"code":0,"data":{"title":"Steps","streams":[{"id":"st1","size":"824720","duration":23,"url":"https://macdn.aoneroom.com/other/2026/10/10/80da52722ee7de7a4303290af6783424.mp4"}]}}"""
+                            )
+                        path.startsWith("/wefeed-mobile-bff/subject-api/resource/v2") -> {
+                            assertTrue(path.contains("se=0"))
+                            assertTrue(path.contains("epFrom=0"))
+                            assertTrue(path.contains("epTo=0"))
+                            assertTrue(path.contains("isVip=true"))
+                            MockResponse().setResponseCode(200).setBody(
+                                """{"code":0,"data":{"list":[{"resourceId":"rid-2541","resolution":1080,"size":"824720","duration":6394,"resourceLink":"https://macdn.aoneroom.com/other/2026/10/10/80da52722ee7de7a4303290af6783424.mp4"}]}}"""
+                            )
+                        }
+                        path.startsWith("/wefeed-mobile-bff/subject-api/resource-position/v2") -> MockResponse()
+                            .setResponseCode(200)
+                            .setBody(
+                                """{"code":0,"data":{"list":[{"resourceId":"rid-2541","resolution":1080,"size":"1206633838","duration":6394,"resourceLink":"$baseUrl/resource/h265/bcdn_1080.mp4"}]}}"""
+                            )
+                        path.startsWith("/resource/h265/bcdn_1080.mp4") -> MockResponse()
+                            .setResponseCode(206)
+                            .setHeader("Content-Range", "bytes 0-1023/1206633838")
+                            .setBody("M".repeat(1024))
+                        else -> MockResponse().setResponseCode(404)
+                    }
+                }
+            }
+            server.start()
+            val base = server.url("/").toString().trimEnd('/')
+
+            val resolver = MovieBoxNativeStreamResolver(
+                okHttpClient = OkHttpClient(),
+                bootstrapBaseUrl = base,
+                nativeApiBaseUrls = listOf(base),
+                diagnosticsStore = diagStore,
+                logger = {},
+            )
+            val outcome = resolver.resolveStreams("9168495427082149592", 0, 0)
+
+            assertNotNull(capturedBuildHeader)
+            val buildParts = capturedBuildHeader!!.split('.')
+            assertEquals(2, buildParts.size)
+            assertEquals(32, buildParts[1].length)
+            assertTrue(capturedClientInfo.orEmpty().contains("\"X-Client-Build\":\"$capturedBuildHeader\""))
+
+            assertEquals(1, outcome.sources.size)
+            val recovered = outcome.sources.first()
+            assertEquals("$base/resource/h265/bcdn_1080.mp4", recovered.url)
+            assertEquals("MP4", recovered.format)
+            assertEquals(1080, recovered.qualityHeight)
         } finally {
             server.shutdown()
         }

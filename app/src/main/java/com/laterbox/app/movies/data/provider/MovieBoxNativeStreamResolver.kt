@@ -152,7 +152,7 @@ class MovieBoxNativeStreamResolver(
                     )
                     logger("native play-info host=$apiHost status=200 throttle=${parsed.cdnThrottleLevel} raw=${parsed.rawStreamCount} usable=${parsed.sources.size} stub=${parsed.stubFilteredCount} cdnHosts=$returnedHosts rawHosts=$rawHostsStr")
                     if (parsed.sources.isEmpty() && !token.isNullOrBlank()) {
-                        runCatching {
+                        val probeSummary = runCatching {
                             probeNativeResourceRoute(
                                 subjectId = cleanId,
                                 seasonNumber = seasonNumber,
@@ -160,6 +160,9 @@ class MovieBoxNativeStreamResolver(
                                 bearerToken = token,
                                 preferredBaseUrl = cleanBase,
                             )
+                        }.getOrNull()
+                        if (probeSummary != null && probeSummary.recoveredSources.isNotEmpty()) {
+                            return@withContext parsed.copy(sources = probeSummary.recoveredSources)
                         }
                     }
                     return@withContext parsed
@@ -400,7 +403,8 @@ class MovieBoxNativeStreamResolver(
         episodeNumber: Int,
         fallbackToken: String?,
     ): ResourceProbeSummary? {
-        val baseHttpUrl = apiBase.toHttpUrlOrNull() ?: return null
+        val cleanBase = apiBase.trim().trimEnd('/')
+        val baseHttpUrl = cleanBase.toHttpUrlOrNull() ?: return null
         val apiHost = baseHttpUrl.host
         val visitorToken = bootstrapVisitorLoginToken()
         val diagToken = visitorToken ?: fallbackToken
@@ -409,7 +413,6 @@ class MovieBoxNativeStreamResolver(
         // 1. play-info/v2 (omitting se/ep for movies, se==0 && ep==0)
         val playV2Builder = baseHttpUrl.newBuilder()
             .addPathSegments("wefeed-mobile-bff/subject-api/play-info/v2")
-            .addQueryParameter("host", apiHost)
             .addQueryParameter("subjectId", subjectId)
         val isMovie = seasonNumber == 0 && episodeNumber == 0
         if (!isMovie) {
@@ -425,6 +428,7 @@ class MovieBoxNativeStreamResolver(
             useV4Profile = true,
         )
         val playV2Summary = evaluateAndRecordDiagnosticResponse(
+            apiBaseUrl = cleanBase,
             apiHost = apiHost,
             variant = if (isMovie) "play_info_v2_no_se_ep" else "play_info_v2",
             endpointPath = "/wefeed-mobile-bff/subject-api/play-info/v2",
@@ -432,15 +436,15 @@ class MovieBoxNativeStreamResolver(
             arrayKeys = listOf("streams", "streamList"),
             stubCollector = stubCandidates,
             allowPolicyExtraction = true,
+            collectPlaybackSources = true,
         )
-        if (playV2Summary != null && (playV2Summary.rangeProbe != null || playV2Summary.nonStubItems > 0)) {
+        if (playV2Summary != null && (playV2Summary.recoveredSources.isNotEmpty() || playV2Summary.rangeProbe != null || playV2Summary.nonStubItems > 0)) {
             return playV2Summary
         }
 
-        // 2. resource/v2 with isVip=true
-        val resV2Builder = baseHttpUrl.newBuilder()
+        // 2. resource/v2 with exact MovieBox-Tui scoped params (including se=0&epFrom=0&epTo=0 for movies)
+        val resV2Url = baseHttpUrl.newBuilder()
             .addPathSegments("wefeed-mobile-bff/subject-api/resource/v2")
-            .addQueryParameter("host", apiHost)
             .addQueryParameter("subjectId", subjectId)
             .addQueryParameter("page", "1")
             .addQueryParameter("perPage", "20")
@@ -449,22 +453,21 @@ class MovieBoxNativeStreamResolver(
             .addQueryParameter("endPosition", "1")
             .addQueryParameter("pagerMode", "2")
             .addQueryParameter("resolution", "0")
+            .addQueryParameter("se", seasonNumber.toString())
+            .addQueryParameter("epFrom", episodeNumber.toString())
+            .addQueryParameter("epTo", episodeNumber.toString())
             .addQueryParameter("isVip", "true")
-        if (!isMovie) {
-            resV2Builder
-                .addQueryParameter("se", seasonNumber.toString())
-                .addQueryParameter("epFrom", episodeNumber.toString())
-                .addQueryParameter("epTo", episodeNumber.toString())
-        }
+            .build()
         val resV2Resp = executeSignedRequest(
             method = "GET",
-            url = resV2Builder.build(),
+            url = resV2Url,
             bearerToken = diagToken,
             playMode = PLAY_MODE_DOWNLOAD,
             useV4Profile = true,
         )
         val resV2Collector = mutableListOf<Pair<String, String>>()
         val resV2Summary = evaluateAndRecordDiagnosticResponse(
+            apiBaseUrl = cleanBase,
             apiHost = apiHost,
             variant = "resource_v2_vip",
             endpointPath = "/wefeed-mobile-bff/subject-api/resource/v2",
@@ -472,8 +475,9 @@ class MovieBoxNativeStreamResolver(
             arrayKeys = listOf("list", "items", "resources"),
             stubCollector = resV2Collector,
             allowPolicyExtraction = false,
+            collectPlaybackSources = true,
         )
-        if (resV2Summary != null && (resV2Summary.rangeProbe != null || resV2Summary.nonStubItems > 0)) {
+        if (resV2Summary != null && (resV2Summary.recoveredSources.isNotEmpty() || resV2Summary.rangeProbe != null || resV2Summary.nonStubItems > 0)) {
             return resV2Summary
         }
 
@@ -484,7 +488,6 @@ class MovieBoxNativeStreamResolver(
         // 3. resource-position/v2 (isVip=true) and resource-position (v1) trap-clip recovery
         val posV2Url = baseHttpUrl.newBuilder()
             .addPathSegments("wefeed-mobile-bff/subject-api/resource-position/v2")
-            .addQueryParameter("host", apiHost)
             .addQueryParameter("subjectId", subjectId)
             .addQueryParameter("resourceId", stubRid)
             .addQueryParameter("failUrl", stubUrl)
@@ -500,6 +503,7 @@ class MovieBoxNativeStreamResolver(
             useV4Profile = true,
         )
         val posV2Summary = evaluateAndRecordDiagnosticResponse(
+            apiBaseUrl = cleanBase,
             apiHost = apiHost,
             variant = "resource_position_v2_vip",
             endpointPath = "/wefeed-mobile-bff/subject-api/resource-position/v2",
@@ -507,14 +511,14 @@ class MovieBoxNativeStreamResolver(
             arrayKeys = listOf("list", "items", "resources"),
             stubCollector = null,
             allowPolicyExtraction = false,
+            collectPlaybackSources = true,
         )
-        if (posV2Summary != null && (posV2Summary.rangeProbe != null || posV2Summary.nonStubItems > 0)) {
+        if (posV2Summary != null && (posV2Summary.recoveredSources.isNotEmpty() || posV2Summary.rangeProbe != null || posV2Summary.nonStubItems > 0)) {
             return posV2Summary
         }
 
         val posV1Url = baseHttpUrl.newBuilder()
             .addPathSegments("wefeed-mobile-bff/subject-api/resource-position")
-            .addQueryParameter("host", apiHost)
             .addQueryParameter("subjectId", subjectId)
             .addQueryParameter("resourceId", stubRid)
             .addQueryParameter("failUrl", stubUrl)
@@ -529,6 +533,7 @@ class MovieBoxNativeStreamResolver(
             useV4Profile = false,
         )
         val posV1Summary = evaluateAndRecordDiagnosticResponse(
+            apiBaseUrl = cleanBase,
             apiHost = apiHost,
             variant = "resource_position_v1",
             endpointPath = "/wefeed-mobile-bff/subject-api/resource-position",
@@ -536,8 +541,9 @@ class MovieBoxNativeStreamResolver(
             arrayKeys = listOf("list", "items", "resources"),
             stubCollector = null,
             allowPolicyExtraction = false,
+            collectPlaybackSources = true,
         )
-        if (posV1Summary != null && (posV1Summary.rangeProbe != null || posV1Summary.nonStubItems > 0)) {
+        if (posV1Summary != null && (posV1Summary.recoveredSources.isNotEmpty() || posV1Summary.rangeProbe != null || posV1Summary.nonStubItems > 0)) {
             return posV1Summary
         }
         return null
@@ -547,7 +553,6 @@ class MovieBoxNativeStreamResolver(
         val bootBase = bootstrapBaseUrl.trim().trimEnd('/').toHttpUrlOrNull() ?: return null
         val loginUrl = bootBase.newBuilder()
             .addPathSegments("wefeed-mobile-bff/user-api/visitor-login")
-            .addQueryParameter("host", bootBase.host)
             .build()
         val resp = executeSignedRequest(
             method = "POST",
@@ -586,6 +591,7 @@ class MovieBoxNativeStreamResolver(
     }
 
     private fun evaluateAndRecordDiagnosticResponse(
+        apiBaseUrl: String,
         apiHost: String,
         variant: String,
         endpointPath: String,
@@ -593,6 +599,7 @@ class MovieBoxNativeStreamResolver(
         arrayKeys: List<String>,
         stubCollector: MutableList<Pair<String, String>>?,
         allowPolicyExtraction: Boolean,
+        collectPlaybackSources: Boolean = false,
     ): ResourceProbeSummary? {
         val parsed = if (resp.statusCode == 200 && !resp.body.isNullOrBlank()) {
             parseResourceListResponse(
@@ -677,6 +684,47 @@ class MovieBoxNativeStreamResolver(
             rangeResult = executeBoundedRangeProbe(bestHttpUrl, fallbackCookie = itemCookie ?: respCookie)
         }
 
+        val recovered = if (collectPlaybackSources && parsed != null) {
+            val seenUrls = hashSetOf<String>()
+            parsed.items.asSequence()
+                .filter { !it.isStub && it.url.startsWith("http") && seenUrls.add(it.url) }
+                .mapIndexed { idx, item ->
+                    val lower = item.url.lowercase(Locale.US)
+                    val format = when {
+                        ".m3u8" in lower -> "HLS"
+                        ".mpd" in lower || !extractPolicyResource(item.signCookie).isNullOrBlank() -> "DASH"
+                        else -> "MP4"
+                    }
+                    val isAdaptive = format == "DASH" || format == "HLS"
+                    val qHeight = item.resolution
+                    val qLabel = when {
+                        qHeight > 0 -> "${qHeight}p"
+                        isAdaptive -> "Adaptive"
+                        else -> "Default"
+                    }
+                    val sizeMb = if (!isAdaptive && item.sizeBytes > 0L) {
+                        item.sizeBytes / (1024.0 * 1024.0)
+                    } else {
+                        null
+                    }
+                    PlaybackSource(
+                        id = "mb_rec_${idx}_${qHeight}_${format.lowercase(Locale.US)}",
+                        url = item.url,
+                        format = format,
+                        qualityLabel = qLabel,
+                        qualityHeight = qHeight,
+                        sizeMb = sizeMb,
+                        durationSeconds = item.durationSec.takeIf { it > 0L },
+                        headers = buildStreamHeaders(apiBaseUrl, item.url, null, item.signCookie),
+                        isAuthorised = true,
+                        providerName = "Native Stream",
+                    )
+                }
+                .toList()
+        } else {
+            emptyList()
+        }
+
         return ResourceProbeSummary(
             apiHost = apiHost,
             variant = variant,
@@ -686,6 +734,7 @@ class MovieBoxNativeStreamResolver(
             selectedHost = bestHttpUrl?.host,
             selectedSanitizedPath = bestHttpUrl?.let { sanitizePathForDiagnostics(it.encodedPath) },
             rangeProbe = rangeResult,
+            recoveredSources = recovered,
         )
     }
 
@@ -1055,9 +1104,10 @@ class MovieBoxNativeStreamResolver(
     ): NativeHttpResponse {
         val ts = clockMs()
         val accept = "application/json"
-        val contentType = if (useV4Profile) "application/json;charset=UTF-8" else "application/json"
+        val contentType = "application/json"
         val bodyBytes = bodyJson?.toByteArray(Charsets.UTF_8)
-        val clientInfo = buildClientInfoJson(randomDeviceId, playMode, useV4Profile)
+        val clientBuildTag = generateClientBuildTag(ts)
+        val clientInfo = buildClientInfoJson(randomDeviceId, playMode, useV4Profile, clientBuildTag)
         val reqBuilder = Request.Builder()
             .url(url)
             .header("User-Agent", buildUserAgent(useV4Profile))
@@ -1066,6 +1116,7 @@ class MovieBoxNativeStreamResolver(
             .header("Connection", "keep-alive")
             .header("X-Client-Token", generateClientToken(ts))
             .header("X-Tr-Signature", generateTrSignature(method, accept, contentType, url, bodyBytes, ts))
+            .header("X-Client-Build", clientBuildTag)
             .header("X-Client-Info", clientInfo)
             .header("X-Client-Status", "0")
             .header("X-Play-Mode", playMode)
@@ -1074,7 +1125,6 @@ class MovieBoxNativeStreamResolver(
             reqBuilder
                 .header("X-M-Version", V4_VERSION_NAME)
                 .header("X-Sign-Version", "2.0")
-                .header("Referer", "https://${url.host}/")
         }
 
         if (!bearerToken.isNullOrBlank()) {
@@ -1112,6 +1162,7 @@ class MovieBoxNativeStreamResolver(
         deviceId: String,
         playMode: String = PLAY_MODE_STREAM,
         useV4Profile: Boolean = false,
+        clientBuildTag: String? = null,
     ): String {
         val osVersion = runCatching { Build.VERSION.RELEASE }.getOrNull()?.takeIf { it.isNotBlank() } ?: "12"
         val model = runCatching { Build.MODEL }.getOrNull()?.takeIf { it.isNotBlank() } ?: "Android"
@@ -1133,11 +1184,14 @@ class MovieBoxNativeStreamResolver(
             "net" to "NETWORK_WIFI",
             "region" to region,
             "timezone" to timezone,
-            "sp_code" to if (useV4Profile) "404" else "",
+            "sp_code" to if (useV4Profile) "40401" else "",
             "X-Play-Mode" to playMode,
         )
         if (useV4Profile) {
             ordered["install_ch"] = "ps"
+        }
+        if (!clientBuildTag.isNullOrBlank()) {
+            ordered["X-Client-Build"] = clientBuildTag
         }
         return JSONObject(ordered).toString()
     }
@@ -1205,6 +1259,7 @@ class MovieBoxNativeStreamResolver(
         val selectedHost: String? = null,
         val selectedSanitizedPath: String? = null,
         val rangeProbe: ResourceRangeProbeResult? = null,
+        val recoveredSources: List<PlaybackSource> = emptyList(),
     )
 
     companion object {
@@ -1226,6 +1281,7 @@ class MovieBoxNativeStreamResolver(
         private const val PLAY_MODE_STREAM = "2"
         private const val RESOURCE_PROBE_RANGE = "bytes=0-1023"
         private const val RESOURCE_PROBE_MAX_BYTES = 1024L
+        private const val STOCK_CERT_SHA256 = "03d4b741632d136bc23e2de4c6adcdb7712f1980b619c183221801730bbd0410"
         private const val SECRET_KEY_DEFAULT_B64 = "NzZpUmwwN3MweFNOOWpxbUVXQXQ3OUVCSlp1bElRSXNWNjRGWnIyTw=="
         private const val REGION_BLOCK_COOLDOWN_MS = 15 * 60_000L
 
@@ -1267,6 +1323,16 @@ class MovieBoxNativeStreamResolver(
         internal fun md5Hex(bytes: ByteArray): String {
             val digest = MessageDigest.getInstance("MD5").digest(bytes)
             return digest.joinToString("") { "%02x".format(it) }
+        }
+
+        internal fun generateClientBuildTag(
+            timestampMs: Long,
+            randPart: Int = SecureRandom().nextInt(1000),
+        ): String {
+            val boundedRand = randPart.coerceIn(0, 999)
+            val stamp = "${timestampMs / 1000}${"%03d".format(Locale.US, timestampMs % 1000)}000$boundedRand"
+            val hash = md5Hex((STOCK_CERT_SHA256 + "oneroom" + stamp).toByteArray(Charsets.UTF_8))
+            return "$stamp.$hash"
         }
 
         internal fun generateClientToken(timestampMs: Long): String {
@@ -1339,11 +1405,23 @@ class MovieBoxNativeStreamResolver(
         internal fun isKnownStubStream(rawUrl: String?, sizeBytes: Long = 0L, durationSec: Long? = null): Boolean {
             val lower = rawUrl?.trim()?.lowercase(Locale.US).orEmpty()
             if (lower.isEmpty()) return true
-            if ("b164fbfb4347792950bdfbfb563d39d9" in lower || "80da52722ee7de7a4303290af6783424" in lower) {
+            if (
+                "notice.mp4" in lower ||
+                "b164fbfb4347792950bdfbfb563d39d9" in lower ||
+                "80da52722ee7de7a4303290af6783424" in lower ||
+                "1c7de0bd3393702d9191801f15f88f8d" in lower ||
+                "9a0461bc39da389663bf3dbb17091d3f" in lower
+            ) {
                 return true
             }
-            if ("/other/" in lower) {
-                if (sizeBytes in 1..2_500_000L || (durationSec != null && durationSec in 1L..35L)) {
+            if (sizeBytes in 800_000L..860_000L) {
+                return true
+            }
+            if (durationSec != null && durationSec in 20L..24L && (sizeBytes <= 0L || sizeBytes <= 2_500_000L)) {
+                return true
+            }
+            if ("macdn.aoneroom.com" in lower || "/other/" in lower) {
+                if ((sizeBytes <= 0L && durationSec == null) || sizeBytes in 1..2_500_000L || (durationSec != null && durationSec in 1L..35L)) {
                     return true
                 }
             }
