@@ -109,17 +109,17 @@ internal object UpdateNetworkSupport {
         UpdateFailureKind.TIMEOUT ->
             "The update server took too long to respond. Please try again."
         UpdateFailureKind.AUTH ->
-            "Update authorization failed${httpCode?.let { " (HTTP $it)" } ?: ""}. Please try again later."
+            "Update check couldn't be verified right now. Please try again later."
         UpdateFailureKind.RATE_LIMIT ->
-            "Too many update requests right now. Please try again in a little while."
+            "Too many update checks right now. Please try again in a little while."
         UpdateFailureKind.EXPIRED_URL ->
-            "The download link expired. Please try again."
+            "The update download timed out. Please try again."
         UpdateFailureKind.SERVER ->
-            "The update server is having trouble${httpCode?.let { " (HTTP $it)" } ?: ""}. Please try again shortly."
+            "Laterbox updates are temporarily unavailable. Please try again shortly."
         UpdateFailureKind.INTERRUPTED ->
             "The download was interrupted. Please try again; progress is kept."
         UpdateFailureKind.CONFIG ->
-            "The update download could not be started${httpCode?.let { " (HTTP $it)" } ?: ""}."
+            "The update download could not be started."
         UpdateFailureKind.UNKNOWN ->
             "Update download failed. Please try again."
     }

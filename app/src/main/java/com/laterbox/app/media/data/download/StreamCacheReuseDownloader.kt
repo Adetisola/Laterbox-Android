@@ -244,9 +244,9 @@ class StreamCacheReuseDownloader(
                                 output.flush()
                                 output.close()
                                 val msg = if (retryAfterSec != null) {
-                                    "Streaming server is rate-limiting downloads (HTTP 429). Retry in ${retryAfterSec}s."
+                                    "Downloads are temporarily busy. Please try again in ${retryAfterSec}s."
                                 } else {
-                                    "Streaming server is temporarily busy (HTTP 429). Please retry shortly."
+                                    "Downloads are temporarily busy. Please try again shortly."
                                 }
                                 return preservePrefixAndFail(
                                     code = FailureCode.RATE_LIMITED,
@@ -260,7 +260,7 @@ class StreamCacheReuseDownloader(
                                 output.close()
                                 return preservePrefixAndFail(
                                     code = FailureCode.PRIVATE_CONTENT,
-                                    message = "HTTP ${resp.code}: ${resp.message}",
+                                    message = "This download couldn't be started right now. Please try again.",
                                     httpStatus = resp.code
                                 )
                             }
@@ -269,7 +269,7 @@ class StreamCacheReuseDownloader(
                                 output.close()
                                 return preservePrefixAndFail(
                                     code = FailureCode.UNSUPPORTED_URL,
-                                    message = "HTTP ${resp.code}: ${resp.message}",
+                                    message = "This file is no longer available to download.",
                                     httpStatus = resp.code
                                 )
                             }
@@ -426,10 +426,10 @@ class StreamCacheReuseDownloader(
             client.newCall(headBuilder.build()).execute().use { resp ->
                 when (resp.code) {
                     401, 403 -> return ProbeOutcome.AuthOrNotFoundFailure(
-                        DownloadResult.Failure(FailureCode.PRIVATE_CONTENT, "HTTP ${resp.code}: ${resp.message}", resp.code)
+                        DownloadResult.Failure(FailureCode.PRIVATE_CONTENT, "This download couldn't be started right now. Please try again.", resp.code)
                     )
                     404, 410 -> return ProbeOutcome.AuthOrNotFoundFailure(
-                        DownloadResult.Failure(FailureCode.UNSUPPORTED_URL, "HTTP ${resp.code}: ${resp.message}", resp.code)
+                        DownloadResult.Failure(FailureCode.UNSUPPORTED_URL, "This file is no longer available to download.", resp.code)
                     )
                     429 -> {
                         val retryAfterSec = com.laterbox.app.network.RetryAfterParser.parseOkHttpResponse(
@@ -439,7 +439,7 @@ class StreamCacheReuseDownloader(
                         return ProbeOutcome.AuthOrNotFoundFailure(
                             DownloadResult.Failure(
                                 FailureCode.RATE_LIMITED,
-                                "HTTP 429: ${resp.message}",
+                                "Downloads are temporarily busy. Please try again shortly.",
                                 429,
                                 retryAfterSeconds = retryAfterSec
                             )
@@ -473,10 +473,10 @@ class StreamCacheReuseDownloader(
             client.newCall(rangeBuilder.build()).execute().use { resp ->
                 when (resp.code) {
                     401, 403 -> ProbeOutcome.AuthOrNotFoundFailure(
-                        DownloadResult.Failure(FailureCode.PRIVATE_CONTENT, "HTTP ${resp.code}: ${resp.message}", resp.code)
+                        DownloadResult.Failure(FailureCode.PRIVATE_CONTENT, "This download couldn't be started right now. Please try again.", resp.code)
                     )
                     404, 410 -> ProbeOutcome.AuthOrNotFoundFailure(
-                        DownloadResult.Failure(FailureCode.UNSUPPORTED_URL, "HTTP ${resp.code}: ${resp.message}", resp.code)
+                        DownloadResult.Failure(FailureCode.UNSUPPORTED_URL, "This file is no longer available to download.", resp.code)
                     )
                     429 -> {
                         val retryAfterSec = com.laterbox.app.network.RetryAfterParser.parseOkHttpResponse(
@@ -486,7 +486,7 @@ class StreamCacheReuseDownloader(
                         ProbeOutcome.AuthOrNotFoundFailure(
                             DownloadResult.Failure(
                                 FailureCode.RATE_LIMITED,
-                                "HTTP 429: ${resp.message}",
+                                "Downloads are temporarily busy. Please try again shortly.",
                                 429,
                                 retryAfterSeconds = retryAfterSec
                             )

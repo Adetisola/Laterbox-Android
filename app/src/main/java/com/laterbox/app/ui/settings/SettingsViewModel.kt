@@ -421,17 +421,17 @@ class SettingsViewModel(
                         onResult("Network error: ${result.message}")
                     }
                     is com.laterbox.app.update.UpdateCheckResult.AuthError -> {
-                        onResult("Update authentication failed (${result.statusCode}): ${result.message}")
+                        onResult("Could not verify update access right now. Please try again later.")
                     }
                     is com.laterbox.app.update.UpdateCheckResult.RateLimited -> {
                         val waitText = result.retryAfterSeconds?.let { " Try again in ${it}s." } ?: ""
-                        onResult("Update server rate limit reached.$waitText ${result.message}".trim())
+                        onResult("Update checks are temporarily busy.$waitText".trim())
                     }
                     is com.laterbox.app.update.UpdateCheckResult.ApiError -> {
-                        onResult("Update check failed (${result.statusCode}): ${result.message}")
+                        onResult("Could not check for updates right now. Please try again later.")
                     }
                     is com.laterbox.app.update.UpdateCheckResult.InvalidRelease -> {
-                        onResult("Could not parse release info: ${result.message}")
+                        onResult("Could not read update details right now. Please try again later.")
                     }
                     is com.laterbox.app.update.UpdateCheckResult.NoCompatibleApk -> {
                         userPreferencesRepository.recordUpdateCheck()
@@ -502,26 +502,48 @@ class SettingsViewModel(
         }
     }
 
-    fun getDiagnosticReport(): com.laterbox.app.media.data.adapters.ytdlp.YtDlpDiagnosticReport? {
-        return runtimeManager?.captureDiagnosticReport()
-    }
-
-    fun getDiagnosticsReportText(): String {
-        val runtimeText = runtimeManager?.captureDiagnosticReport()?.toFormattedString() ?: "No runtime diagnostic report available."
-        val inspectionsText = diagnosticsBuffer?.exportAsText() ?: "No inspection timings recorded yet."
-        val mediaNetworkText = com.laterbox.app.diagnostics.MediaNetworkDiagnostics.default.exportText()
-        return """
-            $runtimeText
-
-            ========================================
-            INSPECTION TIMING DIAGNOSTICS (LAST 50)
-            ========================================
-
-            $inspectionsText
-
-            ========================================
-            $mediaNetworkText
-        """.trimIndent()
+    fun sendPlaybackDiagnostics(onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            val tracker = (appContext?.applicationContext as? com.laterbox.app.LaterboxApplication)
+                ?.container
+                ?.analyticsTracker
+            if (tracker == null) {
+                onResult("Unable to send playback diagnostics right now.")
+                return@launch
+            }
+            val recentNetwork = com.laterbox.app.diagnostics.MediaNetworkDiagnostics.default.snapshot()
+            val recentLifecycle = com.laterbox.app.diagnostics.MediaNetworkDiagnostics.default.snapshotLifecycle()
+            val latestFailure = recentLifecycle.lastOrNull {
+                it.stage.contains("FAILURE", ignoreCase = true) || (it.statusCode ?: 0) >= 400
+            }
+            val latestNetError = recentNetwork.lastOrNull {
+                !it.outcome.equals("OK", ignoreCase = true) && !it.outcome.equals("SUCCESS", ignoreCase = true) ||
+                    it.finalStatus >= 400 ||
+                    !it.hops.lastOrNull()?.error.isNullOrBlank()
+            }
+            val latestNetErrorText = latestNetError?.hops?.lastOrNull()?.error ?: latestNetError?.outcome.orEmpty()
+            val httpStatus = latestFailure?.statusCode
+                ?: latestNetError?.finalStatus?.takeIf { it in 100..599 }
+            val category = when {
+                latestNetErrorText.contains("Timeout", ignoreCase = true) -> "network_timeout"
+                latestFailure?.kind == com.laterbox.app.diagnostics.MediaRequestKind.DOWNLOAD ||
+                    latestNetError?.kind == com.laterbox.app.diagnostics.MediaRequestKind.DOWNLOAD -> "download_error"
+                httpStatus != null && httpStatus >= 400 -> "api_http_error"
+                else -> "playback_error"
+            }
+            val featureId = if (category == "download_error") {
+                "media_download"
+            } else {
+                null
+            }
+            tracker.trackErrorObserved(
+                errorCategory = category,
+                httpStatus = httpStatus,
+                screenId = "settings",
+                featureId = featureId,
+            )
+            onResult("Playback diagnostics sent to Laterbox.")
+        }
     }
 
     fun retryInitializeEngine(onResult: (String) -> Unit) {

@@ -1789,8 +1789,11 @@ fun LaterboxApp(
                                 },
                                 ytDlpState = ytDlpState,
                                 ffmpegState = ffmpegState,
-                                onGetDiagnosticReport = settingsViewModel::getDiagnosticReport,
-                                onGetDiagnosticReportText = settingsViewModel::getDiagnosticsReportText,
+                                onSendPlaybackDiagnostics = {
+                                    settingsViewModel.sendPlaybackDiagnostics { msg ->
+                                        toastController.showNeutral(msg)
+                                    }
+                                },
                                 onRetryInitializeEngine = {
                                     settingsViewModel.retryInitializeEngine { msg ->
                                         toastController.showNeutral(msg)

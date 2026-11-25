@@ -36,10 +36,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -47,7 +45,6 @@ import androidx.documentfile.provider.DocumentFile
 import com.laterbox.app.data.preferences.MediaDownloadNetworkPolicy
 import com.laterbox.app.data.preferences.UserPreferences
 import com.laterbox.app.media.data.adapters.ytdlp.FfmpegInitState
-import com.laterbox.app.media.data.adapters.ytdlp.YtDlpDiagnosticReport
 import com.laterbox.app.media.data.adapters.ytdlp.YtDlpInitState
 import com.laterbox.app.ui.components.LaterboxBanner
 import com.laterbox.app.ui.components.LaterboxIcons
@@ -64,8 +61,7 @@ fun MediaDownloadsSettingsScreen(
     onUpdateYtDlpClick: () -> Unit,
     ytDlpState: YtDlpInitState,
     ffmpegState: FfmpegInitState,
-    onGetDiagnosticReport: () -> YtDlpDiagnosticReport?,
-    onGetDiagnosticReportText: () -> String,
+    onSendPlaybackDiagnostics: () -> Unit,
     onRetryInitializeEngine: () -> Unit,
     onSetCustomExportDirectory: (String, String) -> Unit,
     onClearCustomExportDirectory: () -> Unit,
@@ -76,11 +72,6 @@ fun MediaDownloadsSettingsScreen(
     val typography = LaterboxTheme.typography
     val spacing = LaterboxTheme.spacing
     val context = LocalContext.current
-    val clipboardManager = LocalClipboardManager.current
-
-    var showDiagnosticsDialog by remember { mutableStateOf(false) }
-    var diagnosticReport by remember { mutableStateOf<YtDlpDiagnosticReport?>(null) }
-    var diagnosticReportText by remember { mutableStateOf<String?>(null) }
 
     val directoryPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -254,21 +245,6 @@ fun MediaDownloadsSettingsScreen(
 
                             Row(horizontalArrangement = Arrangement.spacedBy(spacing.xs)) {
                                 OutlinedButton(
-                                    onClick = {
-                                        diagnosticReport = onGetDiagnosticReport()
-                                        diagnosticReportText = onGetDiagnosticReportText()
-                                        showDiagnosticsDialog = true
-                                    },
-                                    shape = LaterboxShapeTokens.Button
-                                ) {
-                                    Text(
-                                        text = "Diagnostics",
-                                        style = typography.uiMedium.copy(fontSize = 13.sp),
-                                        color = colors.accentPrimary
-                                    )
-                                }
-
-                                OutlinedButton(
                                     onClick = onUpdateYtDlpClick,
                                     enabled = !isUpdatingYtDlp,
                                     shape = LaterboxShapeTokens.Button
@@ -385,104 +361,38 @@ fun MediaDownloadsSettingsScreen(
                                 }
                             }
                         }
+
+                        SettingsDivider()
+
+                        // Silent playback diagnostics action (never displays raw logs, hosts, or status codes)
+                        Column(verticalArrangement = Arrangement.spacedBy(spacing.xs)) {
+                            Text(
+                                text = "Playback Diagnostics",
+                                style = typography.uiMedium,
+                                color = colors.textPrimary
+                            )
+                            Text(
+                                text = "Send anonymous playback health data to help Laterbox investigate playback or download issues.",
+                                style = typography.bodySecondary.copy(fontSize = 12.sp),
+                                color = colors.textSecondary
+                            )
+                            Spacer(modifier = Modifier.height(spacing.xxs))
+                            OutlinedButton(
+                                onClick = onSendPlaybackDiagnostics,
+                                shape = LaterboxShapeTokens.Button
+                            ) {
+                                Text(
+                                    text = "Send playback diagnostics to Laterbox",
+                                    style = typography.uiMedium.copy(fontSize = 13.sp),
+                                    color = colors.accentPrimary
+                                )
+                            }
+                        }
                     }
                 }
             }
 
             Spacer(modifier = Modifier.navigationBarsPadding().height(40.dp))
-        }
-
-        // Diagnostics Dialog
-        if (showDiagnosticsDialog) {
-            AlertDialog(
-                onDismissRequest = { showDiagnosticsDialog = false },
-                containerColor = colors.surfaceElevated,
-                title = {
-                    Text(
-                        text = "Media Engine Diagnostics",
-                        style = typography.titleSmall,
-                        color = colors.textPrimary
-                    )
-                },
-                text = {
-                    val reportText = diagnosticReportText ?: diagnosticReport?.toFormattedString() ?: "No diagnostics captured."
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 380.dp)
-                            .verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(spacing.sm)
-                    ) {
-                        Text(
-                            text = reportText,
-                            style = typography.codeText.copy(fontSize = 11.sp),
-                            color = colors.textPrimary
-                        )
-                    }
-                },
-                confirmButton = {
-                    Row(horizontalArrangement = Arrangement.spacedBy(spacing.xs)) {
-                        TextButton(
-                            onClick = {
-                                val reportText = diagnosticReportText ?: diagnosticReport?.toFormattedString() ?: ""
-                                clipboardManager.setText(AnnotatedString(reportText))
-                                com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
-                                    context = context,
-                                    message = "Diagnostics copied to clipboard",
-                                    variant = com.laterbox.app.ui.components.LaterboxToastVariant.SUCCESS
-                                )
-                            }
-                        ) {
-                            Text(
-                                text = "Copy Report",
-                                style = typography.uiMedium,
-                                color = colors.accentPrimary
-                            )
-                        }
-                        TextButton(
-                            onClick = {
-                                val reportText = diagnosticReportText ?: diagnosticReport?.toFormattedString() ?: ""
-                                val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                    type = "text/plain"
-                                    putExtra(android.content.Intent.EXTRA_SUBJECT, "Laterbox media diagnostics")
-                                    putExtra(android.content.Intent.EXTRA_TEXT, reportText)
-                                }
-                                context.startActivity(
-                                    android.content.Intent.createChooser(send, "Share diagnostics")
-                                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                                )
-                            }
-                        ) {
-                            Text(
-                                text = "Share",
-                                style = typography.uiMedium,
-                                color = colors.accentPrimary
-                            )
-                        }
-                        TextButton(onClick = { showDiagnosticsDialog = false }) {
-                            Text(
-                                text = "Close",
-                                style = typography.uiMedium,
-                                color = colors.accentPrimary
-                            )
-                        }
-                    }
-                },
-                dismissButton = {
-                    TextButton(
-                        onClick = {
-                            onRetryInitializeEngine()
-                            diagnosticReport = onGetDiagnosticReport()
-                        }
-                    ) {
-                        Text(
-                            text = "Retry Init",
-                            style = typography.uiMedium,
-                            color = colors.textSecondary
-                        )
-                    }
-                }
-            )
         }
     }
 }

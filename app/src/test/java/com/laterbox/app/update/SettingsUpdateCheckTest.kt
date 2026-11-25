@@ -94,7 +94,7 @@ class SettingsUpdateCheckTest {
         assertNotNull(recorded)
         assertEquals("/updates/laterbox/latest?refresh=1", recorded!!.path)
         assertEquals("appcheck-settings-token", recorded.getHeader("X-Firebase-AppCheck"))
-        assertTrue(feedback.contains("authentication failed", ignoreCase = true))
+        assertTrue("Unexpected feedback: $feedback", feedback.contains("Could not verify update access", ignoreCase = true))
         assertFalse(feedback.contains("up to date", ignoreCase = true))
         assertEquals(0L, preferencesRepository.userPreferencesFlow.first().lastUpdateCheckTime)
     }
@@ -117,7 +117,8 @@ class SettingsUpdateCheckTest {
         }
 
         assertTrue(latch.await(5, TimeUnit.SECONDS))
-        assertTrue(feedback.contains("rate limit", ignoreCase = true))
+        assertTrue("Unexpected feedback: $feedback", feedback.contains("temporarily busy", ignoreCase = true))
+        assertFalse("Feedback should not leak rate limit jargon: $feedback", feedback.contains("rate limit", ignoreCase = true))
         assertTrue(feedback.contains("42s"))
     }
 

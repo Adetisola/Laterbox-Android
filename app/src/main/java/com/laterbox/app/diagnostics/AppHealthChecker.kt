@@ -222,27 +222,27 @@ class AppHealthChecker(
                 issues += AppHealthIssue(
                     id = "ytdlp_failed",
                     severity = IssueSeverity.CRITICAL,
-                    title = "Media extractor failed to initialize",
+                    title = "Media engine could not be started",
                     summary = ytDlpState.error.category.userDescription,
-                    suggestedFix = "Open Settings → Media & Downloads to inspect runtime diagnostics or reinitialize yt-dlp."
+                    suggestedFix = "Open Settings → Media & Downloads to retry initializing the media engine."
                 )
             }
             if (ffmpegState is FfmpegInitState.Failed) {
                 issues += AppHealthIssue(
                     id = "ffmpeg_failed",
                     severity = IssueSeverity.WARNING,
-                    title = "FFmpeg media processor failed",
+                    title = "High-quality video processing is limited",
                     summary = ffmpegState.error.category.userDescription,
-                    suggestedFix = "High-resolution video+audio merging may fail until FFmpeg is reinitialized."
+                    suggestedFix = "Some high-resolution video downloads may be limited until initialization completes."
                 )
             }
             if (!quickJsAvailable && !Build.FINGERPRINT.equals("robolectric", ignoreCase = true)) {
                 issues += AppHealthIssue(
                     id = "quickjs_missing",
                     severity = IssueSeverity.WARNING,
-                    title = "QuickJS runtime not detected",
-                    summary = "YouTube signature solving may be slower or incomplete without libqjs.so.",
-                    suggestedFix = "Verify you installed the matching ABI release APK from Settings → About."
+                    title = "Optional media helper unavailable",
+                    summary = "Some saved video links may take longer to load on this installation.",
+                    suggestedFix = "Verify you installed the matching release build from Settings → About."
                 )
             }
             if (availableBytes in 1 until LOW_STORAGE_CRITICAL_BYTES) {

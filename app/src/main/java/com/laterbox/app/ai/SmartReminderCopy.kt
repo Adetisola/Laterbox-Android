@@ -35,18 +35,18 @@ sealed interface AiFailure {
     }
 
     data class RateLimited(val code: Int = 429) : AiFailure {
-        override val userMessage: String = "Rate limited by AI provider ($code)"
+        override val userMessage: String = "Assistant is temporarily busy. Please try again shortly."
     }
 
     data class AuthError(val code: Int) : AiFailure {
-        override val userMessage: String = "Invalid API key or unauthorized ($code)"
+        override val userMessage: String = "Invalid API key or access denied."
     }
 
     data class ServerError(val code: Int, val details: String? = null) : AiFailure {
         override val userMessage: String = if (details.isNullOrBlank()) {
-            "AI server error ($code)"
+            "Assistant is temporarily unavailable. Please try again shortly."
         } else {
-            "AI server error ($code): $details"
+            "Assistant is temporarily unavailable: $details"
         }
     }
 

@@ -250,7 +250,7 @@ fun AppUpdateDialog(
                 if (patchFile == null || !patchFile.exists()) {
                     if (patchError?.isAuthOrRateLimit == true) {
                         errorMessage = patchError?.message
-                            ?: "Download could not be authorized or rate limit was reached."
+                            ?: "Update download is temporarily unavailable. Please try again later."
                         currentStep = UpdateStep.FAILED
                         return@launch
                     }
@@ -471,12 +471,7 @@ fun AppUpdateDialog(
                         val customMessage = policyPrompt?.customMessage?.trim().orEmpty()
                         val defaultPolicyBody = if (isRequiredModal) {
                             val targetTagLabel = policyPrompt?.targetTag?.takeIf { it.isNotBlank() } ?: "the latest release"
-                            val minTagLabel = policyPrompt?.minimumSupportedTag?.takeIf { it.isNotBlank() }
-                            if (minTagLabel != null) {
-                                "Update to $targetTagLabel to continue using Laterbox online services (minimum required: $minTagLabel)."
-                            } else {
-                                "Update to $targetTagLabel to continue using Laterbox."
-                            }
+                            "Update to $targetTagLabel to continue using Laterbox."
                         } else {
                             val targetTagLabel = policyPrompt?.targetTag?.takeIf { it.isNotBlank() } ?: "a newer release"
                             "Laterbox $targetTagLabel is available with improvements and fixes."
@@ -856,7 +851,9 @@ fun AppUpdateDialog(
                             color = colors.statusDanger
                         )
 
-                        if (errorMessage.contains("Signature mismatch", ignoreCase = true)) {
+                        if (errorMessage.contains("could not be verified", ignoreCase = true) ||
+                            errorMessage.contains("Signature mismatch", ignoreCase = true)
+                        ) {
                             Spacer(modifier = Modifier.height(spacing.xs))
                             Text(
                                 text = "Tip: You can save the APK to your Downloads folder now, uninstall your existing app, and then install the APK from your Downloads.",

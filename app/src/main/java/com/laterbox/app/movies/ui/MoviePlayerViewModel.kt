@@ -372,13 +372,13 @@ class MoviePlayerViewModel(
                         error is MovieBoxApiException && error.httpCode == 429 -> {
                             val waitHint = error.retryAfterSeconds?.coerceIn(1L, 60L)
                             if (waitHint != null) {
-                                "Catalogue service is temporarily busy. Please try again in ${waitHint}s."
+                                "Laterbox is temporarily busy. Please try again in ${waitHint}s."
                             } else {
-                                "Catalogue service is temporarily busy. Please try again shortly."
+                                "Laterbox is temporarily busy. Please try again shortly."
                             }
                         }
                         else -> error.message?.takeIf { m -> m.isNotBlank() }
-                            ?: "Unable to resolve playback stream."
+                            ?: "Unable to start playback right now."
                     }
                     _uiState.update {
                         it.copy(
@@ -574,13 +574,13 @@ class MoviePlayerViewModel(
                         ?: remainingCooldownSec
                     val exhaustionMessage = when {
                         refreshErr is MovieBoxApiException && refreshErr.httpCode == 429 ->
-                            refreshErr.message ?: "Streaming service is temporarily busy. Please try again shortly."
+                            refreshErr.message ?: "Video playback is temporarily busy. Please try again shortly."
                         httpStatusCode == 429 && waitHintSec != null ->
-                            "Streaming server is temporarily busy (rate-limited). Please try again in ${waitHintSec}s."
+                            "Video playback is temporarily busy. Please try again in ${waitHintSec}s."
                         httpStatusCode == 429 ->
-                            "Streaming server is temporarily busy (rate-limited). Please try again shortly."
+                            "Video playback is temporarily busy. Please try again shortly."
                         else ->
-                            "Playback access expired or needs verification. Try again or switch quality."
+                            "Playback couldn't be started right now. Please try again or switch quality."
                     }
                     val finalCategory = if (refreshErr is MovieBoxApiException) {
                         refreshErr.failureCategory.name

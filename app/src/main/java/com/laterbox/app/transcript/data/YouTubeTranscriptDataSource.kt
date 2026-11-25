@@ -836,7 +836,7 @@ class LaterboxYouTubeTranscriptDataSource(
                     return@withContext Result.failure(
                         HttpStatusException(
                             code = 429,
-                            message = "YouTube temporarily rate-limited caption requests (HTTP 429).",
+                            message = "Captions are temporarily busy. Please try again shortly.",
                             retryAfterSeconds = retryAfter
                         )
                     )
@@ -845,7 +845,7 @@ class LaterboxYouTubeTranscriptDataSource(
                     return@withContext Result.failure(
                         HttpStatusException(
                             code = response.code,
-                            message = "YouTube rejected the caption request (HTTP ${response.code})."
+                            message = "Captions couldn't be loaded for this video right now."
                         )
                     )
                 }
@@ -853,7 +853,7 @@ class LaterboxYouTubeTranscriptDataSource(
                     return@withContext Result.failure(
                         HttpStatusException(
                             code = response.code,
-                            message = "Caption request failed (HTTP ${response.code}).",
+                            message = "Unable to load captions right now. Please try again shortly.",
                             retryAfterSeconds = retryAfter
                         )
                     )
@@ -1769,7 +1769,7 @@ class LaterboxYouTubeTranscriptDataSource(
                 if (response.code == 429) {
                     return VideoInfoFetchResult.Failed(
                         status = VideoTranscriptStatus.RATE_LIMITED,
-                        message = "YouTube temporarily rate-limited requests (HTTP 429).",
+                        message = "Transcript service is temporarily busy. Please try again shortly.",
                         retryable = true,
                         retryAfterSeconds = retryAfter,
                         diagnosticInfo = TranscriptDiagnosticInfo(
@@ -1790,7 +1790,7 @@ class LaterboxYouTubeTranscriptDataSource(
                 if (response.code == 401 || response.code == 403) {
                     return VideoInfoFetchResult.Failed(
                         status = VideoTranscriptStatus.ACCESS_ERROR,
-                        message = "YouTube rejected watch page request (HTTP ${response.code}).",
+                        message = "This video couldn't be accessed for transcripts right now.",
                         retryable = false,
                         diagnosticInfo = TranscriptDiagnosticInfo(
                             videoId = videoId,
@@ -1814,7 +1814,7 @@ class LaterboxYouTubeTranscriptDataSource(
                     }
                     return VideoInfoFetchResult.Failed(
                         status = VideoTranscriptStatus.NETWORK_ERROR,
-                        message = "Failed to load YouTube page (HTTP ${response.code}).",
+                        message = "Unable to load this video page right now. Please try again.",
                         retryable = true,
                         retryAfterSeconds = retryAfter,
                         diagnosticInfo = TranscriptDiagnosticInfo(
@@ -2606,7 +2606,7 @@ class LaterboxYouTubeTranscriptDataSource(
                 lower.contains("too many requests") ||
                 lower.contains("rate limit") -> Triple(
                 VideoTranscriptStatus.RATE_LIMITED,
-                "YouTube temporarily rate-limited requests (HTTP 429). Retry shortly.",
+                "Transcript service is temporarily busy. Please try again shortly.",
                 true
             )
             lower.contains("po token") ||
@@ -2766,7 +2766,7 @@ class LaterboxYouTubeTranscriptDataSource(
             lower.contains("timed out") || lower.contains("timeout") ->
                 PlaylistFetchResult.Failed(VideoTranscriptStatus.TIMEOUT, "Timed out while loading playlist.", retryable = true)
             Regex("""\b429\b""").containsMatchIn(lower) || lower.contains("too many requests") ->
-                PlaylistFetchResult.Failed(VideoTranscriptStatus.RATE_LIMITED, "YouTube rate-limited playlist request (HTTP 429).", retryable = true)
+                PlaylistFetchResult.Failed(VideoTranscriptStatus.RATE_LIMITED, "Playlist requests are temporarily busy. Please try again shortly.", retryable = true)
             lower.contains("private") || lower.contains("sign in") || lower.contains("does not exist") ->
                 PlaylistFetchResult.Failed(VideoTranscriptStatus.ACCESS_ERROR, "Playlist is private or does not exist.", retryable = false)
             networkHint != null || lower.contains("network") ->

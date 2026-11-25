@@ -1315,7 +1315,7 @@ class YouTubeTranscriptExtractor(
                 current.diagnosticInfo?.httpStatusCode == 429
             ) {
                 val secs = (waitMs / 1000L).coerceAtLeast(1L)
-                "Rate-limited by YouTube (HTTP 429); retrying in ${secs}s..."
+                "Captions are temporarily busy; retrying in ${secs}s..."
             } else {
                 null
             }
@@ -1374,7 +1374,7 @@ class YouTubeTranscriptExtractor(
                 val maxAllowedMs = resilienceConfig.maxRateLimitRetryDelayMs.coerceAtLeast(1L)
                 val retryAfterMs = (ex.retryAfterSeconds?.times(1000L) ?: waitMs)
                     .coerceIn(minOf(500L, maxAllowedMs), maxAllowedMs)
-                onRetry("Rate-limited by YouTube while loading captions (HTTP 429); retrying...")
+                onRetry("Captions are temporarily busy; retrying...")
                 delay(retryAfterMs)
                 currentCoroutineContext().ensureActive()
                 attemptResult = dataSource.fetchCaptionPayload(url)

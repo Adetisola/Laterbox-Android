@@ -1895,7 +1895,8 @@ class MoviesViewModelsTest {
         assertEquals("bcdnxw.hakunaymatata.com", info?.failingHost)
         assertEquals(18L, info?.retryAfterSeconds)
         val msg = com.laterbox.app.movies.ui.formatPlayerErrorMessage(playbackException)
-        assertTrue("Unexpected message: $msg", msg.contains("rate-limited", ignoreCase = true) && msg.contains("18s"))
+        assertTrue("Unexpected message: $msg", msg.contains("temporarily busy", ignoreCase = true) && msg.contains("18s"))
+        assertFalse("Message should not leak rate-limited jargon: $msg", msg.contains("rate-limit", ignoreCase = true))
     }
 
     @Test
@@ -2024,7 +2025,8 @@ class MoviesViewModelsTest {
         assertEquals("https://sbcdnw.hakunaymatata.com/dash/index.mpd", vm.uiState.value.selectedSource?.url)
         assertEquals(68_000L, vm.uiState.value.startPositionMs)
         val err = vm.uiState.value.errorMessage.orEmpty()
-        assertTrue("Expected rate-limit unavailability message, got: $err", err.contains("rate-limited", ignoreCase = true))
+        assertTrue("Expected busy unavailability message, got: $err", err.contains("temporarily busy", ignoreCase = true))
+        assertFalse("Error should not leak rate-limited jargon: $err", err.contains("rate-limit", ignoreCase = true))
     }
 
     @Test

@@ -91,7 +91,7 @@ object YouTubeUrlParser {
             return YouTubeUrlTarget.Invalid("Unsupported URL scheme", rawUrl)
         }
 
-        val host = uri.host?.lowercase() ?: return YouTubeUrlTarget.Invalid("Missing URL host", rawUrl)
+        val host = uri.host?.lowercase() ?: return YouTubeUrlTarget.Invalid("Invalid video web link", rawUrl)
         val path = (uri.rawPath ?: "").trimEnd('/')
         val queryParams = parseQueryParams(uri.rawQuery.orEmpty())
         val listId = queryParams["list"]?.takeIf { isValidId(it) }

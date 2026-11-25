@@ -95,9 +95,9 @@ class SmartDigestTest {
         assertEquals("No API key configured", AiFailure.NoApiKey.userMessage)
         assertEquals("Network connection unavailable", AiFailure.Offline.userMessage)
         assertEquals("Request timed out", AiFailure.Timeout.userMessage)
-        assertEquals("Rate limited by AI provider (429)", AiFailure.RateLimited(429).userMessage)
-        assertEquals("Invalid API key or unauthorized (401)", AiFailure.AuthError(401).userMessage)
-        assertEquals("AI server error (500)", AiFailure.ServerError(500).userMessage)
+        assertEquals("Assistant is temporarily busy. Please try again shortly.", AiFailure.RateLimited(429).userMessage)
+        assertEquals("Invalid API key or access denied.", AiFailure.AuthError(401).userMessage)
+        assertEquals("Assistant is temporarily unavailable. Please try again shortly.", AiFailure.ServerError(500).userMessage)
         assertEquals("AI returned an empty response", AiFailure.EmptyResponse.userMessage)
         assertEquals("AI returned unparseable content", AiFailure.MalformedResponse.userMessage)
     }

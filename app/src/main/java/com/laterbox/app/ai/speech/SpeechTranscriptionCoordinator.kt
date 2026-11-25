@@ -77,7 +77,7 @@ class SpeechTranscriptionCoordinator(
                     val reason = when {
                         resolvedKey == null -> "Add a Gemini API key in Settings for voice input."
                         !online -> "You're offline and Android speech recognition isn't available."
-                        else -> "Gemini voice quota is temporarily rate-limited. Try again shortly."
+                        else -> "Voice transcription is temporarily busy. Try again shortly."
                     }
                     _state.value = ComposerSpeechUiState(SpeechStatus.ERROR, message = reason)
                 }

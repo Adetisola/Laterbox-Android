@@ -125,14 +125,15 @@ class HttpDownloader(
                             in 500..599 -> FailureCode.HTTP_ERROR
                             else -> FailureCode.HTTP_ERROR
                         }
-                        val msg = if (resp.code == 429) {
-                            if (retryAfterSec != null) {
-                                "Streaming server is rate-limiting downloads (HTTP 429). Retry in ${retryAfterSec}s."
+                        val msg = when (resp.code) {
+                            429 -> if (retryAfterSec != null) {
+                                "Downloads are temporarily busy. Please try again in ${retryAfterSec}s."
                             } else {
-                                "Streaming server is temporarily busy (HTTP 429). Please retry shortly."
+                                "Downloads are temporarily busy. Please try again shortly."
                             }
-                        } else {
-                            "HTTP ${resp.code}: ${resp.message}"
+                            401, 403 -> "This download couldn't be started right now. Please try again."
+                            404, 410 -> "This file is no longer available to download."
+                            else -> "Unable to download right now. Please try again shortly."
                         }
                         return@use DownloadResult.Failure(
                             code = code,
@@ -148,7 +149,7 @@ class HttpDownloader(
 
                     val body = resp.body ?: return@use DownloadResult.Failure(
                         code = FailureCode.HTTP_ERROR,
-                        message = "Response body is empty"
+                        message = "Download interrupted. Please try again."
                     )
                     val contentLength = body.contentLength()
 
@@ -178,7 +179,7 @@ class HttpDownloader(
                             }
                             return@use DownloadResult.Failure(
                                 code = FailureCode.HTTP_ERROR,
-                                message = "Invalid HTTP 206 Content-Range or representation mismatch"
+                                message = "Unable to resume this download cleanly. Please retry."
                             )
                         }
                     }

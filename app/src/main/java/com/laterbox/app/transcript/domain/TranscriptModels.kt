@@ -17,7 +17,7 @@ enum class VideoTranscriptStatus(val displayLabel: String) {
     ACCESS_ERROR("Could not be accessed"),
     NETWORK_ERROR("Network error"),
     TIMEOUT("Timed out"),
-    RATE_LIMITED("Rate limited (HTTP 429)"),
+    RATE_LIMITED("Temporarily busy"),
     EXTRACTION_ERROR("Extraction failed"),
     CANCELLED("Cancelled")
 }

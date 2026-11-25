@@ -128,11 +128,11 @@ object SmartDigestEngine {
                         errorStreamText.contains("API_KEY_SERVICE_BLOCKED") ->
                             "Google Generative Language API is blocked on this key. In Google Cloud Console, select 'Don't restrict key' or add 'Generative Language API'."
                         code == 429 ->
-                            "Rate limit reached (429). Please wait a moment."
+                            "Too many requests right now. Please wait a moment and try again."
                         code == 400 || code == 401 || code == 403 ->
-                            "Invalid API key or unauthorized ($code)."
+                            "Invalid API key or access denied."
                         else ->
-                            "Server error ($code)."
+                            "Assistant is temporarily unavailable. Please try again shortly."
                     }
                     Pair(false, message)
                 }

@@ -380,9 +380,9 @@ object AppCapabilityRegistry {
         ),
         SectionCapabilitySpec(
             section = LaterboxSection.DOWNLOADS,
-            summary = "On-device media downloader, stream muxer, YouTube transcript documents, and offline Movies/TV library.",
+            summary = "On-device media downloader, video/audio processing, YouTube transcript documents, and offline Movies/TV library.",
             capabilities = listOf(
-                "Inspect and download video/audio formats using embedded yt-dlp + Python + QuickJS (libqjs.so) + FFmpeg.",
+                "Inspect and download supported video and audio formats directly on-device.",
                 "Queue & Library tabs across Images, Videos, Movies, Audio, and Documents, with optional SAF custom folder export.",
                 "Extract verbatim YouTube captions/transcripts for single videos and playlists (--skip-download, no audio/video download), copy individual or all playlist transcripts to clipboard, and export to Markdown (.md), Plain Text (.txt), and PDF (.pdf) saved in Downloads Library -> Documents."
             ),
@@ -403,14 +403,14 @@ object AppCapabilityRegistry {
             summary = "Discovery, Personal Library, Offline Playback, and unified full-screen Media Player.",
             capabilities = listOf(
                 "Browse curated rails, Surprise Me picks, Because You Watched & More Like This recommendations, Runtime-aware picks, and expandable filters (Kind, Genre, Language, Country, Year, Runtime, Sort).",
-                "Canonical cross-provider identities across live streaming catalogue, Internet Archive, and TV series guide so watchlist & history do not duplicate.",
+                "Unified title identities across Laterbox's catalogue and guides so watchlist and history do not duplicate.",
                 "Watch History split separately for Movies, Episodes, and Trailers; Continue Watching management (Resume, Restart from beginning, Remove from Continue Watching, Hide title); Rewatch tracking; Episode watched/unwatched toggles & next unwatched episode; Recently Viewed; Custom Collections.",
                 "Full-screen ExoPlayer with vertical brightness/volume swipe gestures, horizontal swipe-to-seek with adjustable sensitivity, double-tap seek, up to 200% LoudnessEnhancer volume boost, subtitle styling, per-series audio/subtitle preferences, next-episode autoplay, and verified intro/recap skip buttons when timestamps are provided by metadata.",
                 "Offline playback directly from downloaded Movie/Episode files in Downloads."
             ),
             constraints = listOf(
                 "Skip Intro / Skip Recap only appear when verified intro/recap timestamps exist in source metadata; never guess timestamps.",
-                "Playback & episode availability depend on connected providers or already-downloaded local files."
+                "Playback and episode availability depend on available catalogue sources or already-downloaded local files."
             )
         ),
         SectionCapabilitySpec(
@@ -426,7 +426,7 @@ object AppCapabilityRegistry {
             section = LaterboxSection.SETTINGS,
             summary = "Appearance, Reminders & AI, Capture & Shortcuts, Reading & Behaviour, Media & Downloads, Movies & TV player config, Data & Storage backup/restore, and About & Privacy.",
             capabilities = listOf(
-                "Configure Gemini API key, Smart Reminders schedules, Movies & TV player/subtitles/endpoints, SAF export directory, and JSON backup/restore."
+                "Configure Gemini API key, Smart Reminders schedules, Movies & TV player and subtitles, SAF export directory, and JSON backup/restore."
             ),
             constraints = listOf(
                 "AI Assistant runs remotely via Google AI Studio / Gemini; no local on-device LLM is present. Never claim private files or API keys are accessible."

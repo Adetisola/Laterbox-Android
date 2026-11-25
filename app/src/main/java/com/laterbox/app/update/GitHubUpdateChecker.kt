@@ -488,7 +488,7 @@ object GitHubUpdateChecker {
                         return@withContext UpdateCheckResult.RateLimited(
                             retryAfterSeconds = retryAfter,
                             message = parsedError.message
-                                ?: "Update server rate limit reached. Please try again later."
+                                ?: "Update checks are temporarily busy. Please try again later."
                         )
                     }
 
@@ -496,7 +496,7 @@ object GitHubUpdateChecker {
                         return@withContext UpdateCheckResult.AuthError(
                             statusCode = 403,
                             message = parsedError.message
-                                ?: "Access to update service or repository was denied."
+                                ?: "Update service is temporarily unavailable."
                         )
                     }
 
@@ -509,13 +509,13 @@ object GitHubUpdateChecker {
 
                     if (parsedError.code == "invalid_release_metadata") {
                         return@withContext UpdateCheckResult.InvalidRelease(
-                            parsedError.message ?: "Release metadata returned by update server is malformed."
+                            parsedError.message ?: "Could not read update details right now."
                         )
                     }
 
                     return@withContext UpdateCheckResult.ApiError(
                         statusCode = responseCode,
-                        message = parsedError.message ?: "Update server returned HTTP $responseCode"
+                        message = parsedError.message ?: "Could not check for updates right now. Please try again later."
                     )
                 } finally {
                     connection?.disconnect()

@@ -2009,7 +2009,8 @@ class YouTubeTranscriptExtractorTest {
         assertTrue("Expected CANCELLED progress event during backoff wait, got $progressStages", TranscriptExtractionStage.CANCELLED in progressStages)
         assertTrue("Expected cancelProcess to be invoked cleanly", cancelledIds.isNotEmpty())
         assertEquals("Retry attempt must NOT fire after coroutine cancelled during delay", 1, attempts)
-        assertTrue(progressMessages.any { it.contains("429") || it.contains("Rate-limited") })
+        assertTrue(progressMessages.any { it.contains("temporarily busy", ignoreCase = true) })
+        assertTrue(progressMessages.none { it.contains("429") || it.contains("rate-limited", ignoreCase = true) })
     }
 }
 

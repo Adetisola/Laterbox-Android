@@ -3033,12 +3033,12 @@ internal fun formatPlayerErrorMessage(error: PlaybackException): String {
         if (cause is HttpDataSource.InvalidResponseCodeException) {
             val info = extractHttpFailureInfo(error)
             return when (cause.responseCode) {
-                401, 403 -> "Playback access expired or needs verification. Try again or switch quality."
-                404, 410 -> "This video link expired or is no longer available. Retry or switch quality."
+                401, 403 -> "Playback couldn't be started right now. Please try again or switch quality."
+                404, 410 -> "This video isn't available right now. Please try again or switch quality."
                 429 -> if (info?.retryAfterSeconds != null) {
-                    "Streaming server is temporarily busy (rate-limited). Please try again in ${info.retryAfterSeconds.coerceIn(1L, 60L)}s."
+                    "Video playback is temporarily busy. Please try again in ${info.retryAfterSeconds.coerceIn(1L, 60L)}s."
                 } else {
-                    "Streaming server is temporarily busy (rate-limited). Please try again shortly."
+                    "Video playback is temporarily busy. Please try again shortly."
                 }
                 else -> "Unable to load this video right now. Please try again or switch quality."
             }

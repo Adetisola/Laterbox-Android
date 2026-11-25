@@ -39,10 +39,10 @@ interface ChatDao {
     @Query("DELETE FROM chat_conversations WHERE id = :id")
     suspend fun deleteConversationById(id: String)
 
-    @Query("SELECT * FROM chat_messages WHERE conversation_id = :conversationId ORDER BY created_at ASC")
+    @Query("SELECT * FROM chat_messages WHERE conversation_id = :conversationId ORDER BY created_at ASC, rowid ASC")
     fun getMessagesForConversation(conversationId: String): Flow<List<ChatMessageEntity>>
 
-    @Query("SELECT * FROM chat_messages WHERE conversation_id = :conversationId ORDER BY created_at ASC")
+    @Query("SELECT * FROM chat_messages WHERE conversation_id = :conversationId ORDER BY created_at ASC, rowid ASC")
     suspend fun getMessagesSnapshot(conversationId: String): List<ChatMessageEntity>
 
     @Upsert

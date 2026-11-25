@@ -1702,7 +1702,7 @@ class MovieBoxProvider(
             } else {
                 "Too many requests right now. Please try again in a moment."
             }
-            502, 503, 504 -> safeDetail ?: "The streaming service is temporarily unavailable. Please retry shortly."
+            502, 503, 504 -> safeDetail ?: "Playback and catalogue are temporarily unavailable. Please try again shortly."
             else -> safeDetail ?: "Could not load catalogue data right now."
         }
     }
@@ -1713,13 +1713,44 @@ class MovieBoxProvider(
             "moviebox",
             "tvmaze",
             "tmdb",
+            "aoneroom",
+            "hakunaymatata",
+            "inmoviebox",
+            "edgenext",
+            "wefeed",
+            "subject-api",
+            "user-api",
+            "play-info",
+            "resource-position",
             "x-user",
+            "x-client",
+            "x-tr-",
             "app check",
             "appcheck",
             "bootstrap",
             "token",
             "http ",
-            "upstream"
+            "429",
+            "403",
+            "401",
+            "428",
+            "rate limit",
+            "rate-limit",
+            "throttle",
+            "cooldown",
+            "failover",
+            "upstream",
+            "cdn",
+            "host",
+            "endpoint",
+            "stub",
+            "quota",
+            "diagnostic",
+            "debug",
+            "trace",
+            "signature",
+            "hmac",
+            "md5"
         )
         if (blockedTerms.any { clean.contains(it, ignoreCase = true) }) {
             return null
@@ -1729,13 +1760,13 @@ class MovieBoxProvider(
 
     private fun buildNetworkErrorMessage(error: IOException): String = when (error) {
         is SocketTimeoutException ->
-            "Request timed out. Please retry in a moment."
+            "Request timed out. Please try again in a moment."
         is UnknownHostException ->
-            "Cannot reach the catalogue service. Check your internet connection and retry."
+            "Cannot reach Laterbox right now. Check your internet connection and try again."
         is SSLException ->
-            "Secure connection to the catalogue service could not be established."
+            "Secure connection to Laterbox could not be established."
         else ->
-            "Connection problem while reaching the catalogue service. Please try again."
+            "Connection problem while reaching Laterbox. Please try again."
     }
 
     private fun safeLogInfo(message: String) {

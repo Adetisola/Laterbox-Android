@@ -184,9 +184,9 @@ object ApkInstallerHelper {
                         }
 
                         val fallbackMsg = when (code) {
-                            401, 403 -> "Authentication failed while preparing asset download (HTTP $code)."
-                            429 -> "Update server rate limit reached. Please try again later."
-                            else -> "Failed to prepare update download (HTTP $code)."
+                            401, 403 -> "Update download couldn't be verified right now. Please try again later."
+                            429 -> "Too many update requests right now. Please try again later."
+                            else -> "Unable to prepare the update download right now. Please try again later."
                         }
                         val kind = if (isAuthOrLimit && code !in listOf(401, 403, 429)) {
                             UpdateFailureKind.AUTH
@@ -358,15 +358,15 @@ object ApkInstallerHelper {
                         val newLocation = conn.getHeaderField("Location")
                         conn.disconnect()
                         if (newLocation.isNullOrBlank()) {
-                            throw DownloadFailure("HTTP redirect without Location header", UpdateFailureKind.CONFIG)
+                            throw DownloadFailure("The update download could not be started.", UpdateFailureKind.CONFIG)
                         }
                         val resolvedLocation = try {
                             URL(URL(currentUrl), newLocation).toString()
                         } catch (_: Exception) {
-                            throw DownloadFailure("Invalid redirect location.", UpdateFailureKind.CONFIG)
+                            throw DownloadFailure("The update download could not be started.", UpdateFailureKind.CONFIG)
                         }
                         if (!UpdateNetworkSupport.isAllowedAssetUrl(resolvedLocation)) {
-                            throw DownloadFailure("Redirect to a disallowed host was blocked.", UpdateFailureKind.CONFIG)
+                            throw DownloadFailure("The update download source could not be verified.", UpdateFailureKind.CONFIG)
                         }
                         currentUrl = resolvedLocation
                         redirectCount++
@@ -377,7 +377,7 @@ object ApkInstallerHelper {
                 }
 
                 val connection = activeConnection
-                    ?: throw DownloadFailure("Too many redirects.", UpdateFailureKind.CONFIG)
+                    ?: throw DownloadFailure("The update download could not be completed.", UpdateFailureKind.CONFIG)
 
                 val responseCode = connection.responseCode
 
@@ -391,7 +391,7 @@ object ApkInstallerHelper {
                     }
                     val kind = if (responseCode == 410) UpdateFailureKind.EXPIRED_URL else UpdateFailureKind.AUTH
                     throw DownloadFailure(
-                        "Download authorization failed or rate limit reached (HTTP $responseCode).",
+                        "Update download couldn't be started right now. Please try again later.",
                         kind, responseCode, isAuthOrRateLimit = true
                     )
                 }
@@ -407,12 +407,10 @@ object ApkInstallerHelper {
                         // 206 Partial Content: Server supports resuming
                         val parsedRange = parseContentRange(connection.getHeaderField("Content-Range"))
                         if (parsedRange != null && parsedRange.first != existingBytes) {
-                            val badStart = parsedRange.first
-                            val expectedStart = existingBytes
                             outputFile.delete()
                             existingBytes = 0L
                             throw DownloadFailure(
-                                "Unexpected Content-Range start ($badStart != $expectedStart)",
+                                "The download was interrupted. Please try again.",
                                 UpdateFailureKind.INTERRUPTED
                             )
                         }
@@ -442,7 +440,10 @@ object ApkInstallerHelper {
                     }
                     else -> {
                         throw DownloadFailure(
-                            "Unexpected HTTP response code: $responseCode",
+                            UpdateNetworkSupport.userMessage(
+                                UpdateNetworkSupport.classifyHttpStatus(responseCode),
+                                responseCode
+                            ),
                             UpdateNetworkSupport.classifyHttpStatus(responseCode), responseCode
                         )
                     }
@@ -714,7 +715,7 @@ object ApkInstallerHelper {
             if (installedSigners.isNotEmpty() && archiveSigners.isNotEmpty() && installedSigners.intersect(archiveSigners).isEmpty()) {
                 Log.w(TAG, "Signing certificate mismatch: installed=$installedSigners, archive=$archiveSigners")
                 return ApkVerificationResult.SignatureMismatch(
-                    "Signature mismatch: The update was signed with an unexpected certificate. Android security requires matching signing certificates."
+                    "This update file could not be verified for your current Laterbox installation."
                 )
             }
 
