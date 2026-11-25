@@ -39,6 +39,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -109,6 +110,7 @@ class MovieBoxProvider(
     private val appCheckTokenProvider: suspend (forceRefresh: Boolean) -> String? = { null },
     private val authHeaderProvider: (suspend (forceRefresh: Boolean) -> Pair<String, String>?)? = null,
     private val authDiagnosticProvider: (() -> String?)? = null,
+    private val nativeStreamResolver: MovieBoxNativeStreamResolver? = null,
 ) : MoviesCatalogueProvider,
     MoviesSearchProvider,
     MovieDetailsProvider,
@@ -140,11 +142,18 @@ class MovieBoxProvider(
     private val searchUpstreamCursor = ConcurrentHashMap<String, Int>()
     private val playbackCache = ConcurrentHashMap<String, Pair<Long, PlaybackResolution.Available>>()
     private val inflightPlayback = ConcurrentHashMap<String, CompletableDeferred<Result<PlaybackResolution>>>()
+    private val lastNativeSuccessAtMs = ConcurrentHashMap<String, Long>()
+    private val skipNativeOnceKeys = ConcurrentHashMap<String, Long>()
 
     fun invalidatePlaybackCache(titleId: String, seasonNumber: Int? = null, episodeNumber: Int? = null) {
         val se = seasonNumber?.takeIf { it > 0 } ?: 0
         val ep = episodeNumber?.takeIf { it > 0 } ?: 0
-        playbackCache.remove("$titleId:$se:$ep")
+        val cacheKey = "$titleId:$se:$ep"
+        playbackCache.remove(cacheKey)
+        val nativeAt = lastNativeSuccessAtMs.remove(cacheKey)
+        if (nativeAt != null && (System.currentTimeMillis() - nativeAt) <= 90_000L) {
+            skipNativeOnceKeys[cacheKey] = System.currentTimeMillis()
+        }
     }
 
     data class EpisodeMetadataEnrichment(
@@ -1135,6 +1144,55 @@ class MovieBoxProvider(
     ): Result<PlaybackResolution> = runCatching {
         val se = seasonNumber?.takeIf { it > 0 } ?: 0
         val ep = episodeNumber?.takeIf { it > 0 } ?: 0
+        val cacheKey = "$titleId:$se:$ep"
+        val skipNativeAt = skipNativeOnceKeys.remove(cacheKey)
+        val skipNativeOnce = skipNativeAt != null && (System.currentTimeMillis() - skipNativeAt) <= 120_000L
+        val resolver = nativeStreamResolver
+        if (!skipNativeOnce && resolver != null) {
+            val nativeOutcome = runCatching {
+                resolver.resolveStreams(titleId, se, ep)
+            }.onFailure { err ->
+                safeLogInfo("native resolve failed id=$titleId se=$se ep=$ep err=${err.javaClass.simpleName}; falling back")
+            }.getOrNull()
+
+            if (nativeOutcome != null && nativeOutcome.sources.isNotEmpty()) {
+                val nativeSources = nativeOutcome.sources.sortedWith(
+                    compareByDescending<PlaybackSource> { it.qualityHeight }
+                        .thenBy { it.format == "DASH" || it.format == "HLS" }
+                )
+                lastNativeSuccessAtMs[cacheKey] = System.currentTimeMillis()
+                if (se > 0 && ep > 0) {
+                    val epSizes = nativeSources
+                        .filter { it.format != "DASH" && it.format != "HLS" && it.qualityHeight > 0 && (it.sizeMb ?: 0.0) > 0.0 }
+                        .associate { it.qualityHeight to (it.sizeMb ?: 0.0) }
+                    if (epSizes.isNotEmpty()) {
+                        episodeSizesCache.getOrPut("$titleId:$se") { ConcurrentHashMap() }[ep] = epSizes
+                    }
+                }
+                val subtitles = getSubtitles(titleId, seasonNumber, episodeNumber)
+                    .getOrDefault(emptyList())
+                val resolvedTitle = titleCache[titleId]
+                    ?: nativeOutcome.resolvedTitle?.takeIf { it.isNotBlank() }
+                    ?: "Video"
+                val heading = if (se > 0 && ep > 0) "Season $se · Episode $ep" else null
+                val cachedDetailMarkers = markerWindowCache[titleId]
+                safeLogInfo(
+                    "playback resolve native_hit=true id=$titleId se=$se ep=$ep count=${nativeSources.size} " +
+                        "hosts=${nativeSources.mapNotNull { it.url.toHttpUrlOrNull()?.host }.distinct().joinToString(",")}"
+                )
+                return@runCatching PlaybackResolution.Available(
+                    title = resolvedTitle,
+                    subtitleHeading = heading,
+                    sources = nativeSources,
+                    subtitles = subtitles,
+                    providerName = displayName,
+                    sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+                    introWindow = cachedDetailMarkers?.first,
+                    recapWindow = cachedDetailMarkers?.second
+                )
+            }
+        }
+
         val builder = requireBaseHttpUrl().newBuilder()
             .addPathSegment("api")
             .addPathSegment("stream")

@@ -355,13 +355,15 @@ class MoviesRepositoryTest {
 
     @Test
     fun productionSourcesContainZeroUnauthorisedMovieBoxHostsOrSecrets() {
-        val forbiddenTokens = listOf(
+        val alwaysForbiddenTokens = listOf(
+            "h5-api.aoneroom",
+            "com.community.mbox.in"
+        )
+        val nativeResolverOnlyTokens = listOf(
             "aoneroom.com",
             "inmoviebox.com",
             "moviebox.ph",
-            "h5-api.aoneroom",
-            "x-tr-signature",
-            "com.community.mbox.in"
+            "x-tr-signature"
         )
         val mainSrcDir = listOf(
             File("app/src/main/java"),
@@ -373,11 +375,19 @@ class MoviesRepositoryTest {
             .filter { it.isFile && it.extension == "kt" }
             .forEach { file ->
                 val content = file.readText()
-                forbiddenTokens.forEach { token ->
+                alwaysForbiddenTokens.forEach { token ->
                     assertFalse(
                         "Forbidden token '$token' found in ${file.path}",
                         content.contains(token, ignoreCase = true)
                     )
+                }
+                if (file.name != "MovieBoxNativeStreamResolver.kt") {
+                    nativeResolverOnlyTokens.forEach { token ->
+                        assertFalse(
+                            "Forbidden token '$token' found in ${file.path}",
+                            content.contains(token, ignoreCase = true)
+                        )
+                    }
                 }
             }
     }

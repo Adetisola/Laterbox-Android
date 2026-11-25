@@ -315,6 +315,15 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
     }
 
     override val moviesRepository: com.laterbox.app.movies.domain.repository.MoviesRepository by lazy {
+        val nativeOkHttpClient = sharedOkHttpClient.newBuilder()
+            .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .callTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+        val nativeStreamResolver = com.laterbox.app.movies.data.provider.MovieBoxNativeStreamResolver(
+            okHttpClient = nativeOkHttpClient,
+        )
         val movieBoxProvider = com.laterbox.app.movies.data.provider.MovieBoxProvider(
             okHttpClient = moviesOkHttpClient,
             baseUrlProvider = {
@@ -329,7 +338,8 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             },
             authDiagnosticProvider = {
                 backendAuthProvider.lastResolutionReason
-            }
+            },
+            nativeStreamResolver = nativeStreamResolver,
         )
         val iaProvider = com.laterbox.app.movies.data.provider.InternetArchiveMoviesProvider(moviesOkHttpClient)
         val tvMazeProvider = com.laterbox.app.movies.data.provider.TvMazeSeriesProvider(moviesOkHttpClient)
