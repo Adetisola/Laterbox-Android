@@ -41,11 +41,11 @@ class Phase2StartupTest {
     }
 
     @Test
-    fun splashGate_releasesImmediatelyOnPrefsLoadedAndHonors800msCeiling() {
+    fun splashGate_releasesImmediatelyOnPrefsLoadedAndHonors500msCeiling() {
         val start = 1_000L
         assertTrue(SplashTimingLogger.shouldKeepSplashOnScreen(prefsLoaded = false, splashStartElapsedMs = start, nowElapsedMs = 1_000L))
-        assertTrue(SplashTimingLogger.shouldKeepSplashOnScreen(prefsLoaded = false, splashStartElapsedMs = start, nowElapsedMs = 1_799L))
-        assertFalse(SplashTimingLogger.shouldKeepSplashOnScreen(prefsLoaded = false, splashStartElapsedMs = start, nowElapsedMs = 1_800L))
+        assertTrue(SplashTimingLogger.shouldKeepSplashOnScreen(prefsLoaded = false, splashStartElapsedMs = start, nowElapsedMs = 1_499L))
+        assertFalse(SplashTimingLogger.shouldKeepSplashOnScreen(prefsLoaded = false, splashStartElapsedMs = start, nowElapsedMs = 1_500L))
         assertFalse(SplashTimingLogger.shouldKeepSplashOnScreen(prefsLoaded = true, splashStartElapsedMs = start, nowElapsedMs = 1_012L))
     }
 

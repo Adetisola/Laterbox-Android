@@ -136,6 +136,9 @@ fun MediaPlayerScreen(
                 PlayerView(ctx).apply {
                     player = exoPlayer
                     useController = true
+                    isFocusable = true
+                    isFocusableInTouchMode = true
+                    requestFocus()
                     attachedPlayerView.value = this
                 }
             },

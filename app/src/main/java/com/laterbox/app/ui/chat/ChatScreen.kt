@@ -534,7 +534,7 @@ private fun AiDisclosureConsentCard(
                 )
             }
             Text(
-                text = "When you send a message, your prompt and relevant saved link metadata (titles, URLs, notes, and app status—never API keys or private storage paths) are sent remotely to Google AI Studio (Gemini). If you use voice dictation, recorded audio is also sent to Gemini for transcription (with Android speech recognition as fallback). You can disable this or review your API key anytime in Settings.",
+                text = "When you send a message, your prompt and relevant saved link metadata (titles, URLs, notes, and app status—never access keys or private storage paths) are sent remotely to Google AI Studio (Gemini). If you use voice dictation, recorded audio is also sent to Gemini for transcription (with Android speech recognition as fallback). You can disable this or review your Gemini access key anytime in Settings.",
                 style = typography.bodySecondary.copy(fontSize = 13.sp),
                 color = colors.textSecondary
             )

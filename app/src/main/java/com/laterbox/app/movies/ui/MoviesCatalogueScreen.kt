@@ -230,7 +230,7 @@ fun MoviesCatalogueScreen(
                     }
                     val searchController = com.laterbox.app.ui.components.rememberSyncedTextFieldController(uiState.query)
                     Box(modifier = Modifier.weight(1f)) {
-                        if (searchController.value.text.isEmpty()) {
+                        if (searchController.text.isEmpty()) {
                             Text(
                                 text = "Search movies & series...",
                                 style = typography.bodySecondary,
@@ -240,9 +240,9 @@ fun MoviesCatalogueScreen(
                             )
                         }
                         BasicTextField(
-                            value = searchController.value,
+                            value = searchController.text,
                             onValueChange = { next ->
-                                searchController.onLocalValueChange(next, onQueryChange)
+                                searchController.onLocalTextChange(next, onQueryChange)
                             },
                             interactionSource = searchInteractionSource,
                             singleLine = true,
@@ -263,7 +263,7 @@ fun MoviesCatalogueScreen(
                                 .testTag("catalogue_search_input")
                         )
                     }
-                    if (searchController.value.text.isNotEmpty() || uiState.query.isNotEmpty()) {
+                    if (searchController.text.isNotEmpty() || uiState.query.isNotEmpty()) {
                         IconButton(
                             onClick = {
                                 searchController.clearLocal(onClearSearch)

@@ -677,4 +677,50 @@ class SearchInputSpaceAndDebounceTest {
         controller.syncExternal("sta ars")
         assertEquals("sta trek beyond", controller.value.text)
     }
+
+    @Test
+    fun `laterboxSearchField plain string mode backspaces 'the matrix' smoothly through the space`() {
+        val controller = com.laterbox.app.ui.components.SyncedTextFieldController("")
+        val emitted = mutableListOf<String>()
+        val target = "the matrix"
+        for (i in 1..target.length) {
+            controller.onLocalTextChange(target.substring(0, i)) { emitted += it }
+        }
+        assertEquals("the matrix", controller.text)
+
+        var step = "the matrix"
+        while (step.isNotEmpty()) {
+            step = step.dropLast(1)
+            controller.onLocalTextChange(step) { emitted += it }
+            // Simulate conflated StateFlow echoing the space-trailing prefix while deleting past it
+            if (step == "the") {
+                controller.syncExternal("the ")
+            }
+            assertEquals(step, controller.text)
+        }
+        assertEquals("", controller.text)
+
+        val queryFlow = MutableStateFlow("the matrix")
+        composeTestRule.setContent {
+            val q by queryFlow.collectAsState()
+            LaterboxTheme {
+                LaterboxSearchField(
+                    query = q,
+                    onQueryChange = { next -> queryFlow.value = next },
+                    placeholder = "Search..."
+                )
+            }
+        }
+        val input = composeTestRule.onNodeWithTag("laterbox_search_input")
+        input.assertTextEquals("the matrix")
+        input.performTextInputSelection(TextRange(0, "the matrix".length))
+        input.performTextInput("the ")
+        composeTestRule.waitForIdle()
+        input.assertTextEquals("the ")
+        input.performTextInputSelection(TextRange(0, "the ".length))
+        input.performTextInput("the")
+        composeTestRule.waitForIdle()
+        input.assertTextEquals("the")
+        assertEquals("the", queryFlow.value)
+    }
 }

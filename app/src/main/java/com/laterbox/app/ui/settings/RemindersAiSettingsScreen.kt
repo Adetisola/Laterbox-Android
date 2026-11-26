@@ -472,7 +472,7 @@ fun RemindersAiSettingsScreen(
                             },
                             placeholder = {
                                 Text(
-                                    text = "Enter Google AI Studio API key (optional)",
+                                    text = "Enter Google AI Studio access key (optional)",
                                     style = typography.bodySecondary,
                                     color = colors.textTertiary
                                 )

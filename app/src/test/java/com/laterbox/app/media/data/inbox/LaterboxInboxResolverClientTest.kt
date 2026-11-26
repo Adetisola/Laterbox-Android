@@ -174,4 +174,53 @@ class LaterboxInboxResolverClientTest {
         val twRes = resolver.resolveToInspectionResult("https://twitter.com/SpaceX/status/736313781907685376")
         assertTrue(twRes is InspectionResult.Unsupported)
     }
+
+    @Test
+    fun backendInboxAdapter_resolvesSpotifyAudioMp3AndFallsBackCleanlyWhenUnavailable() = runBlocking {
+        var callCount = 0
+        var requestedPath: String? = null
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                callCount++
+                val req = chain.request()
+                requestedPath = req.url.encodedPath
+                val body = if (callCount == 1) {
+                    """{"type":"audio","url":"https://cdn.example.com/track.mp3","title":"Midnight City","artist":"M83"}"""
+                } else {
+                    """{"type":"unsupported","reason":"spotify_api_unavailable","fallback":"open_in_browser"}"""
+                }
+                Response.Builder()
+                    .request(req)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(body.toResponseBody("application/json".toMediaType()))
+                    .build()
+            }
+            .build()
+
+        val resolver = LaterboxInboxResolverClient(
+            okHttpClient = client,
+            baseUrlProvider = { "https://api.example.com" },
+            appCheckTokenProvider = { "appcheck-spotify" }
+        )
+
+        val audioRes = resolver.resolveToInspectionResult("https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT")
+        assertEquals("/api/inbox/resolve/spotify", requestedPath)
+        assertTrue(audioRes is InspectionResult.Available)
+        val available = audioRes as InspectionResult.Available
+        assertEquals("Spotify", available.platform)
+        assertEquals(1, available.candidates.size)
+        val candidate = available.candidates.single()
+        assertEquals(MediaType.AUDIO, candidate.mediaType)
+        assertEquals("mp3", candidate.ext)
+        assertEquals("M83 — Midnight City", candidate.formatLabel)
+        assertEquals("https://cdn.example.com/track.mp3", (candidate.source as AcquisitionSource.DirectHttp).url)
+
+        val fallbackRes = resolver.resolveToInspectionResult("https://open.spotify.com/track/5XeFesFbtLpXzIVDNQP22n")
+        assertTrue(fallbackRes is InspectionResult.Unsupported)
+        val fallbackReason = (fallbackRes as InspectionResult.Unsupported).reason.lowercase()
+        assertFalse(fallbackReason.contains("spotidownloader"))
+        assertFalse(fallbackReason.contains("gleeze"))
+    }
 }

@@ -173,7 +173,7 @@ fun LibraryTab(
             ) {
                 // 1. Ready to download horizontal carousel in scrolling content
                 if (readyToDownloadItems.isNotEmpty()) {
-                    item(key = "ready_to_download_section") {
+                    item(key = "ready_to_download_section", contentType = "ready_carousel") {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -216,7 +216,7 @@ fun LibraryTab(
                 }
 
                 // 2. Sticky Media Type Filter Chips
-                stickyHeader(key = "media_type_filter_chips") {
+                stickyHeader(key = "media_type_filter_chips", contentType = "filter_chips") {
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
                         color = colors.backgroundPrimary
@@ -246,14 +246,14 @@ fun LibraryTab(
 
                 // 3. Asset Cards
                 if (assets.isEmpty()) {
-                    item(key = "empty_filter_state") {
+                    item(key = "empty_filter_state", contentType = "empty_state") {
                         EmptyStateView(
                             title = "No ${selectedMediaType?.name?.lowercase() ?: "media"} files",
                             subtitle = "Try changing the filter or downloading media from your inbox links."
                         )
                     }
                 } else {
-                    items(assets, key = { it.id }) { asset ->
+                    items(assets, key = { it.id }, contentType = { "library_asset" }) { asset ->
                         val isSelected = selectedAssetIds.contains(asset.id)
                         LibraryAssetCard(
                             asset = asset,

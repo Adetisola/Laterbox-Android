@@ -138,8 +138,7 @@ class SurfaceSanitisationTest {
     }
 
     @Test
-    fun mediaDownloadsSettingsScreen_hidesRawDiagnosticsDialogAndExposesSilentSendAction() {
-        var sentCount = 0
+    fun mediaDownloadsSettingsScreen_hidesInternalTechnicalAndDiagnosticsEntries() {
         composeRule.setContent {
             LaterboxTheme {
                 MediaDownloadsSettingsScreen(
@@ -151,7 +150,7 @@ class SurfaceSanitisationTest {
                     onUpdateYtDlpClick = {},
                     ytDlpState = YtDlpInitState.NotInitialized,
                     ffmpegState = FfmpegInitState.NotInitialized,
-                    onSendPlaybackDiagnostics = { sentCount++ },
+                    onSendPlaybackDiagnostics = {},
                     onRetryInitializeEngine = {},
                     onSetCustomExportDirectory = { _, _ -> },
                     onClearCustomExportDirectory = {},
@@ -162,12 +161,10 @@ class SurfaceSanitisationTest {
 
         assertEquals(0, composeRule.onAllNodesWithText("Diagnostics").fetchSemanticsNodes().size)
         assertEquals(0, composeRule.onAllNodesWithText("Media Engine Diagnostics").fetchSemanticsNodes().size)
-        composeRule.onNodeWithText("Send playback diagnostics to Laterbox")
-            .performScrollTo()
-            .assertIsDisplayed()
-            .performClick()
-        assertEquals(1, sentCount)
-        assertEquals(0, composeRule.onAllNodesWithText("Media Engine Diagnostics").fetchSemanticsNodes().size)
+        assertEquals(0, composeRule.onAllNodesWithText("Send playback diagnostics to Laterbox").fetchSemanticsNodes().size)
+        assertEquals(0, composeRule.onAllNodesWithText("Fast engine").fetchSemanticsNodes().size)
+        assertEquals(0, composeRule.onAllNodesWithText("Media Extractor (yt-dlp)").fetchSemanticsNodes().size)
+        assertEquals(0, composeRule.onAllNodesWithText("Media Stream Muxer (FFmpeg)").fetchSemanticsNodes().size)
     }
 
     @Test

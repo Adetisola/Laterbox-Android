@@ -118,7 +118,7 @@ fun AboutLaterboxSection(
                     color = colors.textPrimary
                 )
                 Text(
-                    text = "A calm, local-first space for your saved links, notes, collections, and offline media. Your saved library stays on your device with no user accounts, no advertising SDKs, and no third-party ad tracking.",
+                    text = "Laterbox is your personal media library. Discover movies and TV, save what you love, and download for offline viewing. Built for a clean, fast experience.",
                     style = typography.bodySecondary,
                     color = colors.textSecondary
                 )

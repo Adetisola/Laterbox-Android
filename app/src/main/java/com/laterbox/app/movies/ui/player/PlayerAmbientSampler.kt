@@ -41,9 +41,10 @@ internal object PlayerAmbientSampler {
     internal const val COLOR_BLEND_NORMAL_MS = 220
     internal const val COLOR_BLEND_SCENE_CUT_MS = 160
     internal const val SCENE_CUT_DELTA_THRESHOLD = 0.22f
-    const val AMBIENT_CENTER_ALPHA = 0.64f
-    const val AMBIENT_MID_ALPHA = 0.34f
-    const val AMBIENT_OUTER_ALPHA = 0.08f
+    const val AMBIENT_CENTER_ALPHA = 0.69f
+    const val AMBIENT_MID_ALPHA = 0.39f
+    const val AMBIENT_OUTER_ALPHA = 0.13f
+    private const val AMBIENT_SATURATION_MULTIPLIER = 1.1f
 
     /**
      * Computes a restrained, atmospheric background tint from sampled ARGB pixels.
@@ -103,7 +104,8 @@ internal object PlayerAmbientSampler {
         }.let { if (it < 0f) it + 360f else it }
 
         val rawSat = if (cMax <= 0.0001f) 0f else (delta / cMax)
-        val clampedSat = if (rawSat < 0.08f) rawSat * 0.5f else rawSat.coerceIn(0.14f, 0.66f)
+        val boostedSat = rawSat * AMBIENT_SATURATION_MULTIPLIER
+        val clampedSat = if (rawSat < 0.08f) boostedSat * 0.5f else boostedSat.coerceIn(0.14f, 0.70f)
         val clampedVal = if (cMax < 0.14f) {
             (cMax * 0.85f).coerceIn(0f, 0.14f)
         } else {

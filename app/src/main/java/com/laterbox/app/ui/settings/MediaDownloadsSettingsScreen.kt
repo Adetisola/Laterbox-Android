@@ -183,209 +183,62 @@ fun MediaDownloadsSettingsScreen(
 
                     SettingsDivider()
 
-                    // Fast engine (warm background extractor process)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Fast engine",
-                                style = typography.uiMedium,
-                                color = colors.textPrimary
-                            )
-                            Text(
-                                text = "Keep extractor warm in background for faster format discovery",
-                                style = typography.bodySecondary.copy(fontSize = 12.sp),
-                                color = colors.textSecondary
-                            )
-                        }
-
-                        Switch(
-                            checked = preferences.fastEngineEnabled,
-                            onCheckedChange = onFastEngineEnabledChange,
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = colors.surfaceElevated,
-                                checkedTrackColor = colors.accentPrimary
-                            )
+                    // Export Location (SAF DocumentTree)
+                    Column(verticalArrangement = Arrangement.spacedBy(spacing.xs)) {
+                        Text(
+                            text = "Export Storage Location",
+                            style = typography.uiMedium,
+                            color = colors.textPrimary
                         )
-                    }
+                        Text(
+                            text = "Choose where downloaded media files are copied when exported. By default, files are exported to the system Downloads/Laterbox folder.",
+                            style = typography.bodySecondary.copy(fontSize = 12.sp),
+                            color = colors.textSecondary
+                        )
 
-                    SettingsDivider()
+                        Spacer(modifier = Modifier.height(spacing.xxs))
 
-                    // yt-dlp extractor engine status and diagnostics
-                    Column(verticalArrangement = Arrangement.spacedBy(spacing.sm)) {
+                        val currentExportFolder = preferences.customExportDirectoryName ?: "Default (System MediaStore)"
+                        Text(
+                            text = "Current: $currentExportFolder",
+                            style = typography.metaText.copy(fontWeight = FontWeight.Medium),
+                            color = if (preferences.customExportDirectoryUri != null) colors.accentPrimary else colors.textSecondary
+                        )
+
+                        Spacer(modifier = Modifier.height(spacing.xxs))
+
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                            horizontalArrangement = Arrangement.spacedBy(spacing.xs)
                         ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "Media Extractor (yt-dlp)",
-                                    style = typography.uiMedium,
-                                    color = colors.textPrimary
-                                )
-                                val statusText = when (ytDlpState) {
-                                    is YtDlpInitState.Initialized -> {
-                                        val v = ytDlpState.version?.ifBlank { preferences.ytDlpVersion } ?: preferences.ytDlpVersion
-                                        if (v.isNotBlank()) "Ready (v$v)" else "Ready (bundled engine)"
-                                    }
-                                    is YtDlpInitState.Initializing -> "Initializing engine…"
-                                    is YtDlpInitState.Failed -> "Initialization failed"
-                                    is YtDlpInitState.NotInitialized -> "Not initialized"
-                                }
-                                Text(
-                                    text = statusText,
-                                    style = typography.bodySecondary.copy(fontSize = 12.sp),
-                                    color = if (ytDlpState is YtDlpInitState.Failed) colors.statusDanger else colors.textSecondary
-                                )
-                            }
-
-                            Row(horizontalArrangement = Arrangement.spacedBy(spacing.xs)) {
-                                OutlinedButton(
-                                    onClick = onUpdateYtDlpClick,
-                                    enabled = !isUpdatingYtDlp,
-                                    shape = LaterboxShapeTokens.Button
-                                ) {
-                                    if (isUpdatingYtDlp) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(16.dp),
-                                            strokeWidth = 2.dp,
-                                            color = colors.accentPrimary
-                                        )
-                                    } else {
-                                        Text(
-                                            text = "Check Update",
-                                            style = typography.uiMedium.copy(fontSize = 13.sp),
-                                            color = colors.accentPrimary
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        // FFmpeg status sub-row
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Media Stream Muxer (FFmpeg)",
-                                style = typography.metaText,
-                                color = colors.textSecondary
-                            )
-                            val ffmpegStatusText = when (ffmpegState) {
-                                is FfmpegInitState.Initialized -> "Ready (Audio/Video muxing enabled)"
-                                is FfmpegInitState.Initializing -> "Initializing…"
-                                is FfmpegInitState.Failed -> "Unavailable (single streams only)"
-                                is FfmpegInitState.NotInitialized -> "Pending"
-                            }
-                            Text(
-                                text = ffmpegStatusText,
-                                style = typography.metaText,
-                                color = if (ffmpegState is FfmpegInitState.Failed) colors.statusDanger else colors.textSecondary
-                            )
-                        }
-
-                        if (ytDlpState is YtDlpInitState.Failed) {
-                            val failure = (ytDlpState as YtDlpInitState.Failed).error
-                            LaterboxBanner(
-                                text = failure.message,
-                                isWarning = true,
-                                actionText = "Retry",
-                                onActionClick = onRetryInitializeEngine
-                            )
-                        }
-
-                        SettingsDivider()
-
-                        // Export Location (SAF DocumentTree)
-                        Column(verticalArrangement = Arrangement.spacedBy(spacing.xs)) {
-                            Text(
-                                text = "Export Storage Location",
-                                style = typography.uiMedium,
-                                color = colors.textPrimary
-                            )
-                            Text(
-                                text = "Choose where downloaded media files are copied when exported. By default, files are exported to the system Downloads/Laterbox folder.",
-                                style = typography.bodySecondary.copy(fontSize = 12.sp),
-                                color = colors.textSecondary
-                            )
-
-                            Spacer(modifier = Modifier.height(spacing.xxs))
-
-                            val currentExportFolder = preferences.customExportDirectoryName ?: "Default (System MediaStore)"
-                            Text(
-                                text = "Current: $currentExportFolder",
-                                style = typography.metaText.copy(fontWeight = FontWeight.Medium),
-                                color = if (preferences.customExportDirectoryUri != null) colors.accentPrimary else colors.textSecondary
-                            )
-
-                            Spacer(modifier = Modifier.height(spacing.xxs))
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(spacing.xs)
-                            ) {
-                                OutlinedButton(
-                                    onClick = { directoryPickerLauncher.launch(null) },
-                                    shape = LaterboxShapeTokens.Button
-                                ) {
-                                    Icon(
-                                        painter = painterResource(LaterboxIcons.Folder),
-                                        contentDescription = null,
-                                        modifier = Modifier.size(16.dp),
-                                        tint = colors.accentPrimary
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = if (preferences.customExportDirectoryUri != null) "Change Folder" else "Choose Folder",
-                                        style = typography.uiMedium.copy(fontSize = 13.sp),
-                                        color = colors.accentPrimary
-                                    )
-                                }
-
-                                if (preferences.customExportDirectoryUri != null) {
-                                    TextButton(
-                                        onClick = onClearCustomExportDirectory
-                                    ) {
-                                        Text(
-                                            text = "Reset to Default",
-                                            style = typography.uiMedium.copy(fontSize = 13.sp),
-                                            color = colors.textSecondary
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        SettingsDivider()
-
-                        // Silent playback diagnostics action (never displays raw logs, hosts, or status codes)
-                        Column(verticalArrangement = Arrangement.spacedBy(spacing.xs)) {
-                            Text(
-                                text = "Playback Diagnostics",
-                                style = typography.uiMedium,
-                                color = colors.textPrimary
-                            )
-                            Text(
-                                text = "Send anonymous playback health data to help Laterbox investigate playback or download issues.",
-                                style = typography.bodySecondary.copy(fontSize = 12.sp),
-                                color = colors.textSecondary
-                            )
-                            Spacer(modifier = Modifier.height(spacing.xxs))
                             OutlinedButton(
-                                onClick = onSendPlaybackDiagnostics,
+                                onClick = { directoryPickerLauncher.launch(null) },
                                 shape = LaterboxShapeTokens.Button
                             ) {
+                                Icon(
+                                    painter = painterResource(LaterboxIcons.Folder),
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = colors.accentPrimary
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "Send playback diagnostics to Laterbox",
+                                    text = if (preferences.customExportDirectoryUri != null) "Change Folder" else "Choose Folder",
                                     style = typography.uiMedium.copy(fontSize = 13.sp),
                                     color = colors.accentPrimary
                                 )
+                            }
+
+                            if (preferences.customExportDirectoryUri != null) {
+                                TextButton(
+                                    onClick = onClearCustomExportDirectory
+                                ) {
+                                    Text(
+                                        text = "Reset to Default",
+                                        style = typography.uiMedium.copy(fontSize = 13.sp),
+                                        color = colors.textSecondary
+                                    )
+                                }
                             }
                         }
                     }

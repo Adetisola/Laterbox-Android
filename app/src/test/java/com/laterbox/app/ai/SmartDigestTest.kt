@@ -92,11 +92,11 @@ class SmartDigestTest {
 
     @Test
     fun aiFailure_userMessagesAreHonestAndInformative() {
-        assertEquals("No API key configured", AiFailure.NoApiKey.userMessage)
+        assertEquals("No Gemini access key configured", AiFailure.NoApiKey.userMessage)
         assertEquals("Network connection unavailable", AiFailure.Offline.userMessage)
         assertEquals("Request timed out", AiFailure.Timeout.userMessage)
         assertEquals("Assistant is temporarily busy. Please try again shortly.", AiFailure.RateLimited(429).userMessage)
-        assertEquals("Invalid API key or access denied.", AiFailure.AuthError(401).userMessage)
+        assertEquals("Invalid access key or permission denied.", AiFailure.AuthError(401).userMessage)
         assertEquals("Assistant is temporarily unavailable. Please try again shortly.", AiFailure.ServerError(500).userMessage)
         assertEquals("AI returned an empty response", AiFailure.EmptyResponse.userMessage)
         assertEquals("AI returned unparseable content", AiFailure.MalformedResponse.userMessage)

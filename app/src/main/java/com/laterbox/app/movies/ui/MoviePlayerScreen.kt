@@ -1513,11 +1513,12 @@ private fun ActiveVideoPlayerContent(
                             .padding(bottom = 32.dp)
                             .clip(RoundedCornerShape(24.dp))
                             .isolatePlayerControlTouch()
-                            .clickable { isLocked = false }
-                            .testTag("player_unlock_button")
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                            modifier = Modifier
+                                .clickable { isLocked = false }
+                                .padding(horizontal = 16.dp, vertical = 10.dp)
+                                .testTag("player_unlock_button"),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
@@ -1842,9 +1843,9 @@ private fun ActiveVideoPlayerContent(
                         ) {
                             IconButton(
                                 onClick = {
-                                    val activeOrBuffering = exoPlayer.playWhenReady &&
-                                        (exoPlayer.isPlaying || exoPlayer.playbackState == Player.STATE_BUFFERING)
+                                    val activeOrBuffering = exoPlayer.playWhenReady || exoPlayer.isPlaying
                                     if (activeOrBuffering) {
+                                        exoPlayer.playWhenReady = false
                                         exoPlayer.pause()
                                         isPlaying = false
                                     } else {
@@ -1852,6 +1853,7 @@ private fun ActiveVideoPlayerContent(
                                             exoPlayer.seekTo(0L)
                                             isPlaybackEnded = false
                                         }
+                                        exoPlayer.playWhenReady = true
                                         exoPlayer.play()
                                         isPlaying = true
                                     }
@@ -3079,13 +3081,6 @@ internal fun Modifier.isolatePlayerControlTouch(): Modifier = this.pointerInput(
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
         down.consume()
-        while (true) {
-            val event = awaitPointerEvent(PointerEventPass.Main)
-            event.changes.forEach { it.consume() }
-            if (event.changes.none { it.pressed }) {
-                break
-            }
-        }
     }
 }
 

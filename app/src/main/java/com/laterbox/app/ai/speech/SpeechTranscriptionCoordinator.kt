@@ -75,7 +75,7 @@ class SpeechTranscriptionCoordinator(
                 } else {
                     activeTranscriptCallback = null
                     val reason = when {
-                        resolvedKey == null -> "Add a Gemini API key in Settings for voice input."
+                        resolvedKey == null -> "Add a Gemini access key in Settings for voice input."
                         !online -> "You're offline and Android speech recognition isn't available."
                         else -> "Voice transcription is temporarily busy. Try again shortly."
                     }

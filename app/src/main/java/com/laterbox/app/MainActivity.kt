@@ -90,7 +90,7 @@ class MainActivity : ComponentActivity() {
                     preferencesState.value = loadedPrefs
                 }
             }
-            // C7: if DataStore misses the 800ms safety ceiling, render default UserPreferences() briefly until emission arrives.
+            // C7: if DataStore misses the 500ms safety ceiling, render default UserPreferences() briefly until emission arrives.
             val preferences = preferencesState.value ?: UserPreferences()
             androidx.activity.compose.ReportDrawnWhen { preferencesState.value != null }
             val openLinkId by openLinkIdState.collectAsState()

@@ -110,6 +110,13 @@ sealed interface InboxResolveOutcome {
         val requiresReferer: Boolean
     ) : InboxResolveOutcome
 
+    data class AudioMedia(
+        val platform: InboxResolvePlatform,
+        val url: String,
+        val title: String?,
+        val artist: String?
+    ) : InboxResolveOutcome
+
     data class Carousel(
         val platform: InboxResolvePlatform,
         val items: List<InboxCarouselItem>,
@@ -318,6 +325,20 @@ class LaterboxInboxResolverClient(
                         }
                     }
 
+                    "audio" -> {
+                        val audioUrl = json.optString("url").trim()
+                        if (audioUrl.isEmpty()) {
+                            InboxResolveOutcome.Unavailable(platform, 404)
+                        } else {
+                            InboxResolveOutcome.AudioMedia(
+                                platform = platform,
+                                url = audioUrl,
+                                title = json.optString("title").takeIf { it.isNotBlank() && it != "null" },
+                                artist = json.optString("artist").takeIf { it.isNotBlank() && it != "null" }
+                            )
+                        }
+                    }
+
                     "unsupported" -> InboxResolveOutcome.Unsupported(
                         platform = platform,
                         reason = json.optString("reason", "unsupported"),
@@ -407,6 +428,34 @@ class LaterboxInboxResolverClient(
                     InspectionResult.Available(
                         platform = outcome.platform.displayName,
                         thumbnailUrl = outcome.thumbnailUrl,
+                        candidates = listOf(candidate),
+                        isComplete = true
+                    )
+                }
+
+                is InboxResolveOutcome.AudioMedia -> {
+                    val label = listOfNotNull(outcome.artist, outcome.title)
+                        .joinToString(" — ")
+                        .takeIf { it.isNotBlank() }
+                        ?: "Audio MP3"
+                    val candidate = MediaCandidate(
+                        candidateId = "inbox_spotify_audio",
+                        mediaType = MediaType.AUDIO,
+                        formatLabel = label,
+                        estimatedBytes = null,
+                        durationMs = null,
+                        width = null,
+                        height = null,
+                        source = AcquisitionSource.DirectHttp(url = outcome.url),
+                        ext = "mp3",
+                        hasVideo = false,
+                        hasAudio = true,
+                        isBest = true,
+                        extractor = "inbox_backend"
+                    )
+                    InspectionResult.Available(
+                        platform = outcome.platform.displayName,
+                        thumbnailUrl = null,
                         candidates = listOf(candidate),
                         isComplete = true
                     )

@@ -46,6 +46,9 @@ import com.laterbox.app.ui.theme.LaterboxTheme
 class SyncedTextFieldController internal constructor(
     initialText: String
 ) {
+    var text by mutableStateOf(initialText)
+        private set
+
     var value by mutableStateOf(
         TextFieldValue(
             text = initialText,
@@ -58,16 +61,16 @@ class SyncedTextFieldController internal constructor(
     private val unconfirmedLocalTexts = ArrayDeque<String>()
     private val seenTextHistory = ArrayDeque<String>().apply { addLast(initialText) }
 
-    private fun recordSeenText(text: String) {
-        if (seenTextHistory.lastOrNull() == text) return
+    private fun recordSeenText(candidate: String) {
+        if (seenTextHistory.lastOrNull() == candidate) return
         if (seenTextHistory.size >= 64) {
             seenTextHistory.removeFirst()
         }
-        seenTextHistory.addLast(text)
+        seenTextHistory.addLast(candidate)
     }
 
     internal fun syncExternal(externalText: String) {
-        if (externalText == value.text) {
+        if (externalText == text) {
             lastObservedExternalText = externalText
             unconfirmedLocalTexts.clear()
             recordSeenText(externalText)
@@ -93,14 +96,33 @@ class SyncedTextFieldController internal constructor(
 
         unconfirmedLocalTexts.clear()
         recordSeenText(externalText)
+        text = externalText
         value = TextFieldValue(
             text = externalText,
             selection = TextRange(externalText.length)
         )
     }
 
+    fun onLocalTextChange(nextText: String, onExternalChange: (String) -> Unit) {
+        val textChanged = nextText != text
+        text = nextText
+        value = TextFieldValue(
+            text = nextText,
+            selection = TextRange(nextText.length)
+        )
+        if (textChanged) {
+            if (unconfirmedLocalTexts.size >= 32) {
+                unconfirmedLocalTexts.removeFirst()
+            }
+            unconfirmedLocalTexts.addLast(nextText)
+            recordSeenText(nextText)
+            onExternalChange(nextText)
+        }
+    }
+
     fun onLocalValueChange(next: TextFieldValue, onExternalChange: (String) -> Unit) {
-        val textChanged = next.text != value.text
+        val textChanged = next.text != text
+        text = next.text
         value = next
         if (textChanged) {
             if (unconfirmedLocalTexts.size >= 32) {
@@ -113,6 +135,7 @@ class SyncedTextFieldController internal constructor(
     }
 
     fun clearLocal(onExternalClear: () -> Unit) {
+        text = ""
         value = TextFieldValue("")
         lastObservedExternalText = ""
         unconfirmedLocalTexts.clear()
@@ -170,7 +193,7 @@ fun LaterboxSearchField(
             Spacer(modifier = Modifier.width(spacing.sm))
 
             Box(modifier = Modifier.weight(1f)) {
-                if (searchController.value.text.isEmpty()) {
+                if (searchController.text.isEmpty()) {
                     Text(
                         text = placeholder,
                         style = typography.bodySecondary,
@@ -178,9 +201,9 @@ fun LaterboxSearchField(
                     )
                 }
                 BasicTextField(
-                    value = searchController.value,
+                    value = searchController.text,
                     onValueChange = { next ->
-                        searchController.onLocalValueChange(next, onQueryChange)
+                        searchController.onLocalTextChange(next, onQueryChange)
                     },
                     singleLine = true,
                     textStyle = typography.bodyPrimary.copy(color = colors.textPrimary),
@@ -193,7 +216,7 @@ fun LaterboxSearchField(
                 )
             }
 
-            if (searchController.value.text.isNotEmpty() || query.isNotEmpty()) {
+            if (searchController.text.isNotEmpty() || query.isNotEmpty()) {
                 Box(
                     modifier = Modifier
                         .size(36.dp)

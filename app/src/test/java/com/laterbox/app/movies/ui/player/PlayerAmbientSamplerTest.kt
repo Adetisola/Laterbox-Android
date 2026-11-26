@@ -51,9 +51,9 @@ class PlayerAmbientSamplerTest {
 
     @Test
     fun ambientBackdropAlphas_stayRestrainedWithSlightlyIncreasedProminence() {
-        assertEquals(0.64f, PlayerAmbientSampler.AMBIENT_CENTER_ALPHA, 0.0001f)
-        assertEquals(0.34f, PlayerAmbientSampler.AMBIENT_MID_ALPHA, 0.0001f)
-        assertEquals(0.08f, PlayerAmbientSampler.AMBIENT_OUTER_ALPHA, 0.0001f)
+        assertEquals(0.69f, PlayerAmbientSampler.AMBIENT_CENTER_ALPHA, 0.0001f)
+        assertEquals(0.39f, PlayerAmbientSampler.AMBIENT_MID_ALPHA, 0.0001f)
+        assertEquals(0.13f, PlayerAmbientSampler.AMBIENT_OUTER_ALPHA, 0.0001f)
         assertTrue(PlayerAmbientSampler.AMBIENT_CENTER_ALPHA > PlayerAmbientSampler.AMBIENT_MID_ALPHA)
         assertTrue(PlayerAmbientSampler.AMBIENT_MID_ALPHA > PlayerAmbientSampler.AMBIENT_OUTER_ALPHA)
         assertTrue(PlayerAmbientSampler.AMBIENT_CENTER_ALPHA <= 0.70f)

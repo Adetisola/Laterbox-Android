@@ -10,7 +10,7 @@ import java.util.concurrent.CopyOnWriteArrayList
  */
 object SplashTimingLogger {
     const val TAG = "LaterboxSplash"
-    const val SAFETY_CEILING_MS = 800L
+    const val SAFETY_CEILING_MS = 500L
 
     data class SplashSample(
         val splashStartElapsedMs: Long,

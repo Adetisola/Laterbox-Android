@@ -23,7 +23,7 @@ sealed interface AiFailure {
     val userMessage: String
 
     data object NoApiKey : AiFailure {
-        override val userMessage: String = "No API key configured"
+        override val userMessage: String = "No Gemini access key configured"
     }
 
     data object Offline : AiFailure {
@@ -39,7 +39,7 @@ sealed interface AiFailure {
     }
 
     data class AuthError(val code: Int) : AiFailure {
-        override val userMessage: String = "Invalid API key or access denied."
+        override val userMessage: String = "Invalid access key or permission denied."
     }
 
     data class ServerError(val code: Int, val details: String? = null) : AiFailure {

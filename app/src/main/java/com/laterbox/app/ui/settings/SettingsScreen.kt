@@ -184,7 +184,7 @@ fun SettingsScreen(
                 SettingsCategoryRow(
                     iconRes = LaterboxIcons.Download,
                     title = "Media & Downloads",
-                    subtitle = "Download tools, network policy, export storage",
+                    subtitle = "Network policy, auto-inspect links, export storage",
                     onClick = onNavigateToMediaDownloads
                 )
 

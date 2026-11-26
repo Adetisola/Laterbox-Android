@@ -382,7 +382,7 @@ fun InboxScreen(
 
                                     val inboxSearchController = com.laterbox.app.ui.components.rememberSyncedTextFieldController(uiState.searchQuery)
                                     Box(modifier = Modifier.weight(1f)) {
-                                        if (inboxSearchController.value.text.isEmpty()) {
+                                        if (inboxSearchController.text.isEmpty()) {
                                             Text(
                                                 text = "Search links, titles, notes...",
                                                 style = typography.bodySecondary,
@@ -390,9 +390,9 @@ fun InboxScreen(
                                             )
                                         }
                                         BasicTextField(
-                                            value = inboxSearchController.value,
+                                            value = inboxSearchController.text,
                                             onValueChange = { next ->
-                                                inboxSearchController.onLocalValueChange(next, onSearchQueryChange)
+                                                inboxSearchController.onLocalTextChange(next, onSearchQueryChange)
                                             },
                                             singleLine = true,
                                             textStyle = typography.bodyPrimary.copy(color = colors.textPrimary),
@@ -403,7 +403,7 @@ fun InboxScreen(
                                         )
                                     }
 
-                                    if (inboxSearchController.value.text.isNotEmpty() || uiState.searchQuery.isNotEmpty()) {
+                                    if (inboxSearchController.text.isNotEmpty() || uiState.searchQuery.isNotEmpty()) {
                                         Box(
                                             modifier = Modifier
                                                 .size(36.dp)

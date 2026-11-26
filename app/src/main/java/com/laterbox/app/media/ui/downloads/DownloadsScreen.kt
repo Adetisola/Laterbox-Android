@@ -488,7 +488,7 @@ internal fun DownloadsScreenContent(
 
                             val downloadsSearchController = com.laterbox.app.ui.components.rememberSyncedTextFieldController(uiState.searchQuery)
                             Box(modifier = Modifier.weight(1f)) {
-                                if (downloadsSearchController.value.text.isEmpty()) {
+                                if (downloadsSearchController.text.isEmpty()) {
                                     Text(
                                         text = "Search title, format, platform...",
                                         style = typography.bodySecondary,
@@ -496,9 +496,9 @@ internal fun DownloadsScreenContent(
                                     )
                                 }
                                 BasicTextField(
-                                    value = downloadsSearchController.value,
+                                    value = downloadsSearchController.text,
                                     onValueChange = { next ->
-                                        downloadsSearchController.onLocalValueChange(next, onSearchQueryChange)
+                                        downloadsSearchController.onLocalTextChange(next, onSearchQueryChange)
                                     },
                                     singleLine = true,
                                     textStyle = typography.bodyPrimary.copy(color = colors.textPrimary),
@@ -509,7 +509,7 @@ internal fun DownloadsScreenContent(
                                 )
                             }
 
-                            if (downloadsSearchController.value.text.isNotEmpty() || uiState.searchQuery.isNotEmpty()) {
+                            if (downloadsSearchController.text.isNotEmpty() || uiState.searchQuery.isNotEmpty()) {
                                 Box(
                                     modifier = Modifier
                                         .size(36.dp)
@@ -653,7 +653,7 @@ internal fun DownloadsScreenContent(
                 ) {
                     // 1. Active Queue Section on top
                     if (uiState.queueTasks.isNotEmpty()) {
-                        item(key = "queue_section_header") {
+                        item(key = "queue_section_header", contentType = "section_header") {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -675,7 +675,11 @@ internal fun DownloadsScreenContent(
                             }
                         }
 
-                        items(uiState.queueTasks, key = { "q_${it.id}" }) { task ->
+                        items(
+                            items = uiState.queueTasks,
+                            key = { "q_${it.id}" },
+                            contentType = { "queue_task" }
+                        ) { task ->
                             val isSelected = uiState.selectedTaskIds.contains(task.id)
                             QueueTaskCard(
                                 task = task,
@@ -699,7 +703,7 @@ internal fun DownloadsScreenContent(
 
                     // 2. Ready to download carousel
                     if (uiState.readyToDownloadItems.isNotEmpty()) {
-                        item(key = "ready_to_download_section") {
+                        item(key = "ready_to_download_section", contentType = "ready_carousel") {
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -742,7 +746,7 @@ internal fun DownloadsScreenContent(
                     }
 
                     // 3. Sticky Library Category Filters
-                    stickyHeader(key = "library_filter_chips") {
+                    stickyHeader(key = "library_filter_chips", contentType = "filter_chips") {
                         Surface(
                             modifier = Modifier.fillMaxWidth(),
                             color = colors.backgroundPrimary
@@ -793,7 +797,7 @@ internal fun DownloadsScreenContent(
                         DownloadedSeriesGrouper.group(uiState.assets)
                     }
                     if (effectiveEntries.isEmpty()) {
-                        item(key = "empty_filter_state") {
+                        item(key = "empty_filter_state", contentType = "empty_state") {
                             EmptyStateView(
                                 title = "No ${uiState.selectedCategory.label.lowercase()} downloads",
                                 subtitle = if (uiState.searchQuery.isNotBlank()) {
@@ -804,7 +808,16 @@ internal fun DownloadsScreenContent(
                             )
                         }
                     } else {
-                        items(effectiveEntries, key = { it.entryKey }) { entry ->
+                        items(
+                            items = effectiveEntries,
+                            key = { it.entryKey },
+                            contentType = { entry ->
+                                when (entry) {
+                                    is DownloadLibraryEntry.SeriesGroup -> "series_group"
+                                    is DownloadLibraryEntry.SingleAsset -> "library_asset"
+                                }
+                            }
+                        ) { entry ->
                             when (entry) {
                                 is DownloadLibraryEntry.SeriesGroup -> {
                                     val allGroupIdsSelected = entry.allAssets.isNotEmpty() &&

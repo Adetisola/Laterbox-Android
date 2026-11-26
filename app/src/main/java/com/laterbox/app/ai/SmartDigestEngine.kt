@@ -87,7 +87,7 @@ object SmartDigestEngine {
 
         return Pair(
             false,
-            "No API key entered. Paste your Google AI Studio API key (AIzaSy...) from aistudio.google.com above."
+            "No access key entered. Paste your Google AI Studio key from aistudio.google.com above."
         )
     }
 
@@ -126,11 +126,11 @@ object SmartDigestEngine {
                     val errorStreamText = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
                     val message = when {
                         errorStreamText.contains("API_KEY_SERVICE_BLOCKED") ->
-                            "Google Generative Language API is blocked on this key. In Google Cloud Console, select 'Don't restrict key' or add 'Generative Language API'."
+                            "Generative Language access is restricted on this key. In Google Cloud Console, allow Generative Language access or use an unrestricted key."
                         code == 429 ->
                             "Too many requests right now. Please wait a moment and try again."
                         code == 400 || code == 401 || code == 403 ->
-                            "Invalid API key or access denied."
+                            "Invalid access key or permission denied."
                         else ->
                             "Assistant is temporarily unavailable. Please try again shortly."
                     }

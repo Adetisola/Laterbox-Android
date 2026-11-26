@@ -412,8 +412,10 @@ fun MediaSection(
                             }
 
                             Spacer(modifier = Modifier.height(12.dp))
+                            val isSpotifyUnsupported = com.laterbox.app.media.data.inbox.InboxLinkRouter.routeForUrl(linkUrl) ==
+                                com.laterbox.app.media.data.inbox.InboxResolvePlatform.SPOTIFY
                             LaterboxPrimaryButton(
-                                text = "Open in browser",
+                                text = if (isSpotifyUnsupported) "Open in Spotify" else "Open in browser",
                                 onClick = {
                                     runCatching {
                                         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(linkUrl)))
@@ -480,8 +482,10 @@ fun MediaSection(
                             }
 
                             Spacer(modifier = Modifier.height(12.dp))
+                            val isSpotifyFailed = com.laterbox.app.media.data.inbox.InboxLinkRouter.routeForUrl(linkUrl) ==
+                                com.laterbox.app.media.data.inbox.InboxResolvePlatform.SPOTIFY
                             LaterboxPrimaryButton(
-                                text = "Open in browser",
+                                text = if (isSpotifyFailed) "Open in Spotify" else "Open in browser",
                                 onClick = {
                                     runCatching {
                                         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(linkUrl)))

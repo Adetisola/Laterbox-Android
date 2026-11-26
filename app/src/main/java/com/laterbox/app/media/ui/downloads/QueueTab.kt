@@ -138,7 +138,7 @@ fun QueueTab(
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 112.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                items(tasks, key = { it.id }) { task ->
+                items(tasks, key = { it.id }, contentType = { "queue_task" }) { task ->
                     val isSelected = selectedTaskIds.contains(task.id)
                     QueueTaskCard(
                         task = task,

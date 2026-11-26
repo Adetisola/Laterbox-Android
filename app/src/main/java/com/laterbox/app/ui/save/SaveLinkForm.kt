@@ -329,8 +329,11 @@ fun SaveLinkForm(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
+                    val isSpotify = resolution.platformLabel.equals("Spotify", ignoreCase = true) ||
+                        com.laterbox.app.media.data.inbox.InboxLinkRouter.routeForUrl(resolution.rawUrl) ==
+                        com.laterbox.app.media.data.inbox.InboxResolvePlatform.SPOTIFY
                     LaterboxSecondaryButton(
-                        text = "Open in browser",
+                        text = if (isSpotify) "Open in Spotify" else "Open in browser",
                         onClick = {
                             runCatching {
                                 context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(resolution.rawUrl)))

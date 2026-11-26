@@ -1,14 +1,22 @@
 package com.laterbox.app.movies
 
+import android.content.res.Configuration
 import androidx.compose.foundation.layout.Column
 import androidx.compose.material3.Text
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.down
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.moveBy
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.up
 import com.laterbox.app.movies.domain.model.PlaybackResolution
 import com.laterbox.app.movies.domain.model.PlaybackSource
 import com.laterbox.app.movies.ui.MoviePlayerScreen
@@ -239,6 +247,77 @@ class PlayerResponsivenessAndTouchTest {
         composeTestRule.onNodeWithTag("vol_boosted").assertIsDisplayed()
         composeTestRule.onNodeWithTag("boost_active").assertIsDisplayed()
         assertFalse(false)
+    }
+
+    @Test
+    fun `play pause quality and unlock buttons fire cleanly when touched with finger jitter`() {
+        val src720 = PlaybackSource("s720", "https://archive.org/720.mp4", "MP4", "720p", 720, providerName = "Laterbox", isAuthorised = true)
+        val src360 = PlaybackSource("s360", "https://archive.org/360.mp4", "MP4", "360p", 360, providerName = "Laterbox", isAuthorised = true)
+        var selectedQuality: String? = null
+
+        composeTestRule.setContent {
+            val landscapeConfig = Configuration(LocalConfiguration.current).apply {
+                orientation = Configuration.ORIENTATION_LANDSCAPE
+            }
+            CompositionLocalProvider(LocalConfiguration provides landscapeConfig) {
+                LaterboxTheme {
+                    MoviePlayerScreen(
+                        uiState = MoviePlayerUiState(
+                            isLoading = false,
+                            resolution = PlaybackResolution.Available(
+                                title = "Big Buck Bunny",
+                                sources = listOf(src720, src360)
+                            ),
+                            selectedSource = src720
+                        ),
+                        onBackClick = {},
+                        onRetry = {},
+                        onSelectSource = { src, _ -> selectedQuality = src.qualityLabel },
+                        onSelectSubtitle = { _, _ -> },
+                        onSaveProgress = { _, _ -> },
+                        onOpenExternalUrl = {}
+                    )
+                }
+            }
+        }
+
+        // 1. Play/pause responds cleanly even with sub-touch-slop finger jitter
+        composeTestRule.onNodeWithTag("player_play_pause_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_play_pause_button").performTouchInput {
+            down(center)
+            moveBy(Offset(2f, 2f))
+            up()
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("player_play_pause_button").assertIsDisplayed()
+
+        // 2. Quality button opens quality picker and selection triggers onSelectSource
+        composeTestRule.onNodeWithTag("player_quality_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_quality_button").performTouchInput {
+            down(center)
+            moveBy(Offset(2f, 2f))
+            up()
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("player_quality_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithText("360p · MP4").performTouchInput {
+            down(center)
+            moveBy(Offset(2f, 2f))
+            up()
+        }
+        composeTestRule.waitForIdle()
+        assertEquals("360p", selectedQuality)
+
+        // 3. Lock -> unlock button responds with touch jitter
+        composeTestRule.onNodeWithTag("player_lock_button").assertIsDisplayed().performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("player_unlock_button").assertIsDisplayed().performTouchInput {
+            down(center)
+            moveBy(Offset(2f, 2f))
+            up()
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("player_lock_button").assertIsDisplayed()
     }
 
     @Test

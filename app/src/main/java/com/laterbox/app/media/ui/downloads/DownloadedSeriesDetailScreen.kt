@@ -250,7 +250,7 @@ fun DownloadedSeriesDetailScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             seriesGroup.seasons.forEach { season ->
-                item(key = "season_header_${season.seasonNumber}") {
+                item(key = "season_header_${season.seasonNumber}", contentType = "season_header") {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -274,7 +274,8 @@ fun DownloadedSeriesDetailScreen(
 
                 items(
                     items = season.episodes,
-                    key = { "ep_${it.asset.id}" }
+                    key = { "ep_${it.asset.id}" },
+                    contentType = { "episode_asset" }
                 ) { episodeEntry ->
                     val asset = episodeEntry.asset
                     LibraryAssetCard(
@@ -292,7 +293,7 @@ fun DownloadedSeriesDetailScreen(
                     )
                 }
             }
-            item(key = "bottom_spacer") {
+            item(key = "bottom_spacer", contentType = "spacer") {
                 Spacer(modifier = Modifier.height(64.dp))
             }
         }
