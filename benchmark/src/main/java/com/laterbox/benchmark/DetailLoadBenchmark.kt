@@ -21,14 +21,19 @@ class DetailLoadBenchmark {
     val benchmarkRule = MacrobenchmarkRule()
 
     @Test
-    fun navigateSearchToDetail() = benchmarkRule.measureRepeated(
+    fun navigateSearchToDetailNoCompilation() = measureDetailLoad(CompilationMode.None())
+
+    @Test
+    fun navigateSearchToDetail() = measureDetailLoad(CompilationMode.Partial())
+
+    private fun measureDetailLoad(compilationMode: CompilationMode) = benchmarkRule.measureRepeated(
         packageName = BenchmarkNavigationHelper.TARGET_PACKAGE,
         metrics = listOf(
             FrameTimingMetric(),
             TraceSectionMetric("LaterboxDetailTTID", TraceSectionMetric.Mode.First),
             TraceSectionMetric("LaterboxDetailTTFD", TraceSectionMetric.Mode.First),
         ),
-        compilationMode = CompilationMode.Partial(),
+        compilationMode = compilationMode,
         startupMode = StartupMode.WARM,
         iterations = 5,
         setupBlock = {

@@ -154,21 +154,12 @@ fun LaterboxApp(
     val haptics = rememberLaterboxHaptics()
     val reducedMotion = rememberReducedMotion()
 
-    // ViewModels
+    // Root-shell ViewModels only; screen/sheet ViewModels are scoped to their destinations/overlays.
     val inboxViewModel: InboxViewModel = viewModel(factory = AppViewModelProvider.Factory)
-    val collectionsViewModel: CollectionsViewModel = viewModel(factory = AppViewModelProvider.Factory)
-    val collectionDetailViewModel: CollectionDetailViewModel = viewModel(factory = AppViewModelProvider.Factory)
-    val archiveViewModel: ArchiveViewModel = viewModel(factory = AppViewModelProvider.Factory)
-    val saveLinkViewModel: SaveLinkViewModel = viewModel(factory = AppViewModelProvider.Factory)
-    val savedItemDetailViewModel: SavedItemDetailViewModel = viewModel(factory = AppViewModelProvider.Factory)
     val settingsViewModel: SettingsViewModel = viewModel(factory = AppViewModelProvider.Factory)
-    val notificationHistoryViewModel: com.laterbox.app.ui.notifications.NotificationHistoryViewModel = viewModel(factory = AppViewModelProvider.Factory)
     val downloadsViewModel: com.laterbox.app.media.ui.downloads.DownloadsViewModel = viewModel(factory = AppViewModelProvider.Factory)
     val chatViewModel: ChatViewModel = viewModel(factory = AppViewModelProvider.Factory)
     val youTubeTranscriptViewModel: com.laterbox.app.transcript.ui.YouTubeTranscriptViewModel = viewModel(factory = AppViewModelProvider.Factory)
-    val moviesHomeViewModel: com.laterbox.app.movies.ui.MoviesHomeViewModel = viewModel(factory = AppViewModelProvider.Factory)
-    val moviesCatalogueViewModel: com.laterbox.app.movies.ui.MoviesCatalogueViewModel = viewModel(factory = AppViewModelProvider.Factory)
-    val movieDetailViewModel: com.laterbox.app.movies.ui.MovieDetailViewModel = viewModel(factory = AppViewModelProvider.Factory)
 
     // Current route & shared state observation
     val navBackStackEntry by navController.currentBackStackEntryAsState()
@@ -400,6 +391,8 @@ fun LaterboxApp(
 
     // Modal sheet states
     var showSaveSheet by remember { mutableStateOf(false) }
+    var pendingSaveReset by remember { mutableStateOf(false) }
+    var createCollectionRequestNonce by remember { mutableIntStateOf(0) }
     var selectedLinkForDetails by remember { mutableStateOf<SavedLink?>(null) }
     var detailSheetInitialTab by remember { mutableStateOf(DetailSheetTab.DETAILS) }
     var detailSheetSessionNonce by remember { mutableIntStateOf(0) }
@@ -418,7 +411,6 @@ fun LaterboxApp(
         } else {
             DetailSheetTab.DETAILS
         }
-        savedItemDetailViewModel.setLink(link)
         detailSheetSessionNonce += 1
         detailSheetInitialTab = effectiveTab
         detailSheetActiveTab = effectiveTab
@@ -568,16 +560,12 @@ fun LaterboxApp(
         val navigateTopLevel: (String) -> Unit = { route ->
             haptics.tick()
             closeDrawerIfNarrow()
-            if (route == LaterboxDestination.Inbox.route) {
-                navController.navigate(route) {
-                    popUpTo(LaterboxDestination.Inbox.route) { inclusive = true }
-                    launchSingleTop = true
+            navController.navigate(route) {
+                popUpTo(navController.graph.startDestinationId) {
+                    saveState = true
                 }
-            } else {
-                navController.navigate(route) {
-                    popUpTo(LaterboxDestination.Inbox.route)
-                    launchSingleTop = true
-                }
+                launchSingleTop = true
+                restoreState = true
             }
         }
 
@@ -743,7 +731,7 @@ fun LaterboxApp(
                                 onLinkClick = handleCardTap,
                                 onQuickOpenClick = handleOpenLink,
                                 onAddLinkClick = {
-                                    saveLinkViewModel.reset()
+                                    pendingSaveReset = true
                                     showSaveSheet = true
                                 },
                                 onSettingsClick = {
@@ -1068,7 +1056,7 @@ fun LaterboxApp(
                                 onAlwaysAllowMutatingAction = { chatViewModel.alwaysAllowMutatingActionInConversation() },
                                 onDismissNotice = { chatViewModel.clearStatusNotice() },
                                 onAddLinkClick = {
-                                    saveLinkViewModel.reset()
+                                    pendingSaveReset = true
                                     showSaveSheet = true
                                 },
                                 onMicClick = { beginDictationFor("CHAT") },
@@ -1111,6 +1099,12 @@ fun LaterboxApp(
 
                         // Collections Screen
                         composable(LaterboxDestination.Collections.route) {
+                            val collectionsViewModel: CollectionsViewModel = viewModel(factory = AppViewModelProvider.Factory)
+                            LaunchedEffect(createCollectionRequestNonce) {
+                                if (createCollectionRequestNonce > 0) {
+                                    collectionsViewModel.onOpenCreateDialog()
+                                }
+                            }
                             val uiState by collectionsViewModel.uiState.collectAsState()
                             CollectionsScreen(
                                 uiState = uiState,
@@ -1146,6 +1140,7 @@ fun LaterboxApp(
                                 navArgument("collectionName") { type = NavType.StringType }
                             )
                         ) { backStackEntry ->
+                            val collectionDetailViewModel: CollectionDetailViewModel = viewModel(factory = AppViewModelProvider.Factory)
                             val collectionId = backStackEntry.arguments?.getLong("collectionId") ?: 0L
                             val collectionName = backStackEntry.arguments?.getString("collectionName") ?: ""
 
@@ -1185,6 +1180,7 @@ fun LaterboxApp(
 
                         // Archive Screen
                         composable(LaterboxDestination.Archive.route) {
+                            val archiveViewModel: ArchiveViewModel = viewModel(factory = AppViewModelProvider.Factory)
                             val uiState by archiveViewModel.uiState.collectAsState()
                             ArchiveScreen(
                                 uiState = uiState,
@@ -1305,6 +1301,7 @@ fun LaterboxApp(
 
                         // Movies & TV Discovery Home
                         composable(LaterboxDestination.Movies.route) {
+                            val moviesHomeViewModel: com.laterbox.app.movies.ui.MoviesHomeViewModel = viewModel(factory = AppViewModelProvider.Factory)
                             val moviesUiState by moviesHomeViewModel.uiState.collectAsState()
                             LaunchedEffect(moviesUiState.actionFeedbackMessage) {
                                 val msg = moviesUiState.actionFeedbackMessage ?: return@LaunchedEffect
@@ -1407,7 +1404,15 @@ fun LaterboxApp(
                         }
 
                         // Dedicated Watchlist Grid Screen
-                        composable(LaterboxDestination.MoviesWatchlist.route) {
+                        composable(LaterboxDestination.MoviesWatchlist.route) { backStackEntry ->
+                            val moviesParentEntry = remember(backStackEntry) {
+                                runCatching { navController.getBackStackEntry(LaterboxDestination.Movies.route) }
+                                    .getOrElse { backStackEntry }
+                            }
+                            val moviesHomeViewModel: com.laterbox.app.movies.ui.MoviesHomeViewModel = viewModel(
+                                viewModelStoreOwner = moviesParentEntry,
+                                factory = AppViewModelProvider.Factory
+                            )
                             val watchlistUiState by moviesHomeViewModel.uiState.collectAsState()
                             LaunchedEffect(watchlistUiState.actionFeedbackMessage) {
                                 val msg = watchlistUiState.actionFeedbackMessage ?: return@LaunchedEffect
@@ -1469,6 +1474,7 @@ fun LaterboxApp(
                             val focusSearch = backStackEntry.arguments?.getBoolean("focusSearch") == true
                             val initialKind = rawKind?.let { com.laterbox.app.movies.domain.model.MediaKind.fromWire(it) }
                             val initialSort = com.laterbox.app.movies.domain.model.CatalogueSort.fromWire(rawSort)
+                            val moviesCatalogueViewModel: com.laterbox.app.movies.ui.MoviesCatalogueViewModel = viewModel(factory = AppViewModelProvider.Factory)
 
                             LaunchedEffect(backStackEntry.id) {
                                 moviesCatalogueViewModel.initialize(
@@ -1545,6 +1551,7 @@ fun LaterboxApp(
                         ) { backStackEntry ->
                             val providerId = backStackEntry.arguments?.getString("providerId").orEmpty()
                             val titleId = backStackEntry.arguments?.getString("titleId").orEmpty()
+                            val movieDetailViewModel: com.laterbox.app.movies.ui.MovieDetailViewModel = viewModel(factory = AppViewModelProvider.Factory)
                             LaunchedEffect(providerId, titleId) {
                                 movieDetailViewModel.load(providerId, titleId)
                             }
@@ -1905,6 +1912,7 @@ fun LaterboxApp(
 
                         // Notification History Screen
                         composable(LaterboxDestination.NotificationHistory.route) {
+                            val notificationHistoryViewModel: com.laterbox.app.ui.notifications.NotificationHistoryViewModel = viewModel(factory = AppViewModelProvider.Factory)
                             com.laterbox.app.ui.notifications.NotificationHistoryScreen(
                                 viewModel = notificationHistoryViewModel,
                                 onNavigateBack = { navController.popBackStack() },
@@ -2050,7 +2058,7 @@ fun LaterboxApp(
                                                     }
                                                 },
                                                 onAddLinkClick = {
-                                                    saveLinkViewModel.reset()
+                                                    pendingSaveReset = true
                                                     showSaveSheet = true
                                                 },
                                                 onMicClick = { beginDictationFor("INBOX") },
@@ -2077,11 +2085,11 @@ fun LaterboxApp(
                                                 haptics.tick()
                                                 when (activeTabDockSpec.kind) {
                                                     com.laterbox.app.ui.components.TabQuickActionKind.SAVE_LINK -> {
-                                                        saveLinkViewModel.reset()
+                                                        pendingSaveReset = true
                                                         showSaveSheet = true
                                                     }
                                                     com.laterbox.app.ui.components.TabQuickActionKind.NEW_COLLECTION -> {
-                                                        collectionsViewModel.onOpenCreateDialog()
+                                                        createCollectionRequestNonce += 1
                                                     }
                                                     com.laterbox.app.ui.components.TabQuickActionKind.WATCHLIST -> {
                                                         navController.navigate(LaterboxDestination.MoviesWatchlist.route)
@@ -2283,6 +2291,13 @@ fun LaterboxApp(
 
     // Save Link Bottom Sheet
     if (showSaveSheet) {
+        val saveLinkViewModel: SaveLinkViewModel = viewModel(factory = AppViewModelProvider.Factory)
+        LaunchedEffect(showSaveSheet, pendingSaveReset) {
+            if (pendingSaveReset) {
+                saveLinkViewModel.reset()
+                pendingSaveReset = false
+            }
+        }
         val saveUiState by saveLinkViewModel.uiState.collectAsState()
         SaveLinkBottomSheet(
             uiState = saveUiState,
@@ -2319,8 +2334,42 @@ fun LaterboxApp(
         )
     }
 
-    // Saved Item Detail Sheet
-    if (selectedLinkForDetails != null && activeViewerAsset == null) {
+    // YouTube Transcript Extraction & Multi-Format Export Sheet
+    val transcriptUiState by youTubeTranscriptViewModel.uiState.collectAsState()
+    if (transcriptUiState.isSheetVisible) {
+        val transcriptSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        com.laterbox.app.transcript.ui.YouTubeTranscriptSheet(
+            uiState = transcriptUiState,
+            onChooseTarget = youTubeTranscriptViewModel::chooseTargetAndExtract,
+            onCancelExtraction = youTubeTranscriptViewModel::cancelExtraction,
+            onRetryExtraction = youTubeTranscriptViewModel::retryExtraction,
+            onRetryFailedEntries = youTubeTranscriptViewModel::retryFailedVideos,
+            onToggleFormat = youTubeTranscriptViewModel::toggleFormat,
+            onSetSelectAllFormats = youTubeTranscriptViewModel::setSelectAllFormats,
+            hasWritableSafFolder = youTubeTranscriptViewModel::hasWritableConfiguredSafFolder,
+            onExportToSafTree = youTubeTranscriptViewModel::exportToSafTree,
+            onExportToDownloads = youTubeTranscriptViewModel::exportToDownloadsFolder,
+            onDestinationPickerCancelled = youTubeTranscriptViewModel::notifyDestinationPickerCancelled,
+            onDismiss = {
+                coroutineScope.launch {
+                    transcriptSheetState.hide()
+                    youTubeTranscriptViewModel.dismissSheet()
+                }
+            },
+            onManualUrlChange = youTubeTranscriptViewModel::onManualUrlChange,
+            onSubmitManualUrl = youTubeTranscriptViewModel::submitManualUrlExtraction,
+            onSaveToLibrary = youTubeTranscriptViewModel::saveToLaterboxLibrary,
+            sheetState = transcriptSheetState
+        )
+    }
+
+    // Saved Item Detail + Media Viewer Overlay
+    if (selectedLinkForDetails != null || activeViewerAsset != null) {
+        val savedItemDetailViewModel: SavedItemDetailViewModel = viewModel(factory = AppViewModelProvider.Factory)
+        LaunchedEffect(selectedLinkForDetails?.id, detailSheetSessionNonce) {
+            selectedLinkForDetails?.let { savedItemDetailViewModel.setLink(it) }
+        }
+        if (selectedLinkForDetails != null && activeViewerAsset == null) {
         val detailUiState by savedItemDetailViewModel.uiState.collectAsState()
         SavedItemDetailSheet(
             uiState = detailUiState,
@@ -2484,34 +2533,6 @@ fun LaterboxApp(
         )
     }
 
-    // YouTube Transcript Extraction & Multi-Format Export Sheet
-    val transcriptUiState by youTubeTranscriptViewModel.uiState.collectAsState()
-    if (transcriptUiState.isSheetVisible) {
-        val transcriptSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-        com.laterbox.app.transcript.ui.YouTubeTranscriptSheet(
-            uiState = transcriptUiState,
-            onChooseTarget = youTubeTranscriptViewModel::chooseTargetAndExtract,
-            onCancelExtraction = youTubeTranscriptViewModel::cancelExtraction,
-            onRetryExtraction = youTubeTranscriptViewModel::retryExtraction,
-            onRetryFailedEntries = youTubeTranscriptViewModel::retryFailedVideos,
-            onToggleFormat = youTubeTranscriptViewModel::toggleFormat,
-            onSetSelectAllFormats = youTubeTranscriptViewModel::setSelectAllFormats,
-            hasWritableSafFolder = youTubeTranscriptViewModel::hasWritableConfiguredSafFolder,
-            onExportToSafTree = youTubeTranscriptViewModel::exportToSafTree,
-            onExportToDownloads = youTubeTranscriptViewModel::exportToDownloadsFolder,
-            onDestinationPickerCancelled = youTubeTranscriptViewModel::notifyDestinationPickerCancelled,
-            onDismiss = {
-                coroutineScope.launch {
-                    transcriptSheetState.hide()
-                    youTubeTranscriptViewModel.dismissSheet()
-                }
-            },
-            onManualUrlChange = youTubeTranscriptViewModel::onManualUrlChange,
-            onSubmitManualUrl = youTubeTranscriptViewModel::submitManualUrlExtraction,
-            onSaveToLibrary = youTubeTranscriptViewModel::saveToLaterboxLibrary,
-            sheetState = transcriptSheetState
-        )
-    }
 
     // Active Media Viewer Overlay
     activeViewerAsset?.let { asset ->
@@ -2577,6 +2598,7 @@ fun LaterboxApp(
                 activeViewerAsset = null
             }
         }
+    }
     }
 
     adaptiveUpdatePrompt?.let { prompt ->

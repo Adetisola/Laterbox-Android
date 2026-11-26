@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 rootProject.name = "Laterbox"
 include(":app")
 include(":benchmark")
+include(":baselineprofile")

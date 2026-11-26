@@ -38,13 +38,32 @@ class MainActivity : ComponentActivity() {
 
         handleIntent(intent)
 
+        val prefsLoaded = java.util.concurrent.atomic.AtomicBoolean(false)
+        val prefsFirstEmissionElapsedMs = java.util.concurrent.atomic.AtomicLong(-1L)
+
         if (savedInstanceState == null && !hasShownColdSplash) {
-            val splashStartTime = System.currentTimeMillis()
+            val splashLogged = java.util.concurrent.atomic.AtomicBoolean(false)
+            val splashStartElapsedMs = com.laterbox.app.diagnostics.SplashTimingLogger.nowElapsedMs()
+
             splashScreen.setKeepOnScreenCondition {
-                val elapsed = System.currentTimeMillis() - splashStartTime
-                val keep = elapsed < 900L
+                val nowElapsed = com.laterbox.app.diagnostics.SplashTimingLogger.nowElapsedMs()
+                val loaded = prefsLoaded.get()
+                val keep = com.laterbox.app.diagnostics.SplashTimingLogger.shouldKeepSplashOnScreen(
+                    prefsLoaded = loaded,
+                    splashStartElapsedMs = splashStartElapsedMs,
+                    nowElapsedMs = nowElapsed
+                )
                 if (!keep) {
                     hasShownColdSplash = true
+                    if (splashLogged.compareAndSet(false, true)) {
+                        val firstEmission = prefsFirstEmissionElapsedMs.get().takeIf { it >= 0L }
+                        com.laterbox.app.diagnostics.SplashTimingLogger.recordRelease(
+                            splashStartElapsedMs = splashStartElapsedMs,
+                            prefsFirstEmissionElapsedMs = firstEmission,
+                            prefsLoadedBeforeCeiling = loaded,
+                            releasedAtElapsedMs = nowElapsed
+                        )
+                    }
                 }
                 keep
             }
@@ -57,9 +76,25 @@ class MainActivity : ComponentActivity() {
         val container = (application as LaterboxApplication).container
 
         setContent {
-            val preferences by container.userPreferencesRepository.userPreferences.collectAsState(
-                initial = UserPreferences()
-            )
+            val prefsReadyState = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+            val preferencesState = androidx.compose.runtime.produceState<UserPreferences?>(
+                initialValue = null,
+                key1 = container.userPreferencesRepository
+            ) {
+                container.userPreferencesRepository.userPreferences.collect { loadedPrefs ->
+                    if (prefsLoaded.compareAndSet(false, true)) {
+                        prefsFirstEmissionElapsedMs.compareAndSet(
+                            -1L,
+                            com.laterbox.app.diagnostics.SplashTimingLogger.nowElapsedMs()
+                        )
+                        prefsReadyState.value = true
+                    }
+                    value = loadedPrefs
+                }
+            }
+            // C7: if DataStore misses the 800ms safety ceiling, render default UserPreferences() briefly until emission arrives.
+            val preferences = preferencesState.value ?: UserPreferences()
+            androidx.activity.compose.ReportDrawnWhen { prefsReadyState.value }
             val openLinkId by openLinkIdState.collectAsState()
             val openDestination by openDestinationState.collectAsState()
 

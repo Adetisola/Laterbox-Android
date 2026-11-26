@@ -18,10 +18,15 @@ class ScrollBenchmark {
     val benchmarkRule = MacrobenchmarkRule()
 
     @Test
-    fun scrollMoviesHomeFeed() = benchmarkRule.measureRepeated(
+    fun scrollMoviesHomeFeedNoCompilation() = scrollHomeFeed(CompilationMode.None())
+
+    @Test
+    fun scrollMoviesHomeFeed() = scrollHomeFeed(CompilationMode.Partial())
+
+    private fun scrollHomeFeed(compilationMode: CompilationMode) = benchmarkRule.measureRepeated(
         packageName = BenchmarkNavigationHelper.TARGET_PACKAGE,
         metrics = listOf(FrameTimingMetric()),
-        compilationMode = CompilationMode.Partial(),
+        compilationMode = compilationMode,
         startupMode = StartupMode.WARM,
         iterations = 5,
         setupBlock = {

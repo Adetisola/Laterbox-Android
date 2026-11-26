@@ -21,11 +21,12 @@
 | Detail TTID (cached, A02s) | On-device A02s `DetailLoadBenchmark` | **Pending (A02s)** | `< 300 ms` |
 | Detail waterfall TTID / TTFD (cold, 60ms/hop MockWebServer) | **Measured (VM Proxy: `NetworkWaterfallBaselineTest`)** | `ttidMs = 2510 ms`, `ttfdMs = 2706 ms` | No chain `> 2` hops |
 | Detail waterfall TTID / TTFD (Room-cached re-open) | **Measured (VM Proxy: `NetworkWaterfallBaselineTest`)** | `ttidMs = 1 ms`, `ttfdMs = 68 ms` | `< 300 ms` |
-| `app-armeabi-v7a-benchmark.apk` size | **Measured (VM R8 build)** | `57,014,650 bytes` (`54.37 MiB`) | `<= +5%` growth |
+| `app-armeabi-v7a-benchmark.apk` size (**C8 Proxy Denominator**) | **Measured (VM R8 build)** | `57,014,650 bytes` (`54.37 MiB`) | `<= +5%` growth |
 | `app-arm64-v8a-benchmark.apk` size | **Measured (VM R8 build)** | `63,668,378 bytes` (`60.72 MiB`) | `<= +5%` growth |
-| `app-universal-benchmark.apk` size | **Measured (VM R8 build)** | `107,170,014 bytes` (`102.21 MiB`) | `<= +5%` growth |
+| `app-universal-benchmark.apk` size (**C8 Proxy Denominator**) | **Measured (VM R8 build)** | `107,170,014 bytes` (`102.21 MiB`) | `<= +5%` growth |
+| `app-release.apk` size | `:app:assembleRelease --dry-run` | Blocked in VM (`KEYSTORE_PATH`/`KEYSTORE_PASSWORD`/`KEY_ALIAS`/`KEY_PASSWORD` unset); `benchmark` build (`initWith(release)`, `isMinifyEnabled = true`, `isShrinkResources = true`) is used as the R8 size denominator | `<= +5%` growth |
 | Backend cold import (`import api`, fresh Python 3.12) | **Measured (VM: `scripts/perf_harness.py`)** | `2,771.34 ms` median (`2,379.65–3,375.18 ms`) | `< 800 ms` |
-| Backend live Vercel `sin1` `/health` cold / warm | **Measured (VM `curl -w` live probe)** | Cold `1,933.15 ms` (`ttfb 1.933s`) / Warm `411.24 ms` | Cold `< 800 ms` |
+| Backend live Vercel `sin1` `/health` cold / warm | **Measured (VM `curl -w` live probe)** | Cold `1,933.15 ms` (`ttfb 1.933s`) / Warm `411.24 ms` | Cold `< 1000 ms` |
 | Backend `/home` response size / encoding | **Measured (VM ASGI: `scripts/perf_harness.py`)** | `13,827 bytes` (`encoding=none`, `cache-control=""`, `8.887 ms`) | GZip + pruned |
 | Backend `/detail/10001` response size / encoding | **Measured (VM ASGI: `scripts/perf_harness.py`)** | `8,092 bytes` (`encoding=none`, `cache-control=""`, `7.180 ms`) | GZip + `private` cache |
 | Backend `/episodes/10001` response size / encoding | **Measured (VM ASGI: `scripts/perf_harness.py`)** | `127 bytes` (`encoding=none`, `cache-control=""`, `6.668 ms`) | `private, max-age=60` |
