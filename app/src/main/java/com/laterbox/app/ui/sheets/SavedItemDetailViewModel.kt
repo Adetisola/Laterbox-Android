@@ -103,7 +103,17 @@ class SavedItemDetailViewModel(
         _editedTitle.value = link.title
         _editedNote.value = link.personalNote.orEmpty()
         _selectedCollectionIds.value = link.collectionIds.toSet()
-        viewModelScope.launch { mediaRepository.recoverOrphanedInspection(link.id) }
+        viewModelScope.launch {
+            mediaRepository.recoverOrphanedInspection(link.id)
+            if (com.laterbox.app.media.data.inbox.InboxLinkRouter.routeForUrl(link.originalUrl) != null) {
+                mediaRepository.startInspection(
+                    linkId = link.id,
+                    url = link.originalUrl,
+                    previewImageUrl = link.previewImageUrl,
+                    forceRefresh = false
+                )
+            }
+        }
     }
 
     fun onTitleChange(newTitle: String) {

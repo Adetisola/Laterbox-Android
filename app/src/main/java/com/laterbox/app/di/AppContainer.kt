@@ -29,6 +29,7 @@ interface AppContainer {
     val mediaRepository: com.laterbox.app.media.domain.repository.MediaRepository
     val mediaInspectionManager: com.laterbox.app.media.data.inspection.MediaInspectionManager
     val platformResolver: com.laterbox.app.media.domain.adapter.PlatformResolver
+    val inboxResolverClient: com.laterbox.app.media.data.inbox.LaterboxInboxResolverClient
     val ytDlpRuntimeManager: com.laterbox.app.media.data.adapters.ytdlp.YtDlpRuntimeManager
     val ytDlpUpdater: com.laterbox.app.media.data.adapters.ytdlp.YtDlpUpdater
     val diagnosticsBuffer: com.laterbox.app.media.data.diagnostics.InspectionDiagnosticsBuffer
@@ -263,8 +264,18 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
         sharedOkHttpClient.newBuilder().build()
     }
 
+    override val inboxResolverClient: com.laterbox.app.media.data.inbox.LaterboxInboxResolverClient by lazy {
+        com.laterbox.app.media.data.inbox.LaterboxInboxResolverClient(
+            okHttpClient = moviesOkHttpClient,
+            baseUrlProvider = { resolveBackendBaseUrl() },
+            appCheckTokenProvider = { forceRefresh -> getBackendAppCheckToken(forceRefresh) },
+            authHeaderProvider = { forceRefresh -> getBackendAuthHeader(forceRefresh) }
+        )
+    }
+
     override val platformResolver: com.laterbox.app.media.domain.adapter.PlatformResolver by lazy {
         val directAdapter = com.laterbox.app.media.data.adapters.direct.DirectUrlAdapter(sharedOkHttpClient)
+        val backendInboxAdapter = com.laterbox.app.media.data.inbox.BackendInboxMediaAdapter(inboxResolverClient)
         val spotifyDiscovery = com.laterbox.app.media.data.adapters.spotify.MusicDiscoveryProviderImpl(
             appContext = context.applicationContext,
             runtimeManager = ytDlpRuntimeManager
@@ -284,7 +295,7 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
         )
         val metadataAdapter = com.laterbox.app.media.data.adapters.metadata.MetadataOnlyAdapter(sharedOkHttpClient)
         val registry = com.laterbox.app.media.domain.adapter.AdapterRegistry(
-            listOf(directAdapter, spotifyAdapter, xAdapter, ytDlpAdapter, metadataAdapter)
+            listOf(directAdapter, backendInboxAdapter, spotifyAdapter, xAdapter, ytDlpAdapter, metadataAdapter)
         )
         com.laterbox.app.media.domain.adapter.PlatformResolver(registry)
     }

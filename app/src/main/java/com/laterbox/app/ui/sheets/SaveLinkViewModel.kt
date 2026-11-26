@@ -9,6 +9,12 @@ import com.laterbox.app.data.repository.LinkRepository
 import com.laterbox.app.domain.model.Collection
 import com.laterbox.app.domain.model.SavedLink
 import com.laterbox.app.domain.util.UrlValidator
+import com.laterbox.app.media.data.inbox.InboxLinkRouter
+import com.laterbox.app.media.data.inbox.LaterboxInboxResolverClient
+import com.laterbox.app.media.domain.model.InspectionResult
+import com.laterbox.app.media.domain.model.MediaCandidate
+import com.laterbox.app.media.domain.model.MediaType
+import com.laterbox.app.media.domain.repository.MediaRepository
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -29,6 +35,21 @@ enum class MetadataPreviewStatus {
     FAILED
 }
 
+sealed interface InboxPasteResolutionState {
+    data object Idle : InboxPasteResolutionState
+    data class Loading(val platformLabel: String) : InboxPasteResolutionState
+    data class Resolved(
+        val platformLabel: String,
+        val thumbnailUrl: String?,
+        val mediaSummary: String,
+        val candidates: List<MediaCandidate>
+    ) : InboxPasteResolutionState
+    data class OpenInBrowserFallback(
+        val platformLabel: String,
+        val rawUrl: String
+    ) : InboxPasteResolutionState
+}
+
 data class SaveLinkUiState(
     val url: String = "",
     val urlError: String? = null,
@@ -42,6 +63,8 @@ data class SaveLinkUiState(
     val reminderAt: Long? = null,
     val metadataStatus: MetadataPreviewStatus = MetadataPreviewStatus.IDLE,
     val previewImageUrl: String? = null,
+    val inboxResolution: InboxPasteResolutionState = InboxPasteResolutionState.Idle,
+    val isDownloadingMedia: Boolean = false,
     val maxNoteLength: Int = 500,
     val maxTitleLength: Int = 200
 ) {
@@ -58,7 +81,9 @@ class SaveLinkViewModel(
     private val metadataExtractor: (suspend (String) -> Result<ExtractedMetadata>)? = { url ->
         JsoupMetadataExtractor.extract(url)
     },
-    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val inboxResolverClient: LaterboxInboxResolverClient? = null,
+    private val mediaRepository: MediaRepository? = null
 ) : ViewModel() {
 
     private val _url = MutableStateFlow("")
@@ -72,9 +97,12 @@ class SaveLinkViewModel(
     private val _reminderAt = MutableStateFlow<Long?>(null)
     private val _metadataStatus = MutableStateFlow(MetadataPreviewStatus.IDLE)
     private val _previewImageUrl = MutableStateFlow<String?>(null)
+    private val _inboxResolution = MutableStateFlow<InboxPasteResolutionState>(InboxPasteResolutionState.Idle)
+    private val _isDownloadingMedia = MutableStateFlow(false)
 
     private var duplicateCheckJob: Job? = null
     private var metadataFetchJob: Job? = null
+    private var inboxResolveJob: Job? = null
 
     val uiState: StateFlow<SaveLinkUiState> = combine(
         combine(
@@ -97,9 +125,11 @@ class SaveLinkViewModel(
         },
         combine(
             _previewImageUrl,
-            collectionRepository.collections
-        ) { p11, p12 ->
-            Pair(p11, p12)
+            collectionRepository.collections,
+            _inboxResolution,
+            _isDownloadingMedia
+        ) { p11, p12, p13, p14 ->
+            Tuple4(p11, p12, p13, p14)
         }
     ) { group1, group2, group3 ->
         SaveLinkUiState(
@@ -113,8 +143,10 @@ class SaveLinkViewModel(
             isSavedSuccess = group2.c,
             reminderAt = group2.d,
             metadataStatus = group2.e,
-            previewImageUrl = group3.first,
-            collections = group3.second
+            previewImageUrl = group3.a,
+            collections = group3.b,
+            inboxResolution = group3.c,
+            isDownloadingMedia = group3.d
         )
     }.stateIn(
         scope = viewModelScope,
@@ -133,7 +165,10 @@ class SaveLinkViewModel(
             _personalNote.value = note.take(500)
         }
         checkDuplicate(normalized)
-        if (title.isNullOrBlank()) {
+        val platform = InboxLinkRouter.routeForUrl(normalized)
+        if (platform != null) {
+            fetchInboxResolutionPreview(normalized)
+        } else if (title.isNullOrBlank()) {
             fetchMetadataPreview(normalized)
         }
     }
@@ -144,8 +179,17 @@ class SaveLinkViewModel(
             _urlError.value = null
         }
         checkDuplicate(newUrl)
-        if (_title.value.isBlank() && UrlValidator.isValidUrl(newUrl)) {
-            fetchMetadataPreview(newUrl)
+        val normalized = UrlValidator.normalize(newUrl)
+        val platform = if (UrlValidator.isValidUrl(normalized)) InboxLinkRouter.routeForUrl(normalized) else null
+        if (platform != null) {
+            metadataFetchJob?.cancel()
+            fetchInboxResolutionPreview(normalized)
+        } else {
+            inboxResolveJob?.cancel()
+            _inboxResolution.value = InboxPasteResolutionState.Idle
+            if (_title.value.isBlank() && UrlValidator.isValidUrl(newUrl)) {
+                fetchMetadataPreview(newUrl)
+            }
         }
     }
 
@@ -212,6 +256,100 @@ class SaveLinkViewModel(
         }
     }
 
+    private fun fetchInboxResolutionPreview(normalizedUrl: String) {
+        val client = inboxResolverClient ?: return
+        val platform = InboxLinkRouter.routeForUrl(normalizedUrl) ?: return
+        inboxResolveJob?.cancel()
+        inboxResolveJob = viewModelScope.launch {
+            _inboxResolution.value = InboxPasteResolutionState.Loading(platform.displayName)
+            _metadataStatus.value = MetadataPreviewStatus.LOADING
+            val result = withContext(ioDispatcher) {
+                client.resolveToInspectionResult(normalizedUrl)
+            }
+            when (result) {
+                is InspectionResult.Available -> {
+                    if (result.candidates.isNotEmpty()) {
+                        val thumb = result.thumbnailUrl
+                        if (!thumb.isNullOrBlank()) {
+                            _previewImageUrl.value = thumb
+                        }
+                        val isCarousel = result.candidates.size > 1 &&
+                            result.candidates.first().candidateId.startsWith("inbox_carousel_")
+                        val summary = if (isCarousel) {
+                            "${platform.displayName} · Carousel (${result.candidates.size} items)"
+                        } else {
+                            "${platform.displayName} · ${result.candidates.first().formatLabel}"
+                        }
+                        _inboxResolution.value = InboxPasteResolutionState.Resolved(
+                            platformLabel = platform.displayName,
+                            thumbnailUrl = thumb,
+                            mediaSummary = summary,
+                            candidates = result.candidates
+                        )
+                        _metadataStatus.value = MetadataPreviewStatus.READY
+                    } else {
+                        _inboxResolution.value = InboxPasteResolutionState.OpenInBrowserFallback(
+                            platformLabel = platform.displayName,
+                            rawUrl = normalizedUrl
+                        )
+                        _metadataStatus.value = MetadataPreviewStatus.FAILED
+                    }
+                }
+                else -> {
+                    _inboxResolution.value = InboxPasteResolutionState.OpenInBrowserFallback(
+                        platformLabel = platform.displayName,
+                        rawUrl = normalizedUrl
+                    )
+                    _metadataStatus.value = MetadataPreviewStatus.FAILED
+                }
+            }
+        }
+    }
+
+    fun downloadResolvedMedia(onCompleted: (enqueuedCount: Int) -> Unit = {}) {
+        val resolved = _inboxResolution.value as? InboxPasteResolutionState.Resolved ?: return
+        if (_isDownloadingMedia.value || _isSaving.value) return
+        val repo = mediaRepository ?: return
+        val rawUrl = _url.value.trim()
+        if (rawUrl.isBlank() || !UrlValidator.isValidUrl(rawUrl)) return
+        val finalUrl = UrlValidator.normalize(rawUrl)
+
+        viewModelScope.launch {
+            _isDownloadingMedia.value = true
+            try {
+                val linkId = saveOrUpdateInternal(finalUrl).first
+                val isCarousel = resolved.candidates.firstOrNull()?.candidateId?.startsWith("inbox_carousel_") == true
+                val toEnqueue = if (isCarousel) resolved.candidates else listOf(resolved.candidates.first())
+                val title = _title.value.trim().ifBlank { "${resolved.platformLabel} media" }
+                var count = 0
+                for (candidate in toEnqueue) {
+                    val itemTitle = if (toEnqueue.size > 1) "$title (${count + 1}/${toEnqueue.size})" else title
+                    if (linkId > 0L) {
+                        repo.enqueueDownload(
+                            linkId = linkId,
+                            candidate = candidate,
+                            sourcePlatform = resolved.platformLabel,
+                            title = itemTitle,
+                            artworkUrl = resolved.thumbnailUrl
+                        )
+                    } else {
+                        repo.enqueueStandaloneDownload(
+                            candidate = candidate,
+                            sourcePlatform = resolved.platformLabel,
+                            title = itemTitle,
+                            artworkUrl = resolved.thumbnailUrl
+                        )
+                    }
+                    count++
+                }
+                _isSavedSuccess.value = true
+                onCompleted(count)
+            } finally {
+                _isDownloadingMedia.value = false
+            }
+        }
+    }
+
     private fun fetchMetadataPreview(rawUrl: String) {
         val extractor = metadataExtractor ?: return
         metadataFetchJob?.cancel()
@@ -262,35 +400,7 @@ class SaveLinkViewModel(
         viewModelScope.launch {
             _isSaving.value = true
             try {
-                val existing = _duplicateLink.value
-                val isUpdate = existing != null
-                val chosenColIds = _selectedCollectionIds.value.toList()
-                val chosenReminder = _reminderAt.value
-                if (existing != null) {
-                    val mergedColIds = (existing.collectionIds + chosenColIds).distinct()
-                    linkRepository.updateLink(
-                        existing.copy(
-                            title = if (_title.value.isNotBlank()) _title.value.trim() else existing.title,
-                            personalNote = if (_personalNote.value.isNotBlank()) _personalNote.value.trim() else existing.personalNote,
-                            collectionIds = mergedColIds,
-                            collectionId = mergedColIds.firstOrNull(),
-                            reminderAt = chosenReminder ?: existing.reminderAt,
-                            isArchived = false // Restores to inbox if it was archived
-                        )
-                    )
-                    linkRepository.setLinkCollections(existing.id, mergedColIds)
-                    if (chosenReminder != null) {
-                        linkRepository.setReminder(existing.id, chosenReminder)
-                    }
-                } else {
-                    linkRepository.saveLink(
-                        originalUrl = finalUrl,
-                        title = _title.value.ifBlank { null },
-                        personalNote = _personalNote.value.ifBlank { null },
-                        collectionIds = chosenColIds,
-                        reminderAt = chosenReminder
-                    )
-                }
+                val (_, isUpdate) = saveOrUpdateInternal(finalUrl)
                 _isSavedSuccess.value = true
                 onSuccess(isUpdate)
             } finally {
@@ -299,7 +409,45 @@ class SaveLinkViewModel(
         }
     }
 
+    private suspend fun saveOrUpdateInternal(finalUrl: String): Pair<Long, Boolean> {
+        val existing = _duplicateLink.value
+        val isUpdate = existing != null
+        val chosenColIds = _selectedCollectionIds.value.toList()
+        val chosenReminder = _reminderAt.value
+        val linkId: Long
+        if (existing != null) {
+            val mergedColIds = (existing.collectionIds + chosenColIds).distinct()
+            linkRepository.updateLink(
+                existing.copy(
+                    title = if (_title.value.isNotBlank()) _title.value.trim() else existing.title,
+                    personalNote = if (_personalNote.value.isNotBlank()) _personalNote.value.trim() else existing.personalNote,
+                    collectionIds = mergedColIds,
+                    collectionId = mergedColIds.firstOrNull(),
+                    reminderAt = chosenReminder ?: existing.reminderAt,
+                    isArchived = false // Restores to inbox if it was archived
+                )
+            )
+            linkRepository.setLinkCollections(existing.id, mergedColIds)
+            if (chosenReminder != null) {
+                linkRepository.setReminder(existing.id, chosenReminder)
+            }
+            linkId = existing.id
+        } else {
+            linkId = linkRepository.saveLink(
+                originalUrl = finalUrl,
+                title = _title.value.ifBlank { null },
+                personalNote = _personalNote.value.ifBlank { null },
+                collectionIds = chosenColIds,
+                reminderAt = chosenReminder
+            )
+        }
+        return linkId to isUpdate
+    }
+
     fun reset() {
+        inboxResolveJob?.cancel()
+        metadataFetchJob?.cancel()
+        duplicateCheckJob?.cancel()
         _url.value = ""
         _urlError.value = null
         _title.value = ""
@@ -311,7 +459,16 @@ class SaveLinkViewModel(
         _isSavedSuccess.value = false
         _metadataStatus.value = MetadataPreviewStatus.IDLE
         _previewImageUrl.value = null
+        _inboxResolution.value = InboxPasteResolutionState.Idle
+        _isDownloadingMedia.value = false
     }
+
+    private data class Tuple4<A, B, C, D>(
+        val a: A,
+        val b: B,
+        val c: C,
+        val d: D
+    )
 
     private data class Tuple5<A, B, C, D, E>(
         val a: A,

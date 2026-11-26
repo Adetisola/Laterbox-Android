@@ -47,7 +47,12 @@ object AppViewModelProvider {
         }
         initializer {
             val app = laterboxApplication()
-            SaveLinkViewModel(app.container.linkRepository, app.container.collectionRepository)
+            SaveLinkViewModel(
+                linkRepository = app.container.linkRepository,
+                collectionRepository = app.container.collectionRepository,
+                inboxResolverClient = app.container.inboxResolverClient,
+                mediaRepository = app.container.mediaRepository
+            )
         }
         initializer {
             val app = laterboxApplication()

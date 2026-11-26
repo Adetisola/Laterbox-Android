@@ -42,6 +42,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.ui.layout.ContentScale
 import coil.compose.AsyncImage
 import com.laterbox.app.domain.util.UrlNormalizer
 import com.laterbox.app.reminders.ReminderPresets
@@ -52,6 +55,7 @@ import com.laterbox.app.ui.components.LaterboxPrimaryButton
 import com.laterbox.app.ui.components.LaterboxSecondaryButton
 import com.laterbox.app.ui.components.LaterboxShapeTokens
 import com.laterbox.app.ui.components.LaterboxTextButton
+import com.laterbox.app.ui.sheets.InboxPasteResolutionState
 import com.laterbox.app.ui.sheets.MetadataPreviewStatus
 import com.laterbox.app.ui.sheets.SaveLinkUiState
 import com.laterbox.app.ui.theme.LaterboxMotion
@@ -79,6 +83,7 @@ fun SaveLinkForm(
     onReminderAtChange: (Long?) -> Unit,
     onSaveClick: () -> Unit,
     onCancelClick: () -> Unit,
+    onDownloadResolvedMedia: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -229,6 +234,114 @@ fun SaveLinkForm(
         }
 
         Spacer(modifier = Modifier.height(spacing.sm))
+
+        when (val resolution = uiState.inboxResolution) {
+            InboxPasteResolutionState.Idle -> Unit
+            is InboxPasteResolutionState.Loading -> {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(LaterboxShapeTokens.Card)
+                        .background(colors.surfaceSecondary)
+                        .border(spacing.hairline, colors.borderSubtle, LaterboxShapeTokens.Card)
+                        .padding(spacing.sm),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(spacing.sm)
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        color = colors.accentPrimary,
+                        strokeWidth = 2.dp
+                    )
+                    Text(
+                        text = "Checking ${resolution.platformLabel} media...",
+                        style = typography.bodySecondary,
+                        color = colors.textSecondary
+                    )
+                }
+                Spacer(modifier = Modifier.height(spacing.sm))
+            }
+            is InboxPasteResolutionState.Resolved -> {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(LaterboxShapeTokens.Card)
+                        .background(colors.surfaceSecondary)
+                        .border(spacing.hairline, colors.borderSubtle, LaterboxShapeTokens.Card)
+                        .padding(spacing.sm),
+                    verticalArrangement = Arrangement.spacedBy(spacing.sm)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(spacing.sm)
+                    ) {
+                        if (!resolution.thumbnailUrl.isNullOrBlank()) {
+                            AsyncImage(
+                                model = resolution.thumbnailUrl,
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(52.dp)
+                                    .clip(RoundedCornerShape(spacing.thumbnailRadius))
+                            )
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = resolution.mediaSummary,
+                                style = typography.bodyPrimary.copy(fontWeight = FontWeight.Medium),
+                                color = colors.textPrimary,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "Ready to download to Inbox Library",
+                                style = typography.metaText,
+                                color = colors.textSecondary
+                            )
+                        }
+                    }
+                    if (onDownloadResolvedMedia != null) {
+                        LaterboxPrimaryButton(
+                            text = "Download",
+                            onClick = onDownloadResolvedMedia,
+                            enabled = !uiState.isDownloadingMedia && !uiState.isSaving && !uiState.isSavedSuccess,
+                            isLoading = uiState.isDownloadingMedia,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(spacing.sm))
+            }
+            is InboxPasteResolutionState.OpenInBrowserFallback -> {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(LaterboxShapeTokens.Card)
+                        .background(colors.surfaceSecondary)
+                        .border(spacing.hairline, colors.borderSubtle, LaterboxShapeTokens.Card)
+                        .padding(spacing.sm),
+                    verticalArrangement = Arrangement.spacedBy(spacing.xs)
+                ) {
+                    Text(
+                        text = resolution.rawUrl,
+                        style = typography.metadataMono,
+                        color = colors.textSecondary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    LaterboxSecondaryButton(
+                        text = "Open in browser",
+                        onClick = {
+                            runCatching {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(resolution.rawUrl)))
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                Spacer(modifier = Modifier.height(spacing.sm))
+            }
+        }
 
         // 4. Title Input
         OutlinedTextField(

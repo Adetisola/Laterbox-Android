@@ -302,6 +302,12 @@ class DownloadWorker(
                     }
 
                     suspend fun executeHttpDownload(currentTask: com.laterbox.app.media.data.db.entity.DownloadTaskEntity): DownloadResult {
+                        val effectiveHeaders = if (currentTask.sourceUrl.contains("/api/inbox/download/instagram") && container != null) {
+                            val fresh = runCatching { container.inboxResolverClient.buildProxyAuthHeaders() }.getOrDefault(emptyMap())
+                            currentTask.toDomain().headers + fresh
+                        } else {
+                            currentTask.toDomain().headers
+                        }
                         val readyCache = com.laterbox.app.movies.data.cache.MoviesMediaCache.getCacheIfReady()
                             ?: com.laterbox.app.movies.data.cache.MoviesMediaCache.warmUp(appContext)
                         if (readyCache != null && (!partFile.exists() || partFile.length() == 0L)) {
@@ -309,7 +315,7 @@ class DownloadWorker(
                                 .tryDownloadReusingCache(
                                     url = currentTask.sourceUrl,
                                     destinationFile = partFile,
-                                    headers = currentTask.toDomain().headers,
+                                    headers = effectiveHeaders,
                                     onTelemetry = ::handleTelemetry,
                                     onProgress = { bytes, total, percent, stage ->
                                         httpTrackingProgressCallback(bytes, total, percent, stage)
@@ -329,7 +335,7 @@ class DownloadWorker(
                         return httpDownloader.download(
                             url = currentTask.sourceUrl,
                             destinationFile = partFile,
-                            headers = currentTask.toDomain().headers,
+                            headers = effectiveHeaders,
                             expectedETag = lastPersistedEtag ?: currentTask.etag,
                             expectedTotalBytes = lastPersistedTotalBytes,
                             onTelemetry = ::handleTelemetry,

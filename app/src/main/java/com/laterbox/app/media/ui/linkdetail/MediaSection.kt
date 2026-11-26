@@ -388,25 +388,12 @@ fun MediaSection(
                         color = colors.surfaceSecondary
                     ) {
                         Column(modifier = Modifier.padding(14.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    painter = painterResource(LaterboxIcons.Download),
-                                    contentDescription = null,
-                                    tint = colors.textSecondary,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "No downloadable media detected",
-                                    style = typography.titleSmall.copy(fontWeight = FontWeight.Medium),
-                                    color = colors.textPrimary
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = "No media formats were discovered on this webpage.",
-                                style = typography.bodySmall,
-                                color = colors.textSecondary
+                                text = linkUrl,
+                                style = typography.metadataMono,
+                                color = colors.textSecondary,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
                             )
 
                             // Preview candidate if available
@@ -425,8 +412,18 @@ fun MediaSection(
                             }
 
                             Spacer(modifier = Modifier.height(12.dp))
+                            LaterboxPrimaryButton(
+                                text = "Open in browser",
+                                onClick = {
+                                    runCatching {
+                                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(linkUrl)))
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
                             LaterboxSecondaryButton(
-                                text = "Retry inspection",
+                                text = "Retry",
                                 leadingIcon = LaterboxIcons.Refresh,
                                 onClick = onRetryClick,
                                 modifier = Modifier.fillMaxWidth()
@@ -437,7 +434,7 @@ fun MediaSection(
 
                 is InspectionResult.Failed -> {
                     val isWaitingConnection = inspectionResult.code in listOf(FailureCode.NETWORK_ERROR, FailureCode.CONNECTION_TIMEOUT)
-                    val headerTitle = if (isWaitingConnection) "Waiting for connection" else "Inspection failed (${inspectionResult.code.name})"
+                    val headerTitle = if (isWaitingConnection) "Waiting for connection" else "Could not load downloadable media"
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
                         shape = LaterboxShapeTokens.Card,
@@ -448,31 +445,24 @@ fun MediaSection(
                                 Icon(
                                     painter = painterResource(LaterboxIcons.Refresh),
                                     contentDescription = null,
-                                    tint = if (isWaitingConnection) colors.accentPrimary else colors.statusDanger,
+                                    tint = if (isWaitingConnection) colors.accentPrimary else colors.textSecondary,
                                     modifier = Modifier.size(18.dp)
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
                                     text = headerTitle,
                                     style = typography.titleSmall.copy(fontWeight = FontWeight.Medium),
-                                    color = if (isWaitingConnection) colors.textPrimary else colors.statusDanger
+                                    color = colors.textPrimary
                                 )
                             }
-                            val failureMessage = if (isWaitingConnection) {
-                                "Connection unavailable or temporary DNS failure. Inspection will retry automatically when connection restores."
-                            } else {
-                                inspectionResult.message
-                            }
-                            if (!failureMessage.isNullOrBlank()) {
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text(
-                                    text = failureMessage,
-                                    style = typography.bodySmall,
-                                    color = colors.textSecondary,
-                                    maxLines = 4,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = linkUrl,
+                                style = typography.metadataMono,
+                                color = colors.textSecondary,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
 
                             // Preview candidate if available
                             inspectionResult.previewCandidate?.let { previewCandidate ->
@@ -490,8 +480,18 @@ fun MediaSection(
                             }
 
                             Spacer(modifier = Modifier.height(12.dp))
+                            LaterboxPrimaryButton(
+                                text = "Open in browser",
+                                onClick = {
+                                    runCatching {
+                                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(linkUrl)))
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
                             LaterboxSecondaryButton(
-                                text = "Retry inspection",
+                                text = "Retry",
                                 leadingIcon = LaterboxIcons.Refresh,
                                 onClick = onRetryClick,
                                 modifier = Modifier.fillMaxWidth()

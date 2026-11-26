@@ -2329,6 +2329,20 @@ fun LaterboxApp(
                     }
                 }
             },
+            onDownloadResolvedMedia = {
+                haptics.confirm()
+                saveLinkViewModel.downloadResolvedMedia { enqueuedCount ->
+                    coroutineScope.launch {
+                        if (enqueuedCount > 0) {
+                            toastController.showSuccess(
+                                if (enqueuedCount == 1) "Download queued in Library" else "$enqueuedCount downloads queued in Library"
+                            )
+                        }
+                        saveSheetState.hide()
+                        showSaveSheet = false
+                    }
+                }
+            },
             onDismissRequest = {
                 coroutineScope.launch {
                     saveSheetState.hide()

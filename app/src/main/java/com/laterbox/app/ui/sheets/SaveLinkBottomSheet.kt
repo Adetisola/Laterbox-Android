@@ -34,7 +34,8 @@ fun SaveLinkBottomSheet(
     onReminderAtChange: (Long?) -> Unit = {},
     onSaveClick: () -> Unit,
     onDismissRequest: () -> Unit,
-    onSelectCollection: (Long?) -> Unit = {}
+    onSelectCollection: (Long?) -> Unit = {},
+    onDownloadResolvedMedia: (() -> Unit)? = null
 ) {
     val colors = LaterboxTheme.colors
     val spacing = LaterboxTheme.spacing
@@ -75,7 +76,8 @@ fun SaveLinkBottomSheet(
                 onCreateCollection = onCreateCollection,
                 onReminderAtChange = onReminderAtChange,
                 onSaveClick = onSaveClick,
-                onCancelClick = onDismissRequest
+                onCancelClick = onDismissRequest,
+                onDownloadResolvedMedia = onDownloadResolvedMedia
             )
         }
     }
