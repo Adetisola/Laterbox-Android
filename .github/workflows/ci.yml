@@ -60,7 +60,7 @@ jobs:
         with:
           name: test-reports
           path: app/build/reports/tests/testDebugUnitTest/
-          retention-days: 7
+          retention-days: 1
 
       - name: Upload Debug APK
         continue-on-error: true
@@ -68,4 +68,4 @@ jobs:
         with:
           name: laterbox-debug-apk
           path: app/build/outputs/apk/debug/*.apk
-          retention-days: 14
+          retention-days: 1
