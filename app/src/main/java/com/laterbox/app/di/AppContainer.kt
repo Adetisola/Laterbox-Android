@@ -249,8 +249,13 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
     }
 
     private val sharedOkHttpClient: okhttp3.OkHttpClient by lazy {
+        val httpCacheDir = java.io.File(context.cacheDir, "http_cache")
+        val httpCache = okhttp3.Cache(httpCacheDir, 40L * 1024L * 1024L)
+        val pool = okhttp3.ConnectionPool(8, 5, java.util.concurrent.TimeUnit.MINUTES)
         okhttp3.OkHttpClient.Builder()
             .dns(com.laterbox.app.network.ResilientDns.INSTANCE)
+            .connectionPool(pool)
+            .cache(httpCache)
             .build()
     }
 
@@ -321,6 +326,7 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
 
     override val moviesRepository: com.laterbox.app.movies.domain.repository.MoviesRepository by lazy {
         val nativeOkHttpClient = sharedOkHttpClient.newBuilder()
+            .cache(null) // Keep direct signed stream resolution cache-free while reusing ConnectionPool(8, 5m)
             .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
             .writeTimeout(10, java.util.concurrent.TimeUnit.SECONDS)

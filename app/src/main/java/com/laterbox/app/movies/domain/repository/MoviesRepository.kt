@@ -29,7 +29,19 @@ data class MovieDurationCoverageStats(
     val failedEnrichments: Int = 0
 )
 
+data class CachedDetailsSnapshot(
+    val details: MediaDetails,
+    val isStale: Boolean
+)
+
+data class CachedHomeFeedSnapshot(
+    val feed: MoviesHomeFeed,
+    val isStale: Boolean
+)
+
 interface MoviesRepository {
+    suspend fun getCachedHomeFeedWithinStaleCeiling(): CachedHomeFeedSnapshot? = null
+
     suspend fun getHomeFeed(forceRefresh: Boolean = false): Result<MoviesHomeFeed>
 
     suspend fun getCatalogue(
@@ -54,6 +66,8 @@ interface MoviesRepository {
     suspend fun getSuggestions(query: String, limit: Int = 8): Result<List<SearchSuggestion>>
 
     suspend fun searchLibrarySuggestions(query: String, limit: Int = 6): List<LibrarySearchSuggestion> = emptyList()
+
+    suspend fun getCachedDetailsFast(providerId: String, titleId: String): CachedDetailsSnapshot? = null
 
     suspend fun getDetails(providerId: String, titleId: String, forceRefresh: Boolean = false): Result<MediaDetails>
 

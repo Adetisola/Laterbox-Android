@@ -305,13 +305,43 @@ class MovieDetailViewModel(
         val cachedSummary = moviesRepository.getCachedSummary(providerId, titleId)
         loadJob = viewModelScope.launch {
             val prev = _uiState.value
-            val cachedIsSeries = cachedSummary?.kind == MediaKind.TV_SERIES
-            val prefillSeason = if (cachedIsSeries) 1 else null
+            val cachedFast = if (!forceRefresh) {
+                moviesRepository.getCachedDetailsFast(providerId, titleId)
+            } else null
+            val fastSummary = cachedFast?.details?.summary ?: cachedSummary
+            val cachedIsSeries = fastSummary?.kind?.isEpisodic == true
+            val prefillSeason = if (cachedIsSeries) {
+                cachedFast?.details?.seasons?.firstOrNull()?.seasonNumber ?: 1
+            } else null
             val prefillEp = if (cachedIsSeries) 1 else null
             var startedEpisodesSeason: Int? = null
             var startedPlaybackTarget: Pair<Int?, Int?>? = null
 
-            if (cachedSummary != null) {
+            if (cachedFast != null) {
+                _uiState.update {
+                    MovieDetailUiState(
+                        isLoading = false,
+                        isRefreshingDetails = cachedFast.isStale,
+                        details = cachedFast.details,
+                        selectedSeasonNumber = prefillSeason,
+                        isInWatchlist = prev.isInWatchlist,
+                        trailerMuted = prev.trailerMuted,
+                        subtitleStyle = prev.subtitleStyle,
+                        playbackPreferences = prev.playbackPreferences,
+                        collections = prev.collections,
+                        offlineMatches = prev.offlineMatches,
+                        hiddenMediaKeys = prev.hiddenMediaKeys,
+                        episodeDownloads = prev.episodeDownloads
+                    )
+                }
+                com.laterbox.app.diagnostics.NetworkWaterfallLogger.markDetailFirstPaint(traceId)
+                if (cachedIsSeries && prefillSeason != null) {
+                    startedEpisodesSeason = prefillSeason
+                    loadEpisodes(cachedFast.details.summary.providerId, cachedFast.details.summary.id, prefillSeason)
+                }
+                startedPlaybackTarget = prefillSeason to prefillEp
+                checkPlayback(cachedFast.details.summary.providerId, cachedFast.details.summary.id, prefillSeason, prefillEp)
+            } else if (cachedSummary != null) {
                 _uiState.update {
                     MovieDetailUiState(
                         isLoading = false,
@@ -353,7 +383,11 @@ class MovieDetailViewModel(
             }
 
             val detailsStartMs = com.laterbox.app.diagnostics.NetworkWaterfallLogger.nowWallMs()
-            val result = moviesRepository.getDetails(providerId, titleId, forceRefresh)
+            val result = when {
+                cachedFast != null && !cachedFast.isStale -> Result.success(cachedFast.details)
+                cachedFast != null && cachedFast.isStale -> moviesRepository.getDetails(providerId, titleId, forceRefresh = true)
+                else -> moviesRepository.getDetails(providerId, titleId, forceRefresh)
+            }
             val detailsDurMs = (com.laterbox.app.diagnostics.NetworkWaterfallLogger.nowWallMs() - detailsStartMs).coerceAtLeast(0L)
             if (loadRequestSeq != requestSeq) return@launch
             result.fold(

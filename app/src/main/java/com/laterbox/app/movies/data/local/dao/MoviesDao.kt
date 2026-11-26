@@ -52,7 +52,9 @@ interface MoviesDao {
                OR w.canonical_id = :compositeId
                OR w.canonical_id IN (
                    SELECT l.canonical_id FROM media_provider_links l
-                   WHERE (l.provider_id || ':' || l.provider_title_id) = :compositeId
+                   WHERE INSTR(:compositeId, ':') > 0
+                     AND l.provider_id = SUBSTR(:compositeId, 1, INSTR(:compositeId, ':') - 1)
+                     AND l.provider_title_id = SUBSTR(:compositeId, INSTR(:compositeId, ':') + 1)
                )
         )
         """

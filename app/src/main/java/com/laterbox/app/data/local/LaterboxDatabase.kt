@@ -65,7 +65,7 @@ import com.laterbox.app.movies.data.local.entity.MovieWatchlistEntity
         HiddenTitleEntity::class,
         DownloadPlaybackProgressEntity::class
     ],
-    version = 20,
+    version = 21,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -1010,6 +1010,19 @@ abstract class LaterboxDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_20_21 = object : Migration(20, 21) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_movie_watch_history_is_trailer_hidden_from_continue_watching_is_hidden_title_last_watched_at` " +
+                        "ON `movie_watch_history` (`is_trailer`, `hidden_from_continue_watching`, `is_hidden_title`, `last_watched_at`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_movie_watch_history_canonical_id_is_trailer_last_watched_at` " +
+                        "ON `movie_watch_history` (`canonical_id`, `is_trailer`, `last_watched_at`)"
+                )
+            }
+        }
+
         @Volatile
         private var INSTANCE: LaterboxDatabase? = null
 
@@ -1039,7 +1052,8 @@ abstract class LaterboxDatabase : RoomDatabase() {
                         MIGRATION_16_17,
                         MIGRATION_17_18,
                         MIGRATION_18_19,
-                        MIGRATION_19_20
+                        MIGRATION_19_20,
+                        MIGRATION_20_21
                     )
                     .build()
                     .also { INSTANCE = it }

@@ -343,13 +343,32 @@ class MoviesHomeViewModel(
     fun loadHome(forceRefresh: Boolean = false) {
         loadJob?.cancel()
         loadJob = viewModelScope.launch {
-            val hasExisting = _uiState.value.feed != null
-            _uiState.update {
-                it.copy(
-                    isLoading = !hasExisting,
-                    isRefreshing = hasExisting && forceRefresh,
-                    errorMessage = null
-                )
+            var swrPaintedFresh = false
+            var swrHasCached = _uiState.value.feed != null
+            if (!forceRefresh && !swrHasCached) {
+                val cachedSnapshot = moviesRepository.getCachedHomeFeedWithinStaleCeiling()
+                if (cachedSnapshot != null) {
+                    val immediate = computeDiscoverySnapshot(_uiState.value.copy(feed = cachedSnapshot.feed))
+                    _uiState.update {
+                        immediate.copy(
+                            isLoading = false,
+                            isRefreshing = cachedSnapshot.isStale,
+                            feed = cachedSnapshot.feed,
+                            errorMessage = null
+                        )
+                    }
+                    swrHasCached = true
+                    swrPaintedFresh = !cachedSnapshot.isStale
+                }
+            }
+            if (!swrHasCached || forceRefresh) {
+                _uiState.update {
+                    it.copy(
+                        isLoading = !swrHasCached,
+                        isRefreshing = swrHasCached && forceRefresh,
+                        errorMessage = null
+                    )
+                }
             }
             // Priority 1: render main home feed as soon as it resolves (cache or live),
             // while Top Rated & Newest discovery rails load concurrently without blocking first render.
@@ -370,7 +389,8 @@ class MoviesHomeViewModel(
                 ).getOrNull()?.items.orEmpty().distinctBy { m -> m.compositeId }
             }
 
-            val result = moviesRepository.getHomeFeed(forceRefresh = forceRefresh)
+            val effectiveForceRefresh = forceRefresh || (swrHasCached && !swrPaintedFresh)
+            val result = if (swrPaintedFresh && !forceRefresh) Result.success(_uiState.value.feed!!) else moviesRepository.getHomeFeed(forceRefresh = effectiveForceRefresh)
             result.fold(
                 onSuccess = { feed ->
                     val immediateDiscovery = computeDiscoverySnapshot(_uiState.value.copy(feed = feed))

@@ -2135,4 +2135,50 @@ class LaterboxDatabaseTest {
             context.deleteDatabase(dbName)
         }
     }
+
+    @Test
+    fun migrate_20_to_21_addsWatchHistoryCompositeIndexes() {
+        val instrumentation = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+        val helper = androidx.room.testing.MigrationTestHelper(
+            instrumentation,
+            LaterboxDatabase::class.java
+        )
+        val dbName = "migration_20_21_test.db"
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        context.deleteDatabase(dbName)
+
+        helper.createDatabase(dbName, 20).use { db ->
+            db.execSQL(
+                "INSERT INTO `movie_watch_history` " +
+                    "(`history_key`, `composite_id`, `provider_id`, `title_id`, `kind`, `title`, `position_ms`, `duration_ms`, `last_watched_at`, `canonical_id`, `is_trailer`, `is_completed`, `rewatch_count`, `hidden_from_continue_watching`, `is_hidden_title`) " +
+                    "VALUES ('moviebox:42:0:0', 'moviebox:42', 'moviebox', '42', 'movie', 'Demo Movie', 15000, 120000, 1700000000000, 'canon_42', 0, 0, 0, 0, 0)"
+            )
+        }
+
+        val migratedDb = helper.runMigrationsAndValidate(
+            dbName,
+            21,
+            true,
+            LaterboxDatabase.MIGRATION_20_21
+        )
+        try {
+            val indexNames = mutableSetOf<String>()
+            migratedDb.query("PRAGMA index_list(`movie_watch_history`)").use { c ->
+                while (c.moveToNext()) {
+                    indexNames += c.getString(1)
+                }
+            }
+            assertTrue(indexNames.contains("index_movie_watch_history_is_trailer_hidden_from_continue_watching_is_hidden_title_last_watched_at"))
+            assertTrue(indexNames.contains("index_movie_watch_history_canonical_id_is_trailer_last_watched_at"))
+
+            migratedDb.query("SELECT `title`, `position_ms` FROM `movie_watch_history` WHERE `history_key` = 'moviebox:42:0:0'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("Demo Movie", c.getString(0))
+                assertEquals(15000L, c.getLong(1))
+            }
+        } finally {
+            migratedDb.close()
+            context.deleteDatabase(dbName)
+        }
+    }
 }

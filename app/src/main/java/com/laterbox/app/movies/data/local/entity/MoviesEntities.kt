@@ -77,7 +77,9 @@ data class MovieWatchlistEntity(
         Index(value = ["is_trailer"]),
         Index(value = ["is_completed"]),
         Index(value = ["is_hidden_title"]),
-        Index(value = ["hidden_from_continue_watching"])
+        Index(value = ["hidden_from_continue_watching"]),
+        Index(value = ["is_trailer", "hidden_from_continue_watching", "is_hidden_title", "last_watched_at"]),
+        Index(value = ["canonical_id", "is_trailer", "last_watched_at"])
     ]
 )
 data class MovieWatchHistoryEntity(

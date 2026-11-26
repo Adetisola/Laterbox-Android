@@ -65,6 +65,9 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
+import com.laterbox.app.movies.data.cache.StaleAge
+import com.laterbox.app.movies.domain.repository.CachedDetailsSnapshot
+import com.laterbox.app.movies.domain.repository.CachedHomeFeedSnapshot
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -169,8 +172,17 @@ class MoviesRepositoryImpl(
         val recordedAtMs: Long
     )
 
+    private data class CachedDetailsEntry(
+        val details: MediaDetails,
+        val updatedAtMs: Long,
+        val expiresAtMs: Long
+    )
+
     private val registeredCanonicalCache = ConcurrentHashMap<String, String>()
     private val summaryMemoryCache = ConcurrentHashMap<String, MovieTitleSummary>()
+    private val detailsMemoryCache = android.util.LruCache<String, CachedDetailsEntry>(48)
+    private val searchMemoryCache = android.util.LruCache<String, Pair<Long, CataloguePage>>(32)
+    private val suggestMemoryCache = android.util.LruCache<String, Pair<Long, List<SearchSuggestion>>>(48)
     private val durationLookupCache = ConcurrentHashMap<String, CachedDurationEntry>()
     private val inFlightDurationLookups = ConcurrentHashMap<String, CompletableDeferred<Int?>>()
     private val tvMazeShowIdByMovieBoxSeries = ConcurrentHashMap<String, String>()
@@ -364,6 +376,7 @@ class MoviesRepositoryImpl(
         }
 
         val detailKey = "details:${item.providerId}:${item.id}"
+        detailsMemoryCache.remove(detailKey)
         val cachedEntry = moviesDao.getCacheEntry(detailKey) ?: return
         val decoded = withContext(defaultDispatcher) {
             MoviesCacheJsonCodec.decodeDetails(cachedEntry.payloadJson)
@@ -382,6 +395,30 @@ class MoviesRepositoryImpl(
 
     private suspend fun isDebugSampleFixturesEnabled(): Boolean =
         BuildConfig.DEBUG && useSampleFixturesOnlyProvider()
+
+    override suspend fun getCachedHomeFeedWithinStaleCeiling(): CachedHomeFeedSnapshot? = withContext(ioDispatcher) {
+        if (isDebugSampleFixturesEnabled()) return@withContext null
+        val currentMs = nowMs()
+        val mb = activeMovieBox()
+        val keys = listOfNotNull(
+            mb?.let { buildMovieBoxHomeCacheKey(it.activeBaseUrl()) },
+            buildHomeCacheKey()
+        )
+        for (key in keys) {
+            val entry = moviesDao.getCacheEntry(key) ?: continue
+            if ((currentMs - entry.updatedAt) > StaleAge.HOME_MS) continue
+            val decoded = withContext(defaultDispatcher) {
+                MoviesCacheJsonCodec.decodeHomeFeed(entry.payloadJson, isOfflineCached = false)
+            } ?: continue
+            cacheSummaries(decoded.featuredBanners)
+            decoded.sections.forEach { cacheSummaries(it.items) }
+            return@withContext CachedHomeFeedSnapshot(
+                feed = decoded,
+                isStale = entry.expiresAt <= currentMs
+            )
+        }
+        null
+    }
 
     override suspend fun getHomeFeed(forceRefresh: Boolean): Result<MoviesHomeFeed> = withContext(ioDispatcher) {
         if (isDebugSampleFixturesEnabled()) {
@@ -448,8 +485,8 @@ class MoviesRepositoryImpl(
                 return@withContext fallbackFeedResult
             }
 
-            // All live providers failed: fall back to stale cache (prefer MovieBox cache first).
-            if (mbCachedEntry != null) {
+            // All live providers failed: fall back to bounded stale cache (<= StaleAge.HOME_MS = 24h).
+            if (mbCachedEntry != null && (currentMs - mbCachedEntry.updatedAt) <= StaleAge.HOME_MS) {
                 val decoded = withContext(defaultDispatcher) {
                     MoviesCacheJsonCodec.decodeHomeFeed(mbCachedEntry.payloadJson, isOfflineCached = true)
                 }
@@ -464,7 +501,9 @@ class MoviesRepositoryImpl(
                 }
             }
             val openCacheKey = buildHomeCacheKey()
-            moviesDao.getCacheEntry(openCacheKey)?.let { openCached ->
+            moviesDao.getCacheEntry(openCacheKey)
+                ?.takeIf { (currentMs - it.updatedAt) <= StaleAge.HOME_MS }
+                ?.let { openCached ->
                 val decoded = withContext(defaultDispatcher) {
                     MoviesCacheJsonCodec.decodeHomeFeed(openCached.payloadJson, isOfflineCached = true)
                 }
@@ -535,7 +574,7 @@ class MoviesRepositoryImpl(
 
         if (iaFeed == null && tvFeed == null) {
             if (!forceRefresh || fallbackNotice == null) {
-                if (cachedEntry != null) {
+                if (cachedEntry != null && (currentMs - cachedEntry.updatedAt) <= StaleAge.HOME_MS) {
                     val decoded = withContext(defaultDispatcher) {
                         MoviesCacheJsonCodec.decodeHomeFeed(cachedEntry.payloadJson, isOfflineCached = true)
                     }
@@ -840,6 +879,12 @@ class MoviesRepositoryImpl(
         if (isDebugSampleFixturesEnabled()) {
             return@withContext fixtureProvider.search(clean, kind, page, pageSize)
         }
+        val searchKey = "$clean:${kind?.wireValue ?: "all"}:$page:$pageSize"
+        searchMemoryCache.get(searchKey)?.let { (recordedAt, cachedPage) ->
+            if ((nowMs() - recordedAt) < StaleAge.SEARCH_MS) {
+                return@withContext Result.success(cachedPage)
+            }
+        }
 
         val queryMovies = kind == null || kind == MediaKind.MOVIE
         val querySeries = kind == null || kind == MediaKind.TV_SERIES
@@ -917,16 +962,18 @@ class MoviesRepositoryImpl(
             val dedupedSupplementary = MovieBoxPriorityDeduplicator.deduplicateSummariesPreferringMovieBox(filteredSupplementary)
 
             val merged = registeredPrimary + dedupedSupplementary
-            return@withContext Result.success(
-                CataloguePage(
-                    items = merged,
-                    page = mbPage.page,
-                    pageSize = mbPage.pageSize,
-                    totalCount = (mbPage.totalCount ?: mbItems.size) + dedupedSupplementary.size,
-                    hasMore = mbPage.hasMore || suppPages.any { it.hasMore },
-                    primaryCount = registeredPrimary.size
-                )
+            val finalSearchPage = CataloguePage(
+                items = merged,
+                page = mbPage.page,
+                pageSize = mbPage.pageSize,
+                totalCount = (mbPage.totalCount ?: mbItems.size) + dedupedSupplementary.size,
+                hasMore = mbPage.hasMore || suppPages.any { it.hasMore },
+                primaryCount = registeredPrimary.size
             )
+            if (finalSearchPage.items.isNotEmpty()) {
+                searchMemoryCache.put(searchKey, nowMs() to finalSearchPage)
+            }
+            return@withContext Result.success(finalSearchPage)
         }
 
         if (suppPages.isEmpty()) {
@@ -963,12 +1010,24 @@ class MoviesRepositoryImpl(
         if (isDebugSampleFixturesEnabled()) {
             return@withContext fixtureProvider.getSuggestions(clean, limit)
         }
+        val suggestKey = "$clean:$limit"
+        suggestMemoryCache.get(suggestKey)?.let { (recordedAt, cachedList) ->
+            if ((nowMs() - recordedAt) < StaleAge.SUGGEST_MS) {
+                return@withContext Result.success(cachedList)
+            }
+        }
 
         val mbResult = activeMovieBox()?.getSuggestions(clean, limit)
         if (mbResult != null && mbResult.isSuccess) {
             clearPrimaryFailure()
-            return@withContext mbResult.map {
-                MovieBoxPriorityDeduplicator.deduplicateSuggestionsPreferringMovieBox(it).take(limit)
+            return@withContext mbResult.map { rawList ->
+                MovieBoxPriorityDeduplicator.deduplicateSuggestionsPreferringMovieBox(rawList)
+                    .take(limit)
+                    .also { deduped ->
+                        if (deduped.isNotEmpty()) {
+                            suggestMemoryCache.put(suggestKey, nowMs() to deduped)
+                        }
+                    }
             }
         }
         if (mbResult != null && mbResult.isFailure) {
@@ -1159,6 +1218,60 @@ class MoviesRepositoryImpl(
             }
     }
 
+    override suspend fun getCachedDetailsFast(providerId: String, titleId: String): CachedDetailsSnapshot? = withContext(ioDispatcher) {
+        val (resolvedProviderId, resolvedTitleId) = mediaResolver.resolveConcreteTarget(
+            providerId = providerId,
+            titleId = titleId,
+            preferPlayable = false
+        )
+        if (resolvedProviderId == DevelopmentMoviesFixtureProvider.PROVIDER_ID) {
+            return@withContext null
+        }
+        val currentMs = nowMs()
+        val cacheKey = "details:$resolvedProviderId:$resolvedTitleId"
+        detailsMemoryCache.get(cacheKey)?.let { memEntry ->
+            if ((currentMs - memEntry.updatedAtMs) <= StaleAge.DETAIL_MS) {
+                com.laterbox.app.diagnostics.NetworkWaterfallLogger.recordCall(
+                    callGroup = "repository.detailsMemoryCache",
+                    startElapsedMs = com.laterbox.app.diagnostics.NetworkWaterfallLogger.nowWallMs(),
+                    durationMs = 0L,
+                    cacheStatus = com.laterbox.app.diagnostics.NetworkWaterfallLogger.CacheStatus.MEMORY_HIT,
+                    blockingFirstPaint = false
+                )
+                return@withContext CachedDetailsSnapshot(
+                    details = memEntry.details,
+                    isStale = memEntry.expiresAtMs <= currentMs
+                )
+            }
+        }
+        val cachedEntry = moviesDao.getCacheEntry(cacheKey) ?: return@withContext null
+        if ((currentMs - cachedEntry.updatedAt) > StaleAge.DETAIL_MS) return@withContext null
+        val decoded = withContext(defaultDispatcher) {
+            MoviesCacheJsonCodec.decodeDetails(cachedEntry.payloadJson)
+        } ?: return@withContext null
+        val resolvedSummary = mediaResolver.resolveOrRegister(
+            decoded.summary,
+            seasonCount = decoded.seasons.size.takeIf { it > 0 }
+        )
+        val finalDetails = decoded.copy(summary = resolvedSummary)
+        cacheSummaries(listOf(finalDetails.summary) + finalDetails.relatedTitles)
+        detailsMemoryCache.put(
+            cacheKey,
+            CachedDetailsEntry(finalDetails, cachedEntry.updatedAt, cachedEntry.expiresAt)
+        )
+        com.laterbox.app.diagnostics.NetworkWaterfallLogger.recordCall(
+            callGroup = "repository.detailsRoomCache",
+            startElapsedMs = com.laterbox.app.diagnostics.NetworkWaterfallLogger.nowWallMs(),
+            durationMs = 0L,
+            cacheStatus = com.laterbox.app.diagnostics.NetworkWaterfallLogger.CacheStatus.ROOM_HIT,
+            blockingFirstPaint = false
+        )
+        CachedDetailsSnapshot(
+            details = finalDetails,
+            isStale = cachedEntry.expiresAt <= currentMs
+        )
+    }
+
     override suspend fun getDetails(providerId: String, titleId: String, forceRefresh: Boolean): Result<MediaDetails> = withContext(ioDispatcher) {
         val (resolvedProviderId, resolvedTitleId) = mediaResolver.resolveConcreteTarget(
             providerId = providerId,
@@ -1174,6 +1287,14 @@ class MoviesRepositoryImpl(
         val currentMs = nowMs()
         val cachedSummarySnapshot = getCachedSummary(resolvedProviderId, resolvedTitleId)
         val cacheKey = "details:$resolvedProviderId:$resolvedTitleId"
+        if (!forceRefresh) {
+            detailsMemoryCache.get(cacheKey)?.let { memEntry ->
+                if (memEntry.expiresAtMs > currentMs) {
+                    cacheSummaries(listOf(memEntry.details.summary) + memEntry.details.relatedTitles)
+                    return@withContext Result.success(memEntry.details)
+                }
+            }
+        }
         val cachedEntry = moviesDao.getCacheEntry(cacheKey)
         if (!forceRefresh && cachedEntry != null && cachedEntry.expiresAt > currentMs) {
             val decoded = withContext(defaultDispatcher) {
@@ -1201,6 +1322,10 @@ class MoviesRepositoryImpl(
                 )
                 val finalDetails = decoded.copy(summary = resolvedSummary)
                 cacheSummaries(listOf(finalDetails.summary) + finalDetails.relatedTitles)
+                detailsMemoryCache.put(
+                    cacheKey,
+                    CachedDetailsEntry(finalDetails, cachedEntry.updatedAt, cachedEntry.expiresAt)
+                )
                 return@withContext Result.success(finalDetails)
             }
         }
@@ -1258,6 +1383,10 @@ class MoviesRepositoryImpl(
                     expiresAt = currentMs + CACHE_TTL_MS
                 )
             )
+            detailsMemoryCache.put(
+                cacheKey,
+                CachedDetailsEntry(enriched, currentMs, currentMs + CACHE_TTL_MS)
+            )
             return@withContext Result.success(enriched)
         }
 
@@ -1286,9 +1415,11 @@ class MoviesRepositoryImpl(
 
         val primaryError = primaryResult.exceptionOrNull()
             ?: IllegalStateException("Unable to load title details.")
-        val staleDecoded = cachedEntry?.let { entry ->
-            withContext(defaultDispatcher) { MoviesCacheJsonCodec.decodeDetails(entry.payloadJson) }
-        }
+        val staleDecoded = cachedEntry
+            ?.takeIf { (currentMs - it.updatedAt) <= StaleAge.DETAIL_MS }
+            ?.let { entry ->
+                withContext(defaultDispatcher) { MoviesCacheJsonCodec.decodeDetails(entry.payloadJson) }
+            }
         staleDecoded?.let {
             cacheSummaries(listOf(it.summary) + it.relatedTitles)
             Result.success(it)

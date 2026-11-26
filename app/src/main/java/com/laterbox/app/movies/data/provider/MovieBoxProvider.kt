@@ -36,6 +36,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -1149,47 +1150,58 @@ class MovieBoxProvider(
         val skipNativeOnce = skipNativeAt != null && (System.currentTimeMillis() - skipNativeAt) <= 120_000L
         val resolver = nativeStreamResolver
         if (!skipNativeOnce && resolver != null) {
-            val nativeOutcome = runCatching {
-                resolver.resolveStreams(titleId, se, ep)
-            }.onFailure { err ->
-                safeLogInfo("native resolve failed id=$titleId se=$se ep=$ep err=${err.javaClass.simpleName}; falling back")
-            }.getOrNull()
-
-            if (nativeOutcome != null && nativeOutcome.sources.isNotEmpty()) {
-                val nativeSources = nativeOutcome.sources.sortedWith(
-                    compareByDescending<PlaybackSource> { it.qualityHeight }
-                        .thenBy { it.format == "DASH" || it.format == "HLS" }
-                )
-                lastNativeSuccessAtMs[cacheKey] = System.currentTimeMillis()
-                if (se > 0 && ep > 0) {
-                    val epSizes = nativeSources
-                        .filter { it.format != "DASH" && it.format != "HLS" && it.qualityHeight > 0 && (it.sizeMb ?: 0.0) > 0.0 }
-                        .associate { it.qualityHeight to (it.sizeMb ?: 0.0) }
-                    if (epSizes.isNotEmpty()) {
-                        episodeSizesCache.getOrPut("$titleId:$se") { ConcurrentHashMap() }[ep] = epSizes
-                    }
+            val nativeResolution = kotlinx.coroutines.coroutineScope {
+                val nativeSubtitlesDeferred = async {
+                    getSubtitles(titleId, seasonNumber, episodeNumber).getOrDefault(emptyList())
                 }
-                val subtitles = getSubtitles(titleId, seasonNumber, episodeNumber)
-                    .getOrDefault(emptyList())
-                val resolvedTitle = titleCache[titleId]
-                    ?: nativeOutcome.resolvedTitle?.takeIf { it.isNotBlank() }
-                    ?: "Video"
-                val heading = if (se > 0 && ep > 0) "Season $se · Episode $ep" else null
-                val cachedDetailMarkers = markerWindowCache[titleId]
-                safeLogInfo(
-                    "playback resolve native_hit=true id=$titleId se=$se ep=$ep count=${nativeSources.size} " +
-                        "hosts=${nativeSources.mapNotNull { it.url.toHttpUrlOrNull()?.host }.distinct().joinToString(",")}"
-                )
-                return@runCatching PlaybackResolution.Available(
-                    title = resolvedTitle,
-                    subtitleHeading = heading,
-                    sources = nativeSources,
-                    subtitles = subtitles,
-                    providerName = displayName,
-                    sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
-                    introWindow = cachedDetailMarkers?.first,
-                    recapWindow = cachedDetailMarkers?.second
-                )
+                val nativeOutcome = runCatching {
+                    resolver.resolveStreams(titleId, se, ep)
+                }.onFailure { err ->
+                    safeLogInfo("native resolve failed id=$titleId se=$se ep=$ep err=${err.javaClass.simpleName}; falling back")
+                }.getOrNull()
+
+                if (nativeOutcome != null && nativeOutcome.sources.isNotEmpty()) {
+                    val nativeSources = nativeOutcome.sources.sortedWith(
+                        compareByDescending<PlaybackSource> { it.qualityHeight }
+                            .thenBy { it.format == "DASH" || it.format == "HLS" }
+                    )
+                    lastNativeSuccessAtMs[cacheKey] = System.currentTimeMillis()
+                    if (se > 0 && ep > 0) {
+                        val epSizes = nativeSources
+                            .filter { it.format != "DASH" && it.format != "HLS" && it.qualityHeight > 0 && (it.sizeMb ?: 0.0) > 0.0 }
+                            .associate { it.qualityHeight to (it.sizeMb ?: 0.0) }
+                        if (epSizes.isNotEmpty()) {
+                            episodeSizesCache.getOrPut("$titleId:$se") { ConcurrentHashMap() }[ep] = epSizes
+                        }
+                    }
+                    val subtitles = nativeSubtitlesDeferred.await()
+                    val resolvedTitle = titleCache[titleId]
+                        ?: nativeOutcome.resolvedTitle?.takeIf { it.isNotBlank() }
+                        ?: "Video"
+                    val heading = if (se > 0 && ep > 0) "Season $se · Episode $ep" else null
+                    val cachedDetailMarkers = markerWindowCache[titleId]
+                    safeLogInfo(
+                        "playback resolve native_hit=true id=$titleId se=$se ep=$ep count=${nativeSources.size} " +
+                            "hosts=${nativeSources.mapNotNull { it.url.toHttpUrlOrNull()?.host }.distinct().joinToString(",")}"
+                    )
+                    PlaybackResolution.Available(
+                        title = resolvedTitle,
+                        subtitleHeading = heading,
+                        sources = nativeSources,
+                        subtitles = subtitles,
+                        providerName = displayName,
+                        sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+                        introWindow = cachedDetailMarkers?.first,
+                        recapWindow = cachedDetailMarkers?.second
+                    )
+                } else {
+                    // Preserve A6: cancel unused parallel captions so fallback /api/stream/{id} populates _stream_id_cache first.
+                    nativeSubtitlesDeferred.cancel()
+                    null
+                }
+            }
+            if (nativeResolution != null) {
+                return@runCatching nativeResolution
             }
         }
 
