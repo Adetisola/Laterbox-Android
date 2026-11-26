@@ -651,7 +651,7 @@ fun InboxScreen(
                         ) {
                             EmptyStateView(
                                 title = "Nothing saved. Yet.",
-                                subtitle = "When something catches your attention online, send it here with Android's share sheet.",
+                                subtitle = "Share links from any app to save them here.",
                                 actionText = "+ Add link manually",
                                 onActionClick = onAddLinkClick
                             )

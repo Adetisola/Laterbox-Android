@@ -442,7 +442,7 @@ fun RemindersAiSettingsScreen(
                         }
 
                         Text(
-                            text = "Number of times Laterbox will gently remind you before leaving a link calm in your inbox.",
+                            text = "Maximum reminders sent per saved link.",
                             style = typography.metaText,
                             color = colors.textSecondary
                         )
@@ -457,7 +457,7 @@ fun RemindersAiSettingsScreen(
                         )
 
                         Text(
-                            text = "Powered by Gemini via Google AI Studio for calm, context-aware digests and smart reminders.",
+                            text = "Gemini key for smart summaries.",
                             style = typography.metaText,
                             color = colors.textSecondary
                         )
@@ -702,7 +702,7 @@ fun RemindersAiSettingsScreen(
                     SettingsDivider()
                     ScheduleRow(
                         title = "App Health Warnings",
-                        description = "Alert on extractor, FFmpeg, permission, or low-storage issues",
+                        description = "Alert on permission or low-storage issues.",
                         enabled = preferences.smartNotificationsAppHealth,
                         onEnabledChange = onSmartNotificationsAppHealthChange,
                         content = {}
@@ -710,7 +710,7 @@ fun RemindersAiSettingsScreen(
                     SettingsDivider()
                     ScheduleRow(
                         title = "Contextual Reading Summaries",
-                        description = "Gentle summary alerts for older unread items & downloads",
+                        description = "Summary alerts for unread saved items.",
                         enabled = preferences.smartNotificationsSummaries,
                         onEnabledChange = onSmartNotificationsSummariesChange,
                         content = {}
@@ -718,7 +718,7 @@ fun RemindersAiSettingsScreen(
                     SettingsDivider()
                     ScheduleRow(
                         title = "Non-Repeating Tips & Tricks",
-                        description = "Occasional discovery tips for Laterbox shortcuts & media features",
+                        description = "Occasional tips for Laterbox features.",
                         enabled = preferences.smartNotificationsTips,
                         onEnabledChange = onSmartNotificationsTipsChange,
                         content = {}
@@ -726,7 +726,7 @@ fun RemindersAiSettingsScreen(
                     SettingsDivider()
                     ScheduleRow(
                         title = "Movies & TV Reminders",
-                        description = "Continue Watching nudges, unwatched watchlist reminders, and verified new season alerts",
+                        description = "Continue watching, watchlist, and new seasons.",
                         enabled = preferences.smartNotificationsMoviesTv,
                         onEnabledChange = onSmartNotificationsMoviesTvChange,
                         content = {}

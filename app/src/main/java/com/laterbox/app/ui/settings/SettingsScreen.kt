@@ -99,7 +99,7 @@ fun SettingsScreen(
                         color = colors.textPrimary
                     )
                     Text(
-                        text = "Preferences, media, storage & privacy",
+                        text = "Preferences, media, storage, and privacy",
                         style = typography.metaText,
                         color = colors.textSecondary
                     )
@@ -156,42 +156,42 @@ fun SettingsScreen(
                 SettingsCategoryRow(
                     iconRes = LaterboxIcons.User,
                     title = "Appearance & Profile",
-                    subtitle = "Theme, reader font size, personal greeting name",
+                    subtitle = "Theme, reader font, and greeting.",
                     onClick = onNavigateToAppearanceProfile
                 )
 
                 SettingsCategoryRow(
                     iconRes = LaterboxIcons.Sparkles,
                     title = "Reminders & AI",
-                    subtitle = "Calendar schedules, notifications & AI assistant",
+                    subtitle = "Schedules, notifications, and assistant.",
                     onClick = onNavigateToRemindersAi
                 )
 
                 SettingsCategoryRow(
                     iconRes = LaterboxIcons.Copy,
                     title = "Capture & Shortcuts",
-                    subtitle = "Clipboard suggestion banner, Quick Settings tile, link shortcut",
+                    subtitle = "Clipboard, selection, and Quick Settings.",
                     onClick = onNavigateToCaptureShortcuts
                 )
 
                 SettingsCategoryRow(
                     iconRes = LaterboxIcons.ViewList,
                     title = "Reading & Behaviour",
-                    subtitle = "Auto-mark as read, default card tap, inbox layout",
+                    subtitle = "Auto-read, taps, and layout.",
                     onClick = onNavigateToReadingBehavior
                 )
 
                 SettingsCategoryRow(
                     iconRes = LaterboxIcons.Download,
                     title = "Media & Downloads",
-                    subtitle = "Network policy, auto-inspect links, export storage",
+                    subtitle = "Download network, inspection, and export.",
                     onClick = onNavigateToMediaDownloads
                 )
 
                 SettingsCategoryRow(
                     iconRes = LaterboxIcons.Movies,
                     title = "Movies & TV",
-                    subtitle = "Player gestures, subtitle style, quality, viewing history",
+                    subtitle = "Gestures, subtitles, and playback quality.",
                     onClick = onNavigateToMoviesTv,
                     modifier = Modifier.testTag("settings_category_movies_tv")
                 )
@@ -199,7 +199,7 @@ fun SettingsScreen(
                 SettingsCategoryRow(
                     iconRes = LaterboxIcons.Folder,
                     title = "Data & Storage",
-                    subtitle = "Backup, restore, storage usage & safe cache cleanup",
+                    subtitle = "Backups, storage, and cache cleanup.",
                     onClick = onNavigateToDataStorage,
                     modifier = Modifier.testTag("settings_category_data_storage")
                 )

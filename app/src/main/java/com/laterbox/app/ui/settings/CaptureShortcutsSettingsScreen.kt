@@ -96,7 +96,7 @@ fun CaptureShortcutsSettingsScreen(
                                 color = colors.textPrimary
                             )
                             Text(
-                                text = "Offers a small floating shortcut when you highlight a web link in supported apps.",
+                                text = "Floating shortcut when selecting links.",
                                 style = typography.metaText,
                                 color = colors.textSecondary
                             )
@@ -120,7 +120,7 @@ fun CaptureShortcutsSettingsScreen(
                     if (preferences.accessibilityCaptureEnabled) {
                         if (!isAccessibilityEnabledInSystem) {
                             LaterboxBanner(
-                                text = "Android Accessibility permission is required for floating selection capture.",
+                                text = "Accessibility permission is needed for selection capture.",
                                 isWarning = true
                             )
                             LaterboxSecondaryButton(
@@ -160,7 +160,7 @@ fun CaptureShortcutsSettingsScreen(
                                 color = colors.textPrimary
                             )
                             Text(
-                                text = "Suggests saving when you open Laterbox if a webpage link is on your clipboard.",
+                                text = "Suggest saving copied links on open.",
                                 style = typography.metaText,
                                 color = colors.textSecondary
                             )
@@ -185,7 +185,7 @@ fun CaptureShortcutsSettingsScreen(
                             color = colors.textPrimary
                         )
                         Text(
-                            text = "Highlight text in any application and tap 'Save to Laterbox' in the text toolbar. Always available without extra permissions.",
+                            text = "Save links from the selection toolbar.",
                             style = typography.metaText,
                             color = colors.textSecondary
                         )
@@ -201,7 +201,7 @@ fun CaptureShortcutsSettingsScreen(
                             color = colors.textPrimary
                         )
                         Text(
-                            text = "Save any copied link instantly from the Android Quick Settings drawer without switching apps.",
+                            text = "Save copied links from Quick Settings.",
                             style = typography.metaText,
                             color = colors.textSecondary
                         )
@@ -221,7 +221,7 @@ fun CaptureShortcutsSettingsScreen(
                                             if (result == StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ADDED) {
                                                 com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
                                                     context = context,
-                                                    message = "Tile added to Quick Settings!",
+                                                    message = "Tile added to Quick Settings.",
                                                     variant = com.laterbox.app.ui.components.LaterboxToastVariant.SUCCESS
                                                 )
                                             }
@@ -230,7 +230,7 @@ fun CaptureShortcutsSettingsScreen(
                                 } else {
                                     com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
                                         context = context,
-                                        message = "Swipe down Quick Settings, tap the pencil edit icon, and drag 'Save to Laterbox' into your tiles.",
+                                        message = "Drag Save to Laterbox into Quick Settings.",
                                         variant = com.laterbox.app.ui.components.LaterboxToastVariant.NEUTRAL
                                     )
                                 }

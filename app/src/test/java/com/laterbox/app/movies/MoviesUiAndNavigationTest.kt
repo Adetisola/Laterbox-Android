@@ -2628,4 +2628,61 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithText("FILM").assertIsDisplayed()
         composeTestRule.onNodeWithContentDescription("Stream available").assertDoesNotExist()
     }
+
+    @Test
+    fun moviePosterCard_longPressOpensMoreMenu_andSingleLineTitlePreservesFullSemantics() {
+        val longTitle = "The Lord of the Rings: The Fellowship of the Ring"
+        var markedWatched = false
+        val item = sampleMovie.copy(id = "long_press_1", title = longTitle)
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                com.laterbox.app.movies.ui.MoviePosterCard(
+                    item = item,
+                    onClick = {},
+                    onMarkWatched = { markedWatched = true }
+                )
+            }
+        }
+
+        // Full title preserved in accessibility semantics even when visually truncated to 1 line
+        composeTestRule.onNodeWithContentDescription(longTitle).assertIsDisplayed()
+
+        // Long-pressing anywhere on the poster card opens the More menu
+        composeTestRule.onNodeWithTag("movie_card_${item.providerId}_${item.id}")
+            .performTouchInput { longClick() }
+        composeTestRule.onNodeWithText("Mark Watched").assertIsDisplayed().performClick()
+        assertTrue(markedWatched)
+    }
+
+    @Test
+    fun moviesHeroCarousel_placesRatingTopLeftAndWatchlistTopRightWith48dpHitTarget() {
+        val heroItem = sampleMovie.copy(id = "hero_layout_1", rating = 8.4)
+        composeTestRule.setContent {
+            LaterboxTheme {
+                com.laterbox.app.movies.ui.MoviesHeroCarousel(
+                    banners = listOf(heroItem),
+                    watchlistIds = emptySet(),
+                    onBannerClick = {},
+                    onPlayClick = {},
+                    onToggleWatchlist = {}
+                )
+            }
+        }
+
+        val ratingBounds = composeTestRule.onNodeWithTag("hero_rating_badge_${heroItem.id}", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        val bookmarkBounds = composeTestRule.onNodeWithTag("hero_bookmark_${heroItem.id}", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+
+        assertTrue(
+            "Expected rating badge (${ratingBounds.left}) to sit top-left of watchlist (${bookmarkBounds.left})",
+            ratingBounds.right < bookmarkBounds.left
+        )
+        val density = composeTestRule.density.density
+        assertTrue(
+            "Expected watchlist hit target >= 48dp, got ${bookmarkBounds.width / density}dp",
+            bookmarkBounds.width >= 47.9f * density && bookmarkBounds.height >= 47.9f * density
+        )
+    }
 }

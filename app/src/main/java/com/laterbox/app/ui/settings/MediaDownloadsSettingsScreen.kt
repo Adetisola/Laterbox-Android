@@ -165,7 +165,7 @@ fun MediaDownloadsSettingsScreen(
                                 color = colors.textPrimary
                             )
                             Text(
-                                text = "Automatically detect downloadable media when links are saved",
+                                text = "Detect downloadable media when saving links.",
                                 style = typography.bodySecondary.copy(fontSize = 12.sp),
                                 color = colors.textSecondary
                             )
@@ -191,7 +191,7 @@ fun MediaDownloadsSettingsScreen(
                             color = colors.textPrimary
                         )
                         Text(
-                            text = "Choose where downloaded media files are copied when exported. By default, files are exported to the system Downloads/Laterbox folder.",
+                            text = "Defaults to Downloads/Laterbox on your device.",
                             style = typography.bodySecondary.copy(fontSize = 12.sp),
                             color = colors.textSecondary
                         )

@@ -39,7 +39,7 @@ fun LinkQuickActionsMenu(
         DropdownMenuItem(
             text = {
                 Text(
-                    text = if (link.isRead) "Mark as unread" else "Mark as read",
+                    text = if (link.isRead) "Mark unread" else "Mark read",
                     style = LaterboxTheme.typography.bodyPrimary,
                     fontSize = 14.sp
                 )

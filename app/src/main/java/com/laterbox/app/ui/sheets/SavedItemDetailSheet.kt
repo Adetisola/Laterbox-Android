@@ -869,7 +869,7 @@ fun SavedItemDetailSheet(
             if (showNotifPermissionWarning && !com.laterbox.app.ui.util.NotificationPermissionHelper.isNotificationPermissionGranted(context)) {
                 Spacer(modifier = Modifier.height(spacing.xs))
                 com.laterbox.app.ui.components.LaterboxBanner(
-                    text = "Notifications are blocked. Reminder is saved, but won't alert you until notifications are enabled.",
+                    text = "Reminder saved, but notifications are blocked.",
                     isWarning = true,
                     actionText = "Settings",
                     onActionClick = {

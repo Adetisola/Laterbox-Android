@@ -2,10 +2,12 @@ package com.laterbox.app.movies.ui
 
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -73,6 +75,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -157,6 +161,7 @@ fun DataSourceBadgeChip(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MoviePosterCard(
     item: MovieTitleSummary,
@@ -188,7 +193,10 @@ fun MoviePosterCard(
     Column(
         modifier = modifier
             .width(width)
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = if (hasContextualActions) ({ menuExpanded = true }) else null
+            )
             .padding(bottom = 2.dp)
             .testTag(testTag)
     ) {
@@ -434,9 +442,10 @@ fun MoviePosterCard(
             text = item.title,
             style = typography.uiLabel.copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold),
             color = colors.textPrimary,
-            maxLines = 2,
+            maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            lineHeight = 16.sp
+            lineHeight = 16.sp,
+            modifier = Modifier.semantics { contentDescription = item.title }
         )
 
         val yearText = item.releaseYear?.toString()
@@ -586,6 +595,7 @@ fun BackdropArtworkBox(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ContinueWatchingCard(
     item: WatchHistoryItem,
@@ -609,7 +619,10 @@ fun ContinueWatchingCard(
         modifier = modifier
             .width(196.dp)
             .clip(RoundedCornerShape(14.dp))
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = if (hasMenuActions) ({ menuExpanded = true }) else null
+            )
             .testTag("continue_watching_${item.compositeId}"),
         shape = RoundedCornerShape(14.dp),
         color = colors.surfacePrimary,
@@ -785,7 +798,8 @@ fun ContinueWatchingCard(
                     style = typography.uiLabel.copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold),
                     color = colors.textPrimary,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.semantics { contentDescription = item.title }
                 )
                 val subText = item.episodeLabel ?: formatResumeTime(item.positionMs, item.durationMs)
                 Text(
@@ -1128,39 +1142,54 @@ fun MoviesHeroCarousel(
                                     )
                             )
 
-                            Row(
+                            Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(12.dp)
-                                    .align(Alignment.TopCenter),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-                                verticalAlignment = Alignment.CenterVertically
+                                    .align(Alignment.TopCenter)
                             ) {
-                                Surface(
-                                    shape = CircleShape,
-                                    color = Color.Black.copy(alpha = 0.52f)
-                                ) {
-                                    IconButton(
-                                        onClick = { onToggleWatchlist(item) },
+                                item.rating?.takeIf { it > 0.0 && !it.isNaN() }?.let { rating ->
+                                    Box(
                                         modifier = Modifier
-                                            .size(36.dp)
-                                            .testTag("hero_bookmark_${item.id}")
+                                            .align(Alignment.TopStart)
+                                            .background(
+                                                Brush.radialGradient(
+                                                    colors = listOf(
+                                                        Color.Black.copy(alpha = 0.45f),
+                                                        Color.Transparent
+                                                    )
+                                                )
+                                            )
                                     ) {
-                                        Icon(
-                                            painter = painterResource(
-                                                if (isSaved) LaterboxIcons.Check else LaterboxIcons.Bookmark
-                                            ),
-                                            contentDescription = if (isSaved) "In Watchlist" else "Add to Watchlist",
-                                            tint = if (isSaved) colors.accentPrimary else Color.White,
-                                            modifier = Modifier.size(18.dp)
+                                        MovieRatingBadge(
+                                            rating = rating,
+                                            modifier = Modifier.testTag("hero_rating_badge_${item.id}")
                                         )
                                     }
                                 }
-                                item.rating?.takeIf { it > 0.0 && !it.isNaN() }?.let { rating ->
-                                    MovieRatingBadge(
-                                        rating = rating,
-                                        modifier = Modifier.testTag("hero_rating_badge_${item.id}")
-                                    )
+                                IconButton(
+                                    onClick = { onToggleWatchlist(item) },
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .size(48.dp)
+                                        .testTag("hero_bookmark_${item.id}")
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = Color.Black.copy(alpha = 0.52f),
+                                        modifier = Modifier.size(36.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                painter = painterResource(
+                                                    if (isSaved) LaterboxIcons.Check else LaterboxIcons.Bookmark
+                                                ),
+                                                contentDescription = if (isSaved) "In Watchlist" else "Add to Watchlist",
+                                                tint = if (isSaved) colors.accentPrimary else Color.White,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
                                 }
                             }
 

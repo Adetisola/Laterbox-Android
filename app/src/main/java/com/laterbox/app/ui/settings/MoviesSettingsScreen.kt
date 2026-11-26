@@ -147,7 +147,7 @@ fun MoviesSettingsScreen(
                                     color = colors.textPrimary
                                 )
                                 Text(
-                                    text = "Drag horizontally to scrub; slide up or down while dragging to change speed.",
+                                    text = "Drag horizontally to seek video.",
                                     style = typography.metaText,
                                     color = colors.textSecondary
                                 )
@@ -202,7 +202,7 @@ fun MoviesSettingsScreen(
                                 color = colors.textPrimary
                             )
                             Text(
-                                text = "Adjusts player window brightness only and restores your device setting on exit.",
+                                text = "Adjusts player brightness during playback.",
                                 style = typography.metaText,
                                 color = colors.textSecondary
                             )

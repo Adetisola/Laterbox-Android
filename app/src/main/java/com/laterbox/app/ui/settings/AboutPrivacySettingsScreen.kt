@@ -293,7 +293,7 @@ fun AboutLaterboxSection(
             },
             text = {
                 Text(
-                    text = "This clears your on-device Reader open counts, reminder open counts, and capture channel counters. Your saved links, collections, and downloaded media are not affected.",
+                    text = "This clears your local reading and reminder counters without affecting saved links or downloads.",
                     style = typography.bodySecondary,
                     color = colors.textSecondary
                 )
@@ -343,12 +343,7 @@ fun AboutLaterboxSection(
                     verticalArrangement = Arrangement.spacedBy(spacing.sm)
                 ) {
                     Text(
-                        text = "Built-in product and reliability analytics are enabled by default across Laterbox installations to measure app stability, version adoption, allowlisted screen and feature usage, categorized error types, and performance timings using pseudonymous app-generated installation and session identifiers (not completely anonymous while an installation ID remains unchanged).",
-                        style = typography.bodySecondary,
-                        color = colors.textSecondary
-                    )
-                    Text(
-                        text = "Analytics events never include saved link URLs, webpage titles, notes, search queries, or assistant prompts. Collection can only be paused globally by administrators, and you may rotate your local installation identifier below at any time.",
+                        text = "Built-in analytics measure stability and feature usage with a local install ID, never your saved links, queries, or prompts.",
                         style = typography.bodySecondary,
                         color = colors.textSecondary
                     )
@@ -360,7 +355,7 @@ fun AboutLaterboxSection(
                                 onResetAnalyticsInstallId()
                                 com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
                                     context = context,
-                                    message = "Installation identifier rotated",
+                                    message = "Installation identifier reset.",
                                     variant = com.laterbox.app.ui.components.LaterboxToastVariant.SUCCESS
                                 )
                             },

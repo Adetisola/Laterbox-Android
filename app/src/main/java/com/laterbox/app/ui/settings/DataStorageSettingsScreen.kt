@@ -75,13 +75,13 @@ fun DataStorageSettingsScreen(
                             val count = result.getOrNull() ?: 0
                             com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
                                 context = context,
-                                message = "Exported $count items",
+                                message = "Exported $count items.",
                                 variant = com.laterbox.app.ui.components.LaterboxToastVariant.SUCCESS
                             )
                         } else {
                             com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
                                 context = context,
-                                message = "Couldn't export backup. Check available space and try again.",
+                                message = "Could not export backup.",
                                 variant = com.laterbox.app.ui.components.LaterboxToastVariant.ERROR
                             )
                         }
@@ -89,7 +89,7 @@ fun DataStorageSettingsScreen(
                 } catch (_: Exception) {
                     com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
                         context = context,
-                        message = "Couldn't export backup to the chosen location.",
+                        message = "Could not export backup to that location.",
                         variant = com.laterbox.app.ui.components.LaterboxToastVariant.ERROR
                     )
                 }
@@ -108,8 +108,8 @@ fun DataStorageSettingsScreen(
                         if (result.isSuccess) {
                             val stats = result.getOrNull()
                             val msg = stats?.let {
-                                "Restored ${it.restoredLinksCount} links and ${it.restoredCollectionsCount} collections"
-                            } ?: "Backup restored"
+                                "Restored ${it.restoredLinksCount} links and ${it.restoredCollectionsCount} collections."
+                            } ?: "Backup restored."
                             com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
                                 context = context,
                                 message = msg,
@@ -118,7 +118,7 @@ fun DataStorageSettingsScreen(
                         } else {
                             com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
                                 context = context,
-                                message = "Couldn't restore backup. Make sure you chose a valid Laterbox backup file.",
+                                message = "Could not restore that backup file.",
                                 variant = com.laterbox.app.ui.components.LaterboxToastVariant.ERROR
                             )
                         }
@@ -126,7 +126,7 @@ fun DataStorageSettingsScreen(
                 } catch (_: Exception) {
                     com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
                         context = context,
-                        message = "Couldn't read the selected backup file.",
+                        message = "Could not read the selected backup file.",
                         variant = com.laterbox.app.ui.components.LaterboxToastVariant.ERROR
                     )
                 }

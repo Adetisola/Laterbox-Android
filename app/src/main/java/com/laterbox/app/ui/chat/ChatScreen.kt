@@ -303,7 +303,7 @@ fun ChatScreen(
 
             if (uiState.manifestOutOfSync) {
                 LaterboxBanner(
-                    text = "Assistant capabilities changed on the server. Check Settings to keep Laterbox in sync.",
+                    text = "Assistant features updated; review Settings if needed.",
                     isWarning = true,
                     actionText = "Settings",
                     onActionClick = onOpenAiSettings,
@@ -540,7 +540,7 @@ private fun AiDisclosureConsentCard(
                 )
             }
             Text(
-                text = "When you send a message, your prompt and relevant saved link metadata (titles, URLs, notes, and app status—never access keys or private storage paths) are sent remotely to Google AI Studio (Gemini). If you use voice dictation, recorded audio is also sent to Gemini for transcription (with Android speech recognition as fallback). You can disable this or review your Gemini access key anytime in Settings.",
+                text = "Your prompts and relevant saved link metadata are processed remotely to generate replies and voice transcriptions, and you can turn this off anytime in Settings.",
                 style = typography.bodySecondary.copy(fontSize = 13.sp),
                 color = colors.textSecondary
             )
