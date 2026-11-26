@@ -76,25 +76,23 @@ class MainActivity : ComponentActivity() {
         val container = (application as LaterboxApplication).container
 
         setContent {
-            val prefsReadyState = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
-            val preferencesState = androidx.compose.runtime.produceState<UserPreferences?>(
-                initialValue = null,
-                key1 = container.userPreferencesRepository
-            ) {
+            val preferencesState = androidx.compose.runtime.remember(container.userPreferencesRepository) {
+                androidx.compose.runtime.mutableStateOf<UserPreferences?>(null)
+            }
+            androidx.compose.runtime.LaunchedEffect(container.userPreferencesRepository) {
                 container.userPreferencesRepository.userPreferences.collect { loadedPrefs ->
                     if (prefsLoaded.compareAndSet(false, true)) {
                         prefsFirstEmissionElapsedMs.compareAndSet(
                             -1L,
                             com.laterbox.app.diagnostics.SplashTimingLogger.nowElapsedMs()
                         )
-                        prefsReadyState.value = true
                     }
-                    value = loadedPrefs
+                    preferencesState.value = loadedPrefs
                 }
             }
             // C7: if DataStore misses the 800ms safety ceiling, render default UserPreferences() briefly until emission arrives.
             val preferences = preferencesState.value ?: UserPreferences()
-            androidx.activity.compose.ReportDrawnWhen { prefsReadyState.value }
+            androidx.activity.compose.ReportDrawnWhen { preferencesState.value != null }
             val openLinkId by openLinkIdState.collectAsState()
             val openDestination by openDestinationState.collectAsState()
 
