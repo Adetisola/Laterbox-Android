@@ -10,6 +10,12 @@ plugins {
     alias(libs.plugins.androidx.baselineprofile)
 }
 
+composeCompiler {
+    metricsDestination.set(layout.buildDirectory.dir("compose_compiler"))
+    reportsDestination.set(layout.buildDirectory.dir("compose_compiler"))
+    stabilityConfigurationFile.set(layout.projectDirectory.file("compose_stability.conf"))
+}
+
 fun resolveProjectConfigValue(project: Project, keys: List<String>): String {
     for (key in keys) {
         (project.findProperty(key) as? String)?.trim()?.takeIf { it.isNotBlank() }?.let { return it }
@@ -68,6 +74,7 @@ android {
     defaultConfig {
         applicationId = "com.laterbox.app"
         minSdk = 26
+        buildConfigField("boolean", "ENABLE_JANK_STATS", "false")
         targetSdk = 35
         versionCode = System.getenv("VERSION_CODE")?.toIntOrNull() ?: 80
         versionName = System.getenv("VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "1.0.80"
@@ -133,6 +140,7 @@ android {
         }
         create("benchmark") {
             initWith(buildTypes.getByName("release"))
+            buildConfigField("boolean", "ENABLE_JANK_STATS", "true")
             signingConfig = signingConfigs.getByName("debug")
             matchingFallbacks += listOf("release")
             isDebuggable = false
@@ -221,6 +229,7 @@ dependencies {
     implementation(libs.androidx.profileinstaller)
     implementation(libs.androidx.tracing)
     baselineProfile(project(":baselineprofile"))
+    "benchmarkImplementation"("androidx.metrics:metrics-performance:1.0.0")
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
     implementation(libs.compose.ui.graphics)

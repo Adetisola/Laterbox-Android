@@ -28,23 +28,28 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
     override fun newImageLoader(): ImageLoader {
         return ImageLoader.Builder(this)
             .okHttpClient {
-                okhttp3.OkHttpClient.Builder()
-                    .dns(com.laterbox.app.network.ResilientDns.INSTANCE)
-                    .build()
+                if (::container.isInitialized) {
+                    container.imageOkHttpClient
+                } else {
+                    okhttp3.OkHttpClient.Builder()
+                        .dns(com.laterbox.app.network.ResilientDns.INSTANCE)
+                        .build()
+                }
             }
             .memoryCache {
                 MemoryCache.Builder(this)
-                    .maxSizePercent(0.25)
+                    .maxSizePercent(0.18)
                     .build()
             }
             .diskCache {
                 DiskCache.Builder()
                     .directory(cacheDir.resolve("image_cache"))
-                    .maxSizeBytes(150L * 1024 * 1024)
+                    .maxSizeBytes(120L * 1024L * 1024L)
                     .build()
             }
+            .allowRgb565(true)
             .respectCacheHeaders(false)
-            .crossfade(true)
+            .crossfade(false)
             .build()
     }
 

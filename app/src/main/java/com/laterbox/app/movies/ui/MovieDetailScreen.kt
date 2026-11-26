@@ -91,7 +91,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -592,6 +592,10 @@ fun MovieDetailScreen(
                 val offlineLookup = remember(uiState.offlineMatches) {
                     OfflineMediaLookup.from(uiState.offlineMatches)
                 }
+                val displayRelated = remember(uiState.rankedRelatedTitles, details.relatedTitles, uiState.hiddenMediaKeys) {
+                    (uiState.rankedRelatedTitles.ifEmpty { details.relatedTitles })
+                        .filter { it.stableMediaKey !in uiState.hiddenMediaKeys }
+                }
 
                 LazyColumn(
                     state = detailListState,
@@ -721,77 +725,18 @@ fun MovieDetailScreen(
                                                             )
                                                         }
                                                     }
-                                                    DropdownMenu(
-                                                        expanded = showMoreActionsMenu,
-                                                        onDismissRequest = { showMoreActionsMenu = false },
-                                                        containerColor = colors.surfaceElevated
-                                                    ) {
-                                                        val detailContext = androidx.compose.ui.platform.LocalContext.current
-                                                        DropdownMenuItem(
-                                                            text = { Text("Share", color = colors.textPrimary) },
-                                                            leadingIcon = {
-                                                                Icon(
-                                                                    painter = painterResource(LaterboxIcons.Share),
-                                                                    contentDescription = null,
-                                                                    tint = colors.textSecondary,
-                                                                    modifier = Modifier.size(18.dp)
-                                                                )
-                                                            },
-                                                            onClick = {
-                                                                showMoreActionsMenu = false
-                                                                com.laterbox.app.media.share.LaterboxShareHelper.shareMovieDetails(
-                                                                    context = detailContext,
-                                                                    providerId = summary.providerId,
-                                                                    titleId = summary.id,
-                                                                    title = summary.title,
-                                                                    kind = summary.kind
-                                                                )
-                                                            },
-                                                            modifier = Modifier.testTag("detail_action_share")
-                                                        )
-                                                        DropdownMenuItem(
-                                                            text = { Text("Save to Collection", color = colors.textPrimary) },
-                                                            leadingIcon = {
-                                                                Icon(
-                                                                    painter = painterResource(LaterboxIcons.FolderAdd),
-                                                                    contentDescription = null,
-                                                                    tint = colors.textSecondary,
-                                                                    modifier = Modifier.size(18.dp)
-                                                                )
-                                                            },
-                                                            onClick = {
-                                                                showMoreActionsMenu = false
-                                                                showCollectionDialog = true
-                                                            },
-                                                            modifier = Modifier.testTag("detail_action_collection")
-                                                        )
-                                                        DropdownMenuItem(
-                                                            text = {
-                                                                Text(
-                                                                    if (uiState.viewingReminder != null) "Update Viewing Reminder" else "Remind Me to Watch",
-                                                                    color = colors.textPrimary
-                                                                )
-                                                            },
-                                                            leadingIcon = {
-                                                                Icon(
-                                                                    painter = painterResource(LaterboxIcons.Bell),
-                                                                    contentDescription = null,
-                                                                    tint = colors.textSecondary,
-                                                                    modifier = Modifier.size(18.dp)
-                                                                )
-                                                            },
-                                                            onClick = {
-                                                                showMoreActionsMenu = false
-                                                                showReminderPicker = true
-                                                            },
-                                                            modifier = Modifier.testTag("detail_action_remind")
-                                                        )
-                                                        if (!uiState.isTitleCompleted) {
+                                                    if (showMoreActionsMenu) {
+                                                        DropdownMenu(
+                                                            expanded = showMoreActionsMenu,
+                                                            onDismissRequest = { showMoreActionsMenu = false },
+                                                            containerColor = colors.surfaceElevated
+                                                        ) {
+                                                            val detailContext = androidx.compose.ui.platform.LocalContext.current
                                                             DropdownMenuItem(
-                                                                text = { Text("Mark as Watched", color = colors.textPrimary) },
+                                                                text = { Text("Share", color = colors.textPrimary) },
                                                                 leadingIcon = {
                                                                     Icon(
-                                                                        painter = painterResource(LaterboxIcons.Check),
+                                                                        painter = painterResource(LaterboxIcons.Share),
                                                                         contentDescription = null,
                                                                         tint = colors.textSecondary,
                                                                         modifier = Modifier.size(18.dp)
@@ -799,16 +744,21 @@ fun MovieDetailScreen(
                                                                 },
                                                                 onClick = {
                                                                     showMoreActionsMenu = false
-                                                                    onMarkWatched(false)
+                                                                    com.laterbox.app.media.share.LaterboxShareHelper.shareMovieDetails(
+                                                                        context = detailContext,
+                                                                        providerId = summary.providerId,
+                                                                        titleId = summary.id,
+                                                                        title = summary.title,
+                                                                        kind = summary.kind
+                                                                    )
                                                                 },
-                                                                modifier = Modifier.testTag("detail_action_mark_watched")
+                                                                modifier = Modifier.testTag("detail_action_share")
                                                             )
-                                                        } else {
                                                             DropdownMenuItem(
-                                                                text = { Text("Log Rewatch", color = colors.textPrimary) },
+                                                                text = { Text("Save to Collection", color = colors.textPrimary) },
                                                                 leadingIcon = {
                                                                     Icon(
-                                                                        painter = painterResource(LaterboxIcons.Refresh),
+                                                                        painter = painterResource(LaterboxIcons.FolderAdd),
                                                                         contentDescription = null,
                                                                         tint = colors.textSecondary,
                                                                         modifier = Modifier.size(18.dp)
@@ -816,67 +766,14 @@ fun MovieDetailScreen(
                                                                 },
                                                                 onClick = {
                                                                     showMoreActionsMenu = false
-                                                                    onMarkWatched(true)
+                                                                    showCollectionDialog = true
                                                                 },
-                                                                modifier = Modifier.testTag("detail_action_rewatch")
+                                                                modifier = Modifier.testTag("detail_action_collection")
                                                             )
-                                                            DropdownMenuItem(
-                                                                text = { Text("Mark Unwatched", color = colors.textPrimary) },
-                                                                leadingIcon = {
-                                                                    Icon(
-                                                                        painter = painterResource(LaterboxIcons.Close),
-                                                                        contentDescription = null,
-                                                                        tint = colors.textSecondary,
-                                                                        modifier = Modifier.size(18.dp)
-                                                                    )
-                                                                },
-                                                                onClick = {
-                                                                    showMoreActionsMenu = false
-                                                                    onMarkUnwatched()
-                                                                },
-                                                                modifier = Modifier.testTag("detail_action_mark_unwatched")
-                                                            )
-                                                        }
-                                                        if (uiState.savedPositionMs > 0L) {
-                                                            DropdownMenuItem(
-                                                                text = { Text("Restart from Beginning", color = colors.textPrimary) },
-                                                                leadingIcon = {
-                                                                    Icon(
-                                                                        painter = painterResource(LaterboxIcons.Refresh),
-                                                                        contentDescription = null,
-                                                                        tint = colors.textSecondary,
-                                                                        modifier = Modifier.size(18.dp)
-                                                                    )
-                                                                },
-                                                                onClick = {
-                                                                    showMoreActionsMenu = false
-                                                                    onRestartFromBeginning()
-                                                                },
-                                                                modifier = Modifier.testTag("detail_action_restart")
-                                                            )
-                                                            DropdownMenuItem(
-                                                                text = { Text("Remove from Continue Watching", color = colors.statusDanger) },
-                                                                leadingIcon = {
-                                                                    Icon(
-                                                                        painter = painterResource(LaterboxIcons.Delete),
-                                                                        contentDescription = null,
-                                                                        tint = colors.statusDanger,
-                                                                        modifier = Modifier.size(18.dp)
-                                                                    )
-                                                                },
-                                                                onClick = {
-                                                                    showMoreActionsMenu = false
-                                                                    onRemoveFromContinueWatching()
-                                                                },
-                                                                modifier = Modifier.testTag("detail_action_remove_cw")
-                                                            )
-                                                        }
-                                                        if (summary.kind.isEpisodic) {
-                                                            val isMuted = uiState.seriesPreferences?.remindersMuted == true
                                                             DropdownMenuItem(
                                                                 text = {
                                                                     Text(
-                                                                        if (isMuted) "Unmute Series Alerts" else "Mute Series Alerts",
+                                                                        if (uiState.viewingReminder != null) "Update Viewing Reminder" else "Remind Me to Watch",
                                                                         color = colors.textPrimary
                                                                     )
                                                                 },
@@ -890,27 +787,136 @@ fun MovieDetailScreen(
                                                                 },
                                                                 onClick = {
                                                                     showMoreActionsMenu = false
-                                                                    onToggleMuteSeriesReminders()
+                                                                    showReminderPicker = true
                                                                 },
-                                                                modifier = Modifier.testTag("detail_action_mute_series")
+                                                                modifier = Modifier.testTag("detail_action_remind")
+                                                            )
+                                                            if (!uiState.isTitleCompleted) {
+                                                                DropdownMenuItem(
+                                                                    text = { Text("Mark as Watched", color = colors.textPrimary) },
+                                                                    leadingIcon = {
+                                                                        Icon(
+                                                                            painter = painterResource(LaterboxIcons.Check),
+                                                                            contentDescription = null,
+                                                                            tint = colors.textSecondary,
+                                                                            modifier = Modifier.size(18.dp)
+                                                                        )
+                                                                    },
+                                                                    onClick = {
+                                                                        showMoreActionsMenu = false
+                                                                        onMarkWatched(false)
+                                                                    },
+                                                                    modifier = Modifier.testTag("detail_action_mark_watched")
+                                                                )
+                                                            } else {
+                                                                DropdownMenuItem(
+                                                                    text = { Text("Log Rewatch", color = colors.textPrimary) },
+                                                                    leadingIcon = {
+                                                                        Icon(
+                                                                            painter = painterResource(LaterboxIcons.Refresh),
+                                                                            contentDescription = null,
+                                                                            tint = colors.textSecondary,
+                                                                            modifier = Modifier.size(18.dp)
+                                                                        )
+                                                                    },
+                                                                    onClick = {
+                                                                        showMoreActionsMenu = false
+                                                                        onMarkWatched(true)
+                                                                    },
+                                                                    modifier = Modifier.testTag("detail_action_rewatch")
+                                                                )
+                                                                DropdownMenuItem(
+                                                                    text = { Text("Mark Unwatched", color = colors.textPrimary) },
+                                                                    leadingIcon = {
+                                                                        Icon(
+                                                                            painter = painterResource(LaterboxIcons.Close),
+                                                                            contentDescription = null,
+                                                                            tint = colors.textSecondary,
+                                                                            modifier = Modifier.size(18.dp)
+                                                                        )
+                                                                    },
+                                                                    onClick = {
+                                                                        showMoreActionsMenu = false
+                                                                        onMarkUnwatched()
+                                                                    },
+                                                                    modifier = Modifier.testTag("detail_action_mark_unwatched")
+                                                                )
+                                                            }
+                                                            if (uiState.savedPositionMs > 0L) {
+                                                                DropdownMenuItem(
+                                                                    text = { Text("Restart from Beginning", color = colors.textPrimary) },
+                                                                    leadingIcon = {
+                                                                        Icon(
+                                                                            painter = painterResource(LaterboxIcons.Refresh),
+                                                                            contentDescription = null,
+                                                                            tint = colors.textSecondary,
+                                                                            modifier = Modifier.size(18.dp)
+                                                                        )
+                                                                    },
+                                                                    onClick = {
+                                                                        showMoreActionsMenu = false
+                                                                        onRestartFromBeginning()
+                                                                    },
+                                                                    modifier = Modifier.testTag("detail_action_restart")
+                                                                )
+                                                                DropdownMenuItem(
+                                                                    text = { Text("Remove from Continue Watching", color = colors.statusDanger) },
+                                                                    leadingIcon = {
+                                                                        Icon(
+                                                                            painter = painterResource(LaterboxIcons.Delete),
+                                                                            contentDescription = null,
+                                                                            tint = colors.statusDanger,
+                                                                            modifier = Modifier.size(18.dp)
+                                                                        )
+                                                                    },
+                                                                    onClick = {
+                                                                        showMoreActionsMenu = false
+                                                                        onRemoveFromContinueWatching()
+                                                                    },
+                                                                    modifier = Modifier.testTag("detail_action_remove_cw")
+                                                                )
+                                                            }
+                                                            if (summary.kind.isEpisodic) {
+                                                                val isMuted = uiState.seriesPreferences?.remindersMuted == true
+                                                                DropdownMenuItem(
+                                                                    text = {
+                                                                        Text(
+                                                                            if (isMuted) "Unmute Series Alerts" else "Mute Series Alerts",
+                                                                            color = colors.textPrimary
+                                                                        )
+                                                                    },
+                                                                    leadingIcon = {
+                                                                        Icon(
+                                                                            painter = painterResource(LaterboxIcons.Bell),
+                                                                            contentDescription = null,
+                                                                            tint = colors.textSecondary,
+                                                                            modifier = Modifier.size(18.dp)
+                                                                        )
+                                                                    },
+                                                                    onClick = {
+                                                                        showMoreActionsMenu = false
+                                                                        onToggleMuteSeriesReminders()
+                                                                    },
+                                                                    modifier = Modifier.testTag("detail_action_mute_series")
+                                                                )
+                                                            }
+                                                            DropdownMenuItem(
+                                                                text = { Text("Hide Title", color = colors.statusDanger) },
+                                                                leadingIcon = {
+                                                                    Icon(
+                                                                        painter = painterResource(LaterboxIcons.Close),
+                                                                        contentDescription = null,
+                                                                        tint = colors.statusDanger,
+                                                                        modifier = Modifier.size(18.dp)
+                                                                    )
+                                                                },
+                                                                onClick = {
+                                                                    showMoreActionsMenu = false
+                                                                    onSetTitleHidden(true)
+                                                                },
+                                                                modifier = Modifier.testTag("detail_action_hide")
                                                             )
                                                         }
-                                                        DropdownMenuItem(
-                                                            text = { Text("Hide Title", color = colors.statusDanger) },
-                                                            leadingIcon = {
-                                                                Icon(
-                                                                    painter = painterResource(LaterboxIcons.Close),
-                                                                    contentDescription = null,
-                                                                    tint = colors.statusDanger,
-                                                                    modifier = Modifier.size(18.dp)
-                                                                )
-                                                            },
-                                                            onClick = {
-                                                                showMoreActionsMenu = false
-                                                                onSetTitleHidden(true)
-                                                            },
-                                                            modifier = Modifier.testTag("detail_action_hide")
-                                                        )
                                                     }
                                                 }
                                             }
@@ -938,8 +944,11 @@ fun MovieDetailScreen(
                                                     .testTag("detail_poster_image")
                                             ) {
                                                 if (!summary.posterUrl.isNullOrBlank()) {
+                                                    val heroPosterReq = remember(summary.posterUrl) {
+                                                        LaterboxImageRequests.poster(context, summary.posterUrl)
+                                                    }
                                                     AsyncImage(
-                                                        model = summary.posterUrl,
+                                                        model = heroPosterReq,
                                                         contentDescription = summary.title,
                                                         contentScale = ContentScale.Crop,
                                                         modifier = Modifier.fillMaxSize()
@@ -1701,7 +1710,8 @@ fun MovieDetailScreen(
                                 ) {
                                     itemsIndexed(
                                         items = details.cast,
-                                        key = { index, it -> "${index}_${it.personId ?: it.name}_${it.role ?: ""}" }
+                                        key = { index, it -> "${index}_${it.personId ?: it.name}_${it.role ?: ""}" },
+                                        contentType = { _, _ -> "cast_member" }
                                     ) { index, member ->
                                         Column(
                                             modifier = Modifier
@@ -1722,8 +1732,11 @@ fun MovieDetailScreen(
                                                 contentAlignment = Alignment.Center
                                             ) {
                                                 if (!member.imageUrl.isNullOrBlank()) {
+                                                    val castReq = remember(member.imageUrl) {
+                                                        LaterboxImageRequests.avatar(context, member.imageUrl)
+                                                    }
                                                     AsyncImage(
-                                                        model = member.imageUrl,
+                                                        model = castReq,
                                                         contentDescription = member.name,
                                                         contentScale = ContentScale.Crop,
                                                         modifier = Modifier.fillMaxSize()
@@ -1766,8 +1779,6 @@ fun MovieDetailScreen(
                     }
 
                     // Related Titles Rail (above Seasons & Episodes)
-                    val displayRelated = (uiState.rankedRelatedTitles.ifEmpty { details.relatedTitles })
-                        .filter { it.stableMediaKey !in uiState.hiddenMediaKeys }
                     if (displayRelated.isNotEmpty()) {
                         item(key = "detail_related") {
                             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1783,7 +1794,8 @@ fun MovieDetailScreen(
                                 ) {
                                     itemsIndexed(
                                         items = displayRelated,
-                                        key = { index, rel -> "rel_${index}_${rel.compositeId}" }
+                                        key = { index, rel -> "rel_${index}_${rel.compositeId}" },
+                                        contentType = { _, _ -> "related_card" }
                                     ) { _, rel ->
                                         val isRelOffline = offlineLookup.hasTitle(rel.providerId, rel.id)
                                         val relContext = androidx.compose.ui.platform.LocalContext.current
@@ -1826,7 +1838,8 @@ fun MovieDetailScreen(
                                     ) {
                                         itemsIndexed(
                                             items = details.seasons,
-                                            key = { index, s -> "season_${index}_${s.seasonNumber}" }
+                                            key = { index, s -> "season_${index}_${s.seasonNumber}" },
+                                            contentType = { _, _ -> "season_chip" }
                                         ) { _, season ->
                                             val selected = uiState.selectedSeasonNumber == season.seasonNumber
                                             Surface(
@@ -1867,7 +1880,8 @@ fun MovieDetailScreen(
 
                                             items(
                                                 items = rangeGroups,
-                                                key = { range -> "one_piece_range_${range.key}" }
+                                                key = { range -> "one_piece_range_${range.key}" },
+                                                contentType = { "one_piece_range" }
                                             ) { range ->
                                                 val isRangeSelected = effectiveOnePieceRangeState?.selectedRangeKey == range.key
                                                 Surface(
@@ -1951,7 +1965,8 @@ fun MovieDetailScreen(
                                     val visibleEpisodes = onePieceSelectedEpisodes ?: uiState.episodes.take(visibleEpisodeCount)
                                     itemsIndexed(
                                         items = visibleEpisodes,
-                                        key = { index, ep -> "ep_${index}_${ep.id}_${ep.seasonNumber}_${ep.episodeNumber}" }
+                                        key = { index, ep -> "ep_${index}_${ep.id}_${ep.seasonNumber}_${ep.episodeNumber}" },
+                                        contentType = { _, _ -> "episode_row" }
                                     ) { _, ep ->
                                         val epProgress = uiState.seriesProgress?.episodeStates
                                             ?.get(ep.seasonNumber to ep.episodeNumber)
@@ -2005,7 +2020,8 @@ fun MovieDetailScreen(
                             val visibleEpisodes = uiState.episodes.take(visibleEpisodeCount)
                             itemsIndexed(
                                 items = visibleEpisodes,
-                                key = { index, ep -> "ep_pre_${index}_${ep.id}_${ep.seasonNumber}_${ep.episodeNumber}" }
+                                key = { index, ep -> "ep_pre_${index}_${ep.id}_${ep.seasonNumber}_${ep.episodeNumber}" },
+                                contentType = { _, _ -> "episode_row" }
                             ) { _, ep ->
                                 val epProgress = uiState.seriesProgress?.episodeStates
                                     ?.get(ep.seasonNumber to ep.episodeNumber)
@@ -2194,8 +2210,12 @@ private fun EpisodeRowCard(
                 val hasSeriesFallback = !seriesPosterUrl.isNullOrBlank() && !fallbackLoadFailed
                 when {
                     hasEpisodeStill -> {
+                        val epContext = androidx.compose.ui.platform.LocalContext.current
+                        val epStillReq = remember(episode.stillUrl) {
+                            LaterboxImageRequests.backdrop(epContext, episode.stillUrl)
+                        }
                         AsyncImage(
-                            model = episode.stillUrl,
+                            model = epStillReq,
                             contentDescription = episode.title,
                             contentScale = ContentScale.Crop,
                             onError = { stillLoadFailed = true },
@@ -2205,14 +2225,18 @@ private fun EpisodeRowCard(
                         )
                     }
                     hasSeriesFallback -> {
+                        val epContext = androidx.compose.ui.platform.LocalContext.current
+                        val epFallbackReq = remember(seriesPosterUrl) {
+                            LaterboxImageRequests.poster(epContext, seriesPosterUrl)
+                        }
                         AsyncImage(
-                            model = seriesPosterUrl,
+                            model = epFallbackReq,
                             contentDescription = episode.title,
                             contentScale = ContentScale.Crop,
                             onError = { fallbackLoadFailed = true },
                             modifier = Modifier
                                 .fillMaxSize()
-                                .blur(10.dp)
+                                .alpha(0.55f)
                                 .testTag("episode_blurred_fallback_${episode.seasonNumber}_${episode.episodeNumber}")
                         )
                         Box(

@@ -214,8 +214,12 @@ fun MoviePosterCard(
                 )
             }
             if (!item.posterUrl.isNullOrBlank()) {
+                val posterContext = androidx.compose.ui.platform.LocalContext.current
+                val posterRequest = remember(item.posterUrl) {
+                    LaterboxImageRequests.poster(posterContext, item.posterUrl)
+                }
                 AsyncImage(
-                    model = item.posterUrl,
+                    model = posterRequest,
                     contentDescription = item.title,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
@@ -286,119 +290,121 @@ fun MoviePosterCard(
                                     )
                                 }
                             }
-                            DropdownMenu(
-                                expanded = menuExpanded,
-                                onDismissRequest = { menuExpanded = false },
-                                containerColor = colors.surfaceElevated
-                            ) {
-                                onToggleWatchlist?.let { toggle ->
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                if (isInWatchlist) "Remove from Watchlist" else "Add to Watchlist",
-                                                color = colors.textPrimary
-                                            )
-                                        },
-                                        leadingIcon = {
-                                            Icon(
-                                                painter = painterResource(LaterboxIcons.Bookmark),
-                                                contentDescription = null,
-                                                tint = colors.textSecondary,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                        },
-                                        onClick = {
-                                            menuExpanded = false
-                                            toggle(item)
-                                        }
-                                    )
-                                }
-                                onAddToCollection?.let { addCol ->
-                                    DropdownMenuItem(
-                                        text = { Text("Add to Collection", color = colors.textPrimary) },
-                                        leadingIcon = {
-                                            Icon(
-                                                painter = painterResource(LaterboxIcons.FolderAdd),
-                                                contentDescription = null,
-                                                tint = colors.textSecondary,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                        },
-                                        onClick = {
-                                            menuExpanded = false
-                                            addCol(item)
-                                        }
-                                    )
-                                }
-                                onMarkWatched?.let { mark ->
-                                    DropdownMenuItem(
-                                        text = { Text("Mark Watched", color = colors.textPrimary) },
-                                        leadingIcon = {
-                                            Icon(
-                                                painter = painterResource(LaterboxIcons.Check),
-                                                contentDescription = null,
-                                                tint = colors.textSecondary,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                        },
-                                        onClick = {
-                                            menuExpanded = false
-                                            mark(item)
-                                        }
-                                    )
-                                }
-                                onShareTitle?.let { share ->
-                                    DropdownMenuItem(
-                                        text = { Text("Share", color = colors.textPrimary) },
-                                        leadingIcon = {
-                                            Icon(
-                                                painter = painterResource(LaterboxIcons.Share),
-                                                contentDescription = null,
-                                                tint = colors.textSecondary,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                        },
-                                        modifier = Modifier.testTag("poster_share_${item.id}"),
-                                        onClick = {
-                                            menuExpanded = false
-                                            share(item)
-                                        }
-                                    )
-                                }
-                                onRemoveFromViewed?.let { removeViewed ->
-                                    DropdownMenuItem(
-                                        text = { Text("Remove from Viewed", color = colors.statusDanger) },
-                                        leadingIcon = {
-                                            Icon(
-                                                painter = painterResource(LaterboxIcons.Delete),
-                                                contentDescription = null,
-                                                tint = colors.statusDanger,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                        },
-                                        modifier = Modifier.testTag("poster_remove_viewed_${item.id}"),
-                                        onClick = {
-                                            menuExpanded = false
-                                            removeViewed(item)
-                                        }
-                                    )
-                                }
-                                onHideTitle?.let { hide ->
-                                    DropdownMenuItem(
-                                        text = { Text("Hide Title", color = colors.statusDanger) },
-                                        leadingIcon = {
-                                            Icon(
-                                                painter = painterResource(LaterboxIcons.Close),
-                                                contentDescription = null,
-                                                tint = colors.statusDanger,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                        },
-                                        onClick = {
-                                            menuExpanded = false
-                                            hide(item)
-                                        }
-                                    )
+                            if (menuExpanded) {
+                                DropdownMenu(
+                                    expanded = menuExpanded,
+                                    onDismissRequest = { menuExpanded = false },
+                                    containerColor = colors.surfaceElevated
+                                ) {
+                                    onToggleWatchlist?.let { toggle ->
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    if (isInWatchlist) "Remove from Watchlist" else "Add to Watchlist",
+                                                    color = colors.textPrimary
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    painter = painterResource(LaterboxIcons.Bookmark),
+                                                    contentDescription = null,
+                                                    tint = colors.textSecondary,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            },
+                                            onClick = {
+                                                menuExpanded = false
+                                                toggle(item)
+                                            }
+                                        )
+                                    }
+                                    onAddToCollection?.let { addCol ->
+                                        DropdownMenuItem(
+                                            text = { Text("Add to Collection", color = colors.textPrimary) },
+                                            leadingIcon = {
+                                                Icon(
+                                                    painter = painterResource(LaterboxIcons.FolderAdd),
+                                                    contentDescription = null,
+                                                    tint = colors.textSecondary,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            },
+                                            onClick = {
+                                                menuExpanded = false
+                                                addCol(item)
+                                            }
+                                        )
+                                    }
+                                    onMarkWatched?.let { mark ->
+                                        DropdownMenuItem(
+                                            text = { Text("Mark Watched", color = colors.textPrimary) },
+                                            leadingIcon = {
+                                                Icon(
+                                                    painter = painterResource(LaterboxIcons.Check),
+                                                    contentDescription = null,
+                                                    tint = colors.textSecondary,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            },
+                                            onClick = {
+                                                menuExpanded = false
+                                                mark(item)
+                                            }
+                                        )
+                                    }
+                                    onShareTitle?.let { share ->
+                                        DropdownMenuItem(
+                                            text = { Text("Share", color = colors.textPrimary) },
+                                            leadingIcon = {
+                                                Icon(
+                                                    painter = painterResource(LaterboxIcons.Share),
+                                                    contentDescription = null,
+                                                    tint = colors.textSecondary,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            },
+                                            modifier = Modifier.testTag("poster_share_${item.id}"),
+                                            onClick = {
+                                                menuExpanded = false
+                                                share(item)
+                                            }
+                                        )
+                                    }
+                                    onRemoveFromViewed?.let { removeViewed ->
+                                        DropdownMenuItem(
+                                            text = { Text("Remove from Viewed", color = colors.statusDanger) },
+                                            leadingIcon = {
+                                                Icon(
+                                                    painter = painterResource(LaterboxIcons.Delete),
+                                                    contentDescription = null,
+                                                    tint = colors.statusDanger,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            },
+                                            modifier = Modifier.testTag("poster_remove_viewed_${item.id}"),
+                                            onClick = {
+                                                menuExpanded = false
+                                                removeViewed(item)
+                                            }
+                                        )
+                                    }
+                                    onHideTitle?.let { hide ->
+                                        DropdownMenuItem(
+                                            text = { Text("Hide Title", color = colors.statusDanger) },
+                                            leadingIcon = {
+                                                Icon(
+                                                    painter = painterResource(LaterboxIcons.Close),
+                                                    contentDescription = null,
+                                                    tint = colors.statusDanger,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            },
+                                            onClick = {
+                                                menuExpanded = false
+                                                hide(item)
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -522,24 +528,32 @@ fun BackdropArtworkBox(
         }
         when {
             !backdropUrl.isNullOrBlank() -> {
+                val artContext = androidx.compose.ui.platform.LocalContext.current
+                val backdropRequest = remember(backdropUrl) {
+                    LaterboxImageRequests.backdrop(artContext, backdropUrl)
+                }
                 AsyncImage(
-                    model = backdropUrl,
+                    model = backdropRequest,
                     contentDescription = contentDescription,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
                 )
             }
             !posterUrl.isNullOrBlank() -> {
+                // Gradient/alpha scrim instead of .blur(20.dp) to avoid GPU/SW blur allocations on API<=31 scrolling cards.
                 val imageModifier = if (blurPosterFallback) {
                     Modifier
                         .fillMaxSize()
-                        .blur(20.dp)
-                        .alpha(0.72f)
+                        .alpha(0.62f)
                 } else {
                     Modifier.fillMaxSize()
                 }
+                val artContext = androidx.compose.ui.platform.LocalContext.current
+                val fallbackRequest = remember(posterUrl) {
+                    LaterboxImageRequests.poster(artContext, posterUrl)
+                }
                 AsyncImage(
-                    model = posterUrl,
+                    model = fallbackRequest,
                     contentDescription = contentDescription,
                     contentScale = ContentScale.Crop,
                     modifier = imageModifier
@@ -677,78 +691,80 @@ fun ContinueWatchingCard(
                                 )
                             }
                         }
-                        DropdownMenu(
-                            expanded = menuExpanded,
-                            onDismissRequest = { menuExpanded = false },
-                            containerColor = colors.surfaceElevated
-                        ) {
-                            onOpenDetail?.let { openDetail ->
-                                DropdownMenuItem(
-                                    text = { Text("View Details", color = colors.textPrimary) },
-                                    leadingIcon = {
-                                        Icon(
-                                            painter = painterResource(LaterboxIcons.ArrowUpRight),
-                                            contentDescription = null,
-                                            tint = colors.textSecondary,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    },
-                                    onClick = {
-                                        menuExpanded = false
-                                        openDetail()
-                                    }
-                                )
-                            }
-                            onRestartFromBeginning?.let { restart ->
-                                DropdownMenuItem(
-                                    text = { Text("Restart from Beginning", color = colors.textPrimary) },
-                                    leadingIcon = {
-                                        Icon(
-                                            painter = painterResource(LaterboxIcons.Refresh),
-                                            contentDescription = null,
-                                            tint = colors.textSecondary,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    },
-                                    onClick = {
-                                        menuExpanded = false
-                                        restart()
-                                    }
-                                )
-                            }
-                            onMarkWatched?.let { mark ->
-                                DropdownMenuItem(
-                                    text = { Text("Mark Watched", color = colors.textPrimary) },
-                                    leadingIcon = {
-                                        Icon(
-                                            painter = painterResource(LaterboxIcons.Check),
-                                            contentDescription = null,
-                                            tint = colors.textSecondary,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    },
-                                    onClick = {
-                                        menuExpanded = false
-                                        mark()
-                                    }
-                                )
-                            }
-                            onRemoveFromContinueWatching?.let { remove ->
-                                DropdownMenuItem(
-                                    text = { Text("Remove from Continue Watching", color = colors.statusDanger) },
-                                    leadingIcon = {
-                                        Icon(
-                                            painter = painterResource(LaterboxIcons.Delete),
-                                            contentDescription = null,
-                                            tint = colors.statusDanger,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    },
-                                    onClick = {
-                                        menuExpanded = false
-                                        remove()
-                                    }
-                                )
+                        if (menuExpanded) {
+                            DropdownMenu(
+                                expanded = menuExpanded,
+                                onDismissRequest = { menuExpanded = false },
+                                containerColor = colors.surfaceElevated
+                            ) {
+                                onOpenDetail?.let { openDetail ->
+                                    DropdownMenuItem(
+                                        text = { Text("View Details", color = colors.textPrimary) },
+                                        leadingIcon = {
+                                            Icon(
+                                                painter = painterResource(LaterboxIcons.ArrowUpRight),
+                                                contentDescription = null,
+                                                tint = colors.textSecondary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        },
+                                        onClick = {
+                                            menuExpanded = false
+                                            openDetail()
+                                        }
+                                    )
+                                }
+                                onRestartFromBeginning?.let { restart ->
+                                    DropdownMenuItem(
+                                        text = { Text("Restart from Beginning", color = colors.textPrimary) },
+                                        leadingIcon = {
+                                            Icon(
+                                                painter = painterResource(LaterboxIcons.Refresh),
+                                                contentDescription = null,
+                                                tint = colors.textSecondary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        },
+                                        onClick = {
+                                            menuExpanded = false
+                                            restart()
+                                        }
+                                    )
+                                }
+                                onMarkWatched?.let { mark ->
+                                    DropdownMenuItem(
+                                        text = { Text("Mark Watched", color = colors.textPrimary) },
+                                        leadingIcon = {
+                                            Icon(
+                                                painter = painterResource(LaterboxIcons.Check),
+                                                contentDescription = null,
+                                                tint = colors.textSecondary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        },
+                                        onClick = {
+                                            menuExpanded = false
+                                            mark()
+                                        }
+                                    )
+                                }
+                                onRemoveFromContinueWatching?.let { remove ->
+                                    DropdownMenuItem(
+                                        text = { Text("Remove from Continue Watching", color = colors.statusDanger) },
+                                        leadingIcon = {
+                                            Icon(
+                                                painter = painterResource(LaterboxIcons.Delete),
+                                                contentDescription = null,
+                                                tint = colors.statusDanger,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        },
+                                        onClick = {
+                                            menuExpanded = false
+                                            remove()
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
@@ -1489,8 +1505,10 @@ fun PersonFilmographyBottomSheet(
                 ) {
                     val img = filmography?.imageUrl ?: member.imageUrl
                     if (!img.isNullOrBlank()) {
+                        val avatarContext = androidx.compose.ui.platform.LocalContext.current
+                        val avatarRequest = remember(img) { LaterboxImageRequests.avatar(avatarContext, img) }
                         AsyncImage(
-                            model = img,
+                            model = avatarRequest,
                             contentDescription = member.name,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxSize()
@@ -1571,7 +1589,7 @@ fun PersonFilmographyBottomSheet(
                     LazyRow(
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        items(filmography.credits, key = { it.compositeId }) { credit ->
+                        items(filmography.credits, key = { it.compositeId }, contentType = { "movie_card" }) { credit ->
                             MoviePosterCard(
                                 item = credit,
                                 width = 112.dp,
@@ -1755,7 +1773,7 @@ fun DownloadOptionsBottomSheet(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.testTag("batch_seasons_and_ranges_row")
                         ) {
-                            items(seasons, key = { "batch_s_${it.seasonNumber}" }) { season ->
+                            items(seasons, key = { "batch_s_${it.seasonNumber}" }, contentType = { "season_chip" }) { season ->
                                 val selected = batchSeason == season.seasonNumber
                                 Surface(
                                     shape = RoundedCornerShape(10.dp),
@@ -1797,7 +1815,8 @@ fun DownloadOptionsBottomSheet(
 
                                 items(
                                     items = onePieceRanges,
-                                    key = { range -> "batch_one_piece_range_${range.key}" }
+                                    key = { range -> "batch_one_piece_range_${range.key}" },
+                                    contentType = { "range_chip" }
                                 ) { range ->
                                     val isRangeSelected = activeRange?.key == range.key
                                     Surface(
@@ -1964,7 +1983,8 @@ fun DownloadOptionsBottomSheet(
                     } else {
                         itemsIndexed(
                             items = displayedEpisodes,
-                            key = { index, ep -> "batch_ep_${batchSeason}_${ep.id}_${ep.episodeNumber}_$index" }
+                            key = { index, ep -> "batch_ep_${batchSeason}_${ep.id}_${ep.episodeNumber}_$index" },
+                            contentType = { _, _ -> "batch_episode" }
                         ) { _, episodeItem ->
                             val epNum = episodeItem.episodeNumber
                             val checked = epNum in selectedEpisodes
@@ -2388,8 +2408,12 @@ fun MoviesSearchSuggestionsDropdown(
                                 contentAlignment = Alignment.Center
                             ) {
                                 if (!summary.posterUrl.isNullOrBlank()) {
+                                    val thumbContext = androidx.compose.ui.platform.LocalContext.current
+                                    val thumbRequest = remember(summary.posterUrl) {
+                                        LaterboxImageRequests.poster(thumbContext, summary.posterUrl)
+                                    }
                                     AsyncImage(
-                                        model = summary.posterUrl,
+                                        model = thumbRequest,
                                         contentDescription = summary.title,
                                         contentScale = ContentScale.Crop,
                                         modifier = Modifier.fillMaxSize()

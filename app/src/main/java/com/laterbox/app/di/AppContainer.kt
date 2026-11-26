@@ -19,6 +19,7 @@ import com.laterbox.app.reminders.ContextualNotificationEngine
 
 interface AppContainer {
     val database: LaterboxDatabase
+    val imageOkHttpClient: okhttp3.OkHttpClient
     val linkRepository: LinkRepository
     val collectionRepository: CollectionRepository
     val userPreferencesRepository: UserPreferencesRepository
@@ -251,6 +252,10 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
         okhttp3.OkHttpClient.Builder()
             .dns(com.laterbox.app.network.ResilientDns.INSTANCE)
             .build()
+    }
+
+    override val imageOkHttpClient: okhttp3.OkHttpClient by lazy {
+        sharedOkHttpClient.newBuilder().build()
     }
 
     override val platformResolver: com.laterbox.app.media.domain.adapter.PlatformResolver by lazy {

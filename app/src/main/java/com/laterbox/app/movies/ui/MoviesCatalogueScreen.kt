@@ -559,7 +559,7 @@ fun MoviesCatalogueScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                items(CatalogueSort.entries, key = { "sort_${it.name}" }) { sort ->
+                items(CatalogueSort.entries, key = { "sort_${it.name}" }, contentType = { "sort_pill" }) { sort ->
                     val selected = uiState.sort == sort
                     Surface(
                         shape = RoundedCornerShape(10.dp),
@@ -580,7 +580,8 @@ fun MoviesCatalogueScreen(
 
                 items(
                     uiState.availableGenres.distinct(),
-                    key = { "genre_$it" }
+                    key = { "genre_$it" },
+                    contentType = { "genre_pill" }
                 ) { genre ->
                     val selected = uiState.selectedGenre.equals(genre, ignoreCase = true)
                     Surface(
@@ -714,7 +715,8 @@ fun MoviesCatalogueScreen(
                 ) {
                     itemsIndexed(
                         items = uiState.items,
-                        key = { index, item -> "grid_${index}_${item.compositeId}" }
+                        key = { index, item -> "grid_${index}_${item.compositeId}" },
+                        contentType = { _, _ -> "movie_card" }
                     ) { index, item ->
                         if (!hasSupplementary) {
                             LaunchedEffect(index, uiState.items.size, uiState.hasMore, uiState.isLoadingMore) {
@@ -767,7 +769,8 @@ fun MoviesCatalogueScreen(
                         }
                         itemsIndexed(
                             items = uiState.supplementaryItems,
-                            key = { index, item -> "supp_${index}_${item.compositeId}" }
+                            key = { index, item -> "supp_${index}_${item.compositeId}" },
+                            contentType = { _, _ -> "movie_card" }
                         ) { index, item ->
                             LaunchedEffect(
                                 index,

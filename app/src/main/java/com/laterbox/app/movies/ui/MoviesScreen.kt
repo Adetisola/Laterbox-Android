@@ -467,7 +467,7 @@ fun MoviesScreen(
                                     }
 
                                     // Group 2: Popularity / Recency Sort (Popular, Top Rated, Newest)
-                                    items(CatalogueSort.entries, key = { "sort_${it.wireValue}" }) { sort ->
+                                    items(CatalogueSort.entries, key = { "sort_${it.wireValue}" }, contentType = { "filter_pill" }) { sort ->
                                         FilterChipPill(
                                             label = sort.label,
                                             selected = uiState.selectedSort == sort,
@@ -482,7 +482,7 @@ fun MoviesScreen(
                                             FilterRowVerticalDivider()
                                         }
                                         val visibleGenres = if (isGenresExpanded) orderedGenres else orderedGenres.take(3)
-                                        items(visibleGenres, key = { "genre_$it" }) { genre ->
+                                        items(visibleGenres, key = { "genre_$it" }, contentType = { "filter_pill" }) { genre ->
                                             FilterChipPill(
                                                 label = genre,
                                                 selected = uiState.selectedGenre == genre,
@@ -508,7 +508,7 @@ fun MoviesScreen(
                                             FilterRowVerticalDivider()
                                         }
                                         val visibleRegions = if (isRegionsExpanded) regionFilterItems else regionFilterItems.take(3)
-                                        items(visibleRegions, key = { it.key }) { regionItem ->
+                                        items(visibleRegions, key = { it.key }, contentType = { "filter_pill" }) { regionItem ->
                                             when (regionItem) {
                                                 is RegionFilterItem.Shortcut -> {
                                                     FilterChipPill(
@@ -569,7 +569,7 @@ fun MoviesScreen(
                                                         modifier = Modifier.padding(end = 4.dp)
                                                     )
                                                 }
-                                                items(YEAR_FILTER_OPTIONS, key = { "year_$it" }) { yr ->
+                                                items(YEAR_FILTER_OPTIONS, key = { "year_$it" }, contentType = { "filter_pill" }) { yr ->
                                                     FilterChipPill(
                                                         label = yr,
                                                         selected = uiState.selectedYear == yr,
@@ -593,7 +593,7 @@ fun MoviesScreen(
                                                         modifier = Modifier.padding(end = 4.dp)
                                                     )
                                                 }
-                                                items(RuntimeBucket.entries, key = { "rt_${it.name}" }) { bucket ->
+                                                items(RuntimeBucket.entries, key = { "rt_${it.name}" }, contentType = { "filter_pill" }) { bucket ->
                                                     FilterChipPill(
                                                         label = bucket.label,
                                                         selected = uiState.selectedRuntimeBucket == bucket,
@@ -618,7 +618,7 @@ fun MoviesScreen(
                                                             modifier = Modifier.padding(end = 4.dp)
                                                         )
                                                     }
-                                                    items(uiState.availableLanguages, key = { "lang_$it" }) { lang ->
+                                                    items(uiState.availableLanguages, key = { "lang_$it" }, contentType = { "filter_pill" }) { lang ->
                                                         FilterChipPill(
                                                             label = lang,
                                                             selected = uiState.selectedLanguage == lang,
@@ -775,7 +775,7 @@ fun MoviesScreen(
                                     }
                                     else -> {
                                         val rows = uiState.filteredItems.chunked(3)
-                                        items(rows, key = { row -> row.first().compositeId }) { rowItems ->
+                                        items(rows, key = { row -> row.first().compositeId }, contentType = { "catalogue_row" }) { rowItems ->
                                             Row(
                                                 modifier = Modifier
                                                     .fillMaxWidth()
@@ -848,6 +848,13 @@ fun MoviesScreen(
                                 }
                             }
 
+                            val renderSlots = remember(remoteConfig, recommendationsEnabled) {
+                                com.laterbox.app.remoteconfig.RemoteConfigLayoutHelper.buildMoviesHomeSlots(
+                                    snapshot = remoteConfig,
+                                    recommendationsEnabled = recommendationsEnabled
+                                )
+                            }
+
                             LazyColumn(
                                 state = homeListState,
                                 modifier = Modifier
@@ -902,10 +909,6 @@ fun MoviesScreen(
                                 }
 
                                 // Server-driven allowlisted UI components & ordered rails
-                                val renderSlots = com.laterbox.app.remoteconfig.RemoteConfigLayoutHelper.buildMoviesHomeSlots(
-                                    snapshot = remoteConfig,
-                                    recommendationsEnabled = recommendationsEnabled
-                                )
                                 renderSlots.forEach { slot ->
                                     when (slot.kind) {
                                         com.laterbox.app.remoteconfig.MoviesHomeSlotKind.ANNOUNCEMENT_BANNER -> Unit
@@ -959,7 +962,8 @@ fun MoviesScreen(
                                                         ) {
                                                             items(
                                                                 uiState.continueWatching.take(slot.maxItems),
-                                                                key = { it.compositeId + (it.episodeLabel ?: "") }
+                                                                key = { it.compositeId + (it.episodeLabel ?: "") },
+                                                                contentType = { "continue_watching" }
                                                             ) { entry ->
                                                                 val isOffline = if (entry.seasonNumber != null && entry.episodeNumber != null) {
                                                                     offlineLookup.hasEpisode(
@@ -1008,7 +1012,7 @@ fun MoviesScreen(
                                                             contentPadding = PaddingValues(horizontal = 16.dp),
                                                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                                                         ) {
-                                                            items(uiState.watchlist.take(slot.maxItems), key = { "wl_${it.compositeId}" }) { item ->
+                                                            items(uiState.watchlist.take(slot.maxItems), key = { "wl_${it.compositeId}" }, contentType = { "movie_card" }) { item ->
                                                                 val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
                                                                 MoviePosterCard(
                                                                     item = item,
@@ -1044,7 +1048,8 @@ fun MoviesScreen(
                                                         ) {
                                                             items(
                                                                 uiState.recentlyViewed.take(slot.maxItems),
-                                                                key = { "rv_${it.compositeId}" }
+                                                                key = { "rv_${it.compositeId}" },
+                                                                contentType = { "movie_card" }
                                                             ) { item ->
                                                                 val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
                                                                 MoviePosterCard(
@@ -1083,7 +1088,7 @@ fun MoviesScreen(
                                                                     contentPadding = PaddingValues(horizontal = 16.dp),
                                                                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                                                                 ) {
-                                                                    items(group.items.take(slot.maxItems), key = { "byw_${idx}_${it.compositeId}" }) { item ->
+                                                                    items(group.items.take(slot.maxItems), key = { "byw_${idx}_${it.compositeId}" }, contentType = { "movie_card" }) { item ->
                                                                         val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
                                                                         MoviePosterCard(
                                                                             item = item,
@@ -1208,7 +1213,7 @@ fun MoviesScreen(
                                                             contentPadding = PaddingValues(horizontal = 16.dp),
                                                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                                                         ) {
-                                                            items(uiState.quickRuntimePicks.take(slot.maxItems), key = { "qp_${it.compositeId}" }) { item ->
+                                                            items(uiState.quickRuntimePicks.take(slot.maxItems), key = { "qp_${it.compositeId}" }, contentType = { "movie_card" }) { item ->
                                                                 val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
                                                                 MoviePosterCard(
                                                                     item = item,
@@ -1242,7 +1247,7 @@ fun MoviesScreen(
                                                             contentPadding = PaddingValues(horizontal = 16.dp),
                                                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                                                         ) {
-                                                            items(uiState.recentlyAddedRail.take(slot.maxItems), key = { "ra_${it.compositeId}" }) { item ->
+                                                            items(uiState.recentlyAddedRail.take(slot.maxItems), key = { "ra_${it.compositeId}" }, contentType = { "movie_card" }) { item ->
                                                                 val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
                                                                 MoviePosterCard(
                                                                     item = item,
@@ -1276,7 +1281,7 @@ fun MoviesScreen(
                                                             contentPadding = PaddingValues(horizontal = 16.dp),
                                                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                                                         ) {
-                                                            items(visibleTopRated.take(slot.maxItems), key = { "tr_${it.compositeId}" }) { item ->
+                                                            items(visibleTopRated.take(slot.maxItems), key = { "tr_${it.compositeId}" }, contentType = { "movie_card" }) { item ->
                                                                 val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
                                                                 MoviePosterCard(
                                                                     item = item,
@@ -1310,7 +1315,7 @@ fun MoviesScreen(
                                                             contentPadding = PaddingValues(horizontal = 16.dp),
                                                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                                                         ) {
-                                                            items(visibleNewest.take(slot.maxItems), key = { "nw_${it.compositeId}" }) { item ->
+                                                            items(visibleNewest.take(slot.maxItems), key = { "nw_${it.compositeId}" }, contentType = { "movie_card" }) { item ->
                                                                 val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
                                                                 MoviePosterCard(
                                                                     item = item,
@@ -1330,7 +1335,7 @@ fun MoviesScreen(
                                             }
 
                                             "discovery_sections" -> {
-                                                items(visibleSections, key = { (section, _) -> section.id }) { (section, sectionItems) ->
+                                                items(visibleSections, key = { (section, _) -> section.id }, contentType = { "browse_section" }) { (section, sectionItems) ->
                                                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                                         val inferKind = sectionItems.firstOrNull()?.kind
                                                         SectionHeaderRow(
@@ -1342,7 +1347,7 @@ fun MoviesScreen(
                                                             contentPadding = PaddingValues(horizontal = 16.dp),
                                                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                                                         ) {
-                                                            items(sectionItems.take(slot.maxItems), key = { "${section.id}_${it.compositeId}" }) { item ->
+                                                            items(sectionItems.take(slot.maxItems), key = { "${section.id}_${it.compositeId}" }, contentType = { "movie_card" }) { item ->
                                                                 val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
                                                                 MoviePosterCard(
                                                                     item = item,

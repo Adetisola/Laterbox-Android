@@ -145,7 +145,8 @@ fun LaterboxApp(
     initialOpenLinkId: Long? = null,
     onClearOpenLinkId: () -> Unit = {},
     initialOpenDestination: Pair<String, String?>? = null,
-    onClearOpenDestination: () -> Unit = {}
+    onClearOpenDestination: () -> Unit = {},
+    onRouteChanged: ((String) -> Unit)? = null
 ) {
     val navController = rememberNavController()
     val context = LocalContext.current
@@ -164,6 +165,9 @@ fun LaterboxApp(
     // Current route & shared state observation
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
+    LaunchedEffect(currentRoute) {
+        currentRoute?.let { onRouteChanged?.invoke(it) }
+    }
     val preferences by settingsViewModel.preferences.collectAsState()
     val remoteConfigManager = remember(context) {
         (context.applicationContext as? LaterboxApplication)?.container?.remoteConfigManager

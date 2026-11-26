@@ -238,7 +238,7 @@ fun MoviesWatchlistScreen(
                         .fillMaxSize()
                         .testTag("movies_watchlist_grid")
                 ) {
-                    items(filteredItems, key = { "wl_grid_${it.compositeId}" }) { item ->
+                    items(filteredItems, key = { "wl_grid_${it.compositeId}" }, contentType = { "movie_card" }) { item ->
                         val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
                         val watchlistContext = androidx.compose.ui.platform.LocalContext.current
                         MoviePosterCard(

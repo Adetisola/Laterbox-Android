@@ -106,13 +106,33 @@ class MainActivity : ComponentActivity() {
 
             val fontScale = preferences.fontSizeScale.scaleFactor
 
+            val jankSession = androidx.compose.runtime.remember {
+                com.laterbox.app.diagnostics.JankStatsPlatformHook.attach(this@MainActivity)
+            }
+            val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+            androidx.compose.runtime.DisposableEffect(jankSession, lifecycleOwner) {
+                val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+                    when (event) {
+                        androidx.lifecycle.Lifecycle.Event.ON_RESUME -> jankSession?.resume()
+                        androidx.lifecycle.Lifecycle.Event.ON_PAUSE -> jankSession?.pause()
+                        else -> Unit
+                    }
+                }
+                lifecycleOwner.lifecycle.addObserver(observer)
+                onDispose {
+                    lifecycleOwner.lifecycle.removeObserver(observer)
+                    jankSession?.dispose()
+                }
+            }
+
             LaterboxTheme(darkTheme = darkTheme, fontScale = fontScale) {
                 CompositionLocalProvider(LocalIsInPictureInPictureMode provides false) {
                     LaterboxApp(
                         initialOpenLinkId = openLinkId,
                         onClearOpenLinkId = { openLinkIdState.value = null },
                         initialOpenDestination = openDestination,
-                        onClearOpenDestination = { openDestinationState.value = null }
+                        onClearOpenDestination = { openDestinationState.value = null },
+                        onRouteChanged = { route -> jankSession?.setRoute(route) }
                     )
                 }
             }
