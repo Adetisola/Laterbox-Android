@@ -259,16 +259,6 @@ fun MoviePosterCard(
                     )
             )
 
-            // Rating pill (top-left)
-            item.rating?.takeIf { it > 0.0 && !it.isNaN() }?.let { rating ->
-                MovieRatingBadge(
-                    rating = rating,
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(6.dp)
-                )
-            }
-
             // Contextual menu (top-right)
             if (hasContextualActions) {
                 Row(
@@ -422,9 +412,9 @@ fun MoviePosterCard(
 
             // Kind micro-badge (bottom-left)
             val badgeText = when (item.kind) {
-                MediaKind.TV_SERIES -> "SERIES"
+                MediaKind.TV_SERIES -> "TV SERIES"
                 MediaKind.SHORT_DRAMA -> "SHORT"
-                MediaKind.MOVIE -> "FILM"
+                MediaKind.MOVIE -> "MOVIE"
             }
             Text(
                 text = badgeText,

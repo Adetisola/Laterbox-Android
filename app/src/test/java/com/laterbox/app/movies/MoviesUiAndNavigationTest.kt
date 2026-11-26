@@ -515,7 +515,7 @@ class MoviesUiAndNavigationTest {
             }
         }
 
-        composeTestRule.onNodeWithText("Discover films & series").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Discover movies & TV series").assertIsDisplayed()
         composeTestRule.onNodeWithTag("movies_tmdb_setup_card").assertDoesNotExist()
         composeTestRule.onNodeWithTag("movies_sources_button").assertDoesNotExist()
     }
@@ -862,7 +862,7 @@ class MoviesUiAndNavigationTest {
             }
         }
 
-        composeTestRule.onNodeWithText("Discover films & series").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Discover movies & TV series").assertIsDisplayed()
         composeTestRule.onNodeWithText("Powered by", substring = true).assertDoesNotExist()
         composeTestRule.onNodeWithTag("movies_home_genre_fantasy").assertDoesNotExist()
 
@@ -878,7 +878,7 @@ class MoviesUiAndNavigationTest {
 
         composeTestRule.onNodeWithTag("movies_home_list").performScrollToNode(hasTestTag("movies_home_top_rated_rail"))
         composeTestRule.onNodeWithTag("movies_home_top_rated_rail").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Highest-rated films & series").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Highest-rated movies & TV series").assertIsDisplayed()
         composeTestRule.onNodeWithTag("movies_home_list").performScrollToNode(hasTestTag("movies_home_newest_rail"))
         composeTestRule.onNodeWithTag("movies_home_newest_rail").assertIsDisplayed()
         composeTestRule.onNodeWithText("Latest releases added").assertIsDisplayed()
@@ -2625,8 +2625,112 @@ class MoviesUiAndNavigationTest {
         }
 
         composeTestRule.onNodeWithText("Clean Poster Card").assertIsDisplayed()
-        composeTestRule.onNodeWithText("FILM").assertIsDisplayed()
+        composeTestRule.onNodeWithText("MOVIE").assertIsDisplayed()
         composeTestRule.onNodeWithContentDescription("Stream available").assertDoesNotExist()
+    }
+
+    @Test
+    fun moviePosterCard_hidesRatingBadgeEvenWhenRatingPresent_andUsesTvSeriesBadge() {
+        val ratedSeries = sampleMovie.copy(
+            id = "rated_poster_tv",
+            kind = MediaKind.TV_SERIES,
+            title = "Severance",
+            rating = 8.7
+        )
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                com.laterbox.app.movies.ui.MoviePosterCard(
+                    item = ratedSeries,
+                    onClick = {},
+                    onMarkWatched = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithText("Severance").assertIsDisplayed()
+        composeTestRule.onNodeWithText("TV SERIES").assertIsDisplayed()
+        composeTestRule.onNodeWithText("8.7").assertDoesNotExist()
+        composeTestRule.onNodeWithContentDescription("Rating 8.7").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("poster_actions_${ratedSeries.id}", useUnmergedTree = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun formatEpisodeReleaseDate_formatsIsoDateAndRejectsInvalidInputs() {
+        assertEquals("Nov 27, 26", com.laterbox.app.movies.ui.formatEpisodeReleaseDate("2026-11-27"))
+        assertEquals("Feb 18, 22", com.laterbox.app.movies.ui.formatEpisodeReleaseDate("2022-02-18"))
+        assertEquals(null, com.laterbox.app.movies.ui.formatEpisodeReleaseDate(null))
+        assertEquals(null, com.laterbox.app.movies.ui.formatEpisodeReleaseDate("   "))
+        assertEquals(null, com.laterbox.app.movies.ui.formatEpisodeReleaseDate("2026-13-45"))
+        assertEquals(null, com.laterbox.app.movies.ui.formatEpisodeReleaseDate("invalid-date"))
+    }
+
+    @Test
+    fun movieDetailScreen_displaysFormattedEpisodeReleaseDateBelowTitle_andOmitsMissingDates() {
+        val seriesSummary = sampleMovie.copy(
+            id = "series_ep_date_test",
+            kind = MediaKind.TV_SERIES,
+            title = "Severance",
+            rating = 8.7
+        )
+        val epWithDate = EpisodeItem(
+            id = "ep_dated",
+            seasonNumber = 1,
+            episodeNumber = 1,
+            title = "Good News About Hell",
+            overview = "Mark leads a team.",
+            runtimeMinutes = 57,
+            airDate = "2026-11-27"
+        )
+        val epWithoutDate = EpisodeItem(
+            id = "ep_undated",
+            seasonNumber = 1,
+            episodeNumber = 2,
+            title = "Half Loop",
+            overview = "The team trains.",
+            runtimeMinutes = 47,
+            airDate = null
+        )
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MovieDetailScreen(
+                    uiState = MovieDetailUiState(
+                        isLoading = false,
+                        details = MediaDetails(
+                            summary = seriesSummary,
+                            fullDescription = "Workplace thriller.",
+                            seasons = listOf(SeasonSummary(1, "Season 1", 2))
+                        ),
+                        selectedSeasonNumber = 1,
+                        episodes = listOf(epWithDate, epWithoutDate)
+                    ),
+                    onBackClick = {},
+                    onRetry = {},
+                    onToggleWatchlist = {},
+                    onPlayClick = { _, _ -> },
+                    onSelectSeason = {},
+                    onOpenRelated = { _, _ -> },
+                    onOpenExternalUrl = {}
+                )
+            }
+        }
+
+        composeTestRule.waitForIdle()
+        // Detail page continues displaying rating
+        composeTestRule.onNodeWithText("8.7", substring = true).assertIsDisplayed()
+
+        // Scroll to episode 1 -> displays "Nov 27, 26" below title, NOT raw ISO string
+        composeTestRule.onNodeWithTag("movie_detail_list").performScrollToNode(hasTestTag("episode_row_1_1"))
+        composeTestRule.onNodeWithTag("episode_release_date_1_1", useUnmergedTree = true).assertIsDisplayed()
+        composeTestRule.onNodeWithText("Nov 27, 26", useUnmergedTree = true).assertIsDisplayed()
+        composeTestRule.onNodeWithText("2026-11-27", substring = true, useUnmergedTree = true).assertDoesNotExist()
+        composeTestRule.onNodeWithText("57m", useUnmergedTree = true).assertIsDisplayed()
+
+        // Scroll to episode 2 -> omits date node entirely when airDate is missing
+        composeTestRule.onNodeWithTag("movie_detail_list").performScrollToNode(hasTestTag("episode_row_1_2"))
+        composeTestRule.onNodeWithText("2. Half Loop", useUnmergedTree = true).assertIsDisplayed()
+        composeTestRule.onNodeWithTag("episode_release_date_1_2", useUnmergedTree = true).assertDoesNotExist()
     }
 
     @Test

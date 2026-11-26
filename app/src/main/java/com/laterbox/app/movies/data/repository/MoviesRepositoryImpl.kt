@@ -1514,11 +1514,11 @@ class MoviesRepositoryImpl(
             if (decoded != null) {
                 if (resolvedProviderId == MovieBoxProvider.PROVIDER_ID &&
                     decoded.isNotEmpty() &&
-                    decoded.any { it.stillUrl.isNullOrBlank() } &&
+                    decoded.needsTvMazeMetadataEnrichment() &&
                     isTvMazeEnabled() &&
                     !isTvMazeStillInCooldown(resolvedSeriesId, seasonNumber, currentMs)
                 ) {
-                    val enriched = enrichEpisodesWithTvMazeStills(resolvedSeriesId, seasonNumber, decoded, currentMs)
+                    val enriched = enrichEpisodesWithTvMazeMetadata(resolvedSeriesId, seasonNumber, decoded, currentMs)
                     if (enriched != decoded) {
                         val encoded = withContext(defaultDispatcher) {
                             MoviesCacheJsonCodec.encodeEpisodes(enriched)
@@ -1544,12 +1544,11 @@ class MoviesRepositoryImpl(
                 else Result.failure(IllegalStateException("TMDB metadata is currently paused."))
             else -> Result.success(emptyList())
         }
-
         if (result.isSuccess) {
             var episodes = result.getOrThrow()
             if (resolvedProviderId == MovieBoxProvider.PROVIDER_ID &&
                 episodes.isNotEmpty() &&
-                episodes.any { it.stillUrl.isNullOrBlank() }
+                episodes.needsTvMazeMetadataEnrichment()
             ) {
                 val cachedEntryDetail = moviesDao.getCacheEntry("details:$resolvedProviderId:$resolvedSeriesId")
                     ?: moviesDao.getCacheEntry("detail:$resolvedProviderId:$resolvedSeriesId")
@@ -1573,13 +1572,13 @@ class MoviesRepositoryImpl(
                             title = if (genericTitle && !patch.title.isNullOrBlank()) patch.title else ep.title,
                             overview = ep.overview ?: patch.overview,
                             runtimeMinutes = ep.runtimeMinutes ?: patch.runtimeMinutes,
-                            airDate = ep.airDate ?: patch.airDate,
-                            stillUrl = ep.stillUrl ?: patch.stillUrl
+                            airDate = ep.airDate?.takeIf { it.isNotBlank() } ?: patch.airDate,
+                            stillUrl = ep.stillUrl?.takeIf { it.isNotBlank() } ?: patch.stillUrl
                         )
                     }
                 }
-                if (episodes.any { it.stillUrl.isNullOrBlank() } && isTvMazeEnabled()) {
-                    episodes = enrichEpisodesWithTvMazeStills(
+                if (episodes.needsTvMazeMetadataEnrichment() && isTvMazeEnabled()) {
+                    episodes = enrichEpisodesWithTvMazeMetadata(
                         seriesId = resolvedSeriesId,
                         seasonNumber = seasonNumber,
                         episodes = episodes,
@@ -1622,18 +1621,21 @@ class MoviesRepositoryImpl(
         staleDecoded?.let { Result.success(it) } ?: Result.failure(error)
     }
 
+    private fun List<EpisodeItem>.needsTvMazeMetadataEnrichment(): Boolean =
+        any { it.stillUrl.isNullOrBlank() || it.airDate.isNullOrBlank() }
+
     private fun isTvMazeStillInCooldown(seriesId: String, seasonNumber: Int, currentMs: Long): Boolean {
         val lastMiss = tvMazeStillCooldownBySeason["$seriesId:$seasonNumber"] ?: return false
         return (currentMs - lastMiss) in 0L until TVMAZE_STILL_ENRICH_COOLDOWN_MS
     }
 
-    private suspend fun enrichEpisodesWithTvMazeStills(
+    private suspend fun enrichEpisodesWithTvMazeMetadata(
         seriesId: String,
         seasonNumber: Int,
         episodes: List<EpisodeItem>,
         currentMs: Long,
     ): List<EpisodeItem> {
-        if (episodes.isEmpty() || episodes.none { it.stillUrl.isNullOrBlank() } || !isTvMazeEnabled()) {
+        if (episodes.isEmpty() || !episodes.needsTvMazeMetadataEnrichment() || !isTvMazeEnabled()) {
             return episodes
         }
         val cooldownKey = "$seriesId:$seasonNumber"
@@ -1685,27 +1687,33 @@ class MoviesRepositoryImpl(
         }
 
         val stillsBySeasonEpisode = HashMap<Pair<Int, Int>, String>(tvEpisodes.size)
+        val airDatesBySeasonEpisode = HashMap<Pair<Int, Int>, String>(tvEpisodes.size)
         for (tvEp in tvEpisodes) {
-            val url = tvEp.stillUrl?.trim()?.takeIf { it.isNotBlank() } ?: continue
-            stillsBySeasonEpisode.putIfAbsent(tvEp.seasonNumber to tvEp.episodeNumber, url)
+            val key = tvEp.seasonNumber to tvEp.episodeNumber
+            tvEp.stillUrl?.trim()?.takeIf { it.isNotBlank() }?.let { url ->
+                stillsBySeasonEpisode.putIfAbsent(key, url)
+            }
+            tvEp.airDate?.trim()?.takeIf { it.isNotBlank() }?.let { date ->
+                airDatesBySeasonEpisode.putIfAbsent(key, date)
+            }
         }
-        if (stillsBySeasonEpisode.isEmpty()) {
+        if (stillsBySeasonEpisode.isEmpty() && airDatesBySeasonEpisode.isEmpty()) {
             tvMazeStillCooldownBySeason[cooldownKey] = currentMs
             return episodes
         }
 
         var patchedCount = 0
         val patched = episodes.map { ep ->
-            if (!ep.stillUrl.isNullOrBlank()) {
-                ep
+            val key = ep.seasonNumber to ep.episodeNumber
+            val currentStill = ep.stillUrl?.takeIf { it.isNotBlank() }
+            val currentAirDate = ep.airDate?.takeIf { it.isNotBlank() }
+            val nextStill = currentStill ?: stillsBySeasonEpisode[key] ?: ep.stillUrl
+            val nextAirDate = currentAirDate ?: airDatesBySeasonEpisode[key] ?: ep.airDate
+            if (nextStill != ep.stillUrl || nextAirDate != ep.airDate) {
+                patchedCount++
+                ep.copy(stillUrl = nextStill, airDate = nextAirDate)
             } else {
-                val fillUrl = stillsBySeasonEpisode[ep.seasonNumber to ep.episodeNumber]
-                if (!fillUrl.isNullOrBlank()) {
-                    patchedCount++
-                    ep.copy(stillUrl = fillUrl)
-                } else {
-                    ep
-                }
+                ep
             }
         }
         if (patchedCount == 0) {

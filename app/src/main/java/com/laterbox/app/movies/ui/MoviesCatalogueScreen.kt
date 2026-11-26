@@ -224,7 +224,7 @@ fun MoviesCatalogueScreen(
                     Box(modifier = Modifier.weight(1f)) {
                         if (searchController.text.isEmpty()) {
                             Text(
-                                text = "Search movies & series...",
+                                text = "Search movies & TV series...",
                                 style = typography.bodySecondary,
                                 color = colors.textTertiary,
                                 maxLines = 1,

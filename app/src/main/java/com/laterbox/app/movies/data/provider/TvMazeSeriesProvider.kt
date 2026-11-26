@@ -43,7 +43,7 @@ class TvMazeSeriesProvider(
     PlaybackSourceProvider {
 
     override val providerId: String = PROVIDER_ID
-    override val displayName: String = "Series Guide"
+    override val displayName: String = "TV Series Guide"
     override val sourceBadge: DataSourceBadge = DataSourceBadge.LIVE_TVMAZE
 
     override suspend fun getHomeFeed(): Result<MoviesHomeFeed> = withContext(Dispatchers.IO) {
@@ -82,7 +82,7 @@ class TvMazeSeriesProvider(
                             BrowseSection(
                                 id = "tvmaze_trending_tonight",
                                 title = "Trending TV Series",
-                                subtitle = "Streaming & on air series schedule",
+                                subtitle = "Streaming & on air TV series schedule",
                                 style = SectionStyle.RAIL,
                                 items = trendingToday
                             )
@@ -92,8 +92,8 @@ class TvMazeSeriesProvider(
                         add(
                             BrowseSection(
                                 id = "tvmaze_top_rated",
-                                title = "Critically Acclaimed Series",
-                                subtitle = "Top-rated television with full episode guides",
+                                title = "Critically Acclaimed TV Series",
+                                subtitle = "Top-rated TV series with full episode guides",
                                 style = SectionStyle.RAIL,
                                 items = topRatedShows
                             )
@@ -103,7 +103,7 @@ class TvMazeSeriesProvider(
                         add(
                             BrowseSection(
                                 id = "tvmaze_popular",
-                                title = "Popular Series Catalogue",
+                                title = "Popular TV Series Catalogue",
                                 subtitle = "Browse seasons, cast, and episode breakdowns",
                                 style = SectionStyle.RAIL,
                                 items = popularShows
@@ -116,7 +116,7 @@ class TvMazeSeriesProvider(
                     featuredBanners = banners,
                     sections = sections,
                     genres = SUPPORTED_GENRES,
-                    activeProviderNotice = "Series metadata & episode guides active"
+                    activeProviderNotice = "TV Series metadata & episode guides active"
                 )
             }
         }
@@ -246,7 +246,7 @@ class TvMazeSeriesProvider(
             okHttpClient.newCall(request).execute().use { response ->
                 if (response.code == 404) return@use null
                 if (!response.isSuccessful) {
-                    throw IOException("Series guide is temporarily unavailable.")
+                    throw IOException("TV Series guide is temporarily unavailable.")
                 }
                 val raw = response.body?.string()?.takeIf { it.isNotBlank() } ?: return@use null
                 parseShowSummary(JSONObject(raw))
@@ -317,7 +317,7 @@ class TvMazeSeriesProvider(
         runCatching {
             val raw = executeGet("$normalizedBaseUrl/shows/$titleId")
             val showObj = JSONObject(raw)
-            val title = showObj.optString("name").ifBlank { "Series #$titleId" }
+            val title = showObj.optString("name").ifBlank { "TV Series #$titleId" }
             val refUrl = showObj.optString("url").takeIf { it.isNotBlank() }
             val episodeSuffix = if (seasonNumber != null && seasonNumber > 0 && episodeNumber != null && episodeNumber > 0) {
                 " (S${seasonNumber}E${episodeNumber})"
@@ -461,7 +461,7 @@ class TvMazeSeriesProvider(
             id = id,
             providerId = providerId,
             kind = MediaKind.TV_SERIES,
-            title = obj.optString("name").ifBlank { "Untitled Series" },
+            title = obj.optString("name").ifBlank { "Untitled TV Series" },
             releaseYear = year,
             rating = rating,
             durationMinutes = runtime,
@@ -558,9 +558,9 @@ class TvMazeSeriesProvider(
             .build()
         okHttpClient.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
-                throw IOException("Series guide is temporarily unavailable.")
+                throw IOException("TV Series guide is temporarily unavailable.")
             }
-            return response.body?.string() ?: throw IOException("Empty response from series guide.")
+            return response.body?.string() ?: throw IOException("Empty response from TV series guide.")
         }
     }
 

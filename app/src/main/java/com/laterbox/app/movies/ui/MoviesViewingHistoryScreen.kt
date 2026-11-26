@@ -707,7 +707,7 @@ private fun ViewingHistoryRowCard(
                         item.isTrailer -> "Trailer"
                         item.kind == MediaKind.SHORT_DRAMA -> "Short Drama"
                         item.kind == MediaKind.TV_SERIES -> "Episode"
-                        else -> "Film"
+                        else -> "Movie"
                     }
                     Text(
                         text = badgeText,
@@ -885,7 +885,7 @@ private fun ViewingHistorySeriesCard(
                         .padding(5.dp)
                 ) {
                     Text(
-                        text = if (series.kind == MediaKind.SHORT_DRAMA) "Short Drama" else "Series",
+                        text = if (series.kind == MediaKind.SHORT_DRAMA) "Short Drama" else "TV Series",
                         style = typography.caption.copy(fontSize = 10.sp, fontWeight = FontWeight.SemiBold),
                         color = Color.White,
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)

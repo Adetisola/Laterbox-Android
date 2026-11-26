@@ -1468,21 +1468,93 @@ class MoviesRepositoryTest {
 
         val episodes = repo.getEpisodes("moviebox", "mb_sev", seasonNumber = 1).getOrThrow()
         assertEquals(2, episodes.size)
-        // Ep 1 keeps existing MovieBox stillUrl and metadata untouched
+        // Ep 1 keeps existing MovieBox stillUrl and metadata untouched while receiving missing airDate from TVMaze
         assertEquals("https://moviebox.cdn/ep1-existing.jpg", episodes[0].stillUrl)
         assertEquals("MovieBox Custom Ep 1", episodes[0].title)
         assertEquals("Keep MovieBox synopsis 1", episodes[0].overview)
-        // Ep 2 receives ONLY missing stillUrl from TVMaze while preserving MovieBox title & overview
+        assertEquals("2022-02-18", episodes[0].airDate)
+        // Ep 2 receives missing stillUrl & airDate from TVMaze while preserving MovieBox title & overview
         assertEquals("https://tvmaze.cdn/ep2-filled.jpg", episodes[1].stillUrl)
         assertEquals("MovieBox Custom Ep 2", episodes[1].title)
         assertEquals("Keep MovieBox synopsis 2", episodes[1].overview)
+        assertEquals("2022-02-18", episodes[1].airDate)
         assertEquals(1, tvMazeEpisodesCalls)
 
-        // Cached subsequent load serves stills without hitting TVMaze again
+        // Cached subsequent load serves stills & airDates without hitting TVMaze again
         failTvMaze = true
         val cachedEpisodes = repo.getEpisodes("moviebox", "mb_sev", seasonNumber = 1).getOrThrow()
         assertEquals("https://tvmaze.cdn/ep2-filled.jpg", cachedEpisodes[1].stillUrl)
+        assertEquals("2022-02-18", cachedEpisodes[0].airDate)
+        assertEquals("2022-02-18", cachedEpisodes[1].airDate)
         assertEquals(1, tvMazeEpisodesCalls)
+    }
+
+    @Test
+    fun getEpisodes_enrichesMissingMovieBoxAirDatesFromTvMazeEvenWhenStillsPresent() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/detail/mb_silo") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "subject_id": "mb_silo",
+                          "subject_type": 2,
+                          "title": "Silo",
+                          "release_date": "2023-05-05",
+                          "imdb_id": "tt14688458",
+                          "seasons": [{"season": 1, "episode_count": 2, "all_ep": [1, 2]}]
+                        }
+                        """.trimIndent()
+                    )
+                    path == "/episodes/mb_silo" -> MockResponse().setResponseCode(200).setBody(
+                        """{"seasons": [{"season": 1, "episode_count": 2, "all_ep": [1, 2]}]}"""
+                    )
+                    path.startsWith("/episodes/mb_silo/metadata") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "episodes": [
+                            {
+                              "episode": 1,
+                              "title": "Freedom Day",
+                              "overview": "Intro",
+                              "still_url": "https://moviebox.cdn/silo-1.jpg"
+                            },
+                            {
+                              "episode": 2,
+                              "title": "Holston's Pick",
+                              "overview": "Episode 2",
+                              "still_url": "https://moviebox.cdn/silo-2.jpg"
+                            }
+                          ]
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/lookup/shows?imdb=tt14688458") -> MockResponse().setResponseCode(200).setBody(
+                        """{"id": 52123, "name": "Silo", "premiered": "2023-05-05", "externals": {"imdb": "tt14688458"}}"""
+                    )
+                    path.startsWith("/shows/52123/episodes") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        [
+                          {"id": 2001, "season": 1, "number": 1, "name": "TVMaze Ep 1", "airdate": "2023-05-05", "image": {"medium": "https://tvmaze.cdn/silo-1.jpg"}},
+                          {"id": 2002, "season": 1, "number": 2, "name": "TVMaze Ep 2", "airdate": "2026-11-27", "image": {"medium": "https://tvmaze.cdn/silo-2.jpg"}}
+                        ]
+                        """.trimIndent()
+                    )
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val repo = createRepositoryWithMovieBox(withMovieBox = true)
+        repo.getDetails("moviebox", "mb_silo").getOrThrow()
+
+        val episodes = repo.getEpisodes("moviebox", "mb_silo", seasonNumber = 1).getOrThrow()
+        assertEquals(2, episodes.size)
+        assertEquals("https://moviebox.cdn/silo-1.jpg", episodes[0].stillUrl)
+        assertEquals("2023-05-05", episodes[0].airDate)
+        assertEquals("https://moviebox.cdn/silo-2.jpg", episodes[1].stillUrl)
+        assertEquals("2026-11-27", episodes[1].airDate)
     }
 
     @Test

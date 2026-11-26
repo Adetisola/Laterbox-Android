@@ -239,7 +239,7 @@ fun MoviesScreen(
             subtitle = if (uiState.useSampleFixturesOnly) {
                 "Offline sample cinema mode"
             } else {
-                "Discover films & series"
+                "Discover movies & TV series"
             },
             onMenuClick = onMenuClick,
             menuButtonTestTag = "movies_menu_button"
@@ -1274,7 +1274,7 @@ fun MoviesScreen(
                                                     ) {
                                                         SectionHeaderRow(
                                                             title = slot.customTitle.ifBlank { "Top Rated" },
-                                                            subtitle = "Highest-rated films & series",
+                                                            subtitle = "Highest-rated movies & TV series",
                                                             onSeeAll = { onOpenCatalogueWithSort(null, null, CatalogueSort.TOP_RATED, null) }
                                                         )
                                                         LazyRow(

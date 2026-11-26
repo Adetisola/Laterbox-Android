@@ -206,7 +206,7 @@ fun MoviesWatchlistScreen(
                         )
                         Text(
                             text = if (watchlist.isEmpty()) {
-                                "Bookmark movies and series from discovery or detail pages to watch later."
+                                "Bookmark movies and TV series from discovery or detail pages to watch later."
                             } else {
                                 "Try switching filters or exploring more titles."
                             },

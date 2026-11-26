@@ -26,7 +26,7 @@ enum class DataSourceBadge(
     LIVE_MOVIEBOX("Laterbox", isLiveNetwork = true),
     LIVE_INTERNET_ARCHIVE("Internet Archive", isLiveNetwork = true),
     LIVE_TVMAZE("TV Guide", isLiveNetwork = true),
-    LIVE_TMDB("Film Guide", isLiveNetwork = true),
+    LIVE_TMDB("Movies & TV Guide", isLiveNetwork = true),
     SAMPLE_FIXTURE("Sample Fixture", isLiveNetwork = false, isSampleFixture = true);
 
     companion object {

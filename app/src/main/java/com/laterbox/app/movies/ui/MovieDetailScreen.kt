@@ -888,7 +888,7 @@ fun MovieDetailScreen(
                                                                 DropdownMenuItem(
                                                                     text = {
                                                                         Text(
-                                                                            if (isMuted) "Unmute Series Alerts" else "Mute Series Alerts",
+                                                                            if (isMuted) "Unmute TV Series Alerts" else "Mute TV Series Alerts",
                                                                             color = colors.textPrimary
                                                                         )
                                                                     },
@@ -2071,7 +2071,7 @@ fun MovieDetailScreen(
                                         .padding(horizontal = 16.dp)
                                 ) {
                                     Text(
-                                        text = "No season breakdown was returned for this series.",
+                                        text = "No season breakdown was returned for this TV series.",
                                         style = typography.bodySecondary,
                                         color = colors.textSecondary,
                                         modifier = Modifier.padding(14.dp)
@@ -2308,9 +2308,17 @@ private fun EpisodeRowCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                formatEpisodeReleaseDate(episode.airDate)?.let { releaseDateText ->
+                    Text(
+                        text = releaseDateText,
+                        style = typography.caption,
+                        color = colors.textSecondary,
+                        maxLines = 1,
+                        modifier = Modifier.testTag("episode_release_date_${episode.seasonNumber}_${episode.episodeNumber}")
+                    )
+                }
                 val epMeta = buildList {
                     episode.runtimeMinutes?.let { add("${it}m") }
-                    episode.airDate?.let { add(it) }
                     if (isWatched) add("Watched")
                 }.joinToString(" · ")
                 if (epMeta.isNotBlank()) {
@@ -3349,6 +3357,16 @@ private tailrec fun Context.findDetailActivity(): Activity? = when (this) {
     is Activity -> this
     is ContextWrapper -> baseContext.findDetailActivity()
     else -> null
+}
+
+internal fun formatEpisodeReleaseDate(rawAirDate: String?): String? {
+    val trimmed = rawAirDate?.trim()?.takeIf { it.isNotBlank() } ?: return null
+    val parser = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+        isLenient = false
+    }
+    val parsedDate = runCatching { parser.parse(trimmed) }.getOrNull() ?: return null
+    val formatter = SimpleDateFormat("MMM dd, yy", Locale.US)
+    return formatter.format(parsedDate)
 }
 
 

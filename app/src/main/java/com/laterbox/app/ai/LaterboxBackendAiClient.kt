@@ -221,7 +221,7 @@ class LaterboxBackendAiClient(
                 if (!resp.isSuccessful) {
                     val msg = when {
                         resp.code == 403 && authHeader?.first == com.laterbox.app.auth.LaterboxBackendAuthProvider.HEADER_GUEST_AUTH ->
-                            "Laterbox Assistant cloud mode requires a verified Android device. Add a personal Gemini key in Settings to use Assistant on this device."
+                            "Laterbox Assistant couldn't verify this session right now. Please try again shortly."
                         resp.code == 401 || resp.code == 403 ->
                             "App verification couldn't be completed for this request. Please try again."
                         resp.code == 426 ->
