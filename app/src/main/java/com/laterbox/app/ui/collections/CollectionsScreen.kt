@@ -271,7 +271,7 @@ private fun CollectionCard(
                     maxLines = 2
                 )
                 Spacer(modifier = Modifier.height(spacing.xxs))
-                val countText = if (item.itemCount == 0) "Empty" else "${item.itemCount} link${if (item.itemCount > 1) "s" else ""}"
+                val countText = "${item.itemCount} ${if (item.itemCount == 1) "item" else "items"}"
                 Text(
                     text = countText,
                     style = typography.metaText,

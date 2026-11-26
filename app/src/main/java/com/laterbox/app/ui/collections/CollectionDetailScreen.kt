@@ -91,7 +91,7 @@ fun CollectionDetailScreen(
                     )
                     val subtitleText = buildList {
                         if (uiState.links.isNotEmpty() || uiState.mediaItems.isEmpty()) {
-                            add("${uiState.links.size} saved link${if (uiState.links.size != 1) "s" else ""}")
+                            add("${uiState.links.size} saved item${if (uiState.links.size != 1) "s" else ""}")
                         }
                         if (uiState.mediaItems.isNotEmpty()) {
                             add("${uiState.mediaItems.size} title${if (uiState.mediaItems.size != 1) "s" else ""}")

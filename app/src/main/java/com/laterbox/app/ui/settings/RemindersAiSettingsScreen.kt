@@ -26,8 +26,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -448,47 +446,6 @@ fun RemindersAiSettingsScreen(
                         )
 
                         SettingsDivider()
-
-                        // Google AI Studio Configuration
-                        Text(
-                            text = "Google AI Studio",
-                            style = typography.uiMedium,
-                            color = colors.textPrimary
-                        )
-
-                        Text(
-                            text = "Gemini key for smart summaries.",
-                            style = typography.metaText,
-                            color = colors.textSecondary
-                        )
-
-                        var apiKeyInput by remember(preferences.geminiApiKey) { mutableStateOf(preferences.geminiApiKey) }
-
-                        OutlinedTextField(
-                            value = apiKeyInput,
-                            onValueChange = {
-                                apiKeyInput = it
-                                onGeminiApiKeyChange(it)
-                            },
-                            placeholder = {
-                                Text(
-                                    text = "Enter Google AI Studio access key (optional)",
-                                    style = typography.bodySecondary,
-                                    color = colors.textTertiary
-                                )
-                            },
-                            singleLine = true,
-                            textStyle = typography.bodyPrimary.copy(color = colors.textPrimary),
-                            shape = RoundedCornerShape(spacing.radiusSmall),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = colors.accentPrimary,
-                                unfocusedBorderColor = colors.borderSubtle,
-                                focusedContainerColor = colors.surfaceSecondary,
-                                unfocusedContainerColor = colors.surfaceSecondary,
-                                cursorColor = colors.accentPrimary
-                            ),
-                            modifier = Modifier.fillMaxWidth()
-                        )
 
                         // Test AI Connection Button
                         LaterboxSecondaryButton(

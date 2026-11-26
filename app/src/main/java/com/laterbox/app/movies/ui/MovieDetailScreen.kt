@@ -158,6 +158,7 @@ import com.laterbox.app.movies.ui.player.PlayerVolumeBoostHud
 import com.laterbox.app.movies.ui.player.SeekSensitivityTier
 import com.laterbox.app.movies.ui.player.playerDragGestures
 import com.laterbox.app.ui.components.CustomReminderPickerDialog
+import com.laterbox.app.ui.components.ReminderContext
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.theme.LaterboxTheme
 import kotlinx.coroutines.delay
@@ -350,8 +351,14 @@ fun MovieDetailScreen(
     }
 
     if (showReminderPicker && uiState.details != null) {
+        val reminderContext = if (uiState.details?.summary?.kind == MediaKind.TV_SERIES) {
+            ReminderContext.TV_SERIES
+        } else {
+            ReminderContext.MOVIE
+        }
         CustomReminderPickerDialog(
             initialTimestamp = uiState.viewingReminder?.triggerAtMillis,
+            contextType = reminderContext,
             onDismissRequest = { showReminderPicker = false },
             onConfirm = { triggerAt ->
                 onScheduleViewingReminder(triggerAt, reminderNoteDraft.trim().takeIf { it.isNotBlank() })

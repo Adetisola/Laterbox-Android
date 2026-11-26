@@ -530,25 +530,11 @@ fun AppStorageSectionContent(
                                 modifier = Modifier.size(18.dp)
                             )
                         }
-                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(
-                                text = "Downloaded",
-                                style = typography.uiMedium.copy(fontWeight = FontWeight.SemiBold),
-                                color = colors.textPrimary
-                            )
-                            val detailText = if (report.inProgressDownloadsBytes > 0L) {
-                                "Offline media, subtitles & ${formatBytes(report.inProgressDownloadsBytes)} active downloads"
-                            } else {
-                                "Offline movies, shows, media & subtitles"
-                            }
-                            Text(
-                                text = detailText,
-                                style = typography.metaText,
-                                color = colors.textSecondary,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
+                        Text(
+                            text = "Downloaded",
+                            style = typography.uiMedium.copy(fontWeight = FontWeight.SemiBold),
+                            color = colors.textPrimary
+                        )
                     }
 
                     Row(
@@ -602,20 +588,11 @@ fun AppStorageSectionContent(
                                     modifier = Modifier.size(18.dp)
                                 )
                             }
-                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Text(
-                                    text = "Cache",
-                                    style = typography.uiMedium.copy(fontWeight = FontWeight.SemiBold),
-                                    color = colors.textPrimary
-                                )
-                                Text(
-                                    text = "Stream playback buffer, poster images & temporary files",
-                                    style = typography.metaText,
-                                    color = colors.textSecondary,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
+                            Text(
+                                text = "Cache",
+                                style = typography.uiMedium.copy(fontWeight = FontWeight.SemiBold),
+                                color = colors.textPrimary
+                            )
                         }
 
                         Text(
@@ -693,20 +670,11 @@ fun AppStorageSectionContent(
                             .clip(CircleShape)
                             .background(appDataColor)
                     )
-                    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                        Text(
-                            text = "App data",
-                            style = typography.uiLabel,
-                            color = colors.textSecondary
-                        )
-                        Text(
-                            text = "Saved library, preferences, and download tools",
-                            style = typography.caption,
-                            color = colors.textTertiary,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                    Text(
+                        text = "App data",
+                        style = typography.uiLabel,
+                        color = colors.textSecondary
+                    )
                 }
                 Text(
                     text = formatBytes(report.appDataBytes),

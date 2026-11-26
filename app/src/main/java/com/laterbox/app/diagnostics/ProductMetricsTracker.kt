@@ -18,6 +18,7 @@ data class LocalLibraryMetrics(
     val archivedCount: Int = 0,
     val totalReadCount: Int = 0,
     val readCompletionPercent: Int = 0,
+    val collectionsCount: Int = 0,
     val mediaAssetsCount: Int = 0,
     val estimatedStorageBytes: Long = 0L,
     val activeScheduledReminders: Int = 0,
@@ -41,7 +42,8 @@ object ProductMetricsTracker {
         activeScheduledReminders: Int,
         mediaAssetsCount: Int,
         estimatedStorageBytes: Long,
-        prefs: UserPreferences
+        prefs: UserPreferences,
+        collectionsCount: Int = 0
     ): LocalLibraryMetrics {
         val safeInbox = inboxCount.coerceAtLeast(0)
         val safeArchived = archivedCount.coerceAtLeast(0)
@@ -77,6 +79,7 @@ object ProductMetricsTracker {
             archivedCount = safeArchived,
             totalReadCount = safeTotalRead,
             readCompletionPercent = completionPercent,
+            collectionsCount = collectionsCount.coerceAtLeast(0),
             mediaAssetsCount = mediaAssetsCount.coerceAtLeast(0),
             estimatedStorageBytes = estimatedStorageBytes.coerceAtLeast(0L),
             activeScheduledReminders = activeScheduledReminders.coerceAtLeast(0),
@@ -96,12 +99,14 @@ object ProductMetricsTracker {
         prefs: UserPreferences
     ): LocalLibraryMetrics = withContext(Dispatchers.IO) {
         val linkDao = database.savedLinkDao()
+        val collectionDao = database.collectionDao()
         val assetDao = database.downloadedAssetDao()
 
         val inboxCount = runCatching { linkDao.getInboxCount() }.getOrDefault(0)
         val inboxUnreadCount = runCatching { linkDao.getUnreadInboxCount() }.getOrDefault(0)
         val archivedCount = runCatching { linkDao.getArchivedCount() }.getOrDefault(0)
         val totalReadCount = runCatching { linkDao.getTotalReadCount() }.getOrDefault(0)
+        val collectionsCount = runCatching { collectionDao.getCollections().first().size }.getOrDefault(0)
         val activeScheduledReminders = runCatching { linkDao.getActiveReminderCount() }.getOrDefault(0)
         val mediaAssetsCount = runCatching { assetDao.getAssetCount().first() }.getOrDefault(0)
         val storageBytes = runCatching {
@@ -116,7 +121,8 @@ object ProductMetricsTracker {
             activeScheduledReminders = activeScheduledReminders,
             mediaAssetsCount = mediaAssetsCount,
             estimatedStorageBytes = storageBytes,
-            prefs = prefs
+            prefs = prefs,
+            collectionsCount = collectionsCount
         )
     }
 }

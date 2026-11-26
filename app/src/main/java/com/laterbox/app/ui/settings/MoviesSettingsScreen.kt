@@ -98,6 +98,51 @@ fun MoviesSettingsScreen(
 
             Spacer(modifier = Modifier.height(spacing.xs))
 
+            // History
+            SettingsSectionHeader(title = "Activity")
+            SettingsCard {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(spacing.radiusSmall))
+                        .clickable(
+                            role = Role.Button,
+                            onClickLabel = "Open viewing history",
+                            onClick = onOpenViewingHistory
+                        )
+                        .padding(vertical = 4.dp)
+                        .testTag("movies_setting_viewing_history_row"),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f).padding(end = spacing.sm),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            painter = painterResource(LaterboxIcons.Clock),
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                            tint = colors.accentPrimary
+                        )
+                        Spacer(modifier = Modifier.width(spacing.sm))
+                        Text(
+                            text = "Viewing History",
+                            style = typography.uiMedium,
+                            color = colors.textPrimary
+                        )
+                    }
+                    Icon(
+                        painter = painterResource(LaterboxIcons.ChevronRight),
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = colors.textSecondary.copy(alpha = 0.7f)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(spacing.md))
+
             // Player Gestures
             SettingsSectionHeader(title = "Player Gestures")
             SettingsCard {
@@ -387,56 +432,6 @@ fun MoviesSettingsScreen(
             }
 
             Spacer(modifier = Modifier.height(spacing.md))
-
-            // History
-            SettingsSectionHeader(title = "Activity")
-            SettingsCard {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(spacing.radiusSmall))
-                        .clickable(
-                            role = Role.Button,
-                            onClickLabel = "Open viewing history",
-                            onClick = onOpenViewingHistory
-                        )
-                        .padding(vertical = 4.dp)
-                        .testTag("movies_setting_viewing_history_row"),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(
-                        modifier = Modifier.weight(1f).padding(end = spacing.sm),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            painter = painterResource(LaterboxIcons.Clock),
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp),
-                            tint = colors.accentPrimary
-                        )
-                        Spacer(modifier = Modifier.width(spacing.sm))
-                        Column {
-                            Text(
-                                text = "Viewing History",
-                                style = typography.uiMedium,
-                                color = colors.textPrimary
-                            )
-                            Text(
-                                text = "Browse and manage watched movies, episodes, and trailers",
-                                style = typography.metaText,
-                                color = colors.textSecondary
-                            )
-                        }
-                    }
-                    Icon(
-                        painter = painterResource(LaterboxIcons.ChevronRight),
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                        tint = colors.textSecondary.copy(alpha = 0.7f)
-                    )
-                }
-            }
 
             Spacer(modifier = Modifier.navigationBarsPadding().height(40.dp))
         }

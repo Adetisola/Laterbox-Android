@@ -1,6 +1,7 @@
 package com.laterbox.app.ui.settings
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,7 +12,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
@@ -21,7 +25,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -112,29 +118,24 @@ fun AboutLaterboxSection(
         SettingsSectionHeader(title = "About Laterbox")
         SettingsCard {
             Column(verticalArrangement = Arrangement.spacedBy(spacing.sm)) {
-                Text(
-                    text = "Laterbox v${BuildConfig.VERSION_NAME}",
-                    style = typography.uiMedium,
-                    color = colors.textPrimary
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Laterbox",
+                        style = typography.uiMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = colors.textPrimary
+                    )
+                    Text(
+                        text = "v${BuildConfig.VERSION_NAME}",
+                        style = typography.metaText,
+                        color = colors.textSecondary
+                    )
+                }
                 Text(
                     text = "Laterbox is your personal media library. Discover movies and TV, save what you love, and download for offline viewing. Built for a clean, fast experience.",
-                    style = typography.bodySecondary,
-                    color = colors.textSecondary
-                )
-
-                Spacer(modifier = Modifier.height(spacing.xs))
-
-                Text(
-                    text = "Built-In Product & Reliability Analytics & Third-Party Services",
-                    style = typography.uiMedium,
-                    color = colors.textPrimary
-                )
-                Text(
-                    text = "• Built-In Product Analytics: Laterbox includes built-in, default-enabled operational and usage analytics using a pseudonymous app-generated installation ID, per-session IDs, app version, high-level screen/feature activity, categorized reliability errors, and performance timings (with a 45-day expiration target for reporting summaries; collection can be paused globally by administrators). Laterbox never collects link titles, search queries, AI prompts, downloaded file names, or personal contacts.\n" +
-                           "• Saved Links & Previews: When you save a link, Laterbox loads page details directly from that website, or uses a public preview lookup for social links.\n" +
-                           "• Media & Streaming: Videos, audio, and subtitles you choose to play or download are retrieved over your network connection.\n" +
-                           "• Optional AI Assistant: Prompts and bounded library context you submit to Laterbox Assistant are processed via Laterbox's backend through Google Gemini.",
                     style = typography.bodySecondary,
                     color = colors.textSecondary
                 )
@@ -198,52 +199,45 @@ fun AboutLaterboxSection(
             SettingsSectionHeader(title = "Library & Activity Insights (On-Device)")
             SettingsCard {
                 Column(verticalArrangement = Arrangement.spacedBy(spacing.sm)) {
-                    Text(
-                        text = "Library totals, reading progress, and capture counts shown below are calculated locally on your device.",
-                        style = typography.bodySecondary,
-                        color = colors.textSecondary
-                    )
-
-                    SettingsDivider()
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(spacing.md)
+                    LazyRow(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("insights_metrics_row"),
+                        horizontalArrangement = Arrangement.spacedBy(spacing.sm)
                     ) {
-                        MetricTile(
-                            label = "Saved Library",
-                            value = "${localMetrics.totalLinksSaved} links",
-                            detail = "${localMetrics.inboxUnreadCount} unread • ${localMetrics.archivedCount} archived",
-                            modifier = Modifier.weight(1f)
-                        )
-                        MetricTile(
-                            label = "Reading Progress",
-                            value = "${localMetrics.readCompletionPercent}% read",
-                            detail = "${localMetrics.readerOpensCount} Reader opens",
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(spacing.md)
-                    ) {
-                        MetricTile(
-                            label = "Offline Media",
-                            value = "${localMetrics.mediaAssetsCount} files",
-                            detail = formatStorageBytes(localMetrics.estimatedStorageBytes),
-                            modifier = Modifier.weight(1f)
-                        )
-                        MetricTile(
-                            label = "Reminders",
-                            value = "${localMetrics.activeScheduledReminders} active",
-                            detail = if (localMetrics.remindersDeliveredCount > 0) {
-                                "${localMetrics.remindersOpenedCount}/${localMetrics.remindersDeliveredCount} opened (${localMetrics.reminderOpenRatePercent ?: 0}%)"
-                            } else {
-                                "No reminders delivered yet"
-                            },
-                            modifier = Modifier.weight(1f)
-                        )
+                        item {
+                            MetricTile(
+                                label = "Saved Items",
+                                value = "${localMetrics.totalLinksSaved}",
+                                detail = "${localMetrics.inboxUnreadCount} unread • ${localMetrics.archivedCount} archived"
+                            )
+                        }
+                        item {
+                            val collectionLabel = if (localMetrics.collectionsCount == 1) "Collection" else "Collections"
+                            MetricTile(
+                                label = "Collections",
+                                value = "${localMetrics.collectionsCount}",
+                                detail = "${localMetrics.collectionsCount} $collectionLabel"
+                            )
+                        }
+                        item {
+                            MetricTile(
+                                label = "Offline Media",
+                                value = "${localMetrics.mediaAssetsCount}",
+                                detail = formatStorageBytes(localMetrics.estimatedStorageBytes)
+                            )
+                        }
+                        item {
+                            MetricTile(
+                                label = "Reminders",
+                                value = "${localMetrics.activeScheduledReminders}",
+                                detail = if (localMetrics.remindersDeliveredCount > 0) {
+                                    "${localMetrics.remindersOpenedCount}/${localMetrics.remindersDeliveredCount} opened (${localMetrics.reminderOpenRatePercent ?: 0}%)"
+                                } else {
+                                    "Active scheduled"
+                                }
+                            )
+                        }
                     }
 
                     val captureSummary = "Share ${localMetrics.shareCapturesCount} • Quick Tile ${localMetrics.quickTileCapturesCount} • In-App ${localMetrics.manualCapturesCount}"
@@ -430,10 +424,17 @@ private fun MetricTile(
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
+    val spacing = LaterboxTheme.spacing
+    val shape = RoundedCornerShape(spacing.radiusMedium)
 
     Column(
-        modifier = modifier,
-        verticalArrangement = Arrangement.spacedBy(2.dp)
+        modifier = modifier
+            .widthIn(min = 148.dp)
+            .clip(shape)
+            .background(colors.surfaceSecondary.copy(alpha = 0.7f))
+            .border(spacing.hairline, colors.borderSubtle, shape)
+            .padding(horizontal = spacing.md, vertical = spacing.sm),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         Text(
             text = label,
@@ -442,7 +443,7 @@ private fun MetricTile(
         )
         Text(
             text = value,
-            style = typography.uiMedium.copy(fontWeight = FontWeight.SemiBold),
+            style = typography.displayLarge.copy(fontSize = 22.sp, fontWeight = FontWeight.Bold),
             color = colors.textPrimary
         )
         Text(

@@ -67,45 +67,49 @@ fun SettingsScreen(
     val typography = LaterboxTheme.typography
     val spacing = LaterboxTheme.spacing
 
-    Box(
+    Column(
         modifier = modifier
             .fillMaxSize()
             .background(colors.backgroundPrimary)
     ) {
+        // Sticky Header: Arrow Back + Title
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(colors.backgroundPrimary)
+                .padding(horizontal = spacing.base, vertical = spacing.sm)
+                .testTag("settings_sticky_header"),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            LaterboxIconButton(
+                iconRes = LaterboxIcons.ArrowLeft,
+                contentDescription = "Back",
+                onClick = onBackClick
+            )
+
+            Spacer(modifier = Modifier.width(spacing.sm))
+
+            Column {
+                Text(
+                    text = "Settings",
+                    style = typography.displayLarge,
+                    color = colors.textPrimary
+                )
+                Text(
+                    text = "Preferences, media, storage, and privacy",
+                    style = typography.metaText,
+                    color = colors.textSecondary
+                )
+            }
+        }
+
         Column(
             modifier = Modifier
-                .fillMaxSize()
+                .weight(1f)
+                .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
+                .testTag("settings_scroll_content")
         ) {
-            // Header: Arrow Back + Title
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = spacing.base, vertical = spacing.sm),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                LaterboxIconButton(
-                    iconRes = LaterboxIcons.ArrowLeft,
-                    contentDescription = "Back",
-                    onClick = onBackClick
-                )
-
-                Spacer(modifier = Modifier.width(spacing.sm))
-
-                Column {
-                    Text(
-                        text = "Settings",
-                        style = typography.displayLarge,
-                        color = colors.textPrimary
-                    )
-                    Text(
-                        text = "Preferences, media, storage, and privacy",
-                        style = typography.metaText,
-                        color = colors.textSecondary
-                    )
-                }
-            }
-
             Spacer(modifier = Modifier.height(spacing.sm))
 
             // Quick Controls: Theme Mode
@@ -156,42 +160,36 @@ fun SettingsScreen(
                 SettingsCategoryRow(
                     iconRes = LaterboxIcons.User,
                     title = "Appearance & Profile",
-                    subtitle = "Theme, reader font, and greeting.",
                     onClick = onNavigateToAppearanceProfile
                 )
 
                 SettingsCategoryRow(
                     iconRes = LaterboxIcons.Sparkles,
                     title = "Reminders & AI",
-                    subtitle = "Schedules, notifications, and assistant.",
                     onClick = onNavigateToRemindersAi
                 )
 
                 SettingsCategoryRow(
                     iconRes = LaterboxIcons.Copy,
                     title = "Capture & Shortcuts",
-                    subtitle = "Clipboard, selection, and Quick Settings.",
                     onClick = onNavigateToCaptureShortcuts
                 )
 
                 SettingsCategoryRow(
                     iconRes = LaterboxIcons.ViewList,
                     title = "Reading & Behaviour",
-                    subtitle = "Auto-read, taps, and layout.",
                     onClick = onNavigateToReadingBehavior
                 )
 
                 SettingsCategoryRow(
                     iconRes = LaterboxIcons.Download,
                     title = "Media & Downloads",
-                    subtitle = "Download network, inspection, and export.",
                     onClick = onNavigateToMediaDownloads
                 )
 
                 SettingsCategoryRow(
                     iconRes = LaterboxIcons.Movies,
                     title = "Movies & TV",
-                    subtitle = "Gestures, subtitles, and playback quality.",
                     onClick = onNavigateToMoviesTv,
                     modifier = Modifier.testTag("settings_category_movies_tv")
                 )
@@ -199,7 +197,6 @@ fun SettingsScreen(
                 SettingsCategoryRow(
                     iconRes = LaterboxIcons.Folder,
                     title = "Data & Storage",
-                    subtitle = "Backups, storage, and cache cleanup.",
                     onClick = onNavigateToDataStorage,
                     modifier = Modifier.testTag("settings_category_data_storage")
                 )
@@ -227,9 +224,9 @@ fun SettingsScreen(
 private fun SettingsCategoryRow(
     iconRes: Int,
     title: String,
-    subtitle: String,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    subtitle: String? = null
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -275,12 +272,14 @@ private fun SettingsCategoryRow(
                     style = typography.uiMedium.copy(fontWeight = FontWeight.SemiBold),
                     color = colors.textPrimary
                 )
-                Text(
-                    text = subtitle,
-                    style = typography.metaText,
-                    color = colors.textSecondary,
-                    maxLines = 1
-                )
+                if (!subtitle.isNullOrBlank()) {
+                    Text(
+                        text = subtitle,
+                        style = typography.metaText,
+                        color = colors.textSecondary,
+                        maxLines = 1
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.width(spacing.xs))

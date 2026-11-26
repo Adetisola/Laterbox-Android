@@ -53,10 +53,17 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
+enum class ReminderContext {
+    LINK,
+    MOVIE,
+    TV_SERIES
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CustomReminderPickerDialog(
     initialTimestamp: Long? = null,
+    contextType: ReminderContext = ReminderContext.LINK,
     onDismissRequest: () -> Unit,
     onConfirm: (Long) -> Unit
 ) {
@@ -226,8 +233,13 @@ fun CustomReminderPickerDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(spacing.md)
             ) {
+                val descriptionText = when (contextType) {
+                    ReminderContext.LINK -> "Choose when you would like Laterbox to remind you to revisit this link."
+                    ReminderContext.MOVIE -> "Choose when you would like Laterbox to remind you to revisit this movie."
+                    ReminderContext.TV_SERIES -> "Choose when you would like Laterbox to remind you to revisit this series."
+                }
                 Text(
-                    text = "Choose when you would like Laterbox to remind you to revisit this link.",
+                    text = descriptionText,
                     style = typography.bodySecondary,
                     color = colors.textSecondary
                 )
