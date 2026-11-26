@@ -22,8 +22,16 @@ private val Context.remoteConfigDataStore: DataStore<Preferences> by preferences
 
 class RemoteConfigCache(
     private val dataStore: DataStore<Preferences>,
+    private val backendBaseUrlProvider: suspend () -> String = {
+        com.laterbox.app.data.preferences.MovieBoxEndpointConfig.DEFAULT_PRODUCTION_BASE_URL
+    },
 ) {
-    constructor(context: Context) : this(context.applicationContext.remoteConfigDataStore)
+    constructor(
+        context: Context,
+        backendBaseUrlProvider: suspend () -> String = {
+            com.laterbox.app.data.preferences.MovieBoxEndpointConfig.DEFAULT_PRODUCTION_BASE_URL
+        },
+    ) : this(context.applicationContext.remoteConfigDataStore, backendBaseUrlProvider)
 
     private object Keys {
         val PAYLOAD_JSON = stringPreferencesKey("rc_payload_json")
@@ -59,6 +67,9 @@ class RemoteConfigCache(
         val etag = prefs[Keys.ETAG]?.takeIf { it.isNotBlank() }
         val fetchedAtMs = prefs[Keys.FETCHED_AT_MS] ?: 0L
 
+        val backendBaseUrl = runCatching { backendBaseUrlProvider() }
+            .getOrDefault(com.laterbox.app.data.preferences.MovieBoxEndpointConfig.DEFAULT_PRODUCTION_BASE_URL)
+            .trim()
         val parsed = RemoteConfigValidator.parseAndValidate(
             rawJson = rawJson,
             clientVersionCode = clientVersionCode,
@@ -67,6 +78,7 @@ class RemoteConfigCache(
             fetchedAtEpochMs = fetchedAtMs,
             nowEpochMs = nowEpochMs,
             enforceExpiry = true,
+            backendBaseUrl = backendBaseUrl,
         )
         val snapshot = (parsed as? RemoteConfigParseResult.Valid)?.snapshot ?: return null
         if (snapshot.isStale(nowEpochMs)) {

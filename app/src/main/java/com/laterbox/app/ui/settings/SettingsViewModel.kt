@@ -300,7 +300,9 @@ class SettingsViewModel(
     suspend fun sendTestSmartDigest(): Boolean {
         val ctx = appContext ?: return false
         val currentPrefs = preferences.value
-        val targetLink = linkRepository?.getSmartDigestCandidate()
+        val targetLink = linkRepository?.getSmartDigestCandidate(
+            maxNudgeCount = currentPrefs.smartReminderPersistence.maxNudges
+        )
             ?: SavedLink(
                 id = 999_999L,
                 originalUrl = "https://instagram.com/p/sample",

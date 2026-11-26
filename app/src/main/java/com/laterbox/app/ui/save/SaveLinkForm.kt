@@ -294,7 +294,7 @@ fun SaveLinkForm(
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                text = "Ready to download to Inbox Library",
+                                text = resolution.sourceLabel ?: "Ready to download to Inbox Library",
                                 style = typography.metaText,
                                 color = colors.textSecondary
                             )
@@ -322,13 +322,51 @@ fun SaveLinkForm(
                         .padding(spacing.sm),
                     verticalArrangement = Arrangement.spacedBy(spacing.xs)
                 ) {
-                    Text(
-                        text = resolution.rawUrl,
-                        style = typography.metadataMono,
-                        color = colors.textSecondary,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    if (!resolution.spotifyTitle.isNullOrBlank() || !resolution.spotifyArtist.isNullOrBlank() || !resolution.spotifyCoverUrl.isNullOrBlank()) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(spacing.sm)
+                        ) {
+                            if (!resolution.spotifyCoverUrl.isNullOrBlank()) {
+                                AsyncImage(
+                                    model = resolution.spotifyCoverUrl,
+                                    contentDescription = resolution.spotifyTitle,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .size(52.dp)
+                                        .clip(RoundedCornerShape(spacing.thumbnailRadius))
+                                )
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                if (!resolution.spotifyTitle.isNullOrBlank()) {
+                                    Text(
+                                        text = resolution.spotifyTitle,
+                                        style = typography.bodyPrimary.copy(fontWeight = FontWeight.Medium),
+                                        color = colors.textPrimary,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                if (!resolution.spotifyArtist.isNullOrBlank()) {
+                                    Text(
+                                        text = resolution.spotifyArtist,
+                                        style = typography.metaText,
+                                        color = colors.textSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        Text(
+                            text = resolution.rawUrl,
+                            style = typography.metadataMono,
+                            color = colors.textSecondary,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                     val isSpotify = resolution.platformLabel.equals("Spotify", ignoreCase = true) ||
                         com.laterbox.app.media.data.inbox.InboxLinkRouter.routeForUrl(resolution.rawUrl) ==
                         com.laterbox.app.media.data.inbox.InboxResolvePlatform.SPOTIFY

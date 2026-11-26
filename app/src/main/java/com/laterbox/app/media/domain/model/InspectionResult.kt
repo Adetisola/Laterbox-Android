@@ -28,7 +28,11 @@ sealed interface InspectionResult {
 
     data class Unsupported(
         val reason: String,
-        val previewCandidate: MediaCandidate? = null
+        val previewCandidate: MediaCandidate? = null,
+        val spotifyTitle: String? = null,
+        val spotifyArtist: String? = null,
+        val spotifyAlbum: String? = null,
+        val spotifyCoverUrl: String? = null
     ) : InspectionResult
 
     data class Failed(

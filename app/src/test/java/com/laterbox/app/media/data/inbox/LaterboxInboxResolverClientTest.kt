@@ -184,20 +184,52 @@ class LaterboxInboxResolverClientTest {
                 callCount++
                 val req = chain.request()
                 requestedPath = req.url.encodedPath
-                val body = if (callCount == 1) {
-                    """{"type":"audio","url":"https://cdn.example.com/track.mp3","title":"Midnight City","artist":"M83"}"""
-                } else {
-                    """{"type":"unsupported","reason":"spotify_api_unavailable","fallback":"open_in_browser"}"""
-                }
-                Response.Builder()
-                    .request(req)
-                    .protocol(Protocol.HTTP_1_1)
-                    .code(200)
-                    .message("OK")
-                    .body(body.toResponseBody("application/json".toMediaType()))
-                    .build()
+        val body = if (callCount == 1) {
+            """
+            {
+              "type": "audio",
+              "source": "youtube",
+              "spotify": {
+                "title": "Midnight City",
+                "artist": "M83",
+                "album": "Hurry Up, We're Dreaming",
+                "cover": "https://i.scdn.co/image/m83.jpg",
+                "duration_ms": 243000
+              },
+              "youtube": {
+                "video_id": "dX3k_QDnzHE",
+                "title": "M83 - Midnight City",
+                "duration_ms": 243000,
+                "audio_url": "https://rr1.googlevideo.com/midnight.m4a",
+                "confidence": "high"
+              }
             }
+            """.trimIndent()
+        } else {
+            """
+            {
+              "type": "unsupported",
+              "reason": "no_youtube_match",
+              "fallback": "open_in_spotify",
+              "spotify": {
+                "title": "I Wanna Be Yours",
+                "artist": "Arctic Monkeys",
+                "album": "AM",
+                "cover": "https://i.scdn.co/image/am.jpg",
+                "duration_ms": 183000
+              }
+            }
+            """.trimIndent()
+        }
+        Response.Builder()
+            .request(req)
+            .protocol(Protocol.HTTP_1_1)
+            .code(200)
+            .message("OK")
+            .body(body.toResponseBody("application/json".toMediaType()))
             .build()
+    }
+    .build()
 
         val resolver = LaterboxInboxResolverClient(
             okHttpClient = client,
@@ -210,16 +242,26 @@ class LaterboxInboxResolverClientTest {
         assertTrue(audioRes is InspectionResult.Available)
         val available = audioRes as InspectionResult.Available
         assertEquals("Spotify", available.platform)
+        assertEquals("Midnight City", available.title)
+        assertEquals("M83", available.artist)
+        assertEquals("https://i.scdn.co/image/m83.jpg", available.thumbnailUrl)
+        assertEquals(1, available.musicMatches.size)
+        assertEquals("via YouTube", available.musicMatches.single().sourceDescription)
         assertEquals(1, available.candidates.size)
         val candidate = available.candidates.single()
         assertEquals(MediaType.AUDIO, candidate.mediaType)
-        assertEquals("mp3", candidate.ext)
+        assertEquals("m4a", candidate.ext)
         assertEquals("M83 — Midnight City", candidate.formatLabel)
-        assertEquals("https://cdn.example.com/track.mp3", (candidate.source as AcquisitionSource.DirectHttp).url)
+        assertEquals("https://rr1.googlevideo.com/midnight.m4a", (candidate.source as AcquisitionSource.DirectHttp).url)
 
         val fallbackRes = resolver.resolveToInspectionResult("https://open.spotify.com/track/5XeFesFbtLpXzIVDNQP22n")
         assertTrue(fallbackRes is InspectionResult.Unsupported)
-        val fallbackReason = (fallbackRes as InspectionResult.Unsupported).reason.lowercase()
+        val unsupported = fallbackRes as InspectionResult.Unsupported
+        assertEquals("I Wanna Be Yours", unsupported.spotifyTitle)
+        assertEquals("Arctic Monkeys", unsupported.spotifyArtist)
+        assertEquals("AM", unsupported.spotifyAlbum)
+        assertEquals("https://i.scdn.co/image/am.jpg", unsupported.spotifyCoverUrl)
+        val fallbackReason = unsupported.reason.lowercase()
         assertFalse(fallbackReason.contains("spotidownloader"))
         assertFalse(fallbackReason.contains("gleeze"))
     }

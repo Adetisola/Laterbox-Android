@@ -284,6 +284,8 @@ class ContextualNotificationEngine(
         }
 
         // 2. Verified New Season Alert (TVMaze only)
+        // NOTE: "Airing Soon" / next-episode reminders are blocked on upstream episode air dates;
+        // implementing them requires TVMaze `/shows/{id}/episodes` or TMDB `next_episode_to_air`.
         if (moviesRepository != null) {
             data class SeriesCandidate(
                 val titleId: String,

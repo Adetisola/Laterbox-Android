@@ -25,13 +25,19 @@ import com.laterbox.app.media.domain.repository.MediaRepository
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.repository.MoviesRepository
 import com.laterbox.app.reminders.ReminderScheduler
+import android.content.Context
+import android.media.AudioAttributes
+import android.media.MediaPlayer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
@@ -41,7 +47,66 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.UUID
+
+interface AssistantTtsAudioPlayer {
+    fun play(wavBytes: ByteArray, onCompletion: () -> Unit, onError: () -> Unit)
+    fun stop()
+    fun release()
+}
+
+private class AndroidMediaPlayerTtsAudioPlayer(
+    private val context: Context
+) : AssistantTtsAudioPlayer {
+    private var mediaPlayer: MediaPlayer? = null
+    private var tempFile: File? = null
+
+    override fun play(wavBytes: ByteArray, onCompletion: () -> Unit, onError: () -> Unit) {
+        stop()
+        try {
+            val file = File(context.cacheDir, "laterbox_tts_play.wav")
+            file.writeBytes(wavBytes)
+            tempFile = file
+            val player = MediaPlayer().apply {
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .build()
+                )
+                setDataSource(file.absolutePath)
+                setOnCompletionListener {
+                    stop()
+                    onCompletion()
+                }
+                setOnErrorListener { _, _, _ ->
+                    stop()
+                    onError()
+                    true
+                }
+                prepare()
+                start()
+            }
+            mediaPlayer = player
+        } catch (_: Throwable) {
+            stop()
+            onError()
+        }
+    }
+
+    override fun stop() {
+        runCatching { mediaPlayer?.stop() }
+        runCatching { mediaPlayer?.release() }
+        mediaPlayer = null
+        runCatching { tempFile?.delete() }
+        tempFile = null
+    }
+
+    override fun release() {
+        stop()
+    }
+}
 
 data class UiActionDispatch(
     val requestId: String,
@@ -65,7 +130,9 @@ data class ChatUiState(
     val streamingPartialText: String = "",
     val pendingMutatingAction: ChatAction? = null,
     val statusNotice: String? = null,
-    val manifestOutOfSync: Boolean = false
+    val manifestOutOfSync: Boolean = false,
+    val ttsLoadingMessageId: String? = null,
+    val ttsPlayingMessageId: String? = null
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -81,6 +148,8 @@ class ChatViewModel(
     private val reminderScheduler: ReminderScheduler? = null,
     private val backendAiClient: com.laterbox.app.ai.LaterboxBackendAiClient? = null,
     private val analyticsTracker: com.laterbox.app.analytics.LaterboxAnalyticsTracker? = null,
+    private val applicationContext: Context? = null,
+    private val ttsAudioPlayer: AssistantTtsAudioPlayer? = null,
     private val isAssistantRemotePaused: () -> Boolean = { false },
 ) : ViewModel() {
 
@@ -127,6 +196,21 @@ class ChatViewModel(
         Quad(isStreaming, msgId, partial, composer)
     }
 
+    private val _ttsLoadingMessageId = MutableStateFlow<String?>(null)
+    private val _ttsPlayingMessageId = MutableStateFlow<String?>(null)
+    private val _ttsErrorEvents = MutableSharedFlow<String>(extraBufferCapacity = 2)
+    val ttsErrorEvents: SharedFlow<String> = _ttsErrorEvents.asSharedFlow()
+
+    private val ttsSessionCache = mutableMapOf<String, ByteArray>()
+    private var ttsJob: Job? = null
+    private val activeTtsPlayer: AssistantTtsAudioPlayer? by lazy {
+        ttsAudioPlayer ?: applicationContext?.let { AndroidMediaPlayerTtsAudioPlayer(it) }
+    }
+
+    private val ttsTuple = combine(_ttsLoadingMessageId, _ttsPlayingMessageId) { loadingId, playingId ->
+        loadingId to playingId
+    }
+
     private val auxiliaryTuple = combine(
         _pendingMutatingAction,
         _statusNotice,
@@ -142,7 +226,8 @@ class ChatViewModel(
         recentConversations,
         userPreferencesRepository.userPreferences,
         streamingTuple,
-        auxiliaryTuple
+        auxiliaryTuple,
+        ttsTuple
     ) { args ->
         @Suppress("UNCHECKED_CAST")
         val activeId = args[0] as String?
@@ -154,6 +239,8 @@ class ChatViewModel(
         val prefs = args[4] as com.laterbox.app.data.preferences.UserPreferences
         val stream = args[5] as Quad
         val aux = args[6] as AuxState
+        @Suppress("UNCHECKED_CAST")
+        val ttsState = args[7] as Pair<String?, String?>
 
         ChatUiState(
             activeConversationId = activeId,
@@ -169,13 +256,83 @@ class ChatViewModel(
             streamingPartialText = stream.partial,
             pendingMutatingAction = aux.pendingAction,
             statusNotice = aux.notice,
-            manifestOutOfSync = aux.manifestOutOfSync
+            manifestOutOfSync = aux.manifestOutOfSync,
+            ttsLoadingMessageId = ttsState.first,
+            ttsPlayingMessageId = ttsState.second
         )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = ChatUiState()
     )
+
+    fun toggleReadAloud(messageId: String, text: String) {
+        val cleanText = text.trim()
+        if (cleanText.isEmpty()) return
+        if (_ttsPlayingMessageId.value == messageId || _ttsLoadingMessageId.value == messageId) {
+            stopReadAloud()
+            return
+        }
+        stopReadAloud()
+
+        val cachedBytes = ttsSessionCache[messageId]
+        if (cachedBytes != null) {
+            playTtsBytes(messageId, cachedBytes)
+            return
+        }
+
+        val client = backendAiClient
+        if (client == null) {
+            _ttsErrorEvents.tryEmit(TTS_UNAVAILABLE_TOAST)
+            return
+        }
+
+        _ttsLoadingMessageId.value = messageId
+        ttsJob = viewModelScope.launch {
+            val result = client.fetchTtsAudio(cleanText)
+            if (_ttsLoadingMessageId.value == messageId) {
+                _ttsLoadingMessageId.value = null
+            }
+            val payload = result.getOrNull()
+            if (payload == null) {
+                _ttsErrorEvents.tryEmit(TTS_UNAVAILABLE_TOAST)
+                return@launch
+            }
+            ttsSessionCache[messageId] = payload.audioBytes
+            playTtsBytes(messageId, payload.audioBytes)
+        }
+    }
+
+    fun stopReadAloud() {
+        ttsJob?.cancel()
+        ttsJob = null
+        _ttsLoadingMessageId.value = null
+        _ttsPlayingMessageId.value = null
+        runCatching { activeTtsPlayer?.stop() }
+    }
+
+    private fun playTtsBytes(messageId: String, audioBytes: ByteArray) {
+        val player = activeTtsPlayer
+        if (player == null) {
+            _ttsErrorEvents.tryEmit(TTS_UNAVAILABLE_TOAST)
+            return
+        }
+        _ttsPlayingMessageId.value = messageId
+        player.play(
+            wavBytes = audioBytes,
+            onCompletion = {
+                if (_ttsPlayingMessageId.value == messageId) {
+                    _ttsPlayingMessageId.value = null
+                }
+            },
+            onError = {
+                if (_ttsPlayingMessageId.value == messageId) {
+                    _ttsPlayingMessageId.value = null
+                }
+                _ttsErrorEvents.tryEmit(TTS_UNAVAILABLE_TOAST)
+            }
+        )
+    }
 
     fun onComposerTextChange(text: String) {
         _composerText.value = text
@@ -1022,6 +1179,7 @@ class ChatViewModel(
 
     override fun onCleared() {
         speech?.cancel()
+        runCatching { activeTtsPlayer?.release() }
         super.onCleared()
     }
 
@@ -1426,6 +1584,8 @@ class ChatViewModel(
     )
 
     companion object {
+        const val TTS_UNAVAILABLE_TOAST = "Read-aloud is unavailable right now."
+
         fun hasBlockingMutatingActionForRetry(actionsJson: String?): Boolean {
             val tracked = AssistantActionHandler.fromTrackedJsonList(actionsJson)
             return tracked.any { item ->

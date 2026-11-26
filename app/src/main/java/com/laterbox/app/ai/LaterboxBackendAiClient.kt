@@ -47,6 +47,12 @@ data class ActionResultAck(
     val followUpMessage: String? = null
 )
 
+data class TtsAudioPayload(
+    val audioBytes: ByteArray,
+    val mimeType: String,
+    val durationEstimateMs: Int
+)
+
 data class RecentActionReceipt(
     val actionId: String? = null,
     val actionType: String,
@@ -516,6 +522,65 @@ class LaterboxBackendAiClient(
 
     suspend fun checkCapabilityManifestSync(): Boolean? =
         fetchCapabilityManifest()?.clientInSync
+
+    suspend fun fetchTtsAudio(
+        text: String,
+        voice: String = "Aoede",
+        speed: Double = 1.0
+    ): Result<TtsAudioPayload> {
+        val cleanText = text.trim()
+        if (cleanText.isEmpty()) {
+            return Result.failure(IllegalArgumentException("tts_empty_text"))
+        }
+        val baseUrl = baseUrlProvider().trim().trimEnd('/')
+        val parsedBase = baseUrl.toHttpUrlOrNull()
+            ?: return Result.failure(IllegalStateException("tts_invalid_base_url"))
+        val url = parsedBase.newBuilder()
+            .addPathSegments("api/assistant/tts")
+            .build()
+
+        val bodyJson = JSONObject().apply {
+            put("text", cleanText.take(4000))
+            put("voice", voice.trim().ifBlank { "Aoede" })
+            put("speed", speed.coerceIn(0.5, 2.0))
+        }
+
+        val authHeader = runCatching { resolveAuthHeader(false) }.getOrNull()
+        val firstAttempt = executePostJson(url, bodyJson.toString(), authHeader)
+        val isGuestRestricted403 = firstAttempt.statusCode == 403 &&
+            authHeader?.first == com.laterbox.app.auth.LaterboxBackendAuthProvider.HEADER_GUEST_AUTH
+        // Only refresh auth token on 401/403 token expiry; never retry on 503/5xx/network failure.
+        val finalAttempt = if (firstAttempt.statusCode == 401 || (firstAttempt.statusCode == 403 && !isGuestRestricted403)) {
+            val refreshed = runCatching { resolveAuthHeader(true) }.getOrNull()
+            if (refreshed != null && refreshed != authHeader) {
+                executePostJson(url, bodyJson.toString(), refreshed)
+            } else {
+                firstAttempt
+            }
+        } else {
+            firstAttempt
+        }
+
+        val responseJson = finalAttempt.json
+            ?: return Result.failure(IllegalStateException("tts_unavailable"))
+        val b64Audio = responseJson.optString("audio_base64", "").trim()
+        if (b64Audio.isEmpty()) {
+            return Result.failure(IllegalStateException("tts_unavailable"))
+        }
+        val bytes = runCatching {
+            android.util.Base64.decode(b64Audio, android.util.Base64.DEFAULT)
+        }.getOrNull()?.takeIf { it.isNotEmpty() }
+            ?: return Result.failure(IllegalStateException("tts_unavailable"))
+        val mimeType = responseJson.optString("mime_type", "audio/wav").trim().ifBlank { "audio/wav" }
+        val durationMs = responseJson.optInt("duration_estimate_ms", 0)
+        return Result.success(
+            TtsAudioPayload(
+                audioBytes = bytes,
+                mimeType = mimeType,
+                durationEstimateMs = durationMs
+            )
+        )
+    }
 
     private data class PostJsonOutcome(
         val statusCode: Int,

@@ -112,7 +112,10 @@ fun ChatScreen(
     onToggleMiniPlayerPlayPause: () -> Unit = {},
     onCloseMiniPlayer: () -> Unit = {},
     onTrackedActionClick: ((messageId: String, tracked: TrackedChatAction) -> Unit)? = null,
-    onMessageCopied: (() -> Unit)? = null
+    onMessageCopied: (() -> Unit)? = null,
+    ttsLoadingMessageId: String? = uiState.ttsLoadingMessageId,
+    ttsPlayingMessageId: String? = uiState.ttsPlayingMessageId,
+    onReadAloudClick: ((messageId: String, content: String) -> Unit)? = null
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -372,7 +375,10 @@ fun ChatScreen(
                                 onActionClick = onActionClick,
                                 onTrackedActionClick = onTrackedActionClick,
                                 onMarkdownLinkClick = onMarkdownLinkClick,
-                                onMessageCopied = onMessageCopied
+                                onMessageCopied = onMessageCopied,
+                                isTtsLoading = ttsLoadingMessageId == message.id,
+                                isTtsPlaying = ttsPlayingMessageId == message.id,
+                                onReadAloudClick = onReadAloudClick
                             )
                         }
                     }
@@ -665,7 +671,10 @@ private fun ChatMessageBubble(
     onActionClick: (ChatAction) -> Unit,
     onMarkdownLinkClick: ((String) -> Unit)?,
     onTrackedActionClick: ((messageId: String, tracked: TrackedChatAction) -> Unit)? = null,
-    onMessageCopied: (() -> Unit)? = null
+    onMessageCopied: (() -> Unit)? = null,
+    isTtsLoading: Boolean = false,
+    isTtsPlaying: Boolean = false,
+    onReadAloudClick: ((messageId: String, content: String) -> Unit)? = null
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -686,6 +695,7 @@ private fun ChatMessageBubble(
     }
     val canCopy = !isUser && !isStreamingThis && displayedContent.isNotBlank()
     val canRetry = !isUser && !isStreamingThis && hasPrecedingUserPrompt && !hasBlockingMutatingAction
+    val canReadAloud = !isUser && !isStreamingThis && displayedContent.isNotBlank() && onReadAloudClick != null
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -852,13 +862,60 @@ private fun ChatMessageBubble(
                 }
             }
 
-            if (canCopy || canRetry) {
+            if (canCopy || canRetry || canReadAloud) {
                 Spacer(modifier = Modifier.height(6.dp))
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                     modifier = Modifier.testTag("chat_quick_actions_${message.id}")
                 ) {
+                    if (canReadAloud) {
+                        val readLabel = when {
+                            isTtsLoading -> "Loading…"
+                            isTtsPlaying -> "Stop"
+                            else -> "Read aloud"
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier
+                                .clip(LaterboxShapeTokens.Chip)
+                                .background(
+                                    if (isTtsPlaying) colors.accentContainer
+                                    else colors.surfaceSecondary.copy(alpha = 0.72f)
+                                )
+                                .clickable(role = Role.Button) {
+                                    onReadAloudClick?.invoke(message.id, displayedContent)
+                                }
+                                .testTag("chat_quick_read_aloud_${message.id}")
+                                .padding(horizontal = 9.dp, vertical = 5.dp)
+                        ) {
+                            if (isTtsLoading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(11.dp),
+                                    strokeWidth = 1.5.dp,
+                                    color = colors.accentPrimary
+                                )
+                            } else {
+                                Icon(
+                                    painter = painterResource(
+                                        id = if (isTtsPlaying) LaterboxIcons.Stop else LaterboxIcons.Play
+                                    ),
+                                    contentDescription = null,
+                                    modifier = Modifier.size(12.dp),
+                                    tint = if (isTtsPlaying) colors.accentPrimary else colors.textSecondary
+                                )
+                            }
+                            Text(
+                                text = readLabel,
+                                style = typography.metaText.copy(
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Medium
+                                ),
+                                color = if (isTtsPlaying) colors.accentPrimary else colors.textSecondary
+                            )
+                        }
+                    }
                     if (canCopy) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,

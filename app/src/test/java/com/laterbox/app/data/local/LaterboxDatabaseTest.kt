@@ -613,6 +613,45 @@ class LaterboxDatabaseTest {
     }
 
     @Test
+    fun getSmartDigestCandidate_doesNotExceedMaxNudgesCapAcrossWorkerTicks() = runTest {
+        val repository = com.laterbox.app.data.repository.LinkRepository(
+            savedLinkDao = linkDao,
+            appContext = ApplicationProvider.getApplicationContext()
+        )
+        val oldTimestamp = System.currentTimeMillis() - (48 * 60 * 60 * 1000L)
+        val id = linkDao.insertLink(
+            SavedLinkEntity(
+                originalUrl = "https://example.com/capped-link",
+                normalizedUrl = "https://example.com/capped-link",
+                title = "Capped Link",
+                domain = "example.com",
+                isArchived = false,
+                isRead = false,
+                nudgeDismissed = false,
+                nudgeCount = 0,
+                createdAt = oldTimestamp
+            )
+        )
+
+        val cooldownBypass = System.currentTimeMillis() - (4 * 24 * 60 * 60 * 1000L)
+
+        // Tick 1 -> eligible, record nudge -> count = 1
+        val tick1 = repository.getSmartDigestCandidate(maxNudgeCount = 2)
+        assertEquals(id, tick1?.id)
+        linkDao.recordNudge(id, cooldownBypass)
+
+        // Tick 2 -> eligible, record nudge -> count = 2
+        val tick2 = repository.getSmartDigestCandidate(maxNudgeCount = 2)
+        assertEquals(id, tick2?.id)
+        linkDao.recordNudge(id, cooldownBypass)
+
+        // Tick 3 -> at maxNudges = 2, must return null (never fall back to latest unread link)
+        val tick3 = repository.getSmartDigestCandidate(maxNudgeCount = 2)
+        assertNull(tick3)
+        assertEquals(2, linkDao.getEntityById(id)?.nudgeCount)
+    }
+
+    @Test
     fun insertAndRetrieveNotificationHistoryItem() = runTest {
         val entity = NotificationHistoryEntity(
             url = "https://example.com/notification-item",

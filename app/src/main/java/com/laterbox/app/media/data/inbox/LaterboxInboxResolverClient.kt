@@ -3,8 +3,10 @@ package com.laterbox.app.media.data.inbox
 import com.laterbox.app.BuildConfig
 import com.laterbox.app.media.domain.model.AcquisitionSource
 import com.laterbox.app.media.domain.model.InspectionResult
+import com.laterbox.app.media.domain.model.MatchConfidence
 import com.laterbox.app.media.domain.model.MediaCandidate
 import com.laterbox.app.media.domain.model.MediaType
+import com.laterbox.app.media.domain.model.MusicMatchCandidate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -94,6 +96,22 @@ data class InboxCarouselItem(
     val thumbnailUrl: String?
 )
 
+data class InboxSpotifyMeta(
+    val title: String,
+    val artist: String,
+    val album: String?,
+    val coverUrl: String?,
+    val durationMs: Long?
+)
+
+data class InboxYouTubeAudioMatch(
+    val videoId: String,
+    val title: String?,
+    val durationMs: Long?,
+    val audioUrl: String,
+    val confidence: String?
+)
+
 sealed interface InboxResolveOutcome {
     data class VideoVariants(
         val platform: InboxResolvePlatform,
@@ -114,7 +132,10 @@ sealed interface InboxResolveOutcome {
         val platform: InboxResolvePlatform,
         val url: String,
         val title: String?,
-        val artist: String?
+        val artist: String?,
+        val source: String? = null,
+        val spotifyMeta: InboxSpotifyMeta? = null,
+        val youtubeMatch: InboxYouTubeAudioMatch? = null
     ) : InboxResolveOutcome
 
     data class Carousel(
@@ -126,7 +147,8 @@ sealed interface InboxResolveOutcome {
     data class Unsupported(
         val platform: InboxResolvePlatform,
         val reason: String,
-        val fallback: String
+        val fallback: String,
+        val spotifyMeta: InboxSpotifyMeta? = null
     ) : InboxResolveOutcome
 
     data class Unavailable(
@@ -326,15 +348,31 @@ class LaterboxInboxResolverClient(
                     }
 
                     "audio" -> {
-                        val audioUrl = json.optString("url").trim()
+                        val spotifyMeta = json.optJSONObject("spotify")?.let(::parseSpotifyMeta)
+                        val youtubeMatch = json.optJSONObject("youtube")?.let(::parseYouTubeAudioMatch)
+                        val audioUrl = youtubeMatch?.audioUrl ?: json.optString("url").trim()
                         if (audioUrl.isEmpty()) {
-                            InboxResolveOutcome.Unavailable(platform, 404)
+                            if (spotifyMeta != null) {
+                                InboxResolveOutcome.Unsupported(
+                                    platform = platform,
+                                    reason = "no_youtube_match",
+                                    fallback = "open_in_spotify",
+                                    spotifyMeta = spotifyMeta
+                                )
+                            } else {
+                                InboxResolveOutcome.Unavailable(platform, 404)
+                            }
                         } else {
                             InboxResolveOutcome.AudioMedia(
                                 platform = platform,
                                 url = audioUrl,
-                                title = json.optString("title").takeIf { it.isNotBlank() && it != "null" },
-                                artist = json.optString("artist").takeIf { it.isNotBlank() && it != "null" }
+                                title = spotifyMeta?.title
+                                    ?: json.optString("title").takeIf { it.isNotBlank() && it != "null" },
+                                artist = spotifyMeta?.artist
+                                    ?: json.optString("artist").takeIf { it.isNotBlank() && it != "null" },
+                                source = json.optString("source").takeIf { it.isNotBlank() && it != "null" },
+                                spotifyMeta = spotifyMeta,
+                                youtubeMatch = youtubeMatch
                             )
                         }
                     }
@@ -342,7 +380,8 @@ class LaterboxInboxResolverClient(
                     "unsupported" -> InboxResolveOutcome.Unsupported(
                         platform = platform,
                         reason = json.optString("reason", "unsupported"),
-                        fallback = json.optString("fallback", "open_in_browser")
+                        fallback = json.optString("fallback", "open_in_browser"),
+                        spotifyMeta = json.optJSONObject("spotify")?.let(::parseSpotifyMeta)
                     )
 
                     else -> InboxResolveOutcome.Unavailable(platform, statusCode)
@@ -350,6 +389,42 @@ class LaterboxInboxResolverClient(
             } catch (_: Throwable) {
                 InboxResolveOutcome.Unavailable(platform, statusCode)
             }
+        }
+
+        private fun parseSpotifyMeta(obj: JSONObject): InboxSpotifyMeta? {
+            val title = obj.optString("title").trim()
+            if (title.isEmpty() || title == "null") return null
+            val artist = obj.optString("artist").trim().takeIf { it.isNotBlank() && it != "null" } ?: "Unknown Artist"
+            val album = obj.optString("album").trim().takeIf { it.isNotBlank() && it != "null" }
+            val coverUrl = obj.optString("cover").trim().takeIf { it.startsWith("http") }
+            val durationMs = if (obj.has("duration_ms") && !obj.isNull("duration_ms")) {
+                obj.optLong("duration_ms").takeIf { it > 0L }
+            } else null
+            return InboxSpotifyMeta(
+                title = title,
+                artist = artist,
+                album = album,
+                coverUrl = coverUrl,
+                durationMs = durationMs
+            )
+        }
+
+        private fun parseYouTubeAudioMatch(obj: JSONObject): InboxYouTubeAudioMatch? {
+            val audioUrl = obj.optString("audio_url").trim()
+            if (audioUrl.isEmpty() || audioUrl == "null") return null
+            val videoId = obj.optString("video_id").trim()
+            val title = obj.optString("title").trim().takeIf { it.isNotBlank() && it != "null" }
+            val durationMs = if (obj.has("duration_ms") && !obj.isNull("duration_ms")) {
+                obj.optLong("duration_ms").takeIf { it > 0L }
+            } else null
+            val confidence = obj.optString("confidence").trim().takeIf { it.isNotBlank() && it != "null" }
+            return InboxYouTubeAudioMatch(
+                videoId = videoId,
+                title = title,
+                durationMs = durationMs,
+                audioUrl = audioUrl,
+                confidence = confidence
+            )
         }
 
         private fun parseVariants(arr: JSONArray): List<InboxVideoVariant> {
@@ -434,29 +509,55 @@ class LaterboxInboxResolverClient(
                 }
 
                 is InboxResolveOutcome.AudioMedia -> {
-                    val label = listOfNotNull(outcome.artist, outcome.title)
+                    val resolvedTitle = outcome.spotifyMeta?.title ?: outcome.title
+                    val resolvedArtist = outcome.spotifyMeta?.artist ?: outcome.artist
+                    val resolvedAlbum = outcome.spotifyMeta?.album
+                    val coverUrl = outcome.spotifyMeta?.coverUrl
+                    val durationMs = outcome.spotifyMeta?.durationMs ?: outcome.youtubeMatch?.durationMs
+                    val label = listOfNotNull(resolvedArtist, resolvedTitle)
                         .joinToString(" — ")
                         .takeIf { it.isNotBlank() }
-                        ?: "Audio MP3"
+                        ?: "Audio"
+                    val isYouTube = outcome.source.equals("youtube", ignoreCase = true) || outcome.youtubeMatch != null
+                    val ext = if (isYouTube || outcome.url.contains(".m4a")) "m4a" else "mp3"
                     val candidate = MediaCandidate(
                         candidateId = "inbox_spotify_audio",
                         mediaType = MediaType.AUDIO,
                         formatLabel = label,
                         estimatedBytes = null,
-                        durationMs = null,
+                        durationMs = durationMs,
                         width = null,
                         height = null,
                         source = AcquisitionSource.DirectHttp(url = outcome.url),
-                        ext = "mp3",
+                        ext = ext,
                         hasVideo = false,
                         hasAudio = true,
                         isBest = true,
                         extractor = "inbox_backend"
                     )
+                    val matchCandidate = if (outcome.platform == InboxResolvePlatform.SPOTIFY && !resolvedTitle.isNullOrBlank()) {
+                        val isHighConfidence = outcome.youtubeMatch?.confidence.equals("high", ignoreCase = true)
+                        MusicMatchCandidate(
+                            candidateId = candidate.candidateId,
+                            title = resolvedTitle,
+                            artist = resolvedArtist ?: "Unknown Artist",
+                            durationMs = durationMs,
+                            score = if (isHighConfidence) 0.95 else 0.78,
+                            confidence = if (isHighConfidence) MatchConfidence.STRONG else MatchConfidence.POSSIBLE,
+                            downloadCandidate = candidate,
+                            sourceDescription = if (isYouTube) "via YouTube" else "Authorized Audio Source"
+                        )
+                    } else {
+                        null
+                    }
                     InspectionResult.Available(
                         platform = outcome.platform.displayName,
-                        thumbnailUrl = null,
+                        title = resolvedTitle,
+                        thumbnailUrl = coverUrl,
                         candidates = listOf(candidate),
+                        artist = resolvedArtist,
+                        album = resolvedAlbum,
+                        musicMatches = listOfNotNull(matchCandidate),
                         isComplete = true
                     )
                 }
@@ -495,7 +596,14 @@ class LaterboxInboxResolverClient(
                     )
                 }
 
-                is InboxResolveOutcome.Unsupported,
+                is InboxResolveOutcome.Unsupported -> InspectionResult.Unsupported(
+                    reason = "Open this link in your browser to view or save media.",
+                    spotifyTitle = outcome.spotifyMeta?.title,
+                    spotifyArtist = outcome.spotifyMeta?.artist,
+                    spotifyAlbum = outcome.spotifyMeta?.album,
+                    spotifyCoverUrl = outcome.spotifyMeta?.coverUrl
+                )
+
                 is InboxResolveOutcome.Unavailable -> InspectionResult.Unsupported(
                     reason = "Open this link in your browser to view or save media."
                 )

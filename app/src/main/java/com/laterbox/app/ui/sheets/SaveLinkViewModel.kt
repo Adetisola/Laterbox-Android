@@ -42,11 +42,15 @@ sealed interface InboxPasteResolutionState {
         val platformLabel: String,
         val thumbnailUrl: String?,
         val mediaSummary: String,
-        val candidates: List<MediaCandidate>
+        val candidates: List<MediaCandidate>,
+        val sourceLabel: String? = null
     ) : InboxPasteResolutionState
     data class OpenInBrowserFallback(
         val platformLabel: String,
-        val rawUrl: String
+        val rawUrl: String,
+        val spotifyTitle: String? = null,
+        val spotifyArtist: String? = null,
+        val spotifyCoverUrl: String? = null
     ) : InboxPasteResolutionState
 }
 
@@ -273,18 +277,24 @@ class SaveLinkViewModel(
                         if (!thumb.isNullOrBlank()) {
                             _previewImageUrl.value = thumb
                         }
+                        val topMatch = result.musicMatches.firstOrNull()
                         val isCarousel = result.candidates.size > 1 &&
                             result.candidates.first().candidateId.startsWith("inbox_carousel_")
-                        val summary = if (isCarousel) {
-                            "${platform.displayName} · Carousel (${result.candidates.size} items)"
-                        } else {
-                            "${platform.displayName} · ${result.candidates.first().formatLabel}"
+                        val summary = when {
+                            topMatch != null -> {
+                                listOfNotNull(result.artist?.takeIf { it.isNotBlank() }, result.title?.takeIf { it.isNotBlank() })
+                                    .joinToString(" — ")
+                                    .ifBlank { result.candidates.first().formatLabel }
+                            }
+                            isCarousel -> "${platform.displayName} · Carousel (${result.candidates.size} items)"
+                            else -> "${platform.displayName} · ${result.candidates.first().formatLabel}"
                         }
                         _inboxResolution.value = InboxPasteResolutionState.Resolved(
                             platformLabel = platform.displayName,
                             thumbnailUrl = thumb,
                             mediaSummary = summary,
-                            candidates = result.candidates
+                            candidates = result.candidates,
+                            sourceLabel = topMatch?.sourceDescription
                         )
                         _metadataStatus.value = MetadataPreviewStatus.READY
                     } else {
@@ -293,6 +303,24 @@ class SaveLinkViewModel(
                             rawUrl = normalizedUrl
                         )
                         _metadataStatus.value = MetadataPreviewStatus.FAILED
+                    }
+                }
+                is InspectionResult.Unsupported -> {
+                    val cover = result.spotifyCoverUrl
+                    if (!cover.isNullOrBlank()) {
+                        _previewImageUrl.value = cover
+                    }
+                    _inboxResolution.value = InboxPasteResolutionState.OpenInBrowserFallback(
+                        platformLabel = platform.displayName,
+                        rawUrl = normalizedUrl,
+                        spotifyTitle = result.spotifyTitle,
+                        spotifyArtist = result.spotifyArtist,
+                        spotifyCoverUrl = cover
+                    )
+                    _metadataStatus.value = if (!result.spotifyTitle.isNullOrBlank()) {
+                        MetadataPreviewStatus.READY
+                    } else {
+                        MetadataPreviewStatus.FAILED
                     }
                 }
                 else -> {

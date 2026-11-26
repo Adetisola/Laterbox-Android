@@ -703,4 +703,87 @@ class RemoteConfigTest {
             scope.cancel()
         }
     }
+
+    @Test
+    fun cache_coldStartResolvesRelativeHeroCarouselAssetPath() = runBlocking {
+        val dsFile = File(tempFolder.newFolder("rc_hero_ds"), "test_hero.preferences_pb")
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            val nowMs = 1_795_300_000_000L
+            val dataStore = PreferenceDataStoreFactory.create(scope = scope) { dsFile }
+            val cache = RemoteConfigCache(
+                dataStore = dataStore,
+                backendBaseUrlProvider = { "https://laterbox-moviebox-api.vercel.app" },
+            )
+            val payloadWithRelativeHero = """
+                {
+                  "schemaVersion": 1,
+                  "revision": 55,
+                  "publishedAt": "2026-11-21T01:00:00Z",
+                  "expiresAt": "2099-01-01T00:00:00Z",
+                  "general": {
+                    "minRefreshIntervalSeconds": 900,
+                    "staleCacheMaxAgeSeconds": 86400
+                  },
+                  "versionPolicy": {
+                    "minimumSupportedVersionCode": 50,
+                    "recommendedVersionCode": 65,
+                    "enforcementEnabled": false,
+                    "recommendedTag": "v1.0.65",
+                    "updateMessage": "New improvements available."
+                  },
+                  "maintenance": {
+                    "enabled": false,
+                    "mode": "none",
+                    "title": "",
+                    "message": "Healthy.",
+                    "allowLocalOfflineAccess": true,
+                    "showBannerInNormalMode": false
+                  },
+                  "announcements": [],
+                  "features": { "movies_tv_enabled": true },
+                  "ui": {
+                    "components": [
+                      {
+                        "id": "movies_hero_default",
+                        "type": "hero_carousel",
+                        "surface": "movies",
+                        "visible": true,
+                        "order": 10,
+                        "autoAdvanceMs": 7000,
+                        "slides": [
+                          {
+                            "id": "slide_a",
+                            "imageUrl": "/config/v1/assets/hero_1234567890abcdef",
+                            "heading": "Spotlight",
+                            "subtitle": "Picked for you",
+                            "actionLabel": "Open",
+                            "actionDestination": "collections",
+                            "enabled": true,
+                            "order": 1
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+            """.trimIndent()
+            cache.saveCachedConfig(
+                rawJson = payloadWithRelativeHero,
+                etag = "\"rev-55\"",
+                fetchedAtEpochMs = nowMs - 1_000L,
+                clientVersionCode = 68,
+            )
+
+            val coldStartSnapshot = cache.readCachedConfig(clientVersionCode = 68, nowEpochMs = nowMs)
+            assertNotNull(coldStartSnapshot)
+            val heroUrl = coldStartSnapshot!!.ui.components[0].slides[0].imageUrl
+            assertEquals(
+                "https://laterbox-moviebox-api.vercel.app/config/v1/assets/hero_1234567890abcdef",
+                heroUrl,
+            )
+        } finally {
+            scope.cancel()
+        }
+    }
 }

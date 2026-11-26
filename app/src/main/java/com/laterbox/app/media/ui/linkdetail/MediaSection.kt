@@ -396,6 +396,47 @@ fun MediaSection(
                                 overflow = TextOverflow.Ellipsis
                             )
 
+                            if (!inspectionResult.spotifyTitle.isNullOrBlank()) {
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    if (!inspectionResult.spotifyCoverUrl.isNullOrBlank()) {
+                                        AsyncImage(
+                                            model = inspectionResult.spotifyCoverUrl,
+                                            contentDescription = inspectionResult.spotifyTitle,
+                                            modifier = Modifier
+                                                .size(48.dp)
+                                                .clip(RoundedCornerShape(8.dp)),
+                                            contentScale = ContentScale.Crop
+                                        )
+                                    }
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = inspectionResult.spotifyTitle,
+                                            style = typography.titleSmall,
+                                            color = colors.textPrimary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        val subLine = listOfNotNull(
+                                            inspectionResult.spotifyArtist,
+                                            inspectionResult.spotifyAlbum
+                                        ).joinToString(" • ")
+                                        if (subLine.isNotBlank()) {
+                                            Text(
+                                                text = subLine,
+                                                style = typography.bodySmall,
+                                                color = colors.textSecondary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
                             // Preview candidate if available
                             inspectionResult.previewCandidate?.let { previewCandidate ->
                                 Spacer(modifier = Modifier.height(10.dp))
@@ -1023,7 +1064,21 @@ private fun MusicMatchCard(
                         overflow = TextOverflow.Ellipsis
                     )
                     Spacer(modifier = Modifier.height(4.dp))
-                    MatchConfidenceBadge(confidence = topMatch.confidence, versionTag = topMatch.versionTag)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        MatchConfidenceBadge(confidence = topMatch.confidence, versionTag = topMatch.versionTag)
+                        if (topMatch.sourceDescription.isNotBlank()) {
+                            Text(
+                                text = topMatch.sourceDescription,
+                                style = typography.metaText,
+                                color = colors.textTertiary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
                 }
             }
 

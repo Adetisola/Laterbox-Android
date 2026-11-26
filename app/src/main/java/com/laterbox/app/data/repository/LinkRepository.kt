@@ -260,7 +260,7 @@ class LinkRepository(
         if (relaxed.isNotEmpty()) {
             return relaxed.first().toDomain()
         }
-        return getLatestUnreadLink()
+        return null
     }
 
     suspend fun getLatestUnreadLink(): SavedLink? {

@@ -974,6 +974,19 @@ fun LaterboxApp(
                                 }
                             }
 
+                            val localContext = androidx.compose.ui.platform.LocalContext.current
+                            val localToastController = com.laterbox.app.ui.components.LocalLaterboxToastController.current
+                            LaunchedEffect(chatViewModel) {
+                                chatViewModel.ttsErrorEvents.collect { errorMsg ->
+                                    com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
+                                        context = localContext,
+                                        message = errorMsg,
+                                        variant = com.laterbox.app.ui.components.LaterboxToastVariant.WARNING,
+                                        controller = localToastController
+                                    )
+                                }
+                            }
+
                             ChatScreen(
                                 uiState = chatUiState,
                                 onMenuClick = openMenuHandler,
@@ -984,6 +997,7 @@ fun LaterboxApp(
                                 onSendMessage = { chatViewModel.sendCurrentMessage() },
                                 onStopStreaming = { chatViewModel.cancelStreaming() },
                                 onRetryMessage = { msgId -> chatViewModel.retryMessage(msgId) },
+                                onReadAloudClick = { msgId, content -> chatViewModel.toggleReadAloud(msgId, content) },
                                 onQuickPromptClick = { prompt -> chatViewModel.sendMessage(prompt) },
                                 onActionClick = { action ->
                                     when (action) {

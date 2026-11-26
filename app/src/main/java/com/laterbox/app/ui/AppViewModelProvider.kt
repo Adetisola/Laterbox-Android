@@ -104,6 +104,7 @@ object AppViewModelProvider {
                 reminderScheduler = app.container.reminderScheduler,
                 backendAiClient = app.container.backendAiClient,
                 analyticsTracker = app.container.analyticsTracker,
+                applicationContext = app.applicationContext,
                 isAssistantRemotePaused = {
                     val rc = app.container.remoteConfigManager.currentConfig
                     rc.maintenance.isOnlineServicesPaused ||

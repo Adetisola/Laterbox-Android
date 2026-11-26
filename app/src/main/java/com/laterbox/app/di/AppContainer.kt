@@ -447,7 +447,9 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             .callTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
             .build()
         val versionCode = com.laterbox.app.BuildConfig.VERSION_CODE
-        val cache = com.laterbox.app.remoteconfig.RemoteConfigCache(context.applicationContext)
+        val cache = com.laterbox.app.remoteconfig.RemoteConfigCache(context.applicationContext) {
+            resolveBackendBaseUrl()
+        }
         val client = com.laterbox.app.remoteconfig.RemoteConfigClient(
             okHttpClient = rcOkHttp,
             baseUrlProvider = { resolveBackendBaseUrl() },
