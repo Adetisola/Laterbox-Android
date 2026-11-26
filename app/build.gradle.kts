@@ -76,8 +76,8 @@ android {
         minSdk = 26
         buildConfigField("boolean", "ENABLE_JANK_STATS", "false")
         targetSdk = 35
-        versionCode = System.getenv("VERSION_CODE")?.toIntOrNull() ?: 83
-        versionName = System.getenv("VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "1.0.83"
+        versionCode = System.getenv("VERSION_CODE")?.toIntOrNull() ?: 84
+        versionName = System.getenv("VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "1.0.84"
 
         val embeddedKey = resolveGeminiApiKey(project)
         buildConfigField("String", "EMBEDDED_GEMINI_API_KEY", "\"${escapeBuildConfigString(embeddedKey)}\"")
