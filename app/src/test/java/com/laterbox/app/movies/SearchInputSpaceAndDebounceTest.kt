@@ -1,17 +1,26 @@
 package com.laterbox.app.movies
 
 import android.content.Context
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextInputSelection
+import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.text.TextRange
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.test.core.app.ApplicationProvider
@@ -722,5 +731,182 @@ class SearchInputSpaceAndDebounceTest {
         composeTestRule.waitForIdle()
         input.assertTextEquals("the")
         assertEquals("the", queryFlow.value)
+    }
+
+    @Test
+    fun `catalogue search with real viewModel backspaces 'the matrix' through space until empty`() {
+        val repo = object : StubRepo() {
+            override fun observeRecentSearches(limit: Int): Flow<List<String>> =
+                flowOf(listOf("inception", "dark knight"))
+        }
+        val vm = MoviesCatalogueViewModel(repo)
+
+        composeTestRule.setContent {
+            val state by vm.uiState.collectAsState()
+            LaterboxTheme {
+                MoviesCatalogueScreen(
+                    uiState = state,
+                    onBackClick = {},
+                    onQueryChange = vm::onQueryChange,
+                    onSearchFocusChange = vm::onSearchFocusChange,
+                    onSubmitSearch = vm::submitSearch,
+                    onClearSearch = vm::clearSearch,
+                    onSelectKind = vm::selectKind,
+                    onSelectGenre = vm::selectGenre,
+                    onSelectSort = vm::selectSort,
+                    onLoadNextPage = vm::loadNextPage,
+                    onRetry = vm::retry,
+                    onClearSearchHistory = vm::clearSearchHistory,
+                    onOpenDetail = { _, _ -> },
+                    autoFocusSearch = true
+                )
+            }
+        }
+
+        val input = composeTestRule.onNodeWithTag("catalogue_search_input")
+        input.performClick()
+        input.performTextInput("the matrix")
+        composeTestRule.waitForIdle()
+        assertEquals("the matrix", vm.uiState.value.query)
+
+        input.performTextInputSelection(TextRange("the matrix".length))
+        composeTestRule.waitForIdle()
+        repeat("the matrix".length) {
+            input.performKeyInput { pressKey(Key.Backspace) }
+            composeTestRule.waitForIdle()
+        }
+
+        assertEquals("", vm.uiState.value.query)
+        input.assertTextEquals("")
+    }
+
+    @Test
+    fun `catalogue search with real viewModel backspaces space directly in front of cursor`() {
+        val repo = object : StubRepo() {
+            override fun observeRecentSearches(limit: Int): Flow<List<String>> =
+                flowOf(listOf("inception"))
+        }
+        val vm = MoviesCatalogueViewModel(repo)
+
+        composeTestRule.setContent {
+            val state by vm.uiState.collectAsState()
+            LaterboxTheme {
+                MoviesCatalogueScreen(
+                    uiState = state,
+                    onBackClick = {},
+                    onQueryChange = vm::onQueryChange,
+                    onSearchFocusChange = vm::onSearchFocusChange,
+                    onSubmitSearch = vm::submitSearch,
+                    onClearSearch = vm::clearSearch,
+                    onSelectKind = vm::selectKind,
+                    onSelectGenre = vm::selectGenre,
+                    onSelectSort = vm::selectSort,
+                    onLoadNextPage = vm::loadNextPage,
+                    onRetry = vm::retry,
+                    onClearSearchHistory = vm::clearSearchHistory,
+                    onOpenDetail = { _, _ -> },
+                    autoFocusSearch = false
+                )
+            }
+        }
+
+        val input = composeTestRule.onNodeWithTag("catalogue_search_input")
+        input.performClick()
+        input.performTextInput("the matrix")
+        composeTestRule.waitForIdle()
+
+        // Place cursor immediately after the space ("the |matrix") and press backspace to delete ' '
+        input.performTextInputSelection(TextRange(4))
+        composeTestRule.waitForIdle()
+        input.performKeyInput { pressKey(Key.Backspace) }
+        composeTestRule.waitForIdle()
+
+        assertEquals("thematrix", vm.uiState.value.query)
+        input.assertTextEquals("thematrix")
+    }
+
+    @Test
+    fun `catalogue search with real viewModel deletes highlighted selection without crashing`() {
+        val repo = object : StubRepo() {
+            override fun observeRecentSearches(limit: Int): Flow<List<String>> =
+                flowOf(listOf("inception"))
+        }
+        val vm = MoviesCatalogueViewModel(repo)
+
+        composeTestRule.setContent {
+            val state by vm.uiState.collectAsState()
+            LaterboxTheme {
+                MoviesCatalogueScreen(
+                    uiState = state,
+                    onBackClick = {},
+                    onQueryChange = vm::onQueryChange,
+                    onSearchFocusChange = vm::onSearchFocusChange,
+                    onSubmitSearch = vm::submitSearch,
+                    onClearSearch = vm::clearSearch,
+                    onSelectKind = vm::selectKind,
+                    onSelectGenre = vm::selectGenre,
+                    onSelectSort = vm::selectSort,
+                    onLoadNextPage = vm::loadNextPage,
+                    onRetry = vm::retry,
+                    onClearSearchHistory = vm::clearSearchHistory,
+                    onOpenDetail = { _, _ -> },
+                    autoFocusSearch = true
+                )
+            }
+        }
+
+        val input = composeTestRule.onNodeWithTag("catalogue_search_input")
+        input.performClick()
+        input.performTextInput("the matrix")
+        composeTestRule.waitForIdle()
+        assertEquals("the matrix", vm.uiState.value.query)
+
+        input.performTextInputSelection(TextRange(0, 3))
+        composeTestRule.waitForIdle()
+        input.performKeyInput { pressKey(Key.Backspace) }
+        composeTestRule.waitForIdle()
+
+        assertEquals(" matrix", vm.uiState.value.query)
+        input.assertTextEquals(" matrix")
+    }
+
+    @Test
+    fun `inboxScreen search backspaces 'the matrix' cleanly through space`() {
+        val inboxQuery = MutableStateFlow("")
+        composeTestRule.setContent {
+            val q by inboxQuery.collectAsState()
+            LaterboxTheme {
+                com.laterbox.app.ui.inbox.InboxScreen(
+                    uiState = com.laterbox.app.ui.inbox.InboxUiState(
+                        isLoading = false,
+                        searchQuery = q
+                    ),
+                    onSearchQueryChange = { inboxQuery.value = it },
+                    onClearSearch = { inboxQuery.value = "" },
+                    onFilterContentType = {},
+                    onFilterDateRange = {},
+                    onLinkClick = {},
+                    onQuickOpenClick = {},
+                    onAddLinkClick = {},
+                    onSettingsClick = {},
+                    onToggleViewMode = {},
+                    onRefresh = {},
+                    onCompleteOnboarding = {},
+                    onToggleRead = {},
+                    onArchive = {},
+                    onDelete = {}
+                )
+            }
+        }
+        val inboxInput = composeTestRule.onNode(androidx.compose.ui.test.hasSetTextAction())
+        inboxInput.performClick()
+        inboxInput.performTextInput("the matrix")
+        composeTestRule.waitForIdle()
+        inboxInput.performTextInputSelection(TextRange("the matrix".length))
+        repeat("the matrix".length) {
+            inboxInput.performKeyInput { pressKey(Key.Backspace) }
+            composeTestRule.waitForIdle()
+        }
+        assertEquals("", inboxQuery.value)
     }
 }
