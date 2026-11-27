@@ -52,6 +52,7 @@ fun AboutPrivacySettingsScreen(
     localMetrics: LocalLibraryMetrics? = null,
     onResetActivityCounters: (() -> Unit)? = null,
     onResetAnalyticsInstallId: (() -> Unit)? = null,
+    onOpenPersonalizationPrivacy: (() -> Unit)? = null,
 ) {
     val colors = LaterboxTheme.colors
     val spacing = LaterboxTheme.spacing
@@ -82,6 +83,7 @@ fun AboutPrivacySettingsScreen(
                 localMetrics = localMetrics,
                 onResetActivityCounters = onResetActivityCounters,
                 onResetAnalyticsInstallId = onResetAnalyticsInstallId,
+                onOpenPersonalizationPrivacy = onOpenPersonalizationPrivacy,
             )
 
             Spacer(modifier = Modifier.height(80.dp))
@@ -99,6 +101,7 @@ fun AboutLaterboxSection(
     localMetrics: LocalLibraryMetrics? = null,
     onResetActivityCounters: (() -> Unit)? = null,
     onResetAnalyticsInstallId: (() -> Unit)? = null,
+    onOpenPersonalizationPrivacy: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -341,6 +344,17 @@ fun AboutLaterboxSection(
                         style = typography.bodySecondary,
                         color = colors.textSecondary
                     )
+                    if (onOpenPersonalizationPrivacy != null) {
+                        SettingsDivider()
+                        LaterboxSecondaryButton(
+                            text = "Personalization & Taste Model",
+                            onClick = {
+                                showPrivacyRightsDialog = false
+                                onOpenPersonalizationPrivacy()
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                     if (onResetAnalyticsInstallId != null) {
                         SettingsDivider()
                         LaterboxSecondaryButton(

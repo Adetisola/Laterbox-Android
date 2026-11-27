@@ -28,6 +28,7 @@ import com.laterbox.app.movies.domain.model.SeasonSummary
 import com.laterbox.app.movies.domain.model.SubtitleTrack
 import com.laterbox.app.movies.domain.repository.MoviesRepository
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -336,5 +337,98 @@ class ContextualNotificationEngineTest {
         assertTrue(engine.maybeNotifyMoviesAndTv(nowMs = now, currentHour = 14))
         val events = activityRepo.getRecentEvents(10)
         assertTrue(events.any { it.title.contains("His Girl Friday") })
+    }
+
+    @Test
+    fun remoteGovernorKillSwitch_blocksTier3ProactiveNudgesWhileTier1ManualReminderRemainsAllowed() = runTest {
+        prefsRepo.recordMoviesNotificationPosted(0L)
+        val now = 4_500_000_000_000L
+        db.moviesDao().insertWatchlistItem(
+            MovieWatchlistEntity(
+                compositeId = "ia:test_film",
+                providerId = "ia",
+                titleId = "test_film",
+                kind = "movie",
+                title = "Metropolis",
+                posterUrl = null,
+                backdropUrl = null,
+                releaseYear = 1927,
+                rating = 8.3,
+                genresCsv = "Sci-Fi",
+                summary = null,
+                sourceBadge = "OPEN_ARCHIVE",
+                isPlayableHint = true,
+                addedAt = now - ContextualNotificationEngine.WATCHLIST_NUDGE_AGE_MS - 60_000L
+            )
+        )
+        prefsRepo.setSmartRemindersEnabled(true)
+        prefsRepo.setSmartNotificationsMoviesTv(true)
+        prefsRepo.setQuietHoursEnabled(true)
+        prefsRepo.setQuietHoursWindow(22, 8)
+
+        val rcServer = okhttp3.mockwebserver.MockWebServer()
+        rcServer.enqueue(
+            okhttp3.mockwebserver.MockResponse()
+                .setResponseCode(200)
+                .addHeader("Content-Type", "application/json")
+                .setBody(
+                    """
+                    {
+                      "schemaVersion": 1,
+                      "revision": 3,
+                      "publishedAt": "2026-11-27T10:00:00Z",
+                      "maintenance": { "enabled": false, "mode": "none" },
+                      "features": { "contextual_notification_governor_enabled": false }
+                    }
+                    """.trimIndent()
+                )
+        )
+        rcServer.start()
+        try {
+            val baseUrl = rcServer.url("/").toString().trimEnd('/')
+            val ds = androidx.datastore.preferences.core.PreferenceDataStoreFactory.create(
+                produceFile = { java.io.File(context.cacheDir, "rc_notif_test_${System.nanoTime()}.preferences_pb") }
+            )
+            val rcManager = com.laterbox.app.remoteconfig.RemoteConfigManager(
+                repository = com.laterbox.app.remoteconfig.RemoteConfigRepository(
+                    cache = com.laterbox.app.remoteconfig.RemoteConfigCache(ds) { baseUrl },
+                    client = com.laterbox.app.remoteconfig.RemoteConfigClient(
+                        okHttpClient = okhttp3.OkHttpClient(),
+                        baseUrlProvider = { baseUrl },
+                        appCheckTokenProvider = { null },
+                        clientVersionCode = 84,
+                        clientVersionName = "1.0.84"
+                    ),
+                    clientVersionCode = 84
+                )
+            )
+            rcManager.refreshNow()
+
+            val governor = NotificationGovernor(prefsRepo)
+            val gatedEngine = ContextualNotificationEngine(
+                appContext = context,
+                database = db,
+                userPreferencesRepository = prefsRepo,
+                activityEventRepository = activityRepo,
+                appHealthChecker = healthChecker,
+                notificationGovernor = governor,
+                remoteConfigManager = rcManager
+            )
+
+            assertFalse(gatedEngine.maybeSendContextualSummaryOrTip(nowMs = now, currentHour = 14))
+            assertFalse(gatedEngine.maybeNotifyMoviesAndTv(nowMs = now, currentHour = 14))
+
+            // Tier-1 explicit scheduled reminder remains allowed even during quiet hours and regardless of Tier-3 switch
+            val prefs = prefsRepo.userPreferencesFlow.first()
+            val tier1 = governor.evaluate(
+                category = NotificationCategory.MANUAL_LINK_REMINDER,
+                prefs = prefs,
+                nowMs = now,
+                currentHour = 23
+            )
+            assertTrue(tier1 is GovernorDecision.Allow)
+        } finally {
+            rcServer.shutdown()
+        }
     }
 }

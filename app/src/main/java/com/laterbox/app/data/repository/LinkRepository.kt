@@ -37,7 +37,8 @@ class LinkRepository(
     private val savedLinkDao: SavedLinkDao,
     private val appContext: Context? = null,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
-    private val reminderScheduler: com.laterbox.app.reminders.ReminderScheduler? = null
+    private val reminderScheduler: com.laterbox.app.reminders.ReminderScheduler? = null,
+    private val intelligenceSignalLogger: com.laterbox.app.intelligence.IntelligenceSignalLogger? = null
 ) {
 
     private val saveMutex = Mutex()
@@ -177,6 +178,19 @@ class LinkRepository(
                         title = "Saved $resolvedTitle",
                         detail = domain,
                         linkId = linkId
+                    )
+                } catch (_: Throwable) {}
+                try {
+                    val savedWithCols = savedLinkDao.getLinkById(linkId).first()
+                    val colNames = savedWithCols?.collections?.map { it.name }.orEmpty()
+                    intelligenceSignalLogger?.logLinkSaved(
+                        linkId = linkId,
+                        url = trimmedUrl,
+                        domain = domain,
+                        title = savedWithCols?.link?.title ?: resolvedTitle,
+                        description = savedWithCols?.link?.description,
+                        contentType = savedWithCols?.link?.contentType ?: contentType,
+                        collectionNames = colNames
                     )
                 } catch (_: Throwable) {}
                 try {
@@ -629,6 +643,13 @@ class LinkRepository(
             savedLinkDao.insertLinkCollectionCrossRef(
                 com.laterbox.app.data.local.entity.LinkCollectionCrossRef(linkId, collectionId)
             )
+            runCatching {
+                val link = savedLinkDao.getLinkById(linkId).first()?.toDomain()
+                if (link != null) {
+                    val colName = link.collectionNames.firstOrNull()
+                    intelligenceSignalLogger?.logLinkCollectionAdded(link, colName)
+                }
+            }
         }
     }
 
@@ -684,11 +705,27 @@ class LinkRepository(
 
     suspend fun setRead(id: Long, isRead: Boolean) {
         savedLinkDao.setRead(id, isRead)
+        if (isRead) {
+            runCatching {
+                savedLinkDao.getLinkById(id).first()?.toDomain()?.let { link ->
+                    intelligenceSignalLogger?.logLinkRead(link)
+                }
+            }
+        }
     }
 
     suspend fun setReadBatch(ids: Collection<Long>, isRead: Boolean) {
         if (ids.isEmpty()) return
         savedLinkDao.setReadBatch(ids.toList(), isRead)
+        if (isRead && intelligenceSignalLogger != null) {
+            runCatching {
+                ids.take(10).forEach { id ->
+                    savedLinkDao.getLinkById(id).first()?.toDomain()?.let { link ->
+                        intelligenceSignalLogger?.logLinkRead(link)
+                    }
+                }
+            }
+        }
     }
 
     private fun SavedLinkWithCollection.toDomain(): SavedLink {

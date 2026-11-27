@@ -1,5 +1,10 @@
 package com.laterbox.app.movies
 
+import com.laterbox.app.data.local.entity.IntelligenceSignalEntity
+import com.laterbox.app.data.local.entity.IntelligenceSurfaceScope
+import com.laterbox.app.data.local.entity.TasteFacetType
+import com.laterbox.app.data.local.entity.UserTasteFacetEntity
+import com.laterbox.app.movies.domain.engine.IntelligenceDiscoveryProfile
 import com.laterbox.app.movies.domain.engine.MoviesDiscoveryEngine
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
@@ -197,5 +202,131 @@ class MoviesDiscoveryEngineTest {
         assertNotNull(surprise)
         assertEquals("moviebox", surprise!!.pick.providerId)
         assertEquals("mb_bb", surprise.pick.id)
+    }
+
+    private fun testFacet(
+        key: String,
+        label: String,
+        type: TasteFacetType,
+        score: Double = 0.85,
+        scope: IntelligenceSurfaceScope = IntelligenceSurfaceScope.MOVIES,
+        suppressed: Boolean = false
+    ) = UserTasteFacetEntity(
+        facetKey = key,
+        facetType = type.name,
+        surfaceScope = scope.name,
+        displayLabel = label,
+        score = score,
+        confidence = 0.9,
+        provenance = "Test evidence",
+        evidenceSummary = "Test summary",
+        includeInAssistantContext = false,
+        isSuppressedByUser = suppressed,
+        firstObservedAtMs = 1000L,
+        lastReinforcedAtMs = 2000L,
+        expiresAtMs = null
+    )
+
+    @Test
+    fun buildPersonalizedForYouRail_demotesDislikesAppliesMmrDiversityAndExplainsWhy() {
+        val sciFi1 = sampleTitle("sf1", "Orbital Drift", genres = listOf("Sci-Fi"), rating = 8.4)
+        val sciFi2 = sampleTitle("sf2", "Quantum Echo", genres = listOf("Sci-Fi"), rating = 8.3)
+        val sciFi3 = sampleTitle("sf3", "Nebula Gate", genres = listOf("Sci-Fi"), rating = 8.2)
+        val doc1 = sampleTitle("doc1", "Deep Ocean", genres = listOf("Documentary"), rating = 8.0)
+        val horrorDisliked = sampleTitle("hor1", "Midnight Haunt", genres = listOf("Horror"), rating = 9.5)
+
+        val profile = IntelligenceDiscoveryProfile(
+            enabled = true,
+            facets = listOf(
+                testFacet("genre:sci_fi", "Sci-Fi", TasteFacetType.EXPLICIT_LIKE, score = 0.95),
+                testFacet("genre:documentary", "Documentary", TasteFacetType.ENDURING_INTEREST, score = 0.80),
+                testFacet("genre:horror", "Horror", TasteFacetType.EXPLICIT_DISLIKE, score = 0.90)
+            )
+        )
+
+        val picks = MoviesDiscoveryEngine.buildPersonalizedForYouRail(
+            watchHistory = emptyList(),
+            watchlist = emptyList(),
+            candidatePool = listOf(horrorDisliked, sciFi1, sciFi2, sciFi3, doc1),
+            profile = profile,
+            maxItems = 3
+        )
+
+        // Disliked genre excluded despite high rating
+        assertFalse(picks.any { it.item.id == "hor1" })
+        // Top pick matches pinned Sci-Fi with explicit rationale
+        assertEquals("sf1", picks.first().item.id)
+        assertTrue(picks.first().rationale.contains("Sci-Fi"))
+        // MMR promotes Documentary alongside Sci-Fi within top 3 instead of 3 pure Sci-Fi duplicates
+        assertTrue(picks.any { it.item.id == "doc1" })
+    }
+
+    @Test
+    fun personalizedDiscovery_usesMediaOnlyInboxCuesAndIgnoresGeneralArticleTopics() {
+        val thriller = sampleTitle("thr1", "Zero Signal", genres = listOf("Thriller"), rating = 7.6)
+        val sciFi = sampleTitle("sf1", "Starlight", genres = listOf("Sci-Fi"), rating = 7.6)
+
+        val explicitTrailerSignal = IntelligenceSignalEntity(
+            id = 1L,
+            signalType = "LINK_SAVE",
+            surfaceScope = IntelligenceSurfaceScope.ALL.name,
+            targetKey = "link:10",
+            topicsCsv = "topic:cinema_tv,genre:sci_fi,kind:movie",
+            isMediaCue = true,
+            strength = 0.85,
+            createdAtMs = 5000L
+        )
+        val generalArticleNoise = IntelligenceSignalEntity(
+            id = 2L,
+            signalType = "LINK_SAVE",
+            surfaceScope = IntelligenceSurfaceScope.LIBRARY.name,
+            targetKey = "link:11",
+            topicsCsv = "genre:thriller,topic:technology",
+            isMediaCue = false, // General web article, MUST NOT cross over to Movies!
+            strength = 0.95,
+            createdAtMs = 5500L
+        )
+
+        val picks = MoviesDiscoveryEngine.buildPersonalizedForYouRail(
+            watchHistory = emptyList(),
+            watchlist = emptyList(),
+            candidatePool = listOf(thriller, sciFi),
+            profile = IntelligenceDiscoveryProfile(
+                enabled = true,
+                facets = emptyList(),
+                recentMediaCues = listOf(explicitTrailerSignal, generalArticleNoise)
+            )
+        )
+
+        assertEquals(listOf("sf1"), picks.map { it.item.id })
+        assertTrue(picks.first().rationale.contains("saved media links"))
+    }
+
+    @Test
+    fun personalizedDiscovery_sessionExposureCooldownRotatesRepeatedCardsAndPauseDisablesRail() {
+        val first = sampleTitle("a1", "Alpha", genres = listOf("Sci-Fi"), rating = 8.0)
+        val second = sampleTitle("a2", "Beta", genres = listOf("Sci-Fi"), rating = 7.9)
+
+        val facet = testFacet("genre:sci_fi", "Sci-Fi", TasteFacetType.ENDURING_INTEREST, score = 0.9)
+
+        val rotated = MoviesDiscoveryEngine.buildPersonalizedForYouRail(
+            watchHistory = emptyList(),
+            watchlist = emptyList(),
+            candidatePool = listOf(first, second),
+            profile = IntelligenceDiscoveryProfile(
+                enabled = true,
+                facets = listOf(facet),
+                sessionExposureCounts = mapOf(first.stableMediaKey to 3)
+            )
+        )
+        assertEquals("a2", rotated.first().item.id)
+
+        val paused = MoviesDiscoveryEngine.buildPersonalizedForYouRail(
+            watchHistory = emptyList(),
+            watchlist = emptyList(),
+            candidatePool = listOf(first, second),
+            profile = IntelligenceDiscoveryProfile(enabled = false, facets = listOf(facet))
+        )
+        assertTrue(paused.isEmpty())
     }
 }

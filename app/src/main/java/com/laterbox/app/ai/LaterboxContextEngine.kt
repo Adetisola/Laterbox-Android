@@ -8,6 +8,7 @@ import com.laterbox.app.data.local.entity.SavedLinkWithCollection
 import com.laterbox.app.data.preferences.UserPreferencesRepository
 import com.laterbox.app.data.repository.ActivityEventRepository
 import com.laterbox.app.diagnostics.AppHealthChecker
+import com.laterbox.app.intelligence.UserUnderstandingRepository
 import com.laterbox.app.media.data.adapters.ytdlp.QuickJsHelper
 import com.laterbox.app.media.data.adapters.ytdlp.YtDlpInitState
 import com.laterbox.app.media.data.adapters.ytdlp.YtDlpRuntimeManager
@@ -32,7 +33,8 @@ class LaterboxContextEngine(
     private val appHealthChecker: AppHealthChecker? = null,
     private val ytDlpRuntimeManager: YtDlpRuntimeManager? = null,
     private val appContext: Context? = null,
-    private val remoteConfigManager: RemoteConfigManager? = null
+    private val remoteConfigManager: RemoteConfigManager? = null,
+    private val userUnderstandingRepository: UserUnderstandingRepository? = null
 ) {
 
     suspend fun buildContextForPrompt(prompt: String): BuiltAssistantContext = withContext(Dispatchers.IO) {
@@ -232,6 +234,7 @@ class LaterboxContextEngine(
         val remotePlayerIntroSkip = rc?.isFeatureEnabled(RemoteCapabilities.KEY_PLAYER_INTRO_SKIP) ?: true
         val remoteAssistantEnabled = rc?.isFeatureEnabled(RemoteCapabilities.KEY_AI_ASSISTANT) ?: true
         val remoteSmartRemindersEnabled = rc?.isFeatureEnabled(RemoteCapabilities.KEY_SMART_REMINDERS) ?: true
+        val remoteExperienceIntelligence = rc?.isFeatureEnabled(RemoteCapabilities.KEY_EXPERIENCE_INTELLIGENCE) ?: true
 
         val activeProviderNames = buildList {
             if (remoteProviderMoviebox) add("Live Streaming Catalogue")
@@ -276,6 +279,33 @@ class LaterboxContextEngine(
             playerIntroSkipEnabled = remotePlayerIntroSkip
         )
         val evaluatedCapabilities = AppCapabilityRegistry.evaluateCapabilities(capabilitySnapshot)
+        val asksAboutAllCapabilities = listOf(
+            "what can you", "capabilit", "all features", "what does laterbox", "support", "help"
+        ).any { lowerPrompt.contains(it) }
+        val scopedCapabilities = if (asksAboutAllCapabilities) {
+            evaluatedCapabilities
+        } else {
+            val selected = evaluatedCapabilities.filter { item ->
+                item.status != CapabilityAvailability.SUPPORTED ||
+                    keywords.any { kw ->
+                        item.title.contains(kw, ignoreCase = true) ||
+                            item.section.contains(kw, ignoreCase = true) ||
+                            item.id.contains(kw, ignoreCase = true) ||
+                            item.description.contains(kw, ignoreCase = true)
+                    }
+            }
+            selected.ifEmpty { evaluatedCapabilities.take(3) }
+        }
+        val optInTasteSummary = if (
+            prefs.personalizationEnabled &&
+            prefs.assistantPersonalContextEnabled &&
+            remoteExperienceIntelligence
+        ) {
+            runCatching { userUnderstandingRepository?.buildPrivacySafeAssistantSummary().orEmpty() }
+                .getOrDefault("")
+        } else {
+            ""
+        }
 
         val asksForDeepContent = listOf(
             "transcript", "caption", "full article", "summarize the video", "what did they say",
@@ -298,6 +328,9 @@ class LaterboxContextEngine(
             if (prefs.userName.isNotBlank()) {
                 appendLine("User name: ${sanitize(prefs.userName, 40)}")
             }
+            if (optInTasteSummary.isNotBlank()) {
+                appendLine("On-Device Taste Profile: ${sanitize(optInTasteSummary, 240)}")
+            }
             appendLine(
                 "Library summary: $inboxCount inbox links, $archivedCount archived links, " +
                     "${collectionsList.size} collections (${collectionMedia.size} Movies & TV items), $downloadedAssetCount downloaded media files " +
@@ -313,7 +346,11 @@ class LaterboxContextEngine(
             appendLine()
             appendLine(AppCapabilityRegistry.formatLiveCapabilitiesBlock(capabilitySnapshot))
             appendLine()
-            appendLine(AppCapabilityRegistry.formatEvaluatedCapabilitiesBlock(evaluatedCapabilities))
+            appendLine(AppCapabilityRegistry.formatEvaluatedCapabilitiesBlock(scopedCapabilities))
+            val omittedCount = evaluatedCapabilities.size - scopedCapabilities.size
+            if (omittedCount > 0) {
+                appendLine("- ($omittedCount additional capabilities are SUPPORTED and available.)")
+            }
 
             if (healthReport != null) {
                 appendLine()
@@ -573,9 +610,9 @@ class LaterboxContextEngine(
     companion object {
         private val EXPLICIT_COLLECTION_LIST_REGEX = Regex(
             pattern = "\\b(?:" +
-                "(?:my|all|existing|saved|custom|available|current)\\s+collections" +
-                "|(?:list|show|view|see|get|display|name|names\\s+of|browse|check|open|find)\\s+(?:all\\s+)?(?:my\\s+|the\\s+)?collections" +
-                "|(?:what|which)\\s+(?:collections|are\\s+(?:my|the)\\s+collections)" +
+                "(?:my|all|existing|saved|custom|available|current)\\s+collections(?!\\s+(?:work|works|feature|features|settings?|sync|backup|privacy|help|guide|tab|screen|do|mean)\\b)" +
+                "|(?:list|show|view|see|get|display|name|names\\s+of|browse|check|open|find)\\s+(?:all\\s+)?(?:my\\s+|the\\s+)?collections(?!\\s+(?:settings?|help|guide|feature|features|work|works|tab|screen)\\b)" +
+                "|(?:what|which)\\s+(?:collections|are\\s+(?:my|the)\\s+collections)(?!\\s+(?:work|works|do|mean|settings?|feature|features)\\b)" +
                 "|collections?\\s+(?:list|names?|inventory)" +
                 "|collection\\s+names?" +
                 ")\\b",

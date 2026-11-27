@@ -10,14 +10,17 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import com.laterbox.app.data.local.dao.ActivityEventDao
 import com.laterbox.app.data.local.dao.ChatDao
 import com.laterbox.app.data.local.dao.CollectionDao
+import com.laterbox.app.data.local.dao.IntelligenceDao
 import com.laterbox.app.data.local.dao.NotificationHistoryDao
 import com.laterbox.app.data.local.dao.SavedLinkDao
 import com.laterbox.app.data.local.entity.ActivityEventEntity
 import com.laterbox.app.data.local.entity.ChatConversationEntity
 import com.laterbox.app.data.local.entity.ChatMessageEntity
 import com.laterbox.app.data.local.entity.CollectionEntity
+import com.laterbox.app.data.local.entity.IntelligenceSignalEntity
 import com.laterbox.app.data.local.entity.NotificationHistoryEntity
 import com.laterbox.app.data.local.entity.SavedLinkEntity
+import com.laterbox.app.data.local.entity.UserTasteFacetEntity
 import com.laterbox.app.media.data.db.dao.DownloadPlaybackProgressDao
 import com.laterbox.app.media.data.db.dao.DownloadedAssetDao
 import com.laterbox.app.media.data.db.dao.DownloadTaskDao
@@ -63,9 +66,11 @@ import com.laterbox.app.movies.data.local.entity.MovieWatchlistEntity
         MediaCollectionCrossRef::class,
         MovieViewingReminderEntity::class,
         HiddenTitleEntity::class,
-        DownloadPlaybackProgressEntity::class
+        DownloadPlaybackProgressEntity::class,
+        UserTasteFacetEntity::class,
+        IntelligenceSignalEntity::class
     ],
-    version = 21,
+    version = 22,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -81,6 +86,7 @@ abstract class LaterboxDatabase : RoomDatabase() {
     abstract fun activityEventDao(): ActivityEventDao
     abstract fun moviesDao(): MoviesDao
     abstract fun downloadPlaybackProgressDao(): DownloadPlaybackProgressDao
+    abstract fun intelligenceDao(): IntelligenceDao
 
     companion object {
         private const val DATABASE_NAME = "laterbox.db"
@@ -1023,6 +1029,55 @@ abstract class LaterboxDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_21_22 = object : Migration(21, 22) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `user_taste_facets` (
+                        `facet_key` TEXT NOT NULL,
+                        `facet_type` TEXT NOT NULL,
+                        `surface_scope` TEXT NOT NULL,
+                        `display_label` TEXT NOT NULL,
+                        `score` REAL NOT NULL,
+                        `confidence` REAL NOT NULL,
+                        `provenance` TEXT NOT NULL,
+                        `evidence_summary` TEXT NOT NULL,
+                        `include_in_assistant_context` INTEGER NOT NULL DEFAULT 0,
+                        `is_suppressed_by_user` INTEGER NOT NULL DEFAULT 0,
+                        `first_observed_at_ms` INTEGER NOT NULL,
+                        `last_reinforced_at_ms` INTEGER NOT NULL,
+                        `expires_at_ms` INTEGER,
+                        PRIMARY KEY(`facet_key`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_user_taste_facets_surface_scope` ON `user_taste_facets` (`surface_scope`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_user_taste_facets_facet_type` ON `user_taste_facets` (`facet_type`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_user_taste_facets_last_reinforced_at_ms` ON `user_taste_facets` (`last_reinforced_at_ms`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_user_taste_facets_expires_at_ms` ON `user_taste_facets` (`expires_at_ms`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_user_taste_facets_is_suppressed_by_user` ON `user_taste_facets` (`is_suppressed_by_user`)")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `intelligence_signals` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `signal_type` TEXT NOT NULL,
+                        `surface_scope` TEXT NOT NULL,
+                        `target_key` TEXT NOT NULL,
+                        `topics_csv` TEXT NOT NULL,
+                        `is_media_cue` INTEGER NOT NULL DEFAULT 0,
+                        `strength` REAL NOT NULL DEFAULT 1.0,
+                        `created_at_ms` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_intelligence_signals_created_at_ms` ON `intelligence_signals` (`created_at_ms`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_intelligence_signals_signal_type` ON `intelligence_signals` (`signal_type`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_intelligence_signals_surface_scope` ON `intelligence_signals` (`surface_scope`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_intelligence_signals_is_media_cue` ON `intelligence_signals` (`is_media_cue`)")
+            }
+        }
+
         @Volatile
         private var INSTANCE: LaterboxDatabase? = null
 
@@ -1053,7 +1108,8 @@ abstract class LaterboxDatabase : RoomDatabase() {
                         MIGRATION_17_18,
                         MIGRATION_18_19,
                         MIGRATION_19_20,
-                        MIGRATION_20_21
+                        MIGRATION_20_21,
+                        MIGRATION_21_22
                     )
                     .build()
                     .also { INSTANCE = it }

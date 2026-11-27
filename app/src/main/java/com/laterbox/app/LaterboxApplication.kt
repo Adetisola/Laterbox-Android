@@ -163,6 +163,7 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
 
                 container.appStorageManager.runMaintenanceCleanup()
                 com.laterbox.app.storage.StorageMaintenanceWorker.enqueuePeriodic(this@LaterboxApplication)
+                runCatching { container.userUnderstandingRepository.bootstrapFromExistingLibraryIfNeeded() }
 
                 try {
                     val currentVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: "1.0.0"

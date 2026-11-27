@@ -18,6 +18,7 @@ class StorageMaintenanceWorker(
         val app = applicationContext as? LaterboxApplication ?: return Result.success()
         return runCatching {
             app.container.appStorageManager.runMaintenanceCleanup()
+            app.container.userUnderstandingRepository.runDailyMaintenance()
             Result.success()
         }.getOrElse {
             Result.retry()

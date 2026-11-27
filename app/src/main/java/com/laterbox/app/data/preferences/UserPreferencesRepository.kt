@@ -209,7 +209,10 @@ data class UserPreferences(
     val tier3DailyCount: Int = 0,
     val lastTier3NotificationAt: Long = 0L,
     val tier3CategoryBackoffUntil: Set<String> = emptySet(),
-    val tier3SwipeStreak: Set<String> = emptySet()
+    val tier3SwipeStreak: Set<String> = emptySet(),
+    val personalizationEnabled: Boolean = true,
+    val assistantPersonalContextEnabled: Boolean = false,
+    val personalizationBootstrapped: Boolean = false
 ) {
     val allowSystemBackup: Boolean get() = includeInBackup
 
@@ -395,6 +398,9 @@ class UserPreferencesRepository(
         val LAST_TIER3_NOTIFICATION_AT = longPreferencesKey("last_tier3_notif_at")
         val TIER3_CATEGORY_BACKOFF_UNTIL = stringSetPreferencesKey("tier3_cat_backoff_until")
         val TIER3_SWIPE_STREAK = stringSetPreferencesKey("tier3_swipe_streak")
+        val PERSONALIZATION_ENABLED = booleanPreferencesKey("personalization_enabled")
+        val ASSISTANT_PERSONAL_CONTEXT_ENABLED = booleanPreferencesKey("assistant_personal_context_enabled")
+        val PERSONALIZATION_BOOTSTRAPPED = booleanPreferencesKey("personalization_bootstrapped")
     }
 
     val userPreferencesFlow: Flow<UserPreferences> = dataStore.data.map { preferences ->
@@ -625,7 +631,10 @@ class UserPreferencesRepository(
             tier3DailyCount = (preferences[PreferencesKeys.TIER3_DAILY_COUNT] ?: 0).coerceAtLeast(0),
             lastTier3NotificationAt = preferences[PreferencesKeys.LAST_TIER3_NOTIFICATION_AT] ?: 0L,
             tier3CategoryBackoffUntil = preferences[PreferencesKeys.TIER3_CATEGORY_BACKOFF_UNTIL] ?: emptySet(),
-            tier3SwipeStreak = preferences[PreferencesKeys.TIER3_SWIPE_STREAK] ?: emptySet()
+            tier3SwipeStreak = preferences[PreferencesKeys.TIER3_SWIPE_STREAK] ?: emptySet(),
+            personalizationEnabled = preferences[PreferencesKeys.PERSONALIZATION_ENABLED] ?: true,
+            assistantPersonalContextEnabled = preferences[PreferencesKeys.ASSISTANT_PERSONAL_CONTEXT_ENABLED] ?: false,
+            personalizationBootstrapped = preferences[PreferencesKeys.PERSONALIZATION_BOOTSTRAPPED] ?: false
         )
     }
 
@@ -1322,6 +1331,24 @@ class UserPreferencesRepository(
             preferences.remove(PreferencesKeys.LAST_TIP_NOTIFICATION_AT)
             preferences.remove(PreferencesKeys.LAST_SUMMARY_NOTIFICATION_AT)
             preferences.remove(PreferencesKeys.LAST_MOVIES_NOTIFICATION_AT)
+        }
+    }
+
+    suspend fun setPersonalizationEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PERSONALIZATION_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setAssistantPersonalContextEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.ASSISTANT_PERSONAL_CONTEXT_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setPersonalizationBootstrapped(bootstrapped: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PERSONALIZATION_BOOTSTRAPPED] = bootstrapped
         }
     }
 }

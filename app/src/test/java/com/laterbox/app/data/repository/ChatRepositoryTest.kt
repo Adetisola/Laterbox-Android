@@ -160,6 +160,14 @@ class ChatRepositoryTest {
             "Check github.com",
             ChatRepository.extractiveFallbackTitle("Check https://github.com/Adetisola/Laterbox-Android")
         )
+        assertEquals(
+            "docs.python.org",
+            ChatRepository.extractiveFallbackTitle("https://docs.python.org/3/library/re.html")
+        )
+        assertEquals(
+            "docs.python.org guide",
+            ChatRepository.extractiveFallbackTitle("docs.python.org guide")
+        )
         assertEquals("https://", ChatRepository.extractiveFallbackTitle("https://"))
     }
 }

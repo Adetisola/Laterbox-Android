@@ -1369,16 +1369,19 @@ class ChatViewModel(
                 }
 
                 if (!receivedTerminal && accumulated.isNotEmpty()) {
+                    receivedTerminal = true
                     val parsed = AssistantActionHandler.parseModelResponse(accumulated.toString())
                     val cleanReply = GeminiClient.redactSecrets(parsed.displayText, resolvedKey)
                     val trackedActions = AssistantActionHandler.toTrackedActions(parsed.actions)
-                    chatRepository.updateAssistantMessage(
-                        messageId = placeholder.id,
-                        conversationId = conversationId,
-                        content = cleanReply,
-                        status = ChatMessageStatus.COMPLETE,
-                        actionsJson = AssistantActionHandler.toTrackedJsonList(trackedActions)
-                    )
+                    withContext(NonCancellable) {
+                        chatRepository.updateAssistantMessage(
+                            messageId = placeholder.id,
+                            conversationId = conversationId,
+                            content = cleanReply,
+                            status = ChatMessageStatus.COMPLETE,
+                            actionsJson = AssistantActionHandler.toTrackedJsonList(trackedActions)
+                        )
+                    }
                     launchContextualTitleGeneration(conversationId, latestPrompt, cleanReply)
                     processMessageActionsAfterCompletion(
                         conversationId = conversationId,

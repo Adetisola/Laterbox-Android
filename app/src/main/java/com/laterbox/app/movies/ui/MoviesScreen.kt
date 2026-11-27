@@ -129,6 +129,8 @@ fun MoviesScreen(
     dismissedAnnouncementIds: Set<String> = emptySet(),
     onRemoteAction: (String) -> Unit = {},
     onDismissRemoteAnnouncement: (String) -> Unit = {},
+    onOpenPersonalizationPrivacy: () -> Unit = {},
+    onRecordCardExposure: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -1072,6 +1074,85 @@ fun MoviesScreen(
                                             }
 
                                             "because_you_watched" -> if (recommendationsEnabled) {
+                                                if (uiState.isPersonalizationActive && uiState.personalizedForYouRail.isNotEmpty()) {
+                                                    item(key = "personalized_for_you_rail") {
+                                                        Column(
+                                                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                                                            modifier = Modifier.testTag("movies_home_for_you_rail")
+                                                        ) {
+                                                            Row(
+                                                                modifier = Modifier
+                                                                    .fillMaxWidth()
+                                                                    .padding(horizontal = 16.dp),
+                                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                                verticalAlignment = Alignment.CenterVertically
+                                                            ) {
+                                                                Column(modifier = Modifier.weight(1f)) {
+                                                                    Text(
+                                                                        text = "Picked For You",
+                                                                        style = typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
+                                                                        color = colors.textPrimary
+                                                                    )
+                                                                    Text(
+                                                                        text = "Personalized locally • Why this? explained below",
+                                                                        style = typography.metaText,
+                                                                        color = colors.textSecondary
+                                                                    )
+                                                                }
+                                                                androidx.compose.material3.TextButton(
+                                                                    onClick = onOpenPersonalizationPrivacy,
+                                                                    modifier = Modifier.testTag("movies_tune_tastes_button")
+                                                                ) {
+                                                                    Text(
+                                                                        text = "Tune tastes",
+                                                                        style = typography.uiMedium.copy(fontSize = 12.sp, fontWeight = FontWeight.SemiBold),
+                                                                        color = colors.accentPrimary
+                                                                    )
+                                                                }
+                                                            }
+                                                            LazyRow(
+                                                                contentPadding = PaddingValues(horizontal = 16.dp),
+                                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                                            ) {
+                                                                items(
+                                                                    uiState.personalizedForYouRail.take(slot.maxItems),
+                                                                    key = { "fy_${it.item.compositeId}" },
+                                                                    contentType = { "movie_card" }
+                                                                ) { rec ->
+                                                                    val item = rec.item
+                                                                    androidx.compose.runtime.LaunchedEffect(item.stableMediaKey) {
+                                                                        onRecordCardExposure(item.stableMediaKey)
+                                                                    }
+                                                                    val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
+                                                                    Column(
+                                                                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                                                                        modifier = Modifier.width(126.dp)
+                                                                    ) {
+                                                                        MoviePosterCard(
+                                                                            item = item,
+                                                                            onClick = { onOpenDetail(item.providerId, item.id) },
+                                                                            isOfflineDownloaded = isOffline,
+                                                                            isInWatchlist = item.compositeId in watchlistIds,
+                                                                            onToggleWatchlist = onToggleWatchlist,
+                                                                            onAddToCollection = { collectionPickerTarget = it },
+                                                                            onMarkWatched = onMarkWatched,
+                                                                            onHideTitle = onHideTitle,
+                                                                            onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) }
+                                                                        )
+                                                                        Text(
+                                                                            text = "Why this? ${rec.rationale}",
+                                                                            style = typography.caption.copy(fontSize = 10.sp),
+                                                                            color = colors.textSecondary,
+                                                                            maxLines = 2,
+                                                                            overflow = TextOverflow.Ellipsis,
+                                                                            modifier = Modifier.testTag("movies_for_you_rationale_${item.id}")
+                                                                        )
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
                                                 uiState.becauseYouWatchedGroups.forEachIndexed { idx, group ->
                                                     if (group.items.isNotEmpty()) {
                                                         item(key = "byw_${idx}_${group.anchorTitle}") {
@@ -1081,7 +1162,7 @@ fun MoviesScreen(
                                                             ) {
                                                                 SectionHeaderRow(
                                                                     title = "Because You Watched ${group.anchorTitle}",
-                                                                    subtitle = "Recommended from your viewing history",
+                                                                    subtitle = group.rationale ?: "Recommended from your viewing history",
                                                                     onSeeAll = null
                                                                 )
                                                                 LazyRow(
@@ -1089,6 +1170,9 @@ fun MoviesScreen(
                                                                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                                                                 ) {
                                                                     items(group.items.take(slot.maxItems), key = { "byw_${idx}_${it.compositeId}" }, contentType = { "movie_card" }) { item ->
+                                                                        androidx.compose.runtime.LaunchedEffect(item.stableMediaKey) {
+                                                                            onRecordCardExposure(item.stableMediaKey)
+                                                                        }
                                                                         val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
                                                                         MoviePosterCard(
                                                                             item = item,
@@ -1153,11 +1237,31 @@ fun MoviesScreen(
                                                                     modifier = Modifier.weight(1f),
                                                                     verticalArrangement = Arrangement.spacedBy(6.dp)
                                                                 ) {
-                                                                    Text(
-                                                                        text = "SURPRISE ME",
-                                                                        style = typography.caption.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
-                                                                        color = colors.accentPrimary
-                                                                    )
+                                                                    Row(
+                                                                        modifier = Modifier.fillMaxWidth(),
+                                                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                                                        verticalAlignment = Alignment.CenterVertically
+                                                                    ) {
+                                                                        Text(
+                                                                            text = "SURPRISE ME",
+                                                                            style = typography.caption.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
+                                                                            color = colors.accentPrimary
+                                                                        )
+                                                                        if (uiState.isPersonalizationActive) {
+                                                                            Text(
+                                                                                text = if (surprise.signalTags.isNotEmpty()) {
+                                                                                    "Why this? ${surprise.signalTags.joinToString(" • ")}"
+                                                                                } else {
+                                                                                    "Why this?"
+                                                                                },
+                                                                                style = typography.caption.copy(fontSize = 10.sp, fontWeight = FontWeight.Medium),
+                                                                                color = colors.textSecondary,
+                                                                                maxLines = 1,
+                                                                                overflow = TextOverflow.Ellipsis,
+                                                                                modifier = Modifier.testTag("movies_surprise_why_badge")
+                                                                            )
+                                                                        }
+                                                                    }
                                                                     Text(
                                                                         text = surprise.pick.title,
                                                                         style = typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
@@ -1190,6 +1294,18 @@ fun MoviesScreen(
                                                                             leadingIcon = LaterboxIcons.Refresh,
                                                                             modifier = Modifier.testTag("movies_surprise_reroll")
                                                                         )
+                                                                        if (uiState.isPersonalizationActive) {
+                                                                            androidx.compose.material3.TextButton(
+                                                                                onClick = onOpenPersonalizationPrivacy,
+                                                                                modifier = Modifier.testTag("movies_surprise_tune_tastes")
+                                                                            ) {
+                                                                                Text(
+                                                                                    text = "Tune tastes",
+                                                                                    style = typography.uiMedium.copy(fontSize = 12.sp),
+                                                                                    color = colors.accentPrimary
+                                                                                )
+                                                                            }
+                                                                        }
                                                                     }
                                                                 }
                                                             }

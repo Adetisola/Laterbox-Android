@@ -608,25 +608,27 @@ class AssistantActionQueueCoordinator(
 
             val outcome = host.executeMutatingAction(item.action, convId, msgId, actId)
             if (!outcome.skipStandardStatusAndReceipt) {
-                val receipt = outcome.receipt?.takeIf { it.isNotBlank() }
-                    ?: if (outcome.succeeded) {
-                        "Completed ${item.action.actionName.lowercase()}."
-                    } else {
-                        outcome.errorDetail?.takeIf { it.isNotBlank() }
-                            ?: "I couldn't ${item.action.actionName.lowercase()}."
-                    }
-                recordStatus(
-                    if (outcome.succeeded) ChatActionStatus.EXECUTED else ChatActionStatus.FAILED,
-                    receipt
-                )
-                host.reportActionOutcome(
-                    conversationId = convId,
-                    action = item.action,
-                    status = if (outcome.succeeded) "executed" else "failed",
-                    detail = outcome.errorDetail?.takeIf { it.isNotBlank() } ?: receipt,
-                    actionId = actId
-                )
-                host.postReceipt(convId, receipt)
+                withContext(NonCancellable) {
+                    val receipt = outcome.receipt?.takeIf { it.isNotBlank() }
+                        ?: if (outcome.succeeded) {
+                            "Completed ${item.action.actionName.lowercase()}."
+                        } else {
+                            outcome.errorDetail?.takeIf { it.isNotBlank() }
+                                ?: "I couldn't ${item.action.actionName.lowercase()}."
+                        }
+                    recordStatus(
+                        if (outcome.succeeded) ChatActionStatus.EXECUTED else ChatActionStatus.FAILED,
+                        receipt
+                    )
+                    host.reportActionOutcome(
+                        conversationId = convId,
+                        action = item.action,
+                        status = if (outcome.succeeded) "executed" else "failed",
+                        detail = outcome.errorDetail?.takeIf { it.isNotBlank() } ?: receipt,
+                        actionId = actId
+                    )
+                    host.postReceipt(convId, receipt)
+                }
             }
             outcome.succeeded
         } catch (ce: CancellationException) {

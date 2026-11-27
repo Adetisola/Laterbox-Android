@@ -21,7 +21,8 @@ object AppViewModelProvider {
                 linkRepository = app.container.linkRepository,
                 userPreferencesRepository = app.container.userPreferencesRepository,
                 notificationHistoryRepository = app.container.notificationHistoryRepository,
-                inspectionDao = app.container.database.mediaInspectionDao()
+                inspectionDao = app.container.database.mediaInspectionDao(),
+                intelligenceSignalLogger = app.container.intelligenceSignalLogger
             )
         }
         initializer {
@@ -87,7 +88,8 @@ object AppViewModelProvider {
                 appCheckTokenProvider = { forceRefresh -> app.container.getBackendAppCheckToken(forceRefresh) },
                 authHeaderProvider = { forceRefresh -> app.container.getBackendAuthHeader(forceRefresh) },
                 moviesRepository = app.container.moviesRepository,
-                appStorageManager = app.container.appStorageManager
+                appStorageManager = app.container.appStorageManager,
+                userUnderstandingRepository = app.container.userUnderstandingRepository
             )
         }
         initializer {
@@ -126,7 +128,9 @@ object AppViewModelProvider {
                 moviesRepository = app.container.moviesRepository,
                 userPreferencesRepository = app.container.userPreferencesRepository,
                 collectionRepository = app.container.collectionRepository,
-                computeDispatcher = kotlinx.coroutines.Dispatchers.Default
+                computeDispatcher = kotlinx.coroutines.Dispatchers.Default,
+                userUnderstandingRepository = app.container.userUnderstandingRepository,
+                remoteConfigManager = app.container.remoteConfigManager
             )
         }
         initializer {

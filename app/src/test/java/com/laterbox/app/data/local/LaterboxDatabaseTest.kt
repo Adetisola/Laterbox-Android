@@ -2220,4 +2220,69 @@ class LaterboxDatabaseTest {
             context.deleteDatabase(dbName)
         }
     }
+
+    @Test
+    fun migrate_21_to_22_createsIntelligenceTablesOnly() {
+        val instrumentation = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+        val helper = androidx.room.testing.MigrationTestHelper(
+            instrumentation,
+            LaterboxDatabase::class.java
+        )
+        val dbName = "migration_21_22_test.db"
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        context.deleteDatabase(dbName)
+
+        helper.createDatabase(dbName, 21).use { db ->
+            db.execSQL(
+                "INSERT INTO `saved_links` (`original_url`, `normalized_url`, `title`, `domain`, `content_type`, `is_read`, `is_archived`, `metadata_status`, `retry_count`, `nudge_count`, `nudge_dismissed`, `created_at`, `updated_at`) " +
+                    "VALUES ('https://example.com/v21', 'https://example.com/v21', 'V21 Link', 'example.com', 'ARTICLE', 0, 0, 'SUCCESS', 0, 0, 0, 1000, 1000)"
+            )
+        }
+
+        val migratedDb = helper.runMigrationsAndValidate(
+            dbName,
+            22,
+            true,
+            LaterboxDatabase.MIGRATION_21_22
+        )
+        try {
+            val tableNames = mutableSetOf<String>()
+            migratedDb.query("SELECT `name` FROM `sqlite_master` WHERE `type` = 'table'").use { c ->
+                while (c.moveToNext()) {
+                    tableNames += c.getString(0)
+                }
+            }
+            assertTrue(tableNames.contains("user_taste_facets"))
+            assertTrue(tableNames.contains("intelligence_signals"))
+            assertFalse("intelligence_exposures must NOT be created", tableNames.contains("intelligence_exposures"))
+            assertFalse("user_timing_profile must be deferred", tableNames.contains("user_timing_profile"))
+
+            migratedDb.execSQL(
+                "INSERT INTO `user_taste_facets` (`facet_key`, `facet_type`, `surface_scope`, `display_label`, `score`, `confidence`, `provenance`, `evidence_summary`, `include_in_assistant_context`, `is_suppressed_by_user`, `first_observed_at_ms`, `last_reinforced_at_ms`, `expires_at_ms`) " +
+                    "VALUES ('genre:sci_fi', 'ENDURING_INTEREST', 'MOVIES', 'Sci-Fi', 0.8, 0.9, 'Watched Arrival', 'Watch history', 0, 0, 1000, 2000, NULL)"
+            )
+            migratedDb.execSQL(
+                "INSERT INTO `intelligence_signals` (`signal_type`, `surface_scope`, `target_key`, `topics_csv`, `is_media_cue`, `strength`, `created_at_ms`) " +
+                    "VALUES ('WATCH_COMPLETED', 'MOVIES', 'moviebox:42', 'genre:sci_fi', 1, 1.0, 2000)"
+            )
+
+            migratedDb.query("SELECT `display_label`, `score` FROM `user_taste_facets` WHERE `facet_key` = 'genre:sci_fi'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("Sci-Fi", c.getString(0))
+                assertEquals(0.8, c.getDouble(1), 0.0001)
+            }
+            migratedDb.query("SELECT `signal_type`, `is_media_cue` FROM `intelligence_signals`").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("WATCH_COMPLETED", c.getString(0))
+                assertEquals(1, c.getInt(1))
+            }
+            migratedDb.query("SELECT `title` FROM `saved_links` WHERE `normalized_url` = 'https://example.com/v21'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("V21 Link", c.getString(0))
+            }
+        } finally {
+            migratedDb.close()
+            context.deleteDatabase(dbName)
+        }
+    }
 }

@@ -257,7 +257,7 @@ class ChatRepository(
         )
         private val URL_TOKEN_REGEX = Regex("https?://[^\\s]+", RegexOption.IGNORE_CASE)
         private val URL_HOST_FALLBACK_REGEX = Regex("^https?://(?:www\\.)?([^/?#:\\s]+)", RegexOption.IGNORE_CASE)
-        private val DOMAIN_PREFIX_REGEX = Regex("^(?:https?://|[a-z0-9-]+\\.[a-z]{2,}(?:/|\\s|$))", RegexOption.IGNORE_CASE)
+        private val DOMAIN_PREFIX_REGEX = Regex("^(?:https?://|(?:[a-z0-9-]+\\.)+[a-z]{2,}(?:/|\\s|$))", RegexOption.IGNORE_CASE)
 
         private fun formatUrlTokenForTitle(rawToken: String): String {
             val cleanedToken = rawToken.trimEnd(*EDGE_PUNCTUATION)

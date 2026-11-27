@@ -286,6 +286,10 @@ class ReminderReceiver : BroadcastReceiver() {
                             if (!mediaKey.isNullOrBlank()) {
                                 notificationManager?.cancel(NotificationIds.movieReminderId(mediaKey))
                             }
+                            appContainer.intelligenceSignalLogger.logNotificationDismissed(
+                                category = NotificationCategory.MOVIE_VIEWING_REMINDER,
+                                targetKey = mediaKey
+                            )
                         }
 
                         ACTION_DISMISS_REMINDER -> {
@@ -300,6 +304,10 @@ class ReminderReceiver : BroadcastReceiver() {
                                 // Defensive cleanup of any pre-migration notifications
                                 notificationManager?.cancel(linkId.toInt())
                                 notificationManager?.cancel((linkId + 500_000L).toInt())
+                                appContainer.intelligenceSignalLogger.logNotificationDismissed(
+                                    category = NotificationCategory.MANUAL_LINK_REMINDER,
+                                    targetKey = "link:$linkId"
+                                )
                                 Log.d(TAG, "Dismissed reminder for link $linkId (notifId $notifId)")
                             }
                         }
@@ -310,6 +318,7 @@ class ReminderReceiver : BroadcastReceiver() {
                                 runCatching { NotificationCategory.valueOf(raw) }.getOrNull()
                             } ?: return@withTimeoutOrNull
                             governor.onTier3NotificationSwiped(category, System.currentTimeMillis())
+                            appContainer.intelligenceSignalLogger.logNotificationDismissed(category = category)
                         }
                     }
                 }

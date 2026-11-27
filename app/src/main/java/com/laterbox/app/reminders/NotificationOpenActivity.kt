@@ -31,6 +31,9 @@ class NotificationOpenActivity : Activity() {
         val destination = intent.getStringExtra(EXTRA_DESTINATION)
         val chatInitialPrompt = intent.getStringExtra(EXTRA_CHAT_INITIAL_PROMPT)
         val isReminder = intent.getBooleanExtra(EXTRA_IS_REMINDER, false)
+        val notificationCategory = intent.getStringExtra(EXTRA_NOTIFICATION_CATEGORY)?.let { raw ->
+            runCatching { NotificationCategory.valueOf(raw) }.getOrNull()
+        }
         val shouldIncrementReminderOpened = isReminder ||
             (linkId > 0 && targetMode != MODE_OPEN_DESTINATION && !intent.hasExtra(EXTRA_IS_REMINDER))
 
@@ -50,6 +53,13 @@ class NotificationOpenActivity : Activity() {
                     }
                     if (shouldIncrementReminderOpened) {
                         container.userPreferencesRepository.incrementRemindersOpened()
+                    }
+                    if (notificationCategory != null) {
+                        container.notificationGovernor.recordNotificationOpened(notificationCategory)
+                        container.intelligenceSignalLogger.logNotificationOpened(
+                            category = notificationCategory,
+                            targetKey = if (linkId > 0) "link:$linkId" else null
+                        )
                     }
                     if (notifRecordId > 0) {
                         container.notificationHistoryRepository.markAsRead(notifRecordId)
@@ -119,6 +129,7 @@ class NotificationOpenActivity : Activity() {
         const val EXTRA_DESTINATION = "extra_destination"
         const val EXTRA_CHAT_INITIAL_PROMPT = "extra_chat_initial_prompt"
         const val EXTRA_IS_REMINDER = "extra_is_reminder"
+        const val EXTRA_NOTIFICATION_CATEGORY = "extra_notification_category"
 
         const val MODE_OPEN_LINK_DETAIL = "mode_open_link_detail"
         const val MODE_OPEN_BROWSER = "mode_open_browser"
@@ -133,7 +144,8 @@ class NotificationOpenActivity : Activity() {
             mode: String = MODE_OPEN_LINK_DETAIL,
             destination: String? = null,
             chatInitialPrompt: String? = null,
-            isReminder: Boolean = false
+            isReminder: Boolean = false,
+            category: NotificationCategory? = null
         ): Intent {
             return Intent(context, NotificationOpenActivity::class.java).apply {
                 putExtra(EXTRA_LINK_ID, linkId)
@@ -142,6 +154,7 @@ class NotificationOpenActivity : Activity() {
                 putExtra(EXTRA_NOTIFICATION_ID, notificationId)
                 putExtra(EXTRA_TARGET_MODE, mode)
                 putExtra(EXTRA_IS_REMINDER, isReminder)
+                if (category != null) putExtra(EXTRA_NOTIFICATION_CATEGORY, category.name)
                 if (!destination.isNullOrBlank()) putExtra(EXTRA_DESTINATION, destination)
                 if (!chatInitialPrompt.isNullOrBlank()) putExtra(EXTRA_CHAT_INITIAL_PROMPT, chatInitialPrompt)
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP

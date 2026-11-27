@@ -624,6 +624,8 @@ object RemoteCapabilities {
     const val FEATURE_SMART_REMINDERS = "feature:smart_reminders_enabled"
     const val FEATURE_PLAYER_INTRO_SKIP = "feature:player_intro_skip_enabled"
     const val FEATURE_YTDLP_AUTO_UPDATE = "feature:ytdlp_auto_update_enabled"
+    const val FEATURE_EXPERIENCE_INTELLIGENCE = "feature:experience_intelligence_enabled"
+    const val FEATURE_CONTEXTUAL_NOTIFICATION_GOVERNOR = "feature:contextual_notification_governor_enabled"
 
     const val KEY_MOVIES_TV = "movies_tv_enabled"
     const val KEY_PROVIDER_MOVIEBOX = "provider_moviebox_enabled"
@@ -634,6 +636,8 @@ object RemoteCapabilities {
     const val KEY_SMART_REMINDERS = "smart_reminders_enabled"
     const val KEY_PLAYER_INTRO_SKIP = "player_intro_skip_enabled"
     const val KEY_YTDLP_AUTO_UPDATE = "ytdlp_auto_update_enabled"
+    const val KEY_EXPERIENCE_INTELLIGENCE = "experience_intelligence_enabled"
+    const val KEY_CONTEXTUAL_NOTIFICATION_GOVERNOR = "contextual_notification_governor_enabled"
 
     const val CAP_MULTI_SURFACE = "multi_surface"
     const val SURFACE_INBOX = "surface:inbox"
@@ -664,6 +668,8 @@ object RemoteCapabilities {
         KEY_SMART_REMINDERS,
         KEY_PLAYER_INTRO_SKIP,
         KEY_YTDLP_AUTO_UPDATE,
+        KEY_EXPERIENCE_INTELLIGENCE,
+        KEY_CONTEXTUAL_NOTIFICATION_GOVERNOR,
     )
 
     val DEFAULT_FEATURES: Map<String, Boolean> = SUPPORTED_FEATURE_KEYS.associateWith { true }
@@ -707,6 +713,8 @@ object RemoteCapabilities {
         FEATURE_SMART_REMINDERS,
         FEATURE_PLAYER_INTRO_SKIP,
         FEATURE_YTDLP_AUTO_UPDATE,
+        FEATURE_EXPERIENCE_INTELLIGENCE,
+        FEATURE_CONTEXTUAL_NOTIFICATION_GOVERNOR,
         CAP_MULTI_SURFACE,
         SURFACE_INBOX,
         SURFACE_COLLECTIONS,

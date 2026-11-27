@@ -2,6 +2,7 @@ package com.laterbox.app.reminders
 
 import android.content.Context
 import androidx.core.app.NotificationManagerCompat
+import com.laterbox.app.ai.RemoteCapabilities
 import com.laterbox.app.data.local.LaterboxDatabase
 import com.laterbox.app.data.preferences.UserPreferencesRepository
 import com.laterbox.app.data.repository.ActivityEventRepository
@@ -11,6 +12,7 @@ import com.laterbox.app.diagnostics.AppHealthReport
 import com.laterbox.app.diagnostics.IssueSeverity
 import com.laterbox.app.domain.model.ContentType
 import com.laterbox.app.movies.domain.repository.MoviesRepository
+import com.laterbox.app.remoteconfig.RemoteConfigManager
 import kotlinx.coroutines.flow.first
 import java.util.Calendar
 
@@ -27,8 +29,16 @@ class ContextualNotificationEngine(
     private val userPreferencesRepository: UserPreferencesRepository,
     private val activityEventRepository: ActivityEventRepository,
     private val appHealthChecker: AppHealthChecker,
-    private val notificationGovernor: NotificationGovernor = NotificationGovernor(userPreferencesRepository)
+    private val notificationGovernor: NotificationGovernor = NotificationGovernor(userPreferencesRepository),
+    private val remoteConfigManager: RemoteConfigManager? = null
 ) {
+
+    private fun isTier3RemoteGovernorEnabled(): Boolean {
+        return remoteConfigManager?.currentConfig?.isFeatureEnabled(
+            RemoteCapabilities.KEY_CONTEXTUAL_NOTIFICATION_GOVERNOR,
+            defaultValue = true
+        ) ?: true
+    }
 
     suspend fun notifyExtractionFailure(
         savedLinkId: Long,
@@ -159,7 +169,7 @@ class ContextualNotificationEngine(
         currentHour: Int = currentHourOfDay(),
         postedTier3InCurrentWakeup: Boolean = false
     ): Boolean {
-        if (postedTier3InCurrentWakeup) return false
+        if (postedTier3InCurrentWakeup || !isTier3RemoteGovernorEnabled()) return false
         val prefs = userPreferencesRepository.userPreferencesFlow.first()
         if (!NotificationManagerCompat.from(appContext).areNotificationsEnabled()) return false
 
@@ -253,7 +263,7 @@ class ContextualNotificationEngine(
         currentHour: Int = currentHourOfDay(),
         postedTier3InCurrentWakeup: Boolean = false
     ): Boolean {
-        if (postedTier3InCurrentWakeup) return false
+        if (postedTier3InCurrentWakeup || !isTier3RemoteGovernorEnabled()) return false
         val prefs = userPreferencesRepository.userPreferencesFlow.first()
         if (!NotificationManagerCompat.from(appContext).areNotificationsEnabled()) return false
 

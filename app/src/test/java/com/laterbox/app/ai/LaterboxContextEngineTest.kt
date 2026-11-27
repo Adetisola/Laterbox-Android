@@ -427,7 +427,10 @@ class LaterboxContextEngineTest {
             "Fix syntax error in SQL",
             "What TV show should I watch?",
             "Hello",
-            "How do collections work in Laterbox?"
+            "How do collections work in Laterbox?",
+            "How do my collections work?",
+            "Show collections settings",
+            "Where are my collections settings?"
         )
         for (prompt in benignPrompts) {
             val built = engine.buildContextForPrompt(prompt)
@@ -496,5 +499,95 @@ class LaterboxContextEngineTest {
         assertTrue(built.contextBlock.contains("App Health Summary:"))
         assertTrue(built.contextBlock.contains("failedDownloads=1"))
         assertTrue(built.contextBlock.contains("media download failed"))
+    }
+
+    @Test
+    fun buildContextForPrompt_scopesCapabilitiesAndGatesTasteProfileOnOptInAndKillSwitch() = runTest {
+        db.collectionDao().insertCollection(
+            com.laterbox.app.data.local.entity.CollectionEntity(
+                id = 55L,
+                name = "Private Secret Watchlist"
+            )
+        )
+        val userUnderstandingRepo = com.laterbox.app.intelligence.UserUnderstandingRepository(
+            intelligenceDao = db.intelligenceDao(),
+            userPreferencesRepository = prefsRepo,
+            moviesDao = db.moviesDao(),
+            savedLinkDao = db.savedLinkDao()
+        )
+        userUnderstandingRepo.setExplicitPreference(
+            facetKey = "genre:sci_fi",
+            displayLabel = "Sci-Fi",
+            surfaceScope = com.laterbox.app.data.local.entity.IntelligenceSurfaceScope.MOVIES,
+            liked = true,
+            includeInAssistant = true
+        )
+
+        val rcServer = okhttp3.mockwebserver.MockWebServer()
+        rcServer.enqueue(
+            okhttp3.mockwebserver.MockResponse()
+                .setResponseCode(200)
+                .addHeader("Content-Type", "application/json")
+                .setBody(
+                    """
+                    {
+                      "schemaVersion": 1,
+                      "revision": 2,
+                      "publishedAt": "2026-11-27T10:00:00Z",
+                      "maintenance": { "enabled": false, "mode": "none" },
+                      "features": { "experience_intelligence_enabled": true }
+                    }
+                    """.trimIndent()
+                )
+        )
+        rcServer.start()
+        try {
+            val baseUrl = rcServer.url("/").toString().trimEnd('/')
+            val dataStore = androidx.datastore.preferences.core.PreferenceDataStoreFactory.create(
+                produceFile = { java.io.File(context.cacheDir, "rc_v2_ctx_${System.nanoTime()}.preferences_pb") }
+            )
+            val rcManager = com.laterbox.app.remoteconfig.RemoteConfigManager(
+                repository = com.laterbox.app.remoteconfig.RemoteConfigRepository(
+                    cache = com.laterbox.app.remoteconfig.RemoteConfigCache(dataStore) { baseUrl },
+                    client = com.laterbox.app.remoteconfig.RemoteConfigClient(
+                        okHttpClient = okhttp3.OkHttpClient(),
+                        baseUrlProvider = { baseUrl },
+                        appCheckTokenProvider = { null },
+                        clientVersionCode = 84,
+                        clientVersionName = "1.0.84"
+                    ),
+                    clientVersionCode = 84
+                )
+            )
+            rcManager.refreshNow()
+
+            val v2Engine = LaterboxContextEngine(
+                database = db,
+                activityEventRepository = activityRepo,
+                userPreferencesRepository = prefsRepo,
+                appContext = context,
+                remoteConfigManager = rcManager,
+                userUnderstandingRepository = userUnderstandingRepo
+            )
+
+            // 1. Default opt-out: assistantPersonalContextEnabled=false -> taste profile NOT injected, raw collection hidden
+            prefsRepo.setPersonalizationEnabled(true)
+            prefsRepo.setAssistantPersonalContextEnabled(false)
+            val optOutCtx = v2Engine.buildContextForPrompt("Suggest something to watch tonight")
+            assertFalse(optOutCtx.contextBlock.contains("On-Device Taste Profile:"))
+            assertFalse(optOutCtx.contextBlock.contains("Private Secret Watchlist"))
+            // Narrow prompt omits unrelated SUPPORTED capabilities
+            assertTrue(optOutCtx.contextBlock.contains("additional capabilities are SUPPORTED and available"))
+
+            // 2. Opt-in enabled -> bounded safe facet appears, raw collection title still excluded
+            prefsRepo.setAssistantPersonalContextEnabled(true)
+            val optInCtx = v2Engine.buildContextForPrompt("What can you help me watch?")
+            assertTrue(optInCtx.contextBlock.contains("On-Device Taste Profile:"))
+            assertTrue(optInCtx.contextBlock.contains("Sci-Fi"))
+            assertFalse(optInCtx.contextBlock.contains("Private Secret Watchlist"))
+            assertFalse(optInCtx.contextBlock.contains("additional capabilities are SUPPORTED"))
+        } finally {
+            rcServer.shutdown()
+        }
     }
 }

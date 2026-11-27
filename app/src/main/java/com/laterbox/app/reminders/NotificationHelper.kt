@@ -212,6 +212,11 @@ object NotificationHelper {
 
         // 4. Intent routing:
         // Body tap routes to in-app link detail sheet in Laterbox
+        val openCategory = if (isManual) {
+            NotificationCategory.MANUAL_LINK_REMINDER
+        } else {
+            NotificationCategory.SMART_DIGEST
+        }
         val openDetailIntent = NotificationOpenActivity.createIntent(
             context = context,
             linkId = effectiveLink.id,
@@ -219,7 +224,8 @@ object NotificationHelper {
             notificationRecordId = notificationRecordId,
             notificationId = notificationId,
             mode = NotificationOpenActivity.MODE_OPEN_LINK_DETAIL,
-            isReminder = true
+            isReminder = true,
+            category = openCategory
         )
         val contentPendingIntent = PendingIntent.getActivity(
             context,
@@ -236,7 +242,8 @@ object NotificationHelper {
             notificationRecordId = notificationRecordId,
             notificationId = notificationId,
             mode = NotificationOpenActivity.MODE_OPEN_BROWSER,
-            isReminder = true
+            isReminder = true,
+            category = openCategory
         )
         val openBrowserPendingIntent = PendingIntent.getActivity(
             context,
@@ -391,7 +398,8 @@ object NotificationHelper {
             url = url,
             notificationRecordId = recordId,
             notificationId = notificationId,
-            mode = NotificationOpenActivity.MODE_OPEN_LINK_DETAIL
+            mode = NotificationOpenActivity.MODE_OPEN_LINK_DETAIL,
+            category = NotificationCategory.EXTRACTION_FAILURE
         )
         val pendingIntent = PendingIntent.getActivity(
             context,
@@ -408,7 +416,8 @@ object NotificationHelper {
             notificationId = notificationId,
             mode = NotificationOpenActivity.MODE_OPEN_DESTINATION,
             destination = "chat",
-            chatInitialPrompt = "Why did media inspection fail for \"$linkTitle\" (linkId=$savedLinkId)?"
+            chatInitialPrompt = "Why did media inspection fail for \"$linkTitle\" (linkId=$savedLinkId)?",
+            category = NotificationCategory.EXTRACTION_FAILURE
         )
         val askAiPendingIntent = PendingIntent.getActivity(
             context,
@@ -474,7 +483,8 @@ object NotificationHelper {
             notificationRecordId = recordId,
             notificationId = notificationId,
             mode = NotificationOpenActivity.MODE_OPEN_DESTINATION,
-            destination = "downloads"
+            destination = "downloads",
+            category = NotificationCategory.DOWNLOAD_FAILURE
         )
         val pendingIntent = PendingIntent.getActivity(
             context,
@@ -533,7 +543,8 @@ object NotificationHelper {
             notificationId = notificationId,
             mode = NotificationOpenActivity.MODE_OPEN_DESTINATION,
             destination = "chat",
-            chatInitialPrompt = "Run an app health check and explain how to fix any issues"
+            chatInitialPrompt = "Run an app health check and explain how to fix any issues",
+            category = NotificationCategory.APP_HEALTH
         )
         val pendingIntent = PendingIntent.getActivity(
             context,
@@ -598,7 +609,8 @@ object NotificationHelper {
             notificationId = notificationId,
             mode = NotificationOpenActivity.MODE_OPEN_DESTINATION,
             destination = destination,
-            chatInitialPrompt = initialPrompt
+            chatInitialPrompt = initialPrompt,
+            category = category
         )
         val pendingIntent = PendingIntent.getActivity(
             context,
@@ -673,7 +685,8 @@ object NotificationHelper {
             notificationId = notificationId,
             mode = NotificationOpenActivity.MODE_OPEN_DESTINATION,
             destination = destinationRoute,
-            isReminder = true
+            isReminder = true,
+            category = NotificationCategory.MOVIE_VIEWING_REMINDER
         )
         val contentPendingIntent = PendingIntent.getActivity(
             context,
@@ -776,7 +789,8 @@ object NotificationHelper {
             notificationRecordId = recordId,
             notificationId = notificationId,
             mode = NotificationOpenActivity.MODE_OPEN_DESTINATION,
-            destination = destinationRoute
+            destination = destinationRoute,
+            category = category
         )
         val pendingIntent = PendingIntent.getActivity(
             context,

@@ -54,6 +54,7 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
     onNavigateToMoviesTv: () -> Unit = {},
     onNavigateToAppStorage: () -> Unit = {},
+    onNavigateToPersonalizationPrivacy: () -> Unit = {},
     isCheckingUpdate: Boolean = false,
     availableUpdateInfo: AppUpdateInfo? = null,
     onCheckForUpdates: () -> Unit = {},
@@ -200,6 +201,14 @@ fun SettingsScreen(
                     onClick = onNavigateToDataStorage,
                     modifier = Modifier.testTag("settings_category_data_storage")
                 )
+
+                SettingsCategoryRow(
+                    iconRes = LaterboxIcons.Sparkles,
+                    title = "Personalization & Privacy",
+                    subtitle = if (preferences.personalizationEnabled) "On-device taste model active" else "Paused",
+                    onClick = onNavigateToPersonalizationPrivacy,
+                    modifier = Modifier.testTag("settings_category_personalization_privacy")
+                )
             }
 
             Spacer(modifier = Modifier.height(spacing.lg))
@@ -213,6 +222,7 @@ fun SettingsScreen(
                 localMetrics = localMetrics,
                 onResetActivityCounters = onResetActivityCounters,
                 onResetAnalyticsInstallId = onResetAnalyticsInstallId,
+                onOpenPersonalizationPrivacy = onNavigateToPersonalizationPrivacy,
             )
 
             Spacer(modifier = Modifier.navigationBarsPadding().height(40.dp))

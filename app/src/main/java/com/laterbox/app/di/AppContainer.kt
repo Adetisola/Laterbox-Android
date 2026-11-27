@@ -54,6 +54,8 @@ interface AppContainer {
     val analyticsTracker: com.laterbox.app.analytics.LaterboxAnalyticsTracker
     val toastController: com.laterbox.app.ui.components.LaterboxToastController
     val connectivityObserver: com.laterbox.app.network.LaterboxConnectivityObserver
+    val userUnderstandingRepository: com.laterbox.app.intelligence.UserUnderstandingRepository
+    val intelligenceSignalLogger: com.laterbox.app.intelligence.IntelligenceSignalLogger
     suspend fun resolveBackendBaseUrl(): String
     suspend fun getBackendAppCheckToken(forceRefresh: Boolean = false): String?
     suspend fun getBackendAuthHeader(forceRefresh: Boolean = false): Pair<String, String>?
@@ -89,16 +91,42 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
         LaterboxDatabase.getInstance(context)
     }
 
+    override val userPreferencesRepository: UserPreferencesRepository by lazy {
+        UserPreferencesRepository(context)
+    }
+
+    override val userUnderstandingRepository: com.laterbox.app.intelligence.UserUnderstandingRepository by lazy {
+        com.laterbox.app.intelligence.UserUnderstandingRepository(
+            intelligenceDao = database.intelligenceDao(),
+            userPreferencesRepository = userPreferencesRepository,
+            moviesDao = database.moviesDao(),
+            savedLinkDao = database.savedLinkDao()
+        )
+    }
+
+    override val intelligenceSignalLogger: com.laterbox.app.intelligence.IntelligenceSignalLogger by lazy {
+        com.laterbox.app.intelligence.IntelligenceSignalLogger(
+            intelligenceDao = database.intelligenceDao(),
+            userUnderstandingRepository = userUnderstandingRepository,
+            userPreferencesRepository = userPreferencesRepository,
+            isIntelligenceEnabled = {
+                remoteConfigManager.currentConfig.isFeatureEnabled(
+                    com.laterbox.app.ai.RemoteCapabilities.KEY_EXPERIENCE_INTELLIGENCE
+                )
+            }
+        )
+    }
+
     override val linkRepository: LinkRepository by lazy {
-        LinkRepository(database.savedLinkDao(), context.applicationContext)
+        LinkRepository(
+            savedLinkDao = database.savedLinkDao(),
+            appContext = context.applicationContext,
+            intelligenceSignalLogger = intelligenceSignalLogger
+        )
     }
 
     override val collectionRepository: CollectionRepository by lazy {
         CollectionRepository(database.collectionDao())
-    }
-
-    override val userPreferencesRepository: UserPreferencesRepository by lazy {
-        UserPreferencesRepository(context)
     }
 
     override val versionGate: com.laterbox.app.remoteconfig.LaterboxVersionGate by lazy {
@@ -240,7 +268,8 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             appHealthChecker = appHealthChecker,
             ytDlpRuntimeManager = ytDlpRuntimeManager,
             appContext = context.applicationContext,
-            remoteConfigManager = remoteConfigManager
+            remoteConfigManager = remoteConfigManager,
+            userUnderstandingRepository = userUnderstandingRepository
         )
     }
 
@@ -258,7 +287,8 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             userPreferencesRepository = userPreferencesRepository,
             activityEventRepository = activityEventRepository,
             appHealthChecker = appHealthChecker,
-            notificationGovernor = notificationGovernor
+            notificationGovernor = notificationGovernor,
+            remoteConfigManager = remoteConfigManager
         )
     }
 
@@ -433,6 +463,7 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
                     screenId = screenId,
                 )
             },
+            intelligenceSignalLogger = intelligenceSignalLogger,
         )
     }
 

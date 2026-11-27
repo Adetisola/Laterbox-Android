@@ -2,6 +2,7 @@ package com.laterbox.app.ai
 
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -17,7 +18,9 @@ class AssistantActionQueueCoordinatorTest {
         val executionOutcomes = mutableMapOf<String, ActionExecutionOutcome>()
         var executionThrowsForAction: String? = null
         var executionDelayMs: Long = 0L
+        var statusUpdateDelayMs: Long = 0L
         var onValidate: (suspend (ChatAction) -> Unit)? = null
+        var onAfterExecute: (() -> Unit)? = null
 
         val executedActions = mutableListOf<ChatAction>()
         val statusUpdates = mutableListOf<StatusUpdate>()
@@ -72,6 +75,7 @@ class AssistantActionQueueCoordinatorTest {
                 throw IllegalStateException("Boom on ${action.actionType}")
             }
             executedActions.add(action)
+            onAfterExecute?.invoke()
             return executionOutcomes[action.actionType]
                 ?: ActionExecutionOutcome(succeeded = true, receipt = "Done ${action.actionType}")
         }
@@ -83,6 +87,7 @@ class AssistantActionQueueCoordinatorTest {
             status: ChatActionStatus,
             statusDetail: String?
         ) {
+            if (statusUpdateDelayMs > 0L) delay(statusUpdateDelayMs)
             statusUpdates.add(StatusUpdate(conversationId, messageId, actionId, status, statusDetail))
         }
 
@@ -370,5 +375,33 @@ class AssistantActionQueueCoordinatorTest {
             assertEquals(ChatActionStatus.DENIED, status.status)
             assertEquals(AssistantActionQueueCoordinator.CANCELLED_CONVERSATION_CHANGE_DETAIL, status.detail)
         }
+    }
+
+    @Test
+    fun processBatch_cancellationRightAfterExecution_stillPersistsExecutedStatusAndReceipt() = runTest {
+        val host = RecordingHost().apply {
+            allowedPermissions.add("LIBRARY_MANAGEMENT")
+            statusUpdateDelayMs = 10L
+        }
+        val coordinator = AssistantActionQueueCoordinator(host)
+        var jobToCancel: kotlinx.coroutines.Job? = null
+        host.onAfterExecute = {
+            jobToCancel?.cancel()
+        }
+
+        val job = launch {
+            coordinator.processBatch(
+                "conv-1",
+                "msg-noncancel",
+                listOf(TrackedChatAction("a1", action1()))
+            )
+        }
+        jobToCancel = job
+        job.join()
+
+        assertEquals(1, host.executedActions.size)
+        assertEquals(ChatActionStatus.EXECUTED, host.statusUpdates.last { it.actionId == "a1" }.status)
+        assertEquals(1, host.outcomeReports.size)
+        assertEquals(1, host.receipts.size)
     }
 }

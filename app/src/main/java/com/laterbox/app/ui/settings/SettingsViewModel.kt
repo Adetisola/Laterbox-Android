@@ -60,7 +60,8 @@ class SettingsViewModel(
     private val appCheckTokenProvider: (suspend (Boolean) -> String?)? = null,
     private val authHeaderProvider: (suspend (Boolean) -> Pair<String, String>?)? = null,
     private val moviesRepository: MoviesRepository? = null,
-    private val appStorageManager: com.laterbox.app.storage.AppStorageManager? = null
+    private val appStorageManager: com.laterbox.app.storage.AppStorageManager? = null,
+    private val userUnderstandingRepository: com.laterbox.app.intelligence.UserUnderstandingRepository? = null
 ) : ViewModel() {
 
     private val runtimeManager: com.laterbox.app.media.data.adapters.ytdlp.YtDlpRuntimeManager? =
@@ -1053,6 +1054,91 @@ class SettingsViewModel(
     fun dismissStorageFeedback() {
         _storageFeedbackMessage.value = null
         _storageErrorMessage.value = null
+    }
+
+    private val resolvedUnderstandingRepo: com.laterbox.app.intelligence.UserUnderstandingRepository?
+        get() = userUnderstandingRepository
+            ?: (appContext?.applicationContext as? com.laterbox.app.LaterboxApplication)
+                ?.container?.userUnderstandingRepository
+
+    val tasteFacets: StateFlow<List<com.laterbox.app.data.local.entity.UserTasteFacetEntity>> =
+        (resolvedUnderstandingRepo?.observeAllFacets() ?: emptyFlow())
+            .stateIn(
+                scope = viewModelScope,
+                started = SharingStarted.WhileSubscribed(5000),
+                initialValue = emptyList()
+            )
+
+    val intelligenceSignalCount: StateFlow<Int> =
+        (resolvedUnderstandingRepo?.observeSignalCount() ?: emptyFlow())
+            .stateIn(
+                scope = viewModelScope,
+                started = SharingStarted.WhileSubscribed(5000),
+                initialValue = 0
+            )
+
+    fun setPersonalizationEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            userPreferencesRepository.setPersonalizationEnabled(enabled)
+        }
+    }
+
+    fun setAssistantPersonalContextEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            userPreferencesRepository.setAssistantPersonalContextEnabled(enabled)
+        }
+    }
+
+    fun setExplicitTastePreference(
+        facetKey: String,
+        displayLabel: String,
+        scope: com.laterbox.app.data.local.entity.IntelligenceSurfaceScope,
+        liked: Boolean
+    ) {
+        val repo = resolvedUnderstandingRepo ?: return
+        viewModelScope.launch {
+            repo.setExplicitPreference(
+                facetKey = facetKey,
+                displayLabel = displayLabel,
+                surfaceScope = scope,
+                liked = liked
+            )
+        }
+    }
+
+    fun toggleSuppressTasteFacet(facetKey: String, suppressed: Boolean) {
+        val repo = resolvedUnderstandingRepo ?: return
+        viewModelScope.launch {
+            repo.toggleSuppressFacet(facetKey, suppressed)
+        }
+    }
+
+    fun setFacetIncludeInAssistant(facetKey: String, include: Boolean) {
+        val repo = resolvedUnderstandingRepo ?: return
+        viewModelScope.launch {
+            repo.setFacetIncludeInAssistant(facetKey, include)
+        }
+    }
+
+    fun deleteTasteFacet(facetKey: String) {
+        val repo = resolvedUnderstandingRepo ?: return
+        viewModelScope.launch {
+            repo.deleteFacet(facetKey)
+        }
+    }
+
+    fun rebuildTasteModelFromLibrary() {
+        val repo = resolvedUnderstandingRepo ?: return
+        viewModelScope.launch {
+            repo.rebuildFromLibrary()
+        }
+    }
+
+    fun resetTasteModel() {
+        val repo = resolvedUnderstandingRepo ?: return
+        viewModelScope.launch {
+            repo.resetModel()
+        }
     }
 }
 

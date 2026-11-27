@@ -3,12 +3,17 @@ package com.laterbox.app.movies.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.laterbox.app.BuildConfig
+import com.laterbox.app.ai.RemoteCapabilities
+import com.laterbox.app.data.local.entity.IntelligenceSignalEntity
+import com.laterbox.app.data.local.entity.UserTasteFacetEntity
 import com.laterbox.app.data.preferences.MovieBoxEndpointConfig
 import com.laterbox.app.data.preferences.UserPreferencesRepository
 import com.laterbox.app.data.repository.CollectionRepository
 import com.laterbox.app.domain.model.Collection
 import com.laterbox.app.domain.model.CollectionWithCount
+import com.laterbox.app.intelligence.UserUnderstandingRepository
 import com.laterbox.app.movies.data.provider.MovieBoxProvider
+import com.laterbox.app.movies.domain.engine.IntelligenceDiscoveryProfile
 import com.laterbox.app.movies.domain.engine.MoviesDiscoveryEngine
 import com.laterbox.app.movies.domain.model.BecauseYouWatchedGroup
 import com.laterbox.app.movies.domain.model.CatalogueSort
@@ -17,11 +22,13 @@ import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.model.MoviesDiscoveryShortcut
 import com.laterbox.app.movies.domain.model.MoviesHomeFeed
 import com.laterbox.app.movies.domain.model.OfflineMediaMatch
+import com.laterbox.app.movies.domain.model.PersonalizedTitleRecommendation
 import com.laterbox.app.movies.domain.model.RuntimeBucket
 import com.laterbox.app.movies.domain.model.SearchSuggestion
 import com.laterbox.app.movies.domain.model.SurprisePickResult
 import com.laterbox.app.movies.domain.model.WatchHistoryItem
 import com.laterbox.app.movies.domain.repository.MoviesRepository
+import com.laterbox.app.remoteconfig.RemoteConfigManager
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -72,6 +79,8 @@ data class MoviesHomeUiState(
     val recentlyViewed: List<MovieTitleSummary> = emptyList(),
     val collectionsWithCounts: List<CollectionWithCount> = emptyList(),
     val becauseYouWatchedGroups: List<BecauseYouWatchedGroup> = emptyList(),
+    val personalizedForYouRail: List<PersonalizedTitleRecommendation> = emptyList(),
+    val isPersonalizationActive: Boolean = false,
     val quickRuntimePicks: List<MovieTitleSummary> = emptyList(),
     val recentlyAddedRail: List<MovieTitleSummary> = emptyList(),
     val surprisePick: SurprisePickResult? = null,
@@ -116,7 +125,9 @@ class MoviesHomeViewModel(
     private val moviesRepository: MoviesRepository,
     private val userPreferencesRepository: UserPreferencesRepository,
     private val collectionRepository: CollectionRepository? = null,
-    private val computeDispatcher: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.Main.immediate
+    private val computeDispatcher: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.Main.immediate,
+    private val userUnderstandingRepository: UserUnderstandingRepository? = null,
+    private val remoteConfigManager: RemoteConfigManager? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MoviesHomeUiState())
@@ -145,6 +156,11 @@ class MoviesHomeViewModel(
     private val inFlightMutationKeys = mutableSetOf<String>()
     private var surpriseSeed: Long = 101L
     private var surprisePreferredKind: MediaKind? = null
+    @Volatile private var latestFacets: List<UserTasteFacetEntity> = emptyList()
+    @Volatile private var latestMediaCues: List<IntelligenceSignalEntity> = emptyList()
+    @Volatile private var localPersonalizationEnabled: Boolean = true
+    @Volatile private var remoteExperienceIntelligenceEnabled: Boolean = true
+    private val sessionExposureCounts = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
     private fun effectiveHiddenKeys(): Set<String> =
         if (pendingHiddenMediaKeys.isEmpty()) rawHiddenKeys else rawHiddenKeys + pendingHiddenMediaKeys
@@ -330,6 +346,47 @@ class MoviesHomeViewModel(
                         }
                     }
                 }
+        }
+        viewModelScope.launch {
+            userPreferencesRepository.userPreferencesFlow
+                .map { it.personalizationEnabled }
+                .distinctUntilChanged()
+                .collect { enabled ->
+                    localPersonalizationEnabled = enabled
+                    scheduleDiscoveryRecompute()
+                }
+        }
+        if (remoteConfigManager != null) {
+            viewModelScope.launch {
+                remoteConfigManager.state
+                    .map {
+                        it.activeConfig.isFeatureEnabled(
+                            RemoteCapabilities.KEY_EXPERIENCE_INTELLIGENCE,
+                            defaultValue = true
+                        )
+                    }
+                    .distinctUntilChanged()
+                    .collect { enabled ->
+                        remoteExperienceIntelligenceEnabled = enabled
+                        scheduleDiscoveryRecompute()
+                    }
+            }
+        }
+        if (userUnderstandingRepository != null) {
+            viewModelScope.launch {
+                userUnderstandingRepository.observeAllFacets().collect { facets ->
+                    latestFacets = facets
+                    scheduleDiscoveryRecompute()
+                }
+            }
+            viewModelScope.launch {
+                userUnderstandingRepository.observeSignalCount().collect {
+                    latestMediaCues = runCatching {
+                        userUnderstandingRepository.getRecentMediaCueSignals()
+                    }.getOrDefault(emptyList())
+                    scheduleDiscoveryRecompute()
+                }
+            }
         }
     }
 
@@ -826,9 +883,17 @@ class MoviesHomeViewModel(
     }
 
     fun rerollSurpriseMe(preferredKind: MediaKind? = surprisePreferredKind) {
+        _uiState.value.surprisePick?.pick?.stableMediaKey?.let { shownKey ->
+            sessionExposureCounts[shownKey] = (sessionExposureCounts[shownKey] ?: 0) + 1
+        }
         surprisePreferredKind = preferredKind
         surpriseSeed = surpriseSeed * 6364136223846793005L + 1442695040888963407L + System.nanoTime()
         recomputeDiscovery()
+    }
+
+    fun recordCardExposure(mediaKey: String) {
+        if (mediaKey.isBlank()) return
+        sessionExposureCounts[mediaKey] = (sessionExposureCounts[mediaKey] ?: 0) + 1
     }
 
     fun markWatched(item: MovieTitleSummary) {
@@ -1061,6 +1126,8 @@ class MoviesHomeViewModel(
             _uiState.update { current ->
                 current.copy(
                     becauseYouWatchedGroups = updated.becauseYouWatchedGroups,
+                    personalizedForYouRail = updated.personalizedForYouRail,
+                    isPersonalizationActive = updated.isPersonalizationActive,
                     quickRuntimePicks = updated.quickRuntimePicks,
                     recentlyAddedRail = updated.recentlyAddedRail,
                     availableLanguages = updated.availableLanguages,
@@ -1082,11 +1149,27 @@ class MoviesHomeViewModel(
                     state.newestRail
             )
 
+        val personalizationActive = localPersonalizationEnabled && remoteExperienceIntelligenceEnabled
+        val profile = IntelligenceDiscoveryProfile(
+            enabled = personalizationActive,
+            facets = latestFacets,
+            recentMediaCues = latestMediaCues,
+            sessionExposureCounts = sessionExposureCounts.toMap()
+        )
+
         val byw = MoviesDiscoveryEngine.buildBecauseYouWatchedGroups(
             watchHistory = latestNonTrailerHistory,
             watchlist = watchlistSnapshot,
             candidatePool = candidatePool,
-            hiddenMediaKeys = hidden
+            hiddenMediaKeys = hidden,
+            profile = profile
+        )
+        val forYou = MoviesDiscoveryEngine.buildPersonalizedForYouRail(
+            watchHistory = latestNonTrailerHistory,
+            watchlist = watchlistSnapshot,
+            candidatePool = candidatePool,
+            hiddenMediaKeys = hidden,
+            profile = profile
         )
         val quick = MoviesDiscoveryEngine.selectQuickRuntimePicks(
             items = candidatePool,
@@ -1104,11 +1187,14 @@ class MoviesHomeViewModel(
             watchlist = watchlistSnapshot,
             candidatePool = candidatePool,
             seed = surpriseSeed,
-            preferredKind = surprisePreferredKind
+            preferredKind = surprisePreferredKind,
+            profile = profile
         )
 
         return state.copy(
             becauseYouWatchedGroups = byw,
+            personalizedForYouRail = forYou,
+            isPersonalizationActive = personalizationActive,
             quickRuntimePicks = quick,
             recentlyAddedRail = recentAdded,
             availableLanguages = languages,

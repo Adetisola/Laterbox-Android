@@ -94,6 +94,7 @@ class MoviesRepositoryImpl(
     private val isTmdbEnabled: () -> Boolean = { true },
     private val onAnalyticsPerformance: ((metricName: String, durationMs: Int, screenId: String?) -> Unit)? = null,
     private val onAnalyticsError: ((category: String, screenId: String?) -> Unit)? = null,
+    private val intelligenceSignalLogger: com.laterbox.app.intelligence.IntelligenceSignalLogger? = null,
 ) : MoviesRepository {
 
     @Volatile
@@ -2028,9 +2029,11 @@ class MoviesRepositoryImpl(
         if (existing != null) {
             moviesDao.deleteWatchlistItem(existing.compositeId)
             cid?.let { moviesDao.deleteWatchlistItemsByCanonical(it) }
+            intelligenceSignalLogger?.logWatchlistChange(resolved, added = false)
             false
         } else {
             moviesDao.insertWatchlistItem(resolved.toWatchlistEntity(nowMs()))
+            intelligenceSignalLogger?.logWatchlistChange(resolved, added = true)
             true
         }
     }
@@ -2099,6 +2102,12 @@ class MoviesRepositoryImpl(
                 isHiddenTitle = existing?.isHiddenTitle ?: false
             )
         )
+
+        if (!wasCompleted && reachedCompletion) {
+            intelligenceSignalLogger?.logWatchProgress(resolved, cleanPos, cleanDur, isCompleted = true)
+        } else if (cleanDur > 0L && prevFraction < 0.25f && (cleanPos.toFloat() / cleanDur.toFloat()) >= 0.25f) {
+            intelligenceSignalLogger?.logWatchProgress(resolved, cleanPos, cleanDur, isCompleted = false)
+        }
 
         val dlProgressDao = downloadPlaybackProgressDao
         if (dlProgressDao != null) {
@@ -2341,6 +2350,8 @@ class MoviesRepositoryImpl(
                 isHiddenTitle = false
             )
         )
+        intelligenceSignalLogger?.logWatchProgress(resolved, effectiveDuration, effectiveDuration, isCompleted = true)
+        Unit
     }
 
     override suspend fun markSeriesWatched(
@@ -2587,6 +2598,9 @@ class MoviesRepositoryImpl(
                     hiddenAt = nowMs()
                 )
             )
+            if (cached != null) {
+                intelligenceSignalLogger?.logMovieHidden(cached)
+            }
         } else {
             val fallbackKind = itemHint?.kind?.wireValue ?: MediaKind.MOVIE.wireValue
             val mediaKey = cid ?: "$resolvedProviderId:$resolvedTitleId:$fallbackKind"
@@ -2743,6 +2757,8 @@ class MoviesRepositoryImpl(
                 addedAt = nowMs()
             )
         )
+        intelligenceSignalLogger?.logMediaAddedToCollection(resolved)
+        Unit
     }
 
     override suspend fun removeMediaFromCollection(item: MovieTitleSummary, collectionId: Long) = withContext(ioDispatcher) {
@@ -2965,6 +2981,10 @@ class MoviesRepositoryImpl(
         if (clean.length < 2) return@withContext
         moviesDao.upsertSearchQuery(
             MovieSearchHistoryEntity(query = clean, searchedAt = nowMs())
+        )
+        intelligenceSignalLogger?.logSearch(
+            surfaceScope = com.laterbox.app.data.local.entity.IntelligenceSurfaceScope.MOVIES,
+            query = clean
         )
     }
 

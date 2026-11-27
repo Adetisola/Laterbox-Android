@@ -183,5 +183,33 @@ class NotificationOpenActivityTest {
             destination = defaultDest
         )
         assertFalse(defaultIntent.getBooleanExtra(NotificationOpenActivity.EXTRA_IS_REMINDER, true))
+
+        // 6. Opening a Tier-3 notification clears any swipe backoff on NotificationGovernor
+        val nowMs = System.currentTimeMillis()
+        app.container.userPreferencesRepository.applyTier3SwipeBackoff(
+            categoryName = NotificationCategory.MOVIES_WATCHLIST.name,
+            backoffUntilMs = nowMs + 86_400_000L,
+            newStreak = 1
+        )
+        val moviesNudgeIntent = NotificationOpenActivity.createIntent(
+            context = app,
+            linkId = -1L,
+            url = "laterbox://movies/detail/moviebox/m42",
+            notificationRecordId = -1L,
+            notificationId = 9001,
+            mode = NotificationOpenActivity.MODE_OPEN_DESTINATION,
+            destination = LaterboxDestination.MovieDetail.createRoute("moviebox", "m42"),
+            category = NotificationCategory.MOVIES_WATCHLIST
+        )
+        Robolectric.buildActivity(NotificationOpenActivity::class.java, moviesNudgeIntent).create().destroy()
+        val deadline = System.currentTimeMillis() + 3_000L
+        while (System.currentTimeMillis() < deadline) {
+            val prefs = app.container.userPreferencesRepository.userPreferencesFlow.first()
+            if (NotificationCategory.MOVIES_WATCHLIST.name !in prefs.tier3BackoffUntilMap()) break
+            Thread.sleep(20)
+        }
+        val clearedPrefs = app.container.userPreferencesRepository.userPreferencesFlow.first()
+        assertFalse(NotificationCategory.MOVIES_WATCHLIST.name in clearedPrefs.tier3BackoffUntilMap())
+        assertFalse(NotificationCategory.MOVIES_WATCHLIST.name in clearedPrefs.tier3SwipeStreakMap())
     }
 }

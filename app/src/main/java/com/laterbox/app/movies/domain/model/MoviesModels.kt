@@ -384,10 +384,20 @@ data class CollectionMediaItem(
 data class BecauseYouWatchedGroup(
     val anchorTitle: String,
     val anchorKind: MediaKind,
-    val items: List<MovieTitleSummary>
+    val items: List<MovieTitleSummary>,
+    val rationale: String? = null,
+    val itemRationales: Map<String, String> = emptyMap()
 )
 
 data class SurprisePickResult(
     val pick: MovieTitleSummary,
+    val rationale: String,
+    val signalTags: List<String> = emptyList()
+)
+
+data class PersonalizedTitleRecommendation(
+    val item: MovieTitleSummary,
+    val score: Double,
     val rationale: String
 )
+

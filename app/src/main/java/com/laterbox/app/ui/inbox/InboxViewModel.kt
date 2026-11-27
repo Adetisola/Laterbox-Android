@@ -30,7 +30,8 @@ class InboxViewModel(
     private val linkRepository: LinkRepository,
     private val userPreferencesRepository: UserPreferencesRepository,
     private val notificationHistoryRepository: NotificationHistoryRepository? = null,
-    private val inspectionDao: com.laterbox.app.media.data.db.dao.MediaInspectionDao? = null
+    private val inspectionDao: com.laterbox.app.media.data.db.dao.MediaInspectionDao? = null,
+    private val intelligenceSignalLogger: com.laterbox.app.intelligence.IntelligenceSignalLogger? = null
 ) : ViewModel() {
 
     private val _searchQuery = MutableStateFlow("")
@@ -193,8 +194,21 @@ class InboxViewModel(
         }
     }
 
+    private var searchSignalJob: kotlinx.coroutines.Job? = null
+
     fun onSearchQueryChange(query: String) {
         _searchQuery.value = query
+        searchSignalJob?.cancel()
+        val clean = query.trim()
+        if (clean.length >= 3 && intelligenceSignalLogger != null) {
+            searchSignalJob = viewModelScope.launch {
+                kotlinx.coroutines.delay(900L)
+                intelligenceSignalLogger.logSearch(
+                    surfaceScope = com.laterbox.app.data.local.entity.IntelligenceSurfaceScope.LIBRARY,
+                    query = clean
+                )
+            }
+        }
     }
 
     fun onClearSearch() {
