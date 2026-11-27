@@ -70,6 +70,7 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
 
     override fun onCreate() {
         super.onCreate()
+        com.laterbox.app.ai.AppCapabilityRegistry.initialize(this)
         container = DefaultAppContainer(this)
 
         // Bypass background workers and App Check in Robolectric / unit test environments
@@ -107,6 +108,8 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
 
                 container.database.savedLinkDao().resetStuckFetchingLinks()
                 MetadataSyncWorker.enqueue(this@LaterboxApplication)
+
+                com.laterbox.app.reminders.AlarmMigrationManager.migrateIfNeeded(this@LaterboxApplication, container)
 
                 val prefs = container.userPreferencesRepository.userPreferencesFlow.first()
                 val smartSettings = prefs.toSmartReminderSettings()

@@ -64,9 +64,17 @@ class ContextualNotificationEngineTest {
             .setTransactionExecutor { it.run() }
             .build()
         prefsRepo = UserPreferencesRepository(context)
+        kotlinx.coroutines.runBlocking { prefsRepo.resetNotificationGovernorStateForTest() }
         activityRepo = ActivityEventRepository(db.activityEventDao())
         healthChecker = AppHealthChecker(context, db, YtDlpRuntimeManager(context), prefsRepo)
-        engine = ContextualNotificationEngine(context, db, prefsRepo, activityRepo, healthChecker)
+        engine = ContextualNotificationEngine(
+            appContext = context,
+            database = db,
+            userPreferencesRepository = prefsRepo,
+            activityEventRepository = activityRepo,
+            appHealthChecker = healthChecker,
+            notificationGovernor = NotificationGovernor(prefsRepo)
+        )
     }
 
     @After

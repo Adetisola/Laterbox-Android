@@ -30,6 +30,9 @@ class NotificationOpenActivity : Activity() {
         val targetMode = intent.getStringExtra(EXTRA_TARGET_MODE) ?: MODE_OPEN_LINK_DETAIL
         val destination = intent.getStringExtra(EXTRA_DESTINATION)
         val chatInitialPrompt = intent.getStringExtra(EXTRA_CHAT_INITIAL_PROMPT)
+        val isReminder = intent.getBooleanExtra(EXTRA_IS_REMINDER, false)
+        val shouldIncrementReminderOpened = isReminder ||
+            (linkId > 0 && targetMode != MODE_OPEN_DESTINATION && !intent.hasExtra(EXTRA_IS_REMINDER))
 
         // 1. Cancel the active status bar notification
         if (notificationId != -1) {
@@ -44,6 +47,8 @@ class NotificationOpenActivity : Activity() {
                 try {
                     if (linkId > 0 && targetMode != MODE_OPEN_DESTINATION) {
                         container.linkRepository.setRead(linkId, true)
+                    }
+                    if (shouldIncrementReminderOpened) {
                         container.userPreferencesRepository.incrementRemindersOpened()
                     }
                     if (notifRecordId > 0) {
@@ -113,6 +118,7 @@ class NotificationOpenActivity : Activity() {
         const val EXTRA_TARGET_MODE = "extra_target_mode"
         const val EXTRA_DESTINATION = "extra_destination"
         const val EXTRA_CHAT_INITIAL_PROMPT = "extra_chat_initial_prompt"
+        const val EXTRA_IS_REMINDER = "extra_is_reminder"
 
         const val MODE_OPEN_LINK_DETAIL = "mode_open_link_detail"
         const val MODE_OPEN_BROWSER = "mode_open_browser"
@@ -126,7 +132,8 @@ class NotificationOpenActivity : Activity() {
             notificationId: Int,
             mode: String = MODE_OPEN_LINK_DETAIL,
             destination: String? = null,
-            chatInitialPrompt: String? = null
+            chatInitialPrompt: String? = null,
+            isReminder: Boolean = false
         ): Intent {
             return Intent(context, NotificationOpenActivity::class.java).apply {
                 putExtra(EXTRA_LINK_ID, linkId)
@@ -134,6 +141,7 @@ class NotificationOpenActivity : Activity() {
                 putExtra(EXTRA_NOTIFICATION_RECORD_ID, notificationRecordId)
                 putExtra(EXTRA_NOTIFICATION_ID, notificationId)
                 putExtra(EXTRA_TARGET_MODE, mode)
+                putExtra(EXTRA_IS_REMINDER, isReminder)
                 if (!destination.isNullOrBlank()) putExtra(EXTRA_DESTINATION, destination)
                 if (!chatInitialPrompt.isNullOrBlank()) putExtra(EXTRA_CHAT_INITIAL_PROMPT, chatInitialPrompt)
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP

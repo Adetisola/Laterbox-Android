@@ -48,8 +48,12 @@ class SmartReminderScheduler(private val context: Context) {
      */
     suspend fun sync(
         settings: SmartReminderSettings,
-        now: ZonedDateTime = ZonedDateTime.now()
+        now: ZonedDateTime = ZonedDateTime.now(),
+        skipMigration: Boolean = false
     ) {
+        if (!skipMigration) {
+            com.laterbox.app.reminders.AlarmMigrationManager.migrateIfNeeded(context)
+        }
         cancelLegacyWorkManagerJobs()
 
         if (!settings.enabled) {
@@ -180,10 +184,10 @@ class SmartReminderScheduler(private val context: Context) {
 
     companion object {
         private const val TAG = "SmartReminderScheduler"
-        const val SMART_ALARM_BASE_REQUEST_CODE = 900_000
+        const val SMART_ALARM_BASE_REQUEST_CODE = com.laterbox.app.reminders.NotificationIds.SMART_ALARM_BASE_REQUEST_CODE
 
         fun requestCodeFor(type: SmartScheduleType): Int {
-            return SMART_ALARM_BASE_REQUEST_CODE + type.ordinal + 1
+            return com.laterbox.app.reminders.NotificationIds.smartScheduleAlarmRequestCode(type.ordinal)
         }
     }
 }

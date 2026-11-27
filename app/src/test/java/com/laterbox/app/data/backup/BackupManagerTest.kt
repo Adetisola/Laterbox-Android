@@ -194,4 +194,171 @@ class BackupManagerTest {
             targetDb.close()
         }
     }
+
+    @Test
+    fun importFromJson_reschedulesAlarmsOnlyForUnreadUnarchivedFutureReminders() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val nowMs = 1_800_000_000_000L
+        val futureMs = nowMs + 3_600_000L
+        val pastMs = nowMs - 60_000L
+
+        val backup = LaterboxBackup(
+            version = 1,
+            exportedAt = nowMs,
+            links = listOf(
+                BackupLink(
+                    originalUrl = "https://example.com/future-unread",
+                    normalizedUrl = "https://example.com/future-unread",
+                    title = "Future Unread",
+                    domain = "example.com",
+                    isRead = false,
+                    isArchived = false,
+                    reminderAt = futureMs,
+                    createdAt = nowMs - 10_000L
+                ),
+                BackupLink(
+                    originalUrl = "https://example.com/future-read",
+                    normalizedUrl = "https://example.com/future-read",
+                    title = "Future Read",
+                    domain = "example.com",
+                    isRead = true,
+                    isArchived = false,
+                    reminderAt = futureMs,
+                    createdAt = nowMs - 10_000L
+                ),
+                BackupLink(
+                    originalUrl = "https://example.com/future-archived",
+                    normalizedUrl = "https://example.com/future-archived",
+                    title = "Future Archived",
+                    domain = "example.com",
+                    isRead = false,
+                    isArchived = true,
+                    reminderAt = futureMs,
+                    createdAt = nowMs - 10_000L
+                ),
+                BackupLink(
+                    originalUrl = "https://example.com/past-unread",
+                    normalizedUrl = "https://example.com/past-unread",
+                    title = "Past Unread",
+                    domain = "example.com",
+                    isRead = false,
+                    isArchived = false,
+                    reminderAt = pastMs,
+                    createdAt = nowMs - 10_000L
+                )
+            )
+        )
+
+        val scheduled = mutableListOf<Triple<Long, Long, String?>>()
+        val realScheduler = com.laterbox.app.reminders.ReminderScheduler(context)
+        val managerWithHook = BackupManager(
+            database = database,
+            reminderScheduler = realScheduler,
+            onScheduleReminder = { linkId, triggerAt, title, _ ->
+                scheduled.add(Triple(linkId, triggerAt, title))
+                realScheduler.scheduleReminder(linkId, triggerAt, title, "https://example.com/future-unread")
+            },
+            nowMsProvider = { nowMs }
+        )
+
+        val json = managerWithHook.serializeBackup(backup)
+        val res = managerWithHook.importFromJson(ByteArrayInputStream(json.toByteArray()))
+        assertTrue(res.isSuccess)
+        assertEquals(4, res.getOrThrow().restoredLinksCount)
+
+        assertEquals(1, scheduled.size)
+        assertEquals("Future Unread", scheduled[0].third)
+        assertEquals(futureMs, scheduled[0].second)
+
+        val scheduledLinkId = scheduled[0].first
+        val pi = android.app.PendingIntent.getBroadcast(
+            context,
+            com.laterbox.app.reminders.NotificationIds.linkReminderAlarmRequestCode(scheduledLinkId),
+            android.content.Intent(context, com.laterbox.app.reminders.ReminderReceiver::class.java).apply {
+                action = com.laterbox.app.reminders.ReminderReceiver.ACTION_TRIGGER_REMINDER
+            },
+            android.app.PendingIntent.FLAG_NO_CREATE or android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+        assertNotNull(pi)
+        realScheduler.cancelReminder(scheduledLinkId)
+    }
+
+    @Test
+    fun importFromJson_mergedDuplicateWithMissingLocalReminder_reschedulesFutureReminder() = runTest {
+        val nowMs = 1_800_000_000_000L
+        val futureMs = nowMs + 7_200_000L
+        val linkDao = database.savedLinkDao()
+
+        val unreadId = linkDao.insertLink(
+            SavedLinkEntity(
+                originalUrl = "https://example.com/dup-unread",
+                normalizedUrl = "https://example.com/dup-unread",
+                title = "Dup Unread",
+                domain = "example.com",
+                isRead = false,
+                isArchived = false,
+                reminderAt = null,
+                nudgeDismissed = true
+            )
+        )
+        linkDao.insertLink(
+            SavedLinkEntity(
+                originalUrl = "https://example.com/dup-read",
+                normalizedUrl = "https://example.com/dup-read",
+                title = "Dup Read",
+                domain = "example.com",
+                isRead = true,
+                isArchived = false,
+                reminderAt = null
+            )
+        )
+
+        val backup = LaterboxBackup(
+            version = 1,
+            exportedAt = nowMs,
+            links = listOf(
+                BackupLink(
+                    originalUrl = "https://example.com/dup-unread",
+                    normalizedUrl = "https://example.com/dup-unread",
+                    title = "Dup Unread",
+                    domain = "example.com",
+                    isRead = false,
+                    isArchived = false,
+                    reminderAt = futureMs,
+                    createdAt = nowMs
+                ),
+                BackupLink(
+                    originalUrl = "https://example.com/dup-read",
+                    normalizedUrl = "https://example.com/dup-read",
+                    title = "Dup Read",
+                    domain = "example.com",
+                    isRead = true,
+                    isArchived = false,
+                    reminderAt = futureMs,
+                    createdAt = nowMs
+                )
+            )
+        )
+
+        val scheduled = mutableListOf<Triple<Long, Long, String?>>()
+        val manager = BackupManager(
+            database = database,
+            onScheduleReminder = { linkId, triggerAt, title, _ ->
+                scheduled.add(Triple(linkId, triggerAt, title))
+            },
+            nowMsProvider = { nowMs }
+        )
+
+        val json = manager.serializeBackup(backup)
+        val res = manager.importFromJson(ByteArrayInputStream(json.toByteArray()))
+        assertTrue(res.isSuccess)
+        assertEquals(2, res.getOrThrow().skippedDuplicatesCount)
+
+        assertEquals(1, scheduled.size)
+        assertEquals(unreadId, scheduled[0].first)
+        assertEquals(futureMs, scheduled[0].second)
+        val mergedUnread = linkDao.getEntityById(unreadId)!!
+        assertEquals(futureMs, mergedUnread.reminderAt)
+        assertEquals(false, mergedUnread.nudgeDismissed)
+    }
 }

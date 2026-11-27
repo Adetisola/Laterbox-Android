@@ -230,4 +230,153 @@ class LaterboxBackendAiClientTest {
         assertTrue(bodyStr.contains("act-1"))
         assertTrue(bodyStr.contains("Opened details for Dune"))
     }
+
+    @Test
+    fun streamChat_parsesApprovalRequiredSseEvent() = runBlocking {
+        val sseBody = """
+            event: response_start
+            data: {"manifestRevision":"2026.12.01-v3","manifestSynced":true}
+
+            event: approval_required
+            data: {"action":{"type":"DELETE_DOWNLOAD","taskId":"task-9","title":"Old Clip"},"category":"LIBRARY_MANAGEMENT"}
+
+            event: response_complete
+            data: {"fullText":"Ready to delete.","displayText":"Ready to delete.","actions":[]}
+
+        """.trimIndent()
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "text/event-stream")
+                .setBody(sseBody)
+        )
+
+        val base = server.url("/").toString().trimEnd('/')
+        val client = LaterboxBackendAiClient(
+            baseUrlProvider = { base },
+            appCheckTokenProvider = { "tok" }
+        )
+
+        val events = client.streamChat(
+            conversationId = "conv-approval",
+            turns = listOf(GeminiTurn(GeminiRole.USER, "Delete old clip")),
+            capabilitySnapshot = CapabilitySnapshot(clientVersionCode = 84),
+            runtimeContextBlock = ""
+        ).toList()
+
+        val approval = events.filterIsInstance<BackendAiStreamEvent.ApprovalRequired>().single()
+        assertTrue(approval.action is ChatAction.DeleteDownload)
+        assertEquals("DELETE_DOWNLOAD", approval.action.actionType)
+        assertEquals("LIBRARY_MANAGEMENT", approval.category)
+    }
+
+    @Test
+    fun fetchCapabilityManifest_retriesOn401WithFreshToken_andDoesNotRetryGuest403() = runBlocking {
+        // 1. 401 -> forceRefresh=true -> 200
+        server.enqueue(MockResponse().setResponseCode(401))
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody(
+                    """
+                    {
+                      "manifestVersion": 3,
+                      "manifestRevision": "${AppCapabilityRegistry.MANIFEST_REVISION}",
+                      "manifestHash": "${AppCapabilityRegistry.MANIFEST_HASH}",
+                      "clientInSync": true,
+                      "items": [{"id":"a"}]
+                    }
+                    """.trimIndent()
+                )
+        )
+
+        val base = server.url("/").toString().trimEnd('/')
+        var refreshCalls = 0
+        val refreshingClient = LaterboxBackendAiClient(
+            baseUrlProvider = { base },
+            appCheckTokenProvider = { null },
+            authHeaderProvider = { forceRefresh ->
+                if (forceRefresh) {
+                    refreshCalls++
+                    "X-Firebase-AppCheck" to "fresh-token"
+                } else {
+                    "X-Firebase-AppCheck" to "stale-token"
+                }
+            }
+        )
+
+        val manifest = refreshingClient.fetchCapabilityManifest()
+        assertNotNull(manifest)
+        assertTrue(manifest!!.clientInSync)
+        assertEquals(1, refreshCalls)
+        assertEquals("stale-token", server.takeRequest().getHeader("X-Firebase-AppCheck"))
+        assertEquals("fresh-token", server.takeRequest().getHeader("X-Firebase-AppCheck"))
+
+        // 2. Guest 403 -> must NOT force-refresh retry
+        server.enqueue(MockResponse().setResponseCode(403))
+        var guestRefreshCalls = 0
+        val guestClient = LaterboxBackendAiClient(
+            baseUrlProvider = { base },
+            appCheckTokenProvider = { null },
+            authHeaderProvider = { forceRefresh ->
+                if (forceRefresh) guestRefreshCalls++
+                com.laterbox.app.auth.LaterboxBackendAuthProvider.HEADER_GUEST_AUTH to "guest-jwt"
+            }
+        )
+        val guestResult = guestClient.fetchCapabilityManifest()
+        assertEquals(null, guestResult)
+        assertEquals(0, guestRefreshCalls)
+        assertEquals(3, server.requestCount)
+    }
+
+    @Test
+    fun guestAuth_skipsHttpCallsForGenerateConversationTitleAndReportActionResult() = runBlocking {
+        val base = server.url("/").toString().trimEnd('/')
+        val guestClient = LaterboxBackendAiClient(
+            baseUrlProvider = { base },
+            appCheckTokenProvider = { null },
+            authHeaderProvider = { _ ->
+                com.laterbox.app.auth.LaterboxBackendAuthProvider.HEADER_GUEST_AUTH to "guest-jwt"
+            }
+        )
+
+        val titleResult = guestClient.generateConversationTitle(
+            firstUserMessage = "Hey laterbox, please find my kotlin links",
+            firstAssistantReply = "Sure!",
+            currentTitle = "Hey laterbox, please find my kotlin links"
+        )
+        assertEquals(null, titleResult)
+
+        val ack = guestClient.reportActionResult(
+            conversationId = "conv-guest",
+            actionType = "TOGGLE_MOVIE_WATCHLIST",
+            category = "LIBRARY_MANAGEMENT",
+            status = "executed",
+            detail = "Added"
+        )
+        assertNotNull(ack)
+        assertTrue(ack!!.accepted)
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
+    fun generateConversationTitle_returnsNullOnAppCheck403WithoutInfiniteRetry() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(403).setBody("""{"detail":"Forbidden"}"""))
+        val base = server.url("/").toString().trimEnd('/')
+        var tokenCalls = 0
+        val client = LaterboxBackendAiClient(
+            baseUrlProvider = { base },
+            appCheckTokenProvider = {
+                tokenCalls++
+                "static-app-check"
+            }
+        )
+
+        val result = client.generateConversationTitle(
+            firstUserMessage = "Summarize my saved articles"
+        )
+        assertEquals(null, result)
+        assertEquals(1, server.requestCount)
+        assertEquals(2, tokenCalls) // initial + single forceRefresh check returning identical token -> no second HTTP request
+    }
 }

@@ -36,18 +36,18 @@ class SmartReminderSchedulerTest {
         // All codes should be distinct
         assertEquals("Each schedule type must have a unique request code", types.size, codes.distinct().size)
 
-        // All codes should be above base request code (900_000)
+        // All codes should be above base request code (930_000)
         for (code in codes) {
-            assertTrue("Request code $code should be >= 900001", code > SmartReminderScheduler.SMART_ALARM_BASE_REQUEST_CODE)
+            assertTrue("Request code $code should be >= 930001", code > SmartReminderScheduler.SMART_ALARM_BASE_REQUEST_CODE)
         }
 
         // Verify specific code bindings
-        assertEquals(900_001, SmartReminderScheduler.requestCodeFor(SmartScheduleType.MORNING))
-        assertEquals(900_002, SmartReminderScheduler.requestCodeFor(SmartScheduleType.EVENING))
-        assertEquals(900_003, SmartReminderScheduler.requestCodeFor(SmartScheduleType.WEEKEND_SAT))
-        assertEquals(900_004, SmartReminderScheduler.requestCodeFor(SmartScheduleType.WEEKEND_SUN))
-        assertEquals(900_005, SmartReminderScheduler.requestCodeFor(SmartScheduleType.DAILY))
-        assertEquals(900_006, SmartReminderScheduler.requestCodeFor(SmartScheduleType.CUSTOM))
+        assertEquals(930_001, SmartReminderScheduler.requestCodeFor(SmartScheduleType.MORNING))
+        assertEquals(930_002, SmartReminderScheduler.requestCodeFor(SmartScheduleType.EVENING))
+        assertEquals(930_003, SmartReminderScheduler.requestCodeFor(SmartScheduleType.WEEKEND_SAT))
+        assertEquals(930_004, SmartReminderScheduler.requestCodeFor(SmartScheduleType.WEEKEND_SUN))
+        assertEquals(930_005, SmartReminderScheduler.requestCodeFor(SmartScheduleType.DAILY))
+        assertEquals(930_006, SmartReminderScheduler.requestCodeFor(SmartScheduleType.CUSTOM))
     }
 
     @Test

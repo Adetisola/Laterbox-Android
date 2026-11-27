@@ -258,4 +258,243 @@ class LaterboxContextEngineTest {
         assertTrue(built.contextBlock.contains("Movies & TV Viewing Reminders"))
         assertTrue(built.contextBlock.contains("Watch Episode 3 tonight"))
     }
+
+    @Test
+    fun buildContextForPrompt_propagatesRemoteConfigFlagsAndMaintenanceState() = runTest {
+        val server = okhttp3.mockwebserver.MockWebServer()
+        server.enqueue(
+            okhttp3.mockwebserver.MockResponse()
+                .setResponseCode(200)
+                .setBody(
+                    """
+                    {
+                      "schemaVersion": 1,
+                      "revision": 9,
+                      "publishedAt": "2026-12-01T00:00:00Z",
+                      "expiresAt": "2099-01-01T00:00:00Z",
+                      "general": { "minRefreshIntervalSeconds": 60, "staleCacheMaxAgeSeconds": 86400 },
+                      "versionPolicy": { "minimumSupportedVersionCode": 1, "recommendedVersionCode": 84 },
+                      "maintenance": {
+                        "enabled": true,
+                        "mode": "partial",
+                        "title": "Catalogue Maintenance",
+                        "message": "Online streaming is paused for upgrades.",
+                        "allowLocalOfflineAccess": true
+                      },
+                      "announcements": [],
+                      "features": {
+                        "movies_tv_enabled": true,
+                        "provider_moviebox_enabled": false,
+                        "provider_internet_archive_enabled": true,
+                        "provider_tvmaze_enabled": false,
+                        "movies_recommendations_enabled": false,
+                        "ai_assistant_enabled": true,
+                        "smart_reminders_enabled": false,
+                        "player_intro_skip_enabled": false
+                      },
+                      "ui": { "components": [] }
+                    }
+                    """.trimIndent()
+                )
+        )
+        server.start()
+        try {
+            val baseUrl = server.url("/").toString().trimEnd('/')
+            val dataStore = androidx.datastore.preferences.core.PreferenceDataStoreFactory.create(
+                produceFile = { java.io.File(context.cacheDir, "rc_ctx_test_${System.nanoTime()}.preferences_pb") }
+            )
+            val cache = com.laterbox.app.remoteconfig.RemoteConfigCache(dataStore) { baseUrl }
+            val client = com.laterbox.app.remoteconfig.RemoteConfigClient(
+                okHttpClient = okhttp3.OkHttpClient(),
+                baseUrlProvider = { baseUrl },
+                appCheckTokenProvider = { null },
+                clientVersionCode = 84,
+                clientVersionName = "1.0.84"
+            )
+            val repo = com.laterbox.app.remoteconfig.RemoteConfigRepository(
+                cache = cache,
+                client = client,
+                clientVersionCode = 84
+            )
+            val rcManager = com.laterbox.app.remoteconfig.RemoteConfigManager(repository = repo)
+            rcManager.refreshNow()
+
+            val wiredEngine = LaterboxContextEngine(
+                database = db,
+                activityEventRepository = activityRepo,
+                userPreferencesRepository = prefsRepo,
+                ytDlpRuntimeManager = YtDlpRuntimeManager(context),
+                appContext = context,
+                remoteConfigManager = rcManager
+            )
+
+            val built = wiredEngine.buildContextForPrompt("Why can't I browse MovieBox right now?")
+            val snap = built.capabilitySnapshot
+            assertTrue(snap.onlineServicesPaused)
+            assertFalse(snap.providerMovieboxEnabled)
+            assertTrue(snap.providerInternetArchiveEnabled)
+            assertFalse(snap.providerTvmazeEnabled)
+            assertFalse(snap.moviesRecommendationsEnabled)
+            assertFalse(snap.playerIntroSkipEnabled)
+            assertFalse(snap.smartRemindersEnabled)
+
+            assertTrue(built.contextBlock.contains("Maintenance notice: Online streaming is paused for upgrades."))
+            assertTrue(built.contextBlock.contains("Online services: Paused (maintenance)"))
+            assertTrue(built.contextBlock.contains("MovieBox=off, Internet Archive=on, TVMaze=off"))
+            assertTrue(built.contextBlock.contains("Evaluated Capability States (Manifest v3):"))
+            assertTrue(built.contextBlock.contains("movies.discovery_and_library): DISABLED"))
+            assertTrue(built.contextBlock.contains("downloads.media_extraction): CONDITIONALLY_AVAILABLE"))
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun buildContextForPrompt_doesNotLeakUnrelatedCollectionNames_andIncludesMatchedOrExplicitCollections() = runTest {
+        val hospitalColId = db.collectionDao().insertCollection(
+            com.laterbox.app.data.local.entity.CollectionEntity(name = "Hospital Bills")
+        )
+        val breakupColId = db.collectionDao().insertCollection(
+            com.laterbox.app.data.local.entity.CollectionEntity(name = "Breakup Notes")
+        )
+        val linkId1 = db.savedLinkDao().insertLink(
+            SavedLinkEntity(
+                originalUrl = "https://example.com/receipt",
+                normalizedUrl = "https://example.com/receipt",
+                title = "Clinic Invoice 2026",
+                domain = "example.com",
+                contentType = ContentType.ARTICLE,
+                collectionId = hospitalColId
+            )
+        )
+        db.savedLinkDao().insertLinkCollectionCrossRef(
+            com.laterbox.app.data.local.entity.LinkCollectionCrossRef(linkId = linkId1, collectionId = hospitalColId)
+        )
+        val linkId2 = db.savedLinkDao().insertLink(
+            SavedLinkEntity(
+                originalUrl = "https://example.com/journal",
+                normalizedUrl = "https://example.com/journal",
+                title = "Personal Reflection",
+                domain = "example.com",
+                contentType = ContentType.ARTICLE,
+                collectionId = breakupColId
+            )
+        )
+        db.savedLinkDao().insertLinkCollectionCrossRef(
+            com.laterbox.app.data.local.entity.LinkCollectionCrossRef(linkId = linkId2, collectionId = breakupColId)
+        )
+
+        // 1. Unrelated prompt: numeric count stays in Library summary, ZERO raw collection names anywhere
+        val unrelated = engine.buildContextForPrompt("What movies are trending on my watchlist?")
+        assertTrue(unrelated.contextBlock.contains("2 collections"))
+        assertFalse(unrelated.contextBlock.contains("Hospital Bills"))
+        assertFalse(unrelated.contextBlock.contains("Breakup Notes"))
+        assertFalse(unrelated.contextBlock.contains("Collections (max"))
+        assertFalse(unrelated.contextBlock.contains("collections=["))
+
+        // 2. Keyword-matched prompt: includes ONLY matching collection
+        val matched = engine.buildContextForPrompt("Show me my hospital receipts")
+        assertTrue(matched.contextBlock.contains("Hospital Bills"))
+        assertFalse(matched.contextBlock.contains("Breakup Notes"))
+
+        // 3. Explicit collections query: includes requested collections
+        val explicit = engine.buildContextForPrompt("List my collections")
+        assertTrue(explicit.contextBlock.contains("Hospital Bills"))
+        assertTrue(explicit.contextBlock.contains("Breakup Notes"))
+    }
+
+    @Test
+    fun buildContextForPrompt_rejectsSubstringAndFeatureHelpCollectionLeaks() = runTest {
+        val sensitiveCollections = listOf(
+            "Hospital Bills",
+            "Breakup Notes",
+            "Private Art",
+            "Tax Returns",
+            "Shower Thoughts",
+            "Othello"
+        )
+        sensitiveCollections.forEach { name ->
+            db.collectionDao().insertCollection(
+                com.laterbox.app.data.local.entity.CollectionEntity(name = name)
+            )
+        }
+
+        val benignPrompts = listOf(
+            "I am not sure what to watch",
+            "I feel ill today",
+            "Explain hospitality trends",
+            "Recommend an article to read",
+            "Fix syntax error in SQL",
+            "What TV show should I watch?",
+            "Hello",
+            "How do collections work in Laterbox?"
+        )
+        for (prompt in benignPrompts) {
+            val built = engine.buildContextForPrompt(prompt)
+            for (secret in sensitiveCollections) {
+                assertFalse(
+                    "Prompt '$prompt' leaked collection '$secret'",
+                    built.contextBlock.contains(secret)
+                )
+            }
+            assertFalse(
+                "Prompt '$prompt' unexpectedly rendered Collections section",
+                built.contextBlock.contains("Collections (max")
+            )
+        }
+
+        val directMatch = engine.buildContextForPrompt("Show my Hospital Bills")
+        assertTrue(directMatch.contextBlock.contains("Hospital Bills"))
+        assertFalse(directMatch.contextBlock.contains("Breakup Notes"))
+
+        val explicitList = engine.buildContextForPrompt("List my collections")
+        sensitiveCollections.forEach { secret ->
+            assertTrue(
+                "Explicit list query missing '$secret'",
+                explicitList.contextBlock.contains(secret)
+            )
+        }
+    }
+
+    @Test
+    fun buildContextForPrompt_wiresAppHealthCheckerSummary() = runTest {
+        val runtimeManager = YtDlpRuntimeManager(context)
+        val checker = com.laterbox.app.diagnostics.AppHealthChecker(
+            appContext = context,
+            database = db,
+            runtimeManager = runtimeManager,
+            userPreferencesRepository = prefsRepo
+        )
+        // Insert failed download task so health checker surfaces a real issue
+        db.downloadTaskDao().insertTask(
+            com.laterbox.app.media.data.db.entity.DownloadTaskEntity(
+                id = "t-health-1",
+                savedLinkId = null,
+                sourceUrl = "https://example.com/v.mp4",
+                sourcePlatform = "Direct",
+                candidateId = null,
+                formatSelector = null,
+                mediaType = MediaType.VIDEO.name,
+                qualityLabel = null,
+                title = "Broken Video",
+                status = com.laterbox.app.media.domain.model.DownloadState.FAILED.name,
+                errorMessage = "Network error",
+                createdAt = 1700000000000L,
+                updatedAt = 1700000000000L
+            )
+        )
+        val healthEngine = LaterboxContextEngine(
+            database = db,
+            activityEventRepository = activityRepo,
+            userPreferencesRepository = prefsRepo,
+            appHealthChecker = checker,
+            ytDlpRuntimeManager = runtimeManager,
+            appContext = context
+        )
+
+        val built = healthEngine.buildContextForPrompt("Check my app health")
+        assertTrue(built.contextBlock.contains("App Health Summary:"))
+        assertTrue(built.contextBlock.contains("failedDownloads=1"))
+        assertTrue(built.contextBlock.contains("media download failed"))
+    }
 }

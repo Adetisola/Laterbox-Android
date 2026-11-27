@@ -80,4 +80,45 @@ class AssistantPermissionAndMarkdownTest {
         assertEquals(closedFence, normalizeStreamingMarkdown(closedFence, isStreaming = true))
         assertEquals(partialFence, normalizeStreamingMarkdown(partialFence, isStreaming = false))
     }
+
+    @Test
+    fun `canonical actionType returns wire name for all actions while destructive permissionKey stays null`() {
+        val deleteDownload = ChatAction.DeleteDownload(taskId = "t-1", title = "Clip.mp4")
+        assertEquals("DELETE_DOWNLOAD", deleteDownload.actionType)
+        assertEquals(null, deleteDownload.permissionKey)
+        assertTrue(deleteDownload.isIrreversibleDestructive)
+
+        val deleteConversation = ChatAction.DeleteConversation(conversationId = "c-1", title = "Old chat")
+        assertEquals("DELETE_CONVERSATION", deleteConversation.actionType)
+        assertEquals(null, deleteConversation.permissionKey)
+        assertTrue(deleteConversation.isIrreversibleDestructive)
+
+        val allActions: List<ChatAction> = listOf(
+            ChatAction.SearchLinks("kotlin"),
+            ChatAction.OpenLinkDetail(1L, "Link"),
+            ChatAction.OpenDownloads(0),
+            ChatAction.OpenYouTubeTranscripts(),
+            ChatAction.OpenCollections,
+            ChatAction.OpenSettings("settings"),
+            ChatAction.RetryInspection(1L, "Link"),
+            ChatAction.RetryDownload("t1", "DL"),
+            ChatAction.RefreshMetadata(1L, "Link"),
+            ChatAction.OpenMoviesHome,
+            ChatAction.SearchMovies("dune"),
+            ChatAction.OpenMovieDetail("moviebox", "1", "Dune"),
+            ChatAction.OpenMoviePlayer("moviebox", "1", title = "Dune"),
+            ChatAction.ToggleMovieWatchlist("moviebox", "1", true, "Dune"),
+            ChatAction.AddMovieToCollection("moviebox", "1", collectionName = "Sci-Fi", title = "Dune"),
+            ChatAction.MarkMovieWatched("moviebox", "1", watched = true, title = "Dune"),
+            ChatAction.ScheduleMovieReminder("moviebox", "1", 1900000000000L, title = "Dune"),
+            ChatAction.MuteSeriesReminders("tvmaze", "1", true, "Show"),
+            ChatAction.RenameConversation(title = "Renamed"),
+            deleteConversation,
+            deleteDownload
+        )
+        assertEquals(21, allActions.map { it.actionType }.toSet().size)
+        for (act in allActions) {
+            assertTrue(act.actionType.matches(Regex("[A-Z_]+")))
+        }
+    }
 }

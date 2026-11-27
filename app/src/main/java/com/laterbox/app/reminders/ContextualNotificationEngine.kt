@@ -26,7 +26,8 @@ class ContextualNotificationEngine(
     private val database: LaterboxDatabase,
     private val userPreferencesRepository: UserPreferencesRepository,
     private val activityEventRepository: ActivityEventRepository,
-    private val appHealthChecker: AppHealthChecker
+    private val appHealthChecker: AppHealthChecker,
+    private val notificationGovernor: NotificationGovernor = NotificationGovernor(userPreferencesRepository)
 ) {
 
     suspend fun notifyExtractionFailure(
@@ -35,13 +36,17 @@ class ContextualNotificationEngine(
         linkTitle: String?,
         errorMessage: String,
         dedupKey: String,
-        currentHour: Int = currentHourOfDay()
+        currentHour: Int = currentHourOfDay(),
+        nowMs: Long = System.currentTimeMillis()
     ): Boolean {
         val prefs = userPreferencesRepository.userPreferencesFlow.first()
-        if (!prefs.smartNotificationsExtractionFailure) return false
-        if (prefs.quietHoursEnabled && NotificationHelper.isWithinQuietHours(currentHour, prefs.quietHoursStartHour, prefs.quietHoursEndHour)) {
-            return false
-        }
+        val decision = notificationGovernor.evaluate(
+            category = NotificationCategory.EXTRACTION_FAILURE,
+            prefs = prefs,
+            nowMs = nowMs,
+            currentHour = currentHour
+        )
+        if (decision !is GovernorDecision.Allow) return false
 
         val cleanTitle = linkTitle?.takeIf { it.isNotBlank() } ?: "Saved link"
         val cleanError = ActivityEventRepository.sanitizeText(errorMessage, 140)
@@ -72,13 +77,17 @@ class ContextualNotificationEngine(
         title: String?,
         errorMessage: String,
         dedupKey: String,
-        currentHour: Int = currentHourOfDay()
+        currentHour: Int = currentHourOfDay(),
+        nowMs: Long = System.currentTimeMillis()
     ): Boolean {
         val prefs = userPreferencesRepository.userPreferencesFlow.first()
-        if (!prefs.smartNotificationsDownloadFailure) return false
-        if (prefs.quietHoursEnabled && NotificationHelper.isWithinQuietHours(currentHour, prefs.quietHoursStartHour, prefs.quietHoursEndHour)) {
-            return false
-        }
+        val decision = notificationGovernor.evaluate(
+            category = NotificationCategory.DOWNLOAD_FAILURE,
+            prefs = prefs,
+            nowMs = nowMs,
+            currentHour = currentHour
+        )
+        if (decision !is GovernorDecision.Allow) return false
 
         val cleanTitle = title?.takeIf { it.isNotBlank() } ?: "Media download"
         val cleanError = ActivityEventRepository.sanitizeText(errorMessage, 140)
@@ -109,11 +118,13 @@ class ContextualNotificationEngine(
     ): AppHealthReport {
         val report = appHealthChecker.runCheck()
         val prefs = userPreferencesRepository.userPreferencesFlow.first()
-        if (!prefs.smartNotificationsAppHealth) return report
-        if (prefs.quietHoursEnabled && NotificationHelper.isWithinQuietHours(currentHour, prefs.quietHoursStartHour, prefs.quietHoursEndHour)) {
-            return report
-        }
-        if ((nowMs - prefs.lastAppHealthAlertAt) < HEALTH_ALERT_COOLDOWN_MS) {
+        val decision = notificationGovernor.evaluate(
+            category = NotificationCategory.APP_HEALTH,
+            prefs = prefs,
+            nowMs = nowMs,
+            currentHour = currentHour
+        )
+        if (decision !is GovernorDecision.Allow) {
             return report
         }
 
@@ -145,16 +156,22 @@ class ContextualNotificationEngine(
 
     suspend fun maybeSendContextualSummaryOrTip(
         nowMs: Long = System.currentTimeMillis(),
-        currentHour: Int = currentHourOfDay()
+        currentHour: Int = currentHourOfDay(),
+        postedTier3InCurrentWakeup: Boolean = false
     ): Boolean {
+        if (postedTier3InCurrentWakeup) return false
         val prefs = userPreferencesRepository.userPreferencesFlow.first()
         if (!NotificationManagerCompat.from(appContext).areNotificationsEnabled()) return false
-        if (prefs.quietHoursEnabled && NotificationHelper.isWithinQuietHours(currentHour, prefs.quietHoursStartHour, prefs.quietHoursEndHour)) {
-            return false
-        }
 
-        // 1. Contextual library/activity summary (max once every 20h)
-        if (prefs.smartNotificationsSummaries && (nowMs - prefs.lastSummaryNotificationAt) >= SUMMARY_COOLDOWN_MS) {
+        // 1. Contextual library/activity summary
+        val summaryDecision = notificationGovernor.evaluate(
+            category = NotificationCategory.CONTEXTUAL_SUMMARY,
+            prefs = prefs,
+            nowMs = nowMs,
+            currentHour = currentHour,
+            postedTier3InCurrentWakeup = postedTier3InCurrentWakeup
+        )
+        if (summaryDecision is GovernorDecision.Allow) {
             val inbox = database.savedLinkDao().getInboxLinks().first()
             val unread = inbox.filter { !it.link.isRead }
             val failedInspections = database.mediaInspectionDao().countFailedOrNeedsAuth()
@@ -176,14 +193,16 @@ class ContextualNotificationEngine(
                 }
                 val posted = NotificationHelper.showContextualSummaryOrTipNotification(
                     context = appContext,
-                    notificationId = SUMMARY_NOTIFICATION_ID,
+                    notificationId = NotificationIds.CONTEXTUAL_SUMMARY_NOTIFICATION_ID,
                     title = title,
                     body = body,
                     destination = "chat",
-                    initialPrompt = "Summarize what needs my attention in Laterbox right now"
+                    initialPrompt = "Summarize what needs my attention in Laterbox right now",
+                    category = NotificationCategory.CONTEXTUAL_SUMMARY
                 )
                 if (posted) {
                     userPreferencesRepository.recordSummaryNotificationPosted(nowMs)
+                    notificationGovernor.recordTier3Posted(NotificationCategory.CONTEXTUAL_SUMMARY, nowMs)
                     activityEventRepository.recordEvent(
                         type = ActivityEventType.NOTIFICATION_POSTED,
                         title = title,
@@ -194,19 +213,28 @@ class ContextualNotificationEngine(
             }
         }
 
-        // 2. Non-repeating contextual tips (opt-in, max once every 24h)
-        if (prefs.smartNotificationsTips && (nowMs - prefs.lastTipNotificationAt) >= TIP_COOLDOWN_MS) {
+        // 2. Non-repeating contextual tips
+        val tipDecision = notificationGovernor.evaluate(
+            category = NotificationCategory.HELPFUL_TIP,
+            prefs = prefs,
+            nowMs = nowMs,
+            currentHour = currentHour,
+            postedTier3InCurrentWakeup = postedTier3InCurrentWakeup
+        )
+        if (tipDecision is GovernorDecision.Allow) {
             val nextTip = selectNextUnshownTip(prefs.shownTipIds) ?: return false
             val posted = NotificationHelper.showContextualSummaryOrTipNotification(
                 context = appContext,
-                notificationId = TIP_NOTIFICATION_ID_BASE + nextTip.id.hashCode(),
+                notificationId = NotificationIds.helpfulTipNotificationId(nextTip.id),
                 title = nextTip.title,
                 body = nextTip.body,
                 destination = nextTip.destination,
-                initialPrompt = null
+                initialPrompt = null,
+                category = NotificationCategory.HELPFUL_TIP
             )
             if (posted) {
                 userPreferencesRepository.recordShownTip(nextTip.id, nowMs)
+                notificationGovernor.recordTier3Posted(NotificationCategory.HELPFUL_TIP, nowMs)
                 activityEventRepository.recordEvent(
                     type = ActivityEventType.NOTIFICATION_POSTED,
                     title = "Tip: ${nextTip.title}",
@@ -222,16 +250,11 @@ class ContextualNotificationEngine(
     suspend fun maybeNotifyMoviesAndTv(
         moviesRepository: MoviesRepository? = null,
         nowMs: Long = System.currentTimeMillis(),
-        currentHour: Int = currentHourOfDay()
+        currentHour: Int = currentHourOfDay(),
+        postedTier3InCurrentWakeup: Boolean = false
     ): Boolean {
+        if (postedTier3InCurrentWakeup) return false
         val prefs = userPreferencesRepository.userPreferencesFlow.first()
-        if (!prefs.smartRemindersEnabled || !prefs.smartNotificationsMoviesTv) return false
-        if (prefs.quietHoursEnabled && NotificationHelper.isWithinQuietHours(currentHour, prefs.quietHoursStartHour, prefs.quietHoursEndHour)) {
-            return false
-        }
-        if (prefs.lastMoviesNotificationAt > 0L && (nowMs - prefs.lastMoviesNotificationAt) < MOVIES_NUDGE_COOLDOWN_MS) {
-            return false
-        }
         if (!NotificationManagerCompat.from(appContext).areNotificationsEnabled()) return false
 
         val dao = database.moviesDao()
@@ -244,49 +267,67 @@ class ContextualNotificationEngine(
             (canonicalId != null && canonicalId in mutedKeys) || compositeId in mutedKeys
 
         // 1. Continue Watching / Next Episode Nudge
-        val continueWatching = dao.observeContinueWatching(5).first()
-        val cwCandidate = continueWatching.firstOrNull { entry ->
-            !entry.isTrailer &&
-                !entry.isHiddenTitle &&
-                !isMuted(entry.canonicalId, entry.compositeId) &&
-                (nowMs - entry.lastWatchedAt) >= CONTINUE_WATCHING_STALE_MS
-        }
-        if (cwCandidate != null) {
-            val title = "Continue \"${cwCandidate.title}\""
-            val body = if (cwCandidate.kind == "tv_series" &&
-                cwCandidate.seasonNumber != null &&
-                cwCandidate.episodeNumber != null
-            ) {
-                "Pick up S${cwCandidate.seasonNumber}E${cwCandidate.episodeNumber} where you left off in Movies & TV."
-            } else {
-                "Pick up where you left off in Movies & TV."
+        val cwDecision = notificationGovernor.evaluate(
+            category = NotificationCategory.MOVIES_CONTINUE_WATCHING,
+            prefs = prefs,
+            nowMs = nowMs,
+            currentHour = currentHour,
+            postedTier3InCurrentWakeup = postedTier3InCurrentWakeup
+        )
+        if (cwDecision is GovernorDecision.Allow) {
+            val continueWatching = dao.observeContinueWatching(5).first()
+            val cwCandidate = continueWatching.firstOrNull { entry ->
+                !entry.isTrailer &&
+                    !entry.isHiddenTitle &&
+                    !isMuted(entry.canonicalId, entry.compositeId) &&
+                    (nowMs - entry.lastWatchedAt) >= CONTINUE_WATCHING_STALE_MS
             }
-            val posted = NotificationHelper.showMoviesSmartNudgeNotification(
-                context = appContext,
-                dedupKey = "movies_cw:${cwCandidate.historyKey}:${cwCandidate.lastWatchedAt}",
-                notificationId = MOVIES_CW_NOTIFICATION_BASE + (cwCandidate.compositeId.hashCode() and 0x0FFF),
-                providerId = cwCandidate.providerId,
-                titleId = cwCandidate.titleId,
-                title = title,
-                body = body,
-                originTag = "MOVIES_CONTINUE_WATCHING",
-                posterUrl = cwCandidate.posterUrl
-            )
-            if (posted) {
-                userPreferencesRepository.recordMoviesNotificationPosted(nowMs)
-                activityEventRepository.recordEvent(
-                    type = ActivityEventType.NOTIFICATION_POSTED,
+            if (cwCandidate != null) {
+                val title = "Continue \"${cwCandidate.title}\""
+                val body = if (cwCandidate.kind == "tv_series" &&
+                    cwCandidate.seasonNumber != null &&
+                    cwCandidate.episodeNumber != null
+                ) {
+                    "Pick up S${cwCandidate.seasonNumber}E${cwCandidate.episodeNumber} where you left off in Movies & TV."
+                } else {
+                    "Pick up where you left off in Movies & TV."
+                }
+                val posted = NotificationHelper.showMoviesSmartNudgeNotification(
+                    context = appContext,
+                    dedupKey = "movies_cw:${cwCandidate.historyKey}:${cwCandidate.lastWatchedAt}",
+                    notificationId = NotificationIds.moviesContinueWatchingNotificationId(cwCandidate.compositeId),
+                    providerId = cwCandidate.providerId,
+                    titleId = cwCandidate.titleId,
                     title = title,
-                    detail = body
+                    body = body,
+                    originTag = "MOVIES_CONTINUE_WATCHING",
+                    posterUrl = cwCandidate.posterUrl,
+                    category = NotificationCategory.MOVIES_CONTINUE_WATCHING
                 )
-                return true
+                if (posted) {
+                    userPreferencesRepository.recordMoviesNotificationPosted(nowMs)
+                    notificationGovernor.recordTier3Posted(NotificationCategory.MOVIES_CONTINUE_WATCHING, nowMs)
+                    activityEventRepository.recordEvent(
+                        type = ActivityEventType.NOTIFICATION_POSTED,
+                        title = title,
+                        detail = body
+                    )
+                    return true
+                }
             }
         }
 
         // 2. Verified New Season Alert (TVMaze only)
         // NOTE: "Airing Soon" / next-episode reminders are blocked on upstream episode air dates;
         // implementing them requires TVMaze `/shows/{id}/episodes` or TMDB `next_episode_to_air`.
-        if (moviesRepository != null) {
+        val seasonDecision = notificationGovernor.evaluate(
+            category = NotificationCategory.MOVIES_NEW_SEASON,
+            prefs = prefs,
+            nowMs = nowMs,
+            currentHour = currentHour,
+            postedTier3InCurrentWakeup = postedTier3InCurrentWakeup
+        )
+        if (moviesRepository != null && seasonDecision is GovernorDecision.Allow) {
             data class SeriesCandidate(
                 val titleId: String,
                 val compositeId: String,
@@ -321,16 +362,18 @@ class ContextualNotificationEngine(
                     val posted = NotificationHelper.showMoviesSmartNudgeNotification(
                         context = appContext,
                         dedupKey = "tvmaze_new_season:${candidate.titleId}:s${verifiedMaxSeason}",
-                        notificationId = MOVIES_SEASON_NOTIFICATION_BASE + (candidate.titleId.hashCode() and 0x0FFF),
+                        notificationId = NotificationIds.moviesNewSeasonNotificationId(candidate.titleId),
                         providerId = "tvmaze",
                         titleId = candidate.titleId,
                         title = title,
                         body = body,
                         originTag = "MOVIES_NEW_SEASON",
-                        posterUrl = candidate.posterUrl
+                        posterUrl = candidate.posterUrl,
+                        category = NotificationCategory.MOVIES_NEW_SEASON
                     )
                     if (posted) {
                         userPreferencesRepository.recordMoviesNotificationPosted(nowMs)
+                        notificationGovernor.recordTier3Posted(NotificationCategory.MOVIES_NEW_SEASON, nowMs)
                         activityEventRepository.recordEvent(
                             type = ActivityEventType.NOTIFICATION_POSTED,
                             title = title,
@@ -343,37 +386,48 @@ class ContextualNotificationEngine(
         }
 
         // 3. Unwatched Watchlist Nudge
-        val historySnapshot = dao.getWatchHistorySnapshot(50).filter { !it.isTrailer }
-        val touchedCompositeIds = historySnapshot.map { it.compositeId }.toSet()
-        val touchedCanonicalIds = historySnapshot.mapNotNull { it.canonicalId }.toSet()
-        val wlCandidate = dao.getWatchlistSnapshot().firstOrNull { item ->
-            (nowMs - item.addedAt) >= WATCHLIST_NUDGE_AGE_MS &&
-                !isMuted(item.canonicalId, item.compositeId) &&
-                item.compositeId !in touchedCompositeIds &&
-                (item.canonicalId == null || item.canonicalId !in touchedCanonicalIds)
-        }
-        if (wlCandidate != null) {
-            val title = "From your watchlist: ${wlCandidate.title}"
-            val body = "You saved \"${wlCandidate.title}\" to watch later in Movies & TV."
-            val posted = NotificationHelper.showMoviesSmartNudgeNotification(
-                context = appContext,
-                dedupKey = "movies_wl:${wlCandidate.compositeId}",
-                notificationId = MOVIES_WL_NOTIFICATION_BASE + (wlCandidate.compositeId.hashCode() and 0x0FFF),
-                providerId = wlCandidate.providerId,
-                titleId = wlCandidate.titleId,
-                title = title,
-                body = body,
-                originTag = "MOVIES_WATCHLIST",
-                posterUrl = wlCandidate.posterUrl
-            )
-            if (posted) {
-                userPreferencesRepository.recordMoviesNotificationPosted(nowMs)
-                activityEventRepository.recordEvent(
-                    type = ActivityEventType.NOTIFICATION_POSTED,
+        val watchlistDecision = notificationGovernor.evaluate(
+            category = NotificationCategory.MOVIES_WATCHLIST,
+            prefs = prefs,
+            nowMs = nowMs,
+            currentHour = currentHour,
+            postedTier3InCurrentWakeup = postedTier3InCurrentWakeup
+        )
+        if (watchlistDecision is GovernorDecision.Allow) {
+            val historySnapshot = dao.getWatchHistorySnapshot(50).filter { !it.isTrailer }
+            val touchedCompositeIds = historySnapshot.map { it.compositeId }.toSet()
+            val touchedCanonicalIds = historySnapshot.mapNotNull { it.canonicalId }.toSet()
+            val wlCandidate = dao.getWatchlistSnapshot().firstOrNull { item ->
+                (nowMs - item.addedAt) >= WATCHLIST_NUDGE_AGE_MS &&
+                    !isMuted(item.canonicalId, item.compositeId) &&
+                    item.compositeId !in touchedCompositeIds &&
+                    (item.canonicalId == null || item.canonicalId !in touchedCanonicalIds)
+            }
+            if (wlCandidate != null) {
+                val title = "From your watchlist: ${wlCandidate.title}"
+                val body = "You saved \"${wlCandidate.title}\" to watch later in Movies & TV."
+                val posted = NotificationHelper.showMoviesSmartNudgeNotification(
+                    context = appContext,
+                    dedupKey = "movies_wl:${wlCandidate.compositeId}",
+                    notificationId = NotificationIds.moviesWatchlistNotificationId(wlCandidate.compositeId),
+                    providerId = wlCandidate.providerId,
+                    titleId = wlCandidate.titleId,
                     title = title,
-                    detail = body
+                    body = body,
+                    originTag = "MOVIES_WATCHLIST",
+                    posterUrl = wlCandidate.posterUrl,
+                    category = NotificationCategory.MOVIES_WATCHLIST
                 )
-                return true
+                if (posted) {
+                    userPreferencesRepository.recordMoviesNotificationPosted(nowMs)
+                    notificationGovernor.recordTier3Posted(NotificationCategory.MOVIES_WATCHLIST, nowMs)
+                    activityEventRepository.recordEvent(
+                        type = ActivityEventType.NOTIFICATION_POSTED,
+                        title = title,
+                        detail = body
+                    )
+                    return true
+                }
             }
         }
 
@@ -383,17 +437,12 @@ class ContextualNotificationEngine(
     private fun currentHourOfDay(): Int = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
 
     companion object {
-        const val HEALTH_ALERT_COOLDOWN_MS = 24L * 60L * 60L * 1000L
-        const val SUMMARY_COOLDOWN_MS = 20L * 60L * 60L * 1000L
-        const val TIP_COOLDOWN_MS = 24L * 60L * 60L * 1000L
-        const val MOVIES_NUDGE_COOLDOWN_MS = 18L * 60L * 60L * 1000L
+        const val HEALTH_ALERT_COOLDOWN_MS = NotificationGovernor.HEALTH_ALERT_COOLDOWN_MS
+        const val SUMMARY_COOLDOWN_MS = NotificationGovernor.SUMMARY_COOLDOWN_MS
+        const val TIP_COOLDOWN_MS = NotificationGovernor.TIP_COOLDOWN_MS
+        const val MOVIES_NUDGE_COOLDOWN_MS = NotificationGovernor.MOVIES_NUDGE_COOLDOWN_MS
         const val CONTINUE_WATCHING_STALE_MS = 6L * 60L * 60L * 1000L
         const val WATCHLIST_NUDGE_AGE_MS = 24L * 60L * 60L * 1000L
-        private const val SUMMARY_NOTIFICATION_ID = 940_100
-        private const val TIP_NOTIFICATION_ID_BASE = 941_000
-        private const val MOVIES_CW_NOTIFICATION_BASE = 945_000
-        private const val MOVIES_SEASON_NOTIFICATION_BASE = 950_000
-        private const val MOVIES_WL_NOTIFICATION_BASE = 955_000
 
         val TIP_CATALOG: List<ContextualTip> = listOf(
             ContextualTip(

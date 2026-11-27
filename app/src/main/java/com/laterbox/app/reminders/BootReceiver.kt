@@ -33,6 +33,7 @@ class BootReceiver : BroadcastReceiver() {
         val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
+                AlarmMigrationManager.migrateIfNeeded(context, appContainer)
                 val scheduledLinks = linkRepository.getScheduledReminders()
                 val now = System.currentTimeMillis()
                 for (link in scheduledLinks) {

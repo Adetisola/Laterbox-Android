@@ -75,6 +75,11 @@ sealed interface BackendAiStreamEvent {
         val requiresApproval: Boolean
     ) : BackendAiStreamEvent
 
+    data class ApprovalRequired(
+        val action: ChatAction,
+        val category: String
+    ) : BackendAiStreamEvent
+
     data class Completed(
         val fullText: String,
         val displayText: String,
@@ -281,6 +286,15 @@ class LaterboxBackendAiClient(
                                     requiresApproval = obj.optBoolean("requiresApproval", true)
                                 )
                             }
+                            "approval_required" -> {
+                                val actionObj = obj.optJSONObject("action") ?: return null
+                                val parsedAction = AssistantActionHandler.fromJsonList("[$actionObj]").firstOrNull()
+                                    ?: return null
+                                BackendAiStreamEvent.ApprovalRequired(
+                                    action = parsedAction,
+                                    category = obj.optString("category", "")
+                                )
+                            }
                             "response_complete" -> {
                                 val fullText = obj.optString("fullText", "")
                                 val displayText = obj.optString("displayText", fullText)
@@ -407,9 +421,15 @@ class LaterboxBackendAiClient(
             put("detail", detail.take(500))
         }.toString()
         val authHeader = runCatching { resolveAuthHeader(false) }.getOrNull()
+        if (isGuestAuth(authHeader)) {
+            return ActionResultAck(
+                accepted = true,
+                status = status,
+                followUpMessage = null
+            )
+        }
         val firstAttempt = executePostJson(url, payload, authHeader)
-        val isGuestRestricted403 = firstAttempt.statusCode == 403 &&
-            authHeader?.first == com.laterbox.app.auth.LaterboxBackendAuthProvider.HEADER_GUEST_AUTH
+        val isGuestRestricted403 = firstAttempt.statusCode == 403 && isGuestAuth(authHeader)
         val finalAttempt = if (firstAttempt.statusCode == 401 || (firstAttempt.statusCode == 403 && !isGuestRestricted403)) {
             val refreshed = runCatching { resolveAuthHeader(true) }.getOrNull()
             if (refreshed != null && refreshed != authHeader) {
@@ -441,6 +461,11 @@ class LaterboxBackendAiClient(
             .addPathSegments("ai/v1/titles/generate")
             .build()
 
+        val authHeader = runCatching { resolveAuthHeader(false) }.getOrNull()
+        if (isGuestAuth(authHeader)) {
+            return null
+        }
+
         val bodyJson = JSONObject().apply {
             put("firstUserMessage", cleanPrompt.take(2000))
             if (!firstAssistantReply.isNullOrBlank()) {
@@ -451,10 +476,8 @@ class LaterboxBackendAiClient(
             }
         }
 
-        val authHeader = runCatching { resolveAuthHeader(false) }.getOrNull()
         val firstAttempt = executePostJson(url, bodyJson.toString(), authHeader)
-        val isGuestRestricted403 = firstAttempt.statusCode == 403 &&
-            authHeader?.first == com.laterbox.app.auth.LaterboxBackendAuthProvider.HEADER_GUEST_AUTH
+        val isGuestRestricted403 = firstAttempt.statusCode == 403 && isGuestAuth(authHeader)
         val finalAttempt = if (firstAttempt.statusCode == 401 || (firstAttempt.statusCode == 403 && !isGuestRestricted403)) {
             val refreshed = runCatching { resolveAuthHeader(true) }.getOrNull()
             if (refreshed != null && refreshed != authHeader) {
@@ -486,38 +509,35 @@ class LaterboxBackendAiClient(
             .build()
 
         val authHeader = runCatching { resolveAuthHeader(false) }.getOrNull()
-        val requestBuilder = Request.Builder()
-            .url(url)
-            .get()
-            .header("Accept", "application/json")
-        if (authHeader != null && authHeader.second.isNotBlank()) {
-            requestBuilder.header(authHeader.first, authHeader.second)
-        }
-        try {
-            okHttpClient.newCall(requestBuilder.build()).execute().use { resp ->
-                if (!resp.isSuccessful) return@withContext null
-                val text = resp.body?.string().orEmpty()
-                val obj = JSONObject(text)
-                val serverHash = obj.optString("manifestHash", "").trim()
-                val itemsCount = obj.optJSONArray("items")?.length() ?: 0
-                val inSync = if (obj.has("clientInSync") && !obj.isNull("clientInSync")) {
-                    obj.getBoolean("clientInSync")
-                } else {
-                    serverHash.isNotEmpty() && serverHash == AppCapabilityRegistry.MANIFEST_HASH
-                }
-                ManifestSyncResult(
-                    manifestVersion = obj.optInt("manifestVersion", 0),
-                    manifestRevision = obj.optString("manifestRevision", ""),
-                    manifestHash = serverHash,
-                    clientInSync = inSync,
-                    serverCapabilitiesCount = itemsCount
-                )
+        val firstAttempt = executeGetJson(url, authHeader)
+        val isGuestRestricted403 = firstAttempt.statusCode == 403 &&
+            authHeader?.first == com.laterbox.app.auth.LaterboxBackendAuthProvider.HEADER_GUEST_AUTH
+        val finalAttempt = if (firstAttempt.statusCode == 401 || (firstAttempt.statusCode == 403 && !isGuestRestricted403)) {
+            val refreshed = runCatching { resolveAuthHeader(true) }.getOrNull()
+            if (refreshed != null && refreshed != authHeader) {
+                executeGetJson(url, refreshed)
+            } else {
+                firstAttempt
             }
-        } catch (ce: CancellationException) {
-            throw ce
-        } catch (_: Throwable) {
-            null
+        } else {
+            firstAttempt
         }
+
+        val obj = finalAttempt.json ?: return@withContext null
+        val serverHash = obj.optString("manifestHash", "").trim()
+        val itemsCount = obj.optJSONArray("items")?.length() ?: 0
+        val inSync = if (obj.has("clientInSync") && !obj.isNull("clientInSync")) {
+            obj.getBoolean("clientInSync")
+        } else {
+            serverHash.isNotEmpty() && serverHash == AppCapabilityRegistry.MANIFEST_HASH
+        }
+        ManifestSyncResult(
+            manifestVersion = obj.optInt("manifestVersion", 0),
+            manifestRevision = obj.optString("manifestRevision", ""),
+            manifestHash = serverHash,
+            clientInSync = inSync,
+            serverCapabilitiesCount = itemsCount
+        )
     }
 
     suspend fun checkCapabilityManifestSync(): Boolean? =
@@ -582,10 +602,39 @@ class LaterboxBackendAiClient(
         )
     }
 
+    private fun isGuestAuth(authHeader: Pair<String, String>?): Boolean =
+        authHeader?.first == com.laterbox.app.auth.LaterboxBackendAuthProvider.HEADER_GUEST_AUTH
+
     private data class PostJsonOutcome(
         val statusCode: Int,
         val json: JSONObject?
     )
+
+    private suspend fun executeGetJson(
+        url: okhttp3.HttpUrl,
+        authHeader: Pair<String, String>?
+    ): PostJsonOutcome = withContext(Dispatchers.IO) {
+        val requestBuilder = Request.Builder()
+            .url(url)
+            .get()
+            .header("Accept", "application/json")
+        if (authHeader != null && authHeader.second.isNotBlank()) {
+            requestBuilder.header(authHeader.first, authHeader.second)
+        }
+        try {
+            okHttpClient.newCall(requestBuilder.build()).execute().use { resp ->
+                val raw = resp.body?.string().orEmpty()
+                val parsed = if (resp.isSuccessful && raw.isNotBlank()) {
+                    runCatching { JSONObject(raw) }.getOrNull()
+                } else null
+                PostJsonOutcome(resp.code, parsed)
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Throwable) {
+            PostJsonOutcome(0, null)
+        }
+    }
 
     private suspend fun executePostJson(
         url: okhttp3.HttpUrl,

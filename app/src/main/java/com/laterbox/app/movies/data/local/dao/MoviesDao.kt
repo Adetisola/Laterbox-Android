@@ -340,6 +340,9 @@ interface MoviesDao {
     @Query("SELECT * FROM movie_viewing_reminders WHERE is_dismissed = 0 ORDER BY trigger_at_millis ASC")
     suspend fun getActiveViewingRemindersSnapshot(): List<MovieViewingReminderEntity>
 
+    @Query("SELECT * FROM movie_viewing_reminders")
+    suspend fun getAllViewingRemindersSnapshot(): List<MovieViewingReminderEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertViewingReminder(reminder: MovieViewingReminderEntity)
 

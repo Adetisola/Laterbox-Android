@@ -1,7 +1,9 @@
 package com.laterbox.app.ai
 
+import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.security.MessageDigest
 
 enum class CapabilityAvailability {
@@ -12,6 +14,12 @@ enum class CapabilityAvailability {
     UNKNOWN
 }
 
+data class FailureRecoveryPath(
+    val condition: String,
+    val explanation: String,
+    val recoveryDestination: String
+)
+
 data class ProductCapabilityItem(
     val id: String,
     val section: String,
@@ -20,7 +28,15 @@ data class ProductCapabilityItem(
     val defaultStatus: CapabilityAvailability = CapabilityAvailability.SUPPORTED,
     val minVersionCode: Int = 1,
     val remoteFeatureKey: String? = null,
-    val conditionNote: String? = null
+    val conditionNote: String? = null,
+    val availableActions: List<String> = emptyList(),
+    val preconditions: List<String> = emptyList(),
+    val requiresBackend: Boolean = false,
+    val aiCopyRequiresBackend: Boolean = false,
+    val reversible: Boolean = true,
+    val requiresConfirmation: Boolean = false,
+    val sideEffects: List<String> = emptyList(),
+    val failureRecoveryPaths: List<FailureRecoveryPath> = emptyList()
 )
 
 data class ResolvedCapabilityItem(
@@ -88,8 +104,9 @@ data class CapabilitySnapshot(
     val moviesActiveRemindersCount: Int = 0,
     val clientVersionCode: Int? = null,
     val clientVersionName: String? = null,
-    val manifestVersion: Int = 2,
-    val manifestRevision: String = "2026.11.21-v2",
+    val manifestVersion: Int = 3,
+    val manifestRevision: String = "2026.12.01-v3",
+    val onlineServicesPaused: Boolean = false,
     val moviesTvEnabled: Boolean = true,
     val providerMovieboxEnabled: Boolean = true,
     val providerInternetArchiveEnabled: Boolean = true,
@@ -104,116 +121,152 @@ data class CapabilitySnapshot(
  */
 object AppCapabilityRegistry {
 
-    const val MANIFEST_VERSION = 2
-    const val MANIFEST_REVISION = "2026.11.21-v2"
+    private const val MANIFEST_ASSET_NAME = "capability_manifest_v3.json"
 
-    val productManifestItems: List<ProductCapabilityItem> = listOf(
-        ProductCapabilityItem(
-            id = "inbox.save_organize",
-            section = "Inbox",
-            title = "Save, Search & Organize Links",
-            description = "Save links via Share sheet, text-selection pill, Clipboard detection, or in-app sheet with offline Room search, filters, and layouts.",
-            defaultStatus = CapabilityAvailability.SUPPORTED
-        ),
-        ProductCapabilityItem(
-            id = "collections.unified",
-            section = "Collections",
-            title = "Unified Collections",
-            description = "Create, rename, and delete custom collections holding both saved links and Movies & TV titles.",
-            defaultStatus = CapabilityAvailability.SUPPORTED
-        ),
-        ProductCapabilityItem(
-            id = "downloads.media_extraction",
-            section = "Downloads",
-            title = "Media Downloader & Offline Library",
-            description = "Inspect and download video/audio formats on-device with Queue and Library tabs plus optional folder export.",
-            defaultStatus = CapabilityAvailability.SUPPORTED
-        ),
-        ProductCapabilityItem(
-            id = "downloads.youtube_transcripts",
-            section = "Downloads",
-            title = "YouTube Captions & Transcript Export",
-            description = "Extract available YouTube captions for videos or playlists without downloading video/audio, copy to clipboard, and export Markdown (.md), Plain Text (.txt), or PDF (.pdf).",
-            defaultStatus = CapabilityAvailability.CONDITIONALLY_AVAILABLE,
-            conditionNote = "Requires accessible caption tracks on the YouTube video or playlist; local Whisper speech transcription is not built in."
-        ),
-        ProductCapabilityItem(
-            id = "downloads.saf_export",
-            section = "Downloads",
-            title = "Automatic Folder Export",
-            description = "Export downloaded media or transcript documents to a user-selected Android folder.",
-            defaultStatus = CapabilityAvailability.CONDITIONALLY_AVAILABLE,
-            conditionNote = "Requires granting access to an export folder in Settings."
-        ),
-        ProductCapabilityItem(
-            id = "movies.discovery_and_library",
-            section = "Movies & TV",
-            title = "Movies & TV Discovery and Library",
-            description = "Browse curated rails, search catalogue providers, manage Watchlist, Continue Watching, Collections, and watch history.",
-            defaultStatus = CapabilityAvailability.SUPPORTED,
-            remoteFeatureKey = "movies_tv_enabled"
-        ),
-        ProductCapabilityItem(
-            id = "movies.recommendations",
-            section = "Movies & TV",
-            title = "Personalized Recommendations & Surprise Me",
-            description = "Shows Because You Watched, More Like This, and Surprise Me suggestions.",
-            defaultStatus = CapabilityAvailability.SUPPORTED,
-            remoteFeatureKey = "movies_recommendations_enabled"
-        ),
-        ProductCapabilityItem(
-            id = "movies.pip_and_mini_player",
-            section = "Movies & TV",
-            title = "Picture-in-Picture & Mini-Player",
-            description = "Pressing Home or Back during active playback enters system Picture-in-Picture; pressing Back after pausing playback returns to Laterbox with its in-app mini-player.",
-            defaultStatus = CapabilityAvailability.SUPPORTED,
-            minVersionCode = 62,
-            remoteFeatureKey = "movies_tv_enabled"
-        ),
-        ProductCapabilityItem(
-            id = "movies.intro_skip",
-            section = "Movies & TV",
-            title = "Skip Intro & Skip Recap",
-            description = "Shows skip buttons in the player when verified timestamps exist in source metadata.",
-            defaultStatus = CapabilityAvailability.CONDITIONALLY_AVAILABLE,
-            remoteFeatureKey = "player_intro_skip_enabled",
-            conditionNote = "Appears only when verified intro or recap timestamps are provided by the stream source."
-        ),
-        ProductCapabilityItem(
-            id = "sharing.deep_links_and_files",
-            section = "Sharing",
-            title = "Share Titles & Downloaded Files",
-            description = "Share Movie or TV Series links directly to Laterbox web/app links, and share generic downloaded files safely via Android FileProvider (individual downloaded episodes share the series link instead).",
-            defaultStatus = CapabilityAvailability.SUPPORTED,
-            minVersionCode = 62
-        ),
-        ProductCapabilityItem(
-            id = "reminders.smart_and_scheduled",
-            section = "Reminders",
-            title = "Scheduled & Smart Reminders",
-            description = "Per-link reminders, Movies & TV viewing alerts, Quiet Hours, and notification history.",
-            defaultStatus = CapabilityAvailability.SUPPORTED,
-            remoteFeatureKey = "smart_reminders_enabled"
-        ),
-        ProductCapabilityItem(
-            id = "assistant.chat_and_actions",
-            section = "Assistant",
-            title = "Laterbox Assistant & Actions",
-            description = "Streaming Q&A, live web search grounding for outside facts, and permission-aware in-app actions.",
-            defaultStatus = CapabilityAvailability.SUPPORTED,
-            remoteFeatureKey = "ai_assistant_enabled"
-        ),
-        ProductCapabilityItem(
-            id = "archive.saved_links",
-            section = "Archive",
-            title = "Archived Links",
-            description = "Store finished links out of the active Inbox with search and one-tap restore.",
-            defaultStatus = CapabilityAvailability.SUPPORTED
-        )
+    internal data class LoadedCapabilityManifest(
+        val manifestVersion: Int,
+        val manifestRevision: String,
+        val manifestHash: String,
+        val items: List<ProductCapabilityItem>
     )
 
-    val MANIFEST_HASH: String by lazy {
-        computeManifestHash(productManifestItems, MANIFEST_VERSION)
+    @Volatile
+    private var initializedContext: Context? = null
+
+    fun initialize(context: Context) {
+        initializedContext = context.applicationContext ?: context
+    }
+
+    private val loadedManifest: LoadedCapabilityManifest by lazy {
+        loadCanonicalManifest()
+    }
+
+    val MANIFEST_VERSION: Int
+        get() = loadedManifest.manifestVersion
+
+    val MANIFEST_REVISION: String
+        get() = loadedManifest.manifestRevision
+
+    val MANIFEST_HASH: String
+        get() = loadedManifest.manifestHash
+
+    val productManifestItems: List<ProductCapabilityItem>
+        get() = loadedManifest.items
+
+    val ONLINE_BLOCKED_IDS: Set<String> = setOf(
+        "movies.discovery_and_library",
+        "movies.recommendations",
+        "movies.pip_and_mini_player",
+        "assistant.chat_and_actions",
+        "downloads.youtube_transcripts"
+    )
+
+    private fun loadCanonicalManifest(): LoadedCapabilityManifest {
+        val rawJson = readManifestJsonText()
+        return parseAndVerifyManifestJson(rawJson)
+    }
+
+    private fun readManifestJsonText(): String {
+        initializedContext?.let { ctx ->
+            runCatching {
+                ctx.assets.open(MANIFEST_ASSET_NAME).bufferedReader(Charsets.UTF_8).use { it.readText() }
+            }.getOrNull()?.let { return it }
+        }
+        AppCapabilityRegistry::class.java.classLoader
+            ?.getResourceAsStream(MANIFEST_ASSET_NAME)
+            ?.bufferedReader(Charsets.UTF_8)
+            ?.use { return it.readText() }
+        val fileCandidates = listOf(
+            File("src/main/assets/$MANIFEST_ASSET_NAME"),
+            File("app/src/main/assets/$MANIFEST_ASSET_NAME")
+        )
+        for (candidate in fileCandidates) {
+            if (candidate.isFile) {
+                return candidate.readText(Charsets.UTF_8)
+            }
+        }
+        throw IllegalStateException("Missing canonical capability manifest asset: $MANIFEST_ASSET_NAME")
+    }
+
+    internal fun parseAndVerifyManifestJson(rawJson: String): LoadedCapabilityManifest {
+        val root = JSONObject(rawJson)
+        val manifestVersion = root.getInt("manifestVersion")
+        val manifestRevision = root.getString("manifestRevision").trim()
+        val manifestHash = root.getString("manifestHash").trim()
+        if (manifestVersion <= 0 || manifestRevision.isEmpty() || manifestHash.isEmpty()) {
+            throw IllegalStateException("Invalid capability manifest header in $MANIFEST_ASSET_NAME")
+        }
+        val itemsArray = root.getJSONArray("items")
+        val items = buildList(itemsArray.length()) {
+            for (i in 0 until itemsArray.length()) {
+                val obj = itemsArray.getJSONObject(i)
+                add(
+                    ProductCapabilityItem(
+                        id = obj.getString("id"),
+                        section = obj.getString("section"),
+                        title = obj.getString("title"),
+                        description = obj.getString("description"),
+                        defaultStatus = CapabilityAvailability.valueOf(obj.optString("defaultStatus", "SUPPORTED")),
+                        minVersionCode = obj.optInt("minVersionCode", 1),
+                        remoteFeatureKey = obj.optNullableString("remoteFeatureKey"),
+                        conditionNote = obj.optNullableString("conditionNote"),
+                        availableActions = obj.optJSONArray("availableActions").toStringList(),
+                        preconditions = obj.optJSONArray("preconditions").toStringList(),
+                        requiresBackend = obj.optBoolean("requiresBackend", false),
+                        aiCopyRequiresBackend = obj.optBoolean("aiCopyRequiresBackend", false),
+                        reversible = obj.optBoolean("reversible", true),
+                        requiresConfirmation = obj.optBoolean("requiresConfirmation", false),
+                        sideEffects = obj.optJSONArray("sideEffects").toStringList(),
+                        failureRecoveryPaths = obj.optJSONArray("failureRecoveryPaths").toFailureRecoveryPaths()
+                    )
+                )
+            }
+        }
+        if (items.isEmpty()) {
+            throw IllegalStateException("Capability manifest $MANIFEST_ASSET_NAME contains no items")
+        }
+        val computedHash = computeManifestHash(items, manifestVersion)
+        if (computedHash != manifestHash) {
+            throw IllegalStateException(
+                "Capability manifest hash mismatch for $MANIFEST_ASSET_NAME: expected=$manifestHash actual=$computedHash"
+            )
+        }
+        return LoadedCapabilityManifest(
+            manifestVersion = manifestVersion,
+            manifestRevision = manifestRevision,
+            manifestHash = manifestHash,
+            items = items
+        )
+    }
+
+    private fun JSONObject.optNullableString(key: String): String? {
+        if (!has(key) || isNull(key)) return null
+        return optString(key).takeIf { it.isNotEmpty() }
+    }
+
+    private fun JSONArray?.toStringList(): List<String> {
+        if (this == null) return emptyList()
+        return buildList(length()) {
+            for (i in 0 until length()) {
+                add(getString(i))
+            }
+        }
+    }
+
+    private fun JSONArray?.toFailureRecoveryPaths(): List<FailureRecoveryPath> {
+        if (this == null) return emptyList()
+        return buildList(length()) {
+            for (i in 0 until length()) {
+                val obj = getJSONObject(i)
+                add(
+                    FailureRecoveryPath(
+                        condition = obj.getString("condition"),
+                        explanation = obj.getString("explanation"),
+                        recoveryDestination = obj.getString("recoveryDestination")
+                    )
+                )
+            }
+        }
     }
 
     fun computeManifestHash(
@@ -226,13 +279,21 @@ object AppCapabilityRegistry {
             sortedItems.forEachIndexed { idx, item ->
                 if (idx > 0) append(',')
                 append('{')
+                append("\"aiCopyRequiresBackend\":"); append(item.aiCopyRequiresBackend); append(',')
+                append("\"availableActions\":"); appendJsonStringList(item.availableActions); append(',')
                 append("\"conditionNote\":"); appendJsonNullableString(item.conditionNote); append(',')
                 append("\"defaultStatus\":"); appendJsonString(item.defaultStatus.name); append(',')
                 append("\"description\":"); appendJsonString(item.description); append(',')
+                append("\"failureRecoveryPaths\":"); appendFailureRecoveryPaths(item.failureRecoveryPaths); append(',')
                 append("\"id\":"); appendJsonString(item.id); append(',')
                 append("\"minVersionCode\":"); append(item.minVersionCode); append(',')
+                append("\"preconditions\":"); appendJsonStringList(item.preconditions); append(',')
                 append("\"remoteFeatureKey\":"); appendJsonNullableString(item.remoteFeatureKey); append(',')
+                append("\"requiresBackend\":"); append(item.requiresBackend); append(',')
+                append("\"requiresConfirmation\":"); append(item.requiresConfirmation); append(',')
+                append("\"reversible\":"); append(item.reversible); append(',')
                 append("\"section\":"); appendJsonString(item.section); append(',')
+                append("\"sideEffects\":"); appendJsonStringList(item.sideEffects); append(',')
                 append("\"title\":"); appendJsonString(item.title)
                 append('}')
             }
@@ -242,6 +303,28 @@ object AppCapabilityRegistry {
         }
         val digest = MessageDigest.getInstance("SHA-256").digest(canonical.toByteArray(Charsets.UTF_8))
         return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    private fun StringBuilder.appendJsonStringList(values: List<String>) {
+        append('[')
+        values.forEachIndexed { idx, value ->
+            if (idx > 0) append(',')
+            appendJsonString(value)
+        }
+        append(']')
+    }
+
+    private fun StringBuilder.appendFailureRecoveryPaths(paths: List<FailureRecoveryPath>) {
+        append('[')
+        paths.forEachIndexed { idx, path ->
+            if (idx > 0) append(',')
+            append('{')
+            append("\"condition\":"); appendJsonString(path.condition); append(',')
+            append("\"explanation\":"); appendJsonString(path.explanation); append(',')
+            append("\"recoveryDestination\":"); appendJsonString(path.recoveryDestination)
+            append('}')
+        }
+        append(']')
     }
 
     private fun StringBuilder.appendJsonNullableString(value: String?) {
@@ -267,6 +350,14 @@ object AppCapabilityRegistry {
 
     fun evaluateCapabilities(snapshot: CapabilitySnapshot): List<ResolvedCapabilityItem> {
         val clientVer = snapshot.clientVersionCode
+        val providerStates = listOf(
+            "MovieBox" to snapshot.providerMovieboxEnabled,
+            "Internet Archive" to snapshot.providerInternetArchiveEnabled,
+            "TVMaze" to snapshot.providerTvmazeEnabled
+        )
+        val enabledProviders = providerStates.filter { it.second }.map { it.first }
+        val disabledProviders = providerStates.filterNot { it.second }.map { it.first }
+
         return productManifestItems.map { item ->
             var status = item.defaultStatus
             var reason: String? = item.conditionNote
@@ -274,6 +365,12 @@ object AppCapabilityRegistry {
             if (clientVer != null && clientVer < item.minVersionCode) {
                 status = CapabilityAvailability.UNAVAILABLE
                 reason = "Requires a newer app version (build ${item.minVersionCode}+)."
+            } else if (snapshot.onlineServicesPaused && item.id in ONLINE_BLOCKED_IDS) {
+                status = CapabilityAvailability.DISABLED
+                reason = "Temporarily unavailable while Laterbox online services are paused."
+            } else if (snapshot.onlineServicesPaused && item.id == "downloads.media_extraction") {
+                status = CapabilityAvailability.CONDITIONALLY_AVAILABLE
+                reason = "On-device extraction works, while online metadata and social link services are paused."
             } else {
                 when (item.id) {
                     "assistant.chat_and_actions" -> if (!snapshot.assistantEnabled) {
@@ -284,7 +381,16 @@ object AppCapabilityRegistry {
                         status = CapabilityAvailability.DISABLED
                         reason = "Smart Reminders are turned off in Settings."
                     }
-                    "movies.discovery_and_library",
+                    "movies.discovery_and_library" -> if (!snapshot.moviesTvEnabled) {
+                        status = CapabilityAvailability.DISABLED
+                        reason = "Movies & TV section is currently disabled."
+                    } else if (enabledProviders.isEmpty()) {
+                        status = CapabilityAvailability.CONDITIONALLY_AVAILABLE
+                        reason = "All online catalogue providers are currently disabled; local Watchlist, history, and offline downloads remain available."
+                    } else if (disabledProviders.isNotEmpty()) {
+                        status = CapabilityAvailability.CONDITIONALLY_AVAILABLE
+                        reason = "Active catalogue providers: ${enabledProviders.joinToString(", ")}. Disabled: ${disabledProviders.joinToString(", ")}."
+                    }
                     "movies.pip_and_mini_player" -> if (!snapshot.moviesTvEnabled) {
                         status = CapabilityAvailability.DISABLED
                         reason = "Movies & TV section is currently disabled."
@@ -292,10 +398,16 @@ object AppCapabilityRegistry {
                     "movies.recommendations" -> if (!snapshot.moviesRecommendationsEnabled) {
                         status = CapabilityAvailability.DISABLED
                         reason = "Personalized recommendations are turned off."
+                    } else if (!snapshot.moviesTvEnabled) {
+                        status = CapabilityAvailability.DISABLED
+                        reason = "Movies & TV section is currently disabled."
                     }
                     "movies.intro_skip" -> if (!snapshot.playerIntroSkipEnabled) {
                         status = CapabilityAvailability.DISABLED
                         reason = "Skip intro controls are turned off."
+                    } else if (!snapshot.moviesTvEnabled) {
+                        status = CapabilityAvailability.DISABLED
+                        reason = "Movies & TV section is currently disabled."
                     }
                     "downloads.youtube_transcripts" -> if (!snapshot.youtubeTranscriptsReady) {
                         status = CapabilityAvailability.UNAVAILABLE
@@ -345,6 +457,7 @@ object AppCapabilityRegistry {
         put("assistantEnabled", snapshot.assistantEnabled)
         put("smartRemindersEnabled", snapshot.smartRemindersEnabled)
         put("quietHoursSummary", snapshot.quietHoursSummary)
+        put("onlineServicesPaused", snapshot.onlineServicesPaused)
         put("moviesTvEnabled", snapshot.moviesTvEnabled)
         put("providerMovieboxEnabled", snapshot.providerMovieboxEnabled)
         put("providerInternetArchiveEnabled", snapshot.providerInternetArchiveEnabled)
@@ -452,11 +565,13 @@ object AppCapabilityRegistry {
     fun formatLiveCapabilitiesBlock(snapshot: CapabilitySnapshot): String = buildString {
         appendLine("Live App Capabilities & Runtime Status:")
         val transcriptEngineNote = when {
+            snapshot.onlineServicesPaused -> "Paused (online services paused)"
             snapshot.ytDlpState == "INITIALIZED" -> "Ready (yt-dlp initialized)"
             snapshot.ytDlpState == "FAILED" -> "Degraded (yt-dlp init failed; watch-page fallback may still work)"
             snapshot.youtubeTranscriptsReady -> "Ready (yt-dlp initializes on first extraction)"
             else -> "Unavailable"
         }
+        appendLine("- Online services: ${if (snapshot.onlineServicesPaused) "Paused (maintenance)" else "Active"}")
         appendLine("- YouTube Transcript Extraction (single video & playlist captions): $transcriptEngineNote")
         appendLine("- yt-dlp engine: ${snapshot.ytDlpState}${snapshot.ytDlpVersion?.let { " (v$it)" } ?: ""}")
         val qjsVer = snapshot.quickJsVersion?.takeIf { it.isNotBlank() && it != "unknown" }?.let { " ($it)" }.orEmpty()
@@ -474,6 +589,12 @@ object AppCapabilityRegistry {
         appendLine("- AI Assistant: ${if (snapshot.assistantEnabled) "Enabled" else "Disabled"}")
         appendLine("- Smart Reminders: ${if (snapshot.smartRemindersEnabled) "Enabled" else "Disabled"} (Quiet Hours: ${snapshot.quietHoursSummary})")
         appendLine(
+            "- Active catalogue providers: " +
+                "MovieBox=${if (snapshot.providerMovieboxEnabled) "on" else "off"}, " +
+                "Internet Archive=${if (snapshot.providerInternetArchiveEnabled) "on" else "off"}, " +
+                "TVMaze=${if (snapshot.providerTvmazeEnabled) "on" else "off"}"
+        )
+        appendLine(
             "- Movies & TV Personal Library (${snapshot.moviesProvidersSummary}): " +
                 "${snapshot.moviesWatchlistCount} watchlist, " +
                 "${snapshot.moviesInProgressCount} in-progress, " +
@@ -482,6 +603,14 @@ object AppCapabilityRegistry {
                 "${snapshot.moviesActiveRemindersCount} reminders; " +
                 "${snapshot.collectionsCount} custom collections"
         )
+    }.trim()
+
+    fun formatEvaluatedCapabilitiesBlock(resolved: List<ResolvedCapabilityItem>): String = buildString {
+        appendLine("Evaluated Capability States (Manifest v$MANIFEST_VERSION):")
+        for (item in resolved) {
+            val reasonPart = item.reason?.takeIf { it.isNotBlank() }?.let { " - $it" }.orEmpty()
+            appendLine("- [${item.section}] ${item.title} (${item.id}): ${item.status.name}$reasonPart")
+        }
     }.trim()
 }
 

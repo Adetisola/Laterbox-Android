@@ -12,6 +12,7 @@ import com.laterbox.app.media.data.adapters.ytdlp.QuickJsHelper
 import com.laterbox.app.media.data.adapters.ytdlp.YtDlpInitState
 import com.laterbox.app.media.data.adapters.ytdlp.YtDlpRuntimeManager
 import com.laterbox.app.media.domain.model.MediaType
+import com.laterbox.app.remoteconfig.RemoteConfigManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -30,7 +31,8 @@ class LaterboxContextEngine(
     private val userPreferencesRepository: UserPreferencesRepository,
     private val appHealthChecker: AppHealthChecker? = null,
     private val ytDlpRuntimeManager: YtDlpRuntimeManager? = null,
-    private val appContext: Context? = null
+    private val appContext: Context? = null,
+    private val remoteConfigManager: RemoteConfigManager? = null
 ) {
 
     suspend fun buildContextForPrompt(prompt: String): BuiltAssistantContext = withContext(Dispatchers.IO) {
@@ -153,6 +155,13 @@ class LaterboxContextEngine(
                 emptyList()
             }
         }
+        val healthReportDef = async {
+            try {
+                appHealthChecker?.runCheck()
+            } catch (_: Throwable) {
+                null
+            }
+        }
 
         val inboxCount = inboxCountDef.await()
         val archivedCount = archivedCountDef.await()
@@ -172,6 +181,7 @@ class LaterboxContextEngine(
         val collectionMedia = collectionMediaDef.await()
         val recentNotifications = recentNotificationsDef.await()
         val recentEvents = recentEventsDef.await()
+        val healthReport = healthReportDef.await()
 
         val ytDlpState = ytDlpRuntimeManager?.ytDlpState?.value
         val ffmpegState = ytDlpRuntimeManager?.ffmpegState?.value
@@ -212,6 +222,29 @@ class LaterboxContextEngine(
         } else {
             "Disabled"
         }
+        val rc = remoteConfigManager?.currentConfig
+        val onlineServicesPaused = rc?.maintenance?.isOnlineServicesPaused == true
+        val remoteMoviesTvEnabled = rc?.isFeatureEnabled(RemoteCapabilities.KEY_MOVIES_TV) ?: true
+        val remoteProviderMoviebox = rc?.isFeatureEnabled(RemoteCapabilities.KEY_PROVIDER_MOVIEBOX) ?: true
+        val remoteProviderInternetArchive = rc?.isFeatureEnabled(RemoteCapabilities.KEY_PROVIDER_INTERNET_ARCHIVE) ?: true
+        val remoteProviderTvmaze = rc?.isFeatureEnabled(RemoteCapabilities.KEY_PROVIDER_TVMAZE) ?: true
+        val remoteMoviesRecommendations = rc?.isFeatureEnabled(RemoteCapabilities.KEY_MOVIES_RECOMMENDATIONS) ?: true
+        val remotePlayerIntroSkip = rc?.isFeatureEnabled(RemoteCapabilities.KEY_PLAYER_INTRO_SKIP) ?: true
+        val remoteAssistantEnabled = rc?.isFeatureEnabled(RemoteCapabilities.KEY_AI_ASSISTANT) ?: true
+        val remoteSmartRemindersEnabled = rc?.isFeatureEnabled(RemoteCapabilities.KEY_SMART_REMINDERS) ?: true
+
+        val activeProviderNames = buildList {
+            if (remoteProviderMoviebox) add("Live Streaming Catalogue")
+            if (remoteProviderInternetArchive) add("Internet Archive")
+            if (remoteProviderTvmaze) add("TV Series Guide")
+        }
+        val moviesProvidersSummary = when {
+            onlineServicesPaused -> "Paused during maintenance (offline library available)"
+            !remoteMoviesTvEnabled -> "Disabled"
+            activeProviderNames.isEmpty() -> "None (all online catalogue providers disabled)"
+            else -> activeProviderNames.joinToString(", ")
+        }
+
         val capabilitySnapshot = CapabilitySnapshot(
             ytDlpState = ytDlpState?.name ?: "NOT_INITIALIZED",
             ytDlpVersion = ytDlpVersion,
@@ -222,16 +255,27 @@ class LaterboxContextEngine(
             storedDocumentCount = storedDocumentCount,
             configuredExportFolderName = prefs.customExportDirectoryName?.let { sanitize(it, 60) },
             configuredExportFolderWritable = exportFolderWritable,
-            assistantEnabled = prefs.assistantEnabled,
-            smartRemindersEnabled = prefs.smartRemindersEnabled,
+            assistantEnabled = prefs.assistantEnabled && remoteAssistantEnabled,
+            smartRemindersEnabled = prefs.smartRemindersEnabled && remoteSmartRemindersEnabled,
             quietHoursSummary = quietHoursSummary,
+            moviesProvidersSummary = moviesProvidersSummary,
             moviesWatchlistCount = watchlistItems.size,
             moviesInProgressCount = inProgressHistory.size,
             moviesCompletedCount = completedHistory.size,
             moviesOfflineCount = offlineMovieAssets.size,
             collectionsCount = collectionsList.size,
-            moviesActiveRemindersCount = activeMovieReminders.size
+            moviesActiveRemindersCount = activeMovieReminders.size,
+            clientVersionCode = com.laterbox.app.BuildConfig.VERSION_CODE,
+            clientVersionName = com.laterbox.app.BuildConfig.VERSION_NAME,
+            onlineServicesPaused = onlineServicesPaused,
+            moviesTvEnabled = remoteMoviesTvEnabled,
+            providerMovieboxEnabled = remoteProviderMoviebox,
+            providerInternetArchiveEnabled = remoteProviderInternetArchive,
+            providerTvmazeEnabled = remoteProviderTvmaze,
+            moviesRecommendationsEnabled = remoteMoviesRecommendations,
+            playerIntroSkipEnabled = remotePlayerIntroSkip
         )
+        val evaluatedCapabilities = AppCapabilityRegistry.evaluateCapabilities(capabilitySnapshot)
 
         val asksForDeepContent = listOf(
             "transcript", "caption", "full article", "summarize the video", "what did they say",
@@ -261,12 +305,44 @@ class LaterboxContextEngine(
                     "${watchlistItems.size} Movies & TV watchlist items, ${activeMovieReminders.size} Movies & TV reminders" +
                     (if (mutedSeriesCount > 0) ", $mutedSeriesCount muted series." else ".")
             )
+            if (onlineServicesPaused) {
+                val maintMsg = rc?.maintenance?.message?.trim()?.takeIf { it.isNotEmpty() }
+                    ?: "Online services are temporarily paused during maintenance."
+                appendLine("Maintenance notice: ${sanitize(maintMsg, 200)}")
+            }
             appendLine()
             appendLine(AppCapabilityRegistry.formatLiveCapabilitiesBlock(capabilitySnapshot))
+            appendLine()
+            appendLine(AppCapabilityRegistry.formatEvaluatedCapabilitiesBlock(evaluatedCapabilities))
 
-            if (collectionsList.isNotEmpty()) {
-                appendLine("\nCollections (max 10):")
-                for (col in collectionsList.take(10)) {
+            if (healthReport != null) {
+                appendLine()
+                appendLine("App Health Summary:")
+                appendLine(
+                    "- Status=${healthReport.overallStatus.name} | " +
+                        "ytDlp=${sanitize(healthReport.ytDlpStateLabel, 24)} | " +
+                        "ffmpeg=${sanitize(healthReport.ffmpegStateLabel, 24)} | " +
+                        "quickJs=${if (healthReport.quickJsAvailable) "available" else "missing"} | " +
+                        "storageFreeMb=${healthReport.availableStorageMb()} | " +
+                        "network=${when { healthReport.isNetworkValidated -> "validated"; healthReport.isNetworkConnected -> "connected"; else -> "offline" }} | " +
+                        "notifications=${if (healthReport.notificationsEnabled) "enabled" else "disabled"} | " +
+                        "exactAlarms=${if (healthReport.exactAlarmsAllowed) "allowed" else "restricted"} | " +
+                        "failedInspections=${healthReport.failedInspectionsCount} | " +
+                        "failedDownloads=${healthReport.failedDownloadsCount}"
+                )
+                for (issue in healthReport.issues.take(5)) {
+                    appendLine("- [${issue.severity.name}] ${sanitize(issue.title, 80)}: ${sanitize(issue.summary, 120)} (Fix: ${sanitize(issue.suggestedFix, 100)})")
+                }
+            }
+
+            val explicitlyRequestsCollections = EXPLICIT_COLLECTION_LIST_REGEX.containsMatchIn(lowerPrompt)
+            val matchedCollections = collectionsList.filter { col ->
+                collectionMatchesPrompt(col.name, keywords, explicitlyRequestsCollections)
+            }
+            if (matchedCollections.isNotEmpty()) {
+                val colSlice = matchedCollections.take(10)
+                appendLine("\nCollections (max ${colSlice.size}):")
+                for (col in colSlice) {
                     appendLine("- [collectionId=${col.id}] name=\"${sanitize(col.name, 50)}\" items=${col.itemCount}")
                 }
             }
@@ -275,12 +351,17 @@ class LaterboxContextEngine(
                 appendLine("\nRelevant & recent saved links (max ${rankedLinks.size}):")
                 for (item in rankedLinks) {
                     val l = item.link
-                    val cols = item.collections.joinToString(", ") { it.name }.ifBlank { "None" }
+                    val visibleCols = item.collections
+                        .filter { col -> collectionMatchesPrompt(col.name, keywords, explicitlyRequestsCollections) }
+                        .joinToString(", ") { sanitize(it.name, 50) }
                     val statusFlags = buildList {
                         if (!l.isRead) add("unread") else add("read")
                         if (l.reminderAt != null && !l.nudgeDismissed) add("reminder-set")
                     }.joinToString(", ")
-                    append("- [linkId=${l.id}] title=\"${sanitize(l.title, 80)}\" domain=${sanitize(l.domain, 40)} url=${sanitize(l.originalUrl, 120)} type=${l.contentType.name} status=($statusFlags) collections=[$cols]")
+                    append("- [linkId=${l.id}] title=\"${sanitize(l.title, 80)}\" domain=${sanitize(l.domain, 40)} url=${sanitize(l.originalUrl, 120)} type=${l.contentType.name} status=($statusFlags)")
+                    if (visibleCols.isNotEmpty()) {
+                        append(" collections=[$visibleCols]")
+                    }
                     if (!l.personalNote.isNullOrBlank()) {
                         append(" note=\"${sanitize(l.personalNote, 120)}\"")
                     }
@@ -469,6 +550,20 @@ class LaterboxContextEngine(
         }.take(maxItems)
     }
 
+    private fun collectionMatchesPrompt(
+        name: String,
+        keywords: Set<String>,
+        explicitlyRequestsCollections: Boolean
+    ): Boolean {
+        if (explicitlyRequestsCollections) return true
+        if (keywords.isEmpty()) return false
+        val nameTokens = name.lowercase()
+            .split(Regex("[^a-z0-9]+"))
+            .filter { it.length >= 3 && it !in STOP_WORDS }
+        if (nameTokens.isEmpty()) return false
+        return nameTokens.any { tok -> tok in keywords }
+    }
+
     private fun sanitize(raw: String, maxLen: Int): String {
         return ActivityEventRepository.sanitizeText(raw, maxLen)
             .replace("\n", " ")
@@ -476,10 +571,29 @@ class LaterboxContextEngine(
     }
 
     companion object {
+        private val EXPLICIT_COLLECTION_LIST_REGEX = Regex(
+            pattern = "\\b(?:" +
+                "(?:my|all|existing|saved|custom|available|current)\\s+collections" +
+                "|(?:list|show|view|see|get|display|name|names\\s+of|browse|check|open|find)\\s+(?:all\\s+)?(?:my\\s+|the\\s+)?collections" +
+                "|(?:what|which)\\s+(?:collections|are\\s+(?:my|the)\\s+collections)" +
+                "|collections?\\s+(?:list|names?|inventory)" +
+                "|collection\\s+names?" +
+                ")\\b",
+            option = RegexOption.IGNORE_CASE
+        )
+
         private val STOP_WORDS = setOf(
             "the", "and", "for", "with", "that", "this", "what", "when", "where",
             "which", "have", "from", "about", "your", "laterbox", "links", "link",
-            "saved", "please", "can", "you", "how", "why", "are", "was", "were"
+            "saved", "please", "can", "you", "how", "why", "are", "was", "were",
+            "not", "ill", "show", "hello", "hey", "sure", "feel", "today",
+            "should", "could", "would", "collection", "collections", "does", "did",
+            "has", "had", "but", "yet", "now", "just", "very", "too", "also",
+            "into", "out", "off", "all", "any", "some", "more", "most", "other",
+            "such", "only", "own", "same", "than", "then", "there", "here",
+            "these", "those", "they", "them", "their", "who", "whom", "whose",
+            "want", "need", "help", "tell", "find", "give", "make", "know",
+            "think", "look", "work", "explain", "recommend", "fix"
         )
     }
 }

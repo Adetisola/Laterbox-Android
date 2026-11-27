@@ -14,7 +14,12 @@ import org.json.JSONObject
 import java.io.InputStream
 import java.io.OutputStream
 
-class BackupManager(private val database: LaterboxDatabase) {
+class BackupManager(
+    private val database: LaterboxDatabase,
+    private val reminderScheduler: com.laterbox.app.reminders.ReminderScheduler? = null,
+    private val onScheduleReminder: ((linkId: Long, triggerAtMillis: Long, title: String?, url: String?) -> Unit)? = null,
+    private val nowMsProvider: () -> Long = { System.currentTimeMillis() }
+) {
 
     suspend fun exportToJson(outputStream: OutputStream): Result<Int> = withContext(Dispatchers.IO) {
         try {
@@ -51,7 +56,7 @@ class BackupManager(private val database: LaterboxDatabase) {
 
             val backup = LaterboxBackup(
                 version = 1,
-                exportedAt = System.currentTimeMillis(),
+                exportedAt = nowMsProvider(),
                 collections = collections,
                 links = allLinks
             )
@@ -72,6 +77,7 @@ class BackupManager(private val database: LaterboxDatabase) {
 
             val collectionDao = database.collectionDao()
             val savedLinkDao = database.savedLinkDao()
+            val nowMs = nowMsProvider()
 
             var restoredCollectionsCount = 0
             var restoredLinksCount = 0
@@ -90,7 +96,7 @@ class BackupManager(private val database: LaterboxDatabase) {
                 }
             }
 
-            // 2. Restore Links with duplicate detection and multi-collections
+            // 2. Restore Links with duplicate detection, multi-collections, and alarm re-hydration
             for (bLink in backup.links) {
                 val targetNames = bLink.collectionNames.ifEmpty { listOfNotNull(bLink.collectionName) }
                 val targetColIds = targetNames.mapNotNull { name ->
@@ -102,14 +108,27 @@ class BackupManager(private val database: LaterboxDatabase) {
                     // Duplicate found: update notes/reminder if missing locally
                     val needsNote = existing.link.personalNote.isNullOrBlank() && !bLink.personalNote.isNullOrBlank()
                     val needsReminder = existing.link.reminderAt == null && bLink.reminderAt != null
+                    val effectiveReminderAt = if (needsReminder) bLink.reminderAt else existing.link.reminderAt
+                    val effectiveDismissed = if (needsReminder) false else existing.link.nudgeDismissed
                     if (needsNote || needsReminder) {
                         savedLinkDao.updateLink(
                             existing.link.copy(
                                 personalNote = if (needsNote) bLink.personalNote else existing.link.personalNote,
-                                reminderAt = if (needsReminder) bLink.reminderAt else existing.link.reminderAt
+                                reminderAt = effectiveReminderAt,
+                                nudgeDismissed = effectiveDismissed
                             )
                         )
                     }
+                    scheduleReminderIfEligible(
+                        linkId = existing.link.id,
+                        reminderAt = effectiveReminderAt,
+                        isRead = existing.link.isRead,
+                        isArchived = existing.link.isArchived,
+                        nudgeDismissed = effectiveDismissed,
+                        title = existing.link.title,
+                        originalUrl = existing.link.originalUrl,
+                        nowMs = nowMs
+                    )
                     for (colId in targetColIds) {
                         savedLinkDao.insertLinkCollectionCrossRef(
                             LinkCollectionCrossRef(linkId = existing.link.id, collectionId = colId)
@@ -134,9 +153,19 @@ class BackupManager(private val database: LaterboxDatabase) {
                         reminderAt = bLink.reminderAt,
                         metadataStatus = if (bLink.previewImageUrl != null) MetadataStatus.SUCCESS else MetadataStatus.PARTIAL,
                         createdAt = bLink.createdAt,
-                        updatedAt = System.currentTimeMillis()
+                        updatedAt = nowMs
                     )
                     val insertedId = savedLinkDao.insertLink(entity)
+                    scheduleReminderIfEligible(
+                        linkId = insertedId,
+                        reminderAt = entity.reminderAt,
+                        isRead = entity.isRead,
+                        isArchived = entity.isArchived,
+                        nudgeDismissed = entity.nudgeDismissed,
+                        title = entity.title,
+                        originalUrl = entity.originalUrl,
+                        nowMs = nowMs
+                    )
                     for (colId in targetColIds) {
                         savedLinkDao.insertLinkCollectionCrossRef(
                             LinkCollectionCrossRef(linkId = insertedId, collectionId = colId)
@@ -155,6 +184,29 @@ class BackupManager(private val database: LaterboxDatabase) {
             )
         } catch (e: Exception) {
             Result.failure(e)
+        }
+    }
+
+    private fun scheduleReminderIfEligible(
+        linkId: Long,
+        reminderAt: Long?,
+        isRead: Boolean,
+        isArchived: Boolean,
+        nudgeDismissed: Boolean,
+        title: String,
+        originalUrl: String,
+        nowMs: Long
+    ) {
+        if (linkId <= 0L || isRead || isArchived || nudgeDismissed) return
+        if (reminderAt == null || reminderAt <= nowMs) return
+        runCatching {
+            onScheduleReminder?.invoke(linkId, reminderAt, title, originalUrl)
+                ?: reminderScheduler?.scheduleReminder(
+                    linkId = linkId,
+                    triggerAtMillis = reminderAt,
+                    title = title,
+                    url = originalUrl
+                )
         }
     }
 

@@ -135,4 +135,31 @@ class ChatRepositoryTest {
         assertEquals(false, blockedAutoUpdate)
         assertEquals("Weekend Movie Night", repo.getConversation(convId)?.title)
     }
+
+    @Test
+    fun extractiveFallbackTitle_formatsUrlsAndPunctuationCleanly() {
+        assertEquals("Laterbox chat", ChatRepository.extractiveFallbackTitle(""))
+        assertEquals("Laterbox chat", ChatRepository.extractiveFallbackTitle("   "))
+        assertEquals("Laterbox chat", ChatRepository.extractiveFallbackTitle("???!!!..."))
+        assertEquals("Hello", ChatRepository.extractiveFallbackTitle("???hello???"))
+        assertEquals("What's up", ChatRepository.extractiveFallbackTitle("\"What's up?\""))
+        assertEquals("🎬🍿🔥", ChatRepository.extractiveFallbackTitle("🎬🍿🔥"))
+        assertEquals(
+            "youtube.com",
+            ChatRepository.extractiveFallbackTitle("https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL1234567890")
+        )
+        assertEquals(
+            "example.com",
+            ChatRepository.extractiveFallbackTitle("Please https://example.com/very/long/path/here/and/more/segments")
+        )
+        assertEquals(
+            "Summarize youtube.com for me",
+            ChatRepository.extractiveFallbackTitle("Summarize https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL1234567890 for me")
+        )
+        assertEquals(
+            "Check github.com",
+            ChatRepository.extractiveFallbackTitle("Check https://github.com/Adetisola/Laterbox-Android")
+        )
+        assertEquals("https://", ChatRepository.extractiveFallbackTitle("https://"))
+    }
 }

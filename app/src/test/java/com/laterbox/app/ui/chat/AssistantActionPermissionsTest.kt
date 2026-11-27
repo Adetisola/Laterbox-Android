@@ -565,6 +565,190 @@ class AssistantActionPermissionsTest {
         }
     }
 
+    @Test
+    fun multipleMutatingActions_queueInFifoOrder_reEvaluateCategoryGrants_andEmitDeleteDownloadReceiptKey() = runTest(mainDispatcher) {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        val server = okhttp3.mockwebserver.MockWebServer()
+        val sseReply1 = """
+            event: response_start
+            data: {"manifestRevision":"2026.12.01-v3","manifestSynced":true}
+
+            event: approval_required
+            data: {"action":{"type":"TOGGLE_MOVIE_WATCHLIST","providerId":"tvmaze","titleId":"66","add":true,"title":"Severance"},"category":"LIBRARY_MANAGEMENT"}
+
+            event: approval_required
+            data: {"action":{"type":"MARK_MOVIE_WATCHED","providerId":"tvmaze","titleId":"66","seasonNumber":1,"episodeNumber":1,"watched":true,"title":"Severance"},"category":"LIBRARY_MANAGEMENT"}
+
+            event: approval_required
+            data: {"action":{"type":"DELETE_DOWNLOAD","taskId":"task-del","title":"Old Clip"},"category":"LIBRARY_MANAGEMENT"}
+
+            event: response_complete
+            data: {"fullText":"I can update Severance and remove Old Clip.","displayText":"I can update Severance and remove Old Clip.","actions":[]}
+
+        """.trimIndent()
+        val sseReply2 = """
+            event: response_complete
+            data: {"fullText":"Got it.","displayText":"Got it.","actions":[]}
+
+        """.trimIndent()
+
+        // Path-routing dispatcher isolates /ai/v1/titles/generate from /ai/v1/chat/stream & /ai/v1/chat/action-result
+        val streamRequestBodies = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val actionResultBodies = java.util.Collections.synchronizedList(mutableListOf<String>())
+        var streamCounter = 0
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): okhttp3.mockwebserver.MockResponse {
+                val path = request.path.orEmpty()
+                val body = request.body.readUtf8()
+                return when {
+                    path.contains("ai/v1/chat/stream") -> {
+                        streamRequestBodies.add(body)
+                        val reply = if (streamCounter++ == 0) sseReply1 else sseReply2
+                        okhttp3.mockwebserver.MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "text/event-stream")
+                            .setBody(reply)
+                    }
+                    path.contains("ai/v1/chat/action-result") -> {
+                        actionResultBodies.add(body)
+                        okhttp3.mockwebserver.MockResponse()
+                            .setResponseCode(200)
+                            .setBody("""{"accepted":true,"status":"ok"}""")
+                    }
+                    path.contains("ai/v1/titles/generate") -> {
+                        okhttp3.mockwebserver.MockResponse()
+                            .setResponseCode(200)
+                            .setBody("""{"title":"Severance Updates","source":"gemini"}""")
+                    }
+                    else -> okhttp3.mockwebserver.MockResponse().setResponseCode(404)
+                }
+            }
+        }
+        server.start()
+        try {
+            moviesRepo.seedTitle(
+                MovieTitleSummary(
+                    id = "66",
+                    providerId = "tvmaze",
+                    kind = MediaKind.TV_SERIES,
+                    title = "Severance",
+                    releaseYear = 2022,
+                    sourceBadge = DataSourceBadge.LIVE_TVMAZE
+                )
+            )
+            prefs.setAssistantAiDisclosureAccepted(true)
+
+            val baseUrl = server.url("/").toString().trimEnd('/')
+            val activityRepo = ActivityEventRepository(db.activityEventDao())
+            val backendClient = com.laterbox.app.ai.LaterboxBackendAiClient(
+                baseUrlProvider = { baseUrl },
+                appCheckTokenProvider = { "tok" }
+            )
+            val streamVm = ChatViewModel(
+                chatRepository = chatRepo,
+                userPreferencesRepository = prefs,
+                laterboxContextEngine = LaterboxContextEngine(db, activityRepo, prefs),
+                linkRepository = linkRepo,
+                mediaRepository = mediaRepo,
+                moviesRepository = moviesRepo,
+                collectionRepository = collectionRepo,
+                reminderScheduler = ReminderScheduler(ctx),
+                backendAiClient = backendClient
+            )
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { streamVm.uiState.collect {} }
+
+            streamVm.sendMessage("Add Severance to watchlist, mark S1E1 watched, and delete Old Clip")
+            awaitCondition(this, timeoutMs = 5_000L) {
+                !streamVm.uiState.value.isStreaming &&
+                    streamVm.uiState.value.pendingMutatingAction is ChatAction.ToggleMovieWatchlist
+            }
+
+            // All 3 mutating actions must be AWAITING_APPROVAL (none dropped)
+            val convId = streamVm.uiState.value.activeConversationId!!
+            val msg = chatRepo.getMessagesSnapshot(convId)
+                .first { it.role == com.laterbox.app.data.repository.ChatRole.ASSISTANT.name && it.actionsJson != null }
+            val initialTracked = com.laterbox.app.ai.AssistantActionHandler.fromTrackedJsonList(msg.actionsJson)
+            assertEquals(3, initialTracked.size)
+            assertTrue(initialTracked.all { it.status == com.laterbox.app.ai.ChatActionStatus.AWAITING_APPROVAL })
+
+            // "Always allow" on #1 -> executes #1, auto-executes #2 (MarkMovieWatched), and surfaces #3 (DeleteDownload)!
+            streamVm.alwaysAllowMutatingActionInConversation()
+            awaitCondition(this, timeoutMs = 5_000L) {
+                moviesRepo.observeIsInWatchlist("tvmaze:66").first() &&
+                    moviesRepo.markedWatched.contains("tvmaze:66:S1E1") &&
+                    streamVm.uiState.value.pendingMutatingAction is ChatAction.DeleteDownload
+            }
+            assertTrue(streamVm.uiState.value.pendingMutatingAction is ChatAction.DeleteDownload)
+
+            // Confirm #3 (DeleteDownload) -> reports "DELETE_DOWNLOAD" (NEVER "DELETE_DOWNLOADED_FILE")
+            streamVm.confirmMutatingAction()
+            awaitCondition(this, timeoutMs = 5_000L) {
+                streamVm.uiState.value.pendingMutatingAction == null &&
+                    actionResultBodies.size >= 3
+            }
+
+            // Send next message so extractRecentActionReceipts serializes into /ai/v1/chat/stream
+            streamVm.sendMessage("Thanks!")
+            awaitCondition(this, timeoutMs = 5_000L) {
+                !streamVm.uiState.value.isStreaming && streamRequestBodies.size >= 2
+            }
+
+            assertTrue(actionResultBodies.any { it.contains("\"actionType\":\"DELETE_DOWNLOAD\"") })
+            assertFalse(actionResultBodies.any { it.contains("DELETE_DOWNLOADED_FILE") })
+
+            val reqStream2Body = streamRequestBodies[1]
+            assertTrue(reqStream2Body.contains("\"actionType\":\"DELETE_DOWNLOAD\""))
+            assertFalse(reqStream2Body.contains("DELETE_DOWNLOADED_FILE"))
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun multipleMutatingActions_sequentialAllowOnceAndDismiss_neverDropsQueuedDialogs() = runTest(mainDispatcher) {
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.uiState.collect {} }
+        moviesRepo.seedTitle(
+            MovieTitleSummary(
+                id = "66",
+                providerId = "tvmaze",
+                kind = MediaKind.TV_SERIES,
+                title = "Severance",
+                releaseYear = 2022,
+                sourceBadge = DataSourceBadge.LIVE_TVMAZE
+            )
+        )
+        val convId = chatRepo.createConversation("Sequential Queue")
+        vm.selectConversation(convId)
+        awaitCondition(this) { vm.uiState.value.activeConversationId == convId }
+
+        val futureMs = System.currentTimeMillis() + 600_000L
+        vm.requestMutatingActionConfirmation(ChatAction.ToggleMovieWatchlist("tvmaze", "66", true, "Severance"))
+        vm.requestMutatingActionConfirmation(ChatAction.ScheduleMovieReminder("tvmaze", "66", futureMs, title = "Severance"))
+        vm.requestMutatingActionConfirmation(ChatAction.DeleteDownload(taskId = "t-del", title = "Old.mp4"))
+
+        awaitCondition(this) { vm.uiState.value.pendingMutatingAction is ChatAction.ToggleMovieWatchlist }
+        assertTrue(vm.uiState.value.pendingMutatingAction is ChatAction.ToggleMovieWatchlist)
+
+        // Allow once #1 -> advances to #2
+        vm.confirmMutatingAction()
+        awaitCondition(this) {
+            moviesRepo.observeIsInWatchlist("tvmaze:66").first() &&
+                vm.uiState.value.pendingMutatingAction is ChatAction.ScheduleMovieReminder
+        }
+        assertTrue(vm.uiState.value.pendingMutatingAction is ChatAction.ScheduleMovieReminder)
+
+        // Dismiss #2 -> advances to #3
+        vm.dismissMutatingAction()
+        awaitCondition(this) { vm.uiState.value.pendingMutatingAction is ChatAction.DeleteDownload }
+        assertTrue(moviesRepo.scheduledReminders.isEmpty())
+        assertTrue(vm.uiState.value.pendingMutatingAction is ChatAction.DeleteDownload)
+
+        // Dismiss #3 -> queue empty
+        vm.dismissMutatingAction()
+        awaitCondition(this) { vm.uiState.value.pendingMutatingAction == null }
+        assertNull(vm.uiState.value.pendingMutatingAction)
+    }
+
     private class RecordingFakeMediaRepository : MediaRepository {
         val inspectedLinkIds = mutableListOf<Long>()
         val retriedTaskIds = mutableListOf<String>()

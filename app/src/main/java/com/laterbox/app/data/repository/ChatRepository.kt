@@ -237,6 +237,11 @@ class ChatRepository(
     }
 
     companion object {
+        private val LEADING_FILLER_REGEX = Regex(
+            pattern = "^(?:hey\\s+laterbox[,!\\s]*|hi\\s+laterbox[,!\\s]*|hello[,!\\s]*|please\\s+|can\\s+you\\s+(?:please\\s+)?|could\\s+you\\s+(?:please\\s+)?|would\\s+you\\s+(?:please\\s+)?|i\\s+want\\s+to\\s+|i\\s+need\\s+to\\s+|help\\s+me\\s+|tell\\s+me\\s+|show\\s+me\\s+|find\\s+me\\s+)+",
+            option = RegexOption.IGNORE_CASE
+        )
+
         fun deriveTitleFromPrompt(prompt: String): String {
             val collapsed = prompt.trim().replace(Regex("\\s+"), " ")
             if (collapsed.isBlank()) return "New conversation"
@@ -245,6 +250,64 @@ class ChatRepository(
             } else {
                 collapsed.take(44).substringBeforeLast(' ', collapsed.take(44)).trimEnd(',', '.', ';', ':') + "…"
             }
+        }
+
+        private val EDGE_PUNCTUATION = charArrayOf(
+            '?', '.', '!', ',', ':', ';', '"', '\'', '(', ')', '[', ']', '-', '–', '—'
+        )
+        private val URL_TOKEN_REGEX = Regex("https?://[^\\s]+", RegexOption.IGNORE_CASE)
+        private val URL_HOST_FALLBACK_REGEX = Regex("^https?://(?:www\\.)?([^/?#:\\s]+)", RegexOption.IGNORE_CASE)
+        private val DOMAIN_PREFIX_REGEX = Regex("^(?:https?://|[a-z0-9-]+\\.[a-z]{2,}(?:/|\\s|$))", RegexOption.IGNORE_CASE)
+
+        private fun formatUrlTokenForTitle(rawToken: String): String {
+            val cleanedToken = rawToken.trimEnd(*EDGE_PUNCTUATION)
+            val host = runCatching {
+                java.net.URI(cleanedToken).host?.removePrefix("www.")?.lowercase()
+            }.getOrNull()
+                ?: URL_HOST_FALLBACK_REGEX.find(cleanedToken)?.groupValues?.getOrNull(1)?.lowercase()
+            return host?.takeIf { it.isNotBlank() } ?: cleanedToken
+        }
+
+        fun extractiveFallbackTitle(firstUserMessage: String): String {
+            val cleaned = firstUserMessage.trim().replace(Regex("\\s+"), " ")
+            if (cleaned.isEmpty()) return "Laterbox chat"
+
+            val trimmedEdges = cleaned.trim(*EDGE_PUNCTUATION).trim()
+            if (trimmedEdges.isEmpty()) return "Laterbox chat"
+
+            val stripped = LEADING_FILLER_REGEX.replace(trimmedEdges, "").trim()
+            var candidate = if (stripped.length >= 4) stripped else trimmedEdges
+            candidate = candidate.trim(*EDGE_PUNCTUATION).trim()
+            if (candidate.isEmpty()) return "Laterbox chat"
+
+            candidate = URL_TOKEN_REGEX.replace(candidate) { match ->
+                formatUrlTokenForTitle(match.value)
+            }.replace(Regex("\\s+"), " ").trim()
+
+            val words = candidate.split(Regex("\\s+")).filter { it.isNotEmpty() }
+            if (words.size > 7) {
+                candidate = words.take(7).joinToString(" ")
+            }
+
+            if (candidate.length > 44) {
+                val prefix = candidate.take(44)
+                val lastSpace = prefix.lastIndexOf(' ')
+                val cut = if (lastSpace > 0) prefix.substring(0, lastSpace).trim() else ""
+                candidate = if (cut.length >= 8) cut else prefix.trim()
+            }
+
+            candidate = candidate.trim(*EDGE_PUNCTUATION).trim()
+            if (candidate.isEmpty()) return "Laterbox chat"
+
+            val startsWithUrlOrDomain = DOMAIN_PREFIX_REGEX.containsMatchIn(candidate)
+            val formatted = if (startsWithUrlOrDomain) {
+                candidate
+            } else {
+                candidate.replaceFirstChar { ch ->
+                    if (ch.isLowerCase()) ch.titlecase() else ch.toString()
+                }
+            }
+            return formatted.take(60)
         }
     }
 }

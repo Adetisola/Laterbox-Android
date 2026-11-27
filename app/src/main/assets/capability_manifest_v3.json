@@ -1,0 +1,473 @@
+{
+  "manifestVersion": 3,
+  "manifestRevision": "2026.12.01-v3",
+  "manifestHash": "f68aed601186bd4d2fe0fc62e3899162352eec381905b57bdeb4b7d321f92f6e",
+  "items": [
+    {
+      "id": "inbox.save_organize",
+      "section": "Inbox",
+      "title": "Save, Search & Organize Links",
+      "description": "Save links via Share sheet, text-selection pill, Clipboard detection, or in-app sheet with offline Room search, filters, and layouts.",
+      "defaultStatus": "SUPPORTED",
+      "minVersionCode": 1,
+      "remoteFeatureKey": null,
+      "conditionNote": null,
+      "availableActions": [
+        "SEARCH_LINKS",
+        "OPEN_LINK_DETAIL",
+        "REFRESH_METADATA",
+        "RETRY_INSPECTION"
+      ],
+      "preconditions": [
+        "Non-empty URL or link query",
+        "Network access only when refreshing remote link metadata"
+      ],
+      "requiresBackend": false,
+      "aiCopyRequiresBackend": false,
+      "reversible": true,
+      "requiresConfirmation": false,
+      "sideEffects": [
+        "Writes saved link records and enriched metadata into local Room storage"
+      ],
+      "failureRecoveryPaths": [
+        {
+          "condition": "metadata_fetch_failed",
+          "explanation": "Link is saved locally offline, but remote preview metadata could not be fetched.",
+          "recoveryDestination": "inbox"
+        },
+        {
+          "condition": "social_resolver_unavailable",
+          "explanation": "Social media link resolution is offline or rate-limited; basic URL saving still succeeds.",
+          "recoveryDestination": "settings/capture_shortcuts"
+        }
+      ]
+    },
+    {
+      "id": "collections.unified",
+      "section": "Collections",
+      "title": "Unified Collections",
+      "description": "Create, rename, and delete custom collections holding both saved links and Movies & TV titles.",
+      "defaultStatus": "SUPPORTED",
+      "minVersionCode": 1,
+      "remoteFeatureKey": null,
+      "conditionNote": null,
+      "availableActions": [
+        "OPEN_COLLECTIONS",
+        "ADD_MOVIE_TO_COLLECTION"
+      ],
+      "preconditions": [
+        "Target collection name or existing collection ID"
+      ],
+      "requiresBackend": false,
+      "aiCopyRequiresBackend": false,
+      "reversible": true,
+      "requiresConfirmation": false,
+      "sideEffects": [
+        "Updates local Room collection memberships for saved links or Movies & TV titles"
+      ],
+      "failureRecoveryPaths": [
+        {
+          "condition": "collection_not_found",
+          "explanation": "The requested collection does not exist yet; open Collections to create or select one.",
+          "recoveryDestination": "collections"
+        }
+      ]
+    },
+    {
+      "id": "downloads.media_extraction",
+      "section": "Downloads",
+      "title": "Media Downloader & Offline Library",
+      "description": "Inspect and download video/audio formats on-device with Queue and Library tabs plus optional folder export.",
+      "defaultStatus": "SUPPORTED",
+      "minVersionCode": 1,
+      "remoteFeatureKey": null,
+      "conditionNote": null,
+      "availableActions": [
+        "OPEN_DOWNLOADS",
+        "RETRY_DOWNLOAD",
+        "DELETE_DOWNLOAD"
+      ],
+      "preconditions": [
+        "Initialized yt-dlp runtime for extraction",
+        "Network connectivity for remote media inspection or download"
+      ],
+      "requiresBackend": false,
+      "aiCopyRequiresBackend": false,
+      "reversible": false,
+      "requiresConfirmation": true,
+      "sideEffects": [
+        "Downloads media files to device storage",
+        "Deleting a download permanently removes the local file"
+      ],
+      "failureRecoveryPaths": [
+        {
+          "condition": "ytdlp_not_initialized",
+          "explanation": "On-device media extractor failed to initialize; retry extraction or check Media & Downloads settings.",
+          "recoveryDestination": "settings/media_downloads"
+        },
+        {
+          "condition": "online_services_paused",
+          "explanation": "On-device extraction still runs for supported URLs, while backend social link resolvers are paused.",
+          "recoveryDestination": "downloads"
+        }
+      ]
+    },
+    {
+      "id": "downloads.youtube_transcripts",
+      "section": "Downloads",
+      "title": "YouTube Captions & Transcript Export",
+      "description": "Extract available YouTube captions for videos or playlists without downloading video/audio, copy to clipboard, and export Markdown (.md), Plain Text (.txt), or PDF (.pdf).",
+      "defaultStatus": "CONDITIONALLY_AVAILABLE",
+      "minVersionCode": 1,
+      "remoteFeatureKey": null,
+      "conditionNote": "Requires accessible caption tracks on the YouTube video or playlist; local Whisper speech transcription is not built in.",
+      "availableActions": [
+        "OPEN_YOUTUBE_TRANSCRIPTS",
+        "OPEN_DOWNLOADS"
+      ],
+      "preconditions": [
+        "Valid YouTube video or playlist URL",
+        "Accessible YouTube caption tracks on the target video"
+      ],
+      "requiresBackend": false,
+      "aiCopyRequiresBackend": false,
+      "reversible": true,
+      "requiresConfirmation": false,
+      "sideEffects": [
+        "Saves extracted Markdown, Plain Text, or PDF transcript documents to Downloads Library"
+      ],
+      "failureRecoveryPaths": [
+        {
+          "condition": "no_captions_available",
+          "explanation": "This video has no accessible YouTube captions; Laterbox does not perform local Whisper speech transcription.",
+          "recoveryDestination": "downloads"
+        },
+        {
+          "condition": "extractor_degraded",
+          "explanation": "On-device extractor hit an error; watch-page caption fallback is attempted when available.",
+          "recoveryDestination": "settings/media_downloads"
+        }
+      ]
+    },
+    {
+      "id": "downloads.saf_export",
+      "section": "Downloads",
+      "title": "Automatic Folder Export",
+      "description": "Export downloaded media or transcript documents to a user-selected Android folder.",
+      "defaultStatus": "CONDITIONALLY_AVAILABLE",
+      "minVersionCode": 1,
+      "remoteFeatureKey": null,
+      "conditionNote": "Requires granting access to an export folder in Settings.",
+      "availableActions": [
+        "OPEN_DOWNLOADS",
+        "OPEN_SETTINGS"
+      ],
+      "preconditions": [
+        "User-granted Storage Access Framework (SAF) directory URI",
+        "Target folder remains writable"
+      ],
+      "requiresBackend": false,
+      "aiCopyRequiresBackend": false,
+      "reversible": true,
+      "requiresConfirmation": false,
+      "sideEffects": [
+        "Copies exported media or transcript documents into the user-selected Android folder"
+      ],
+      "failureRecoveryPaths": [
+        {
+          "condition": "export_folder_not_configured",
+          "explanation": "No SAF export folder is selected; choose one in Media & Downloads settings.",
+          "recoveryDestination": "settings/media_downloads"
+        },
+        {
+          "condition": "export_folder_permission_lost",
+          "explanation": "Android folder permission expired or the folder moved; re-select the export folder.",
+          "recoveryDestination": "settings/media_downloads"
+        }
+      ]
+    },
+    {
+      "id": "movies.discovery_and_library",
+      "section": "Movies & TV",
+      "title": "Movies & TV Discovery and Library",
+      "description": "Browse curated rails, search catalogue providers, manage Watchlist, Continue Watching, Collections, and watch history.",
+      "defaultStatus": "SUPPORTED",
+      "minVersionCode": 1,
+      "remoteFeatureKey": "movies_tv_enabled",
+      "conditionNote": null,
+      "availableActions": [
+        "OPEN_MOVIES_HOME",
+        "SEARCH_MOVIES",
+        "OPEN_MOVIE_DETAIL",
+        "OPEN_MOVIE_PLAYER",
+        "TOGGLE_MOVIE_WATCHLIST",
+        "MARK_MOVIE_WATCHED"
+      ],
+      "preconditions": [
+        "Remote feature movies_tv_enabled is active",
+        "At least one online catalogue provider enabled for remote search"
+      ],
+      "requiresBackend": true,
+      "aiCopyRequiresBackend": false,
+      "reversible": true,
+      "requiresConfirmation": false,
+      "sideEffects": [
+        "Updates local watchlist, watch history, and episode progress in Room"
+      ],
+      "failureRecoveryPaths": [
+        {
+          "condition": "movies_tv_disabled",
+          "explanation": "Movies & TV is turned off in Remote Configuration or app settings.",
+          "recoveryDestination": "settings/movies_tv"
+        },
+        {
+          "condition": "online_maintenance",
+          "explanation": "Online catalogue search and streaming are paused during maintenance; local watchlist, history, and offline downloads remain usable.",
+          "recoveryDestination": "downloads"
+        },
+        {
+          "condition": "provider_disabled",
+          "explanation": "One or more online catalogue providers are disabled; remaining active providers and local library still work.",
+          "recoveryDestination": "movies"
+        }
+      ]
+    },
+    {
+      "id": "movies.recommendations",
+      "section": "Movies & TV",
+      "title": "Personalized Recommendations & Surprise Me",
+      "description": "Shows Because You Watched, More Like This, and Surprise Me suggestions.",
+      "defaultStatus": "SUPPORTED",
+      "minVersionCode": 1,
+      "remoteFeatureKey": "movies_recommendations_enabled",
+      "conditionNote": null,
+      "availableActions": [
+        "OPEN_MOVIES_HOME",
+        "SEARCH_MOVIES",
+        "OPEN_MOVIE_DETAIL"
+      ],
+      "preconditions": [
+        "Remote feature movies_recommendations_enabled is active",
+        "At least one watch history or watchlist entry improves personalization"
+      ],
+      "requiresBackend": true,
+      "aiCopyRequiresBackend": false,
+      "reversible": true,
+      "requiresConfirmation": false,
+      "sideEffects": [
+        "Computes discovery rails locally from watchlist and watch history"
+      ],
+      "failureRecoveryPaths": [
+        {
+          "condition": "recommendations_disabled",
+          "explanation": "Personalized recommendations are disabled in settings or Remote Configuration.",
+          "recoveryDestination": "settings/movies_tv"
+        }
+      ]
+    },
+    {
+      "id": "movies.pip_and_mini_player",
+      "section": "Movies & TV",
+      "title": "Picture-in-Picture & Mini-Player",
+      "description": "Pressing Home or Back during active playback enters system Picture-in-Picture; pressing Back after pausing playback returns to Laterbox with its in-app mini-player.",
+      "defaultStatus": "SUPPORTED",
+      "minVersionCode": 62,
+      "remoteFeatureKey": "movies_tv_enabled",
+      "conditionNote": null,
+      "availableActions": [
+        "OPEN_MOVIE_PLAYER"
+      ],
+      "preconditions": [
+        "App version build 62+",
+        "Movies & TV enabled",
+        "Active or paused video playback session"
+      ],
+      "requiresBackend": false,
+      "aiCopyRequiresBackend": false,
+      "reversible": true,
+      "requiresConfirmation": false,
+      "sideEffects": [
+        "Transitions player into system Picture-in-Picture or in-app mini-player overlay"
+      ],
+      "failureRecoveryPaths": [
+        {
+          "condition": "pip_permission_denied",
+          "explanation": "Picture-in-Picture is disabled in Android system app settings; paused playback still falls back to the in-app mini-player.",
+          "recoveryDestination": "settings/movies_tv"
+        }
+      ]
+    },
+    {
+      "id": "movies.intro_skip",
+      "section": "Movies & TV",
+      "title": "Skip Intro & Skip Recap",
+      "description": "Shows skip buttons in the player when verified timestamps exist in source metadata.",
+      "defaultStatus": "CONDITIONALLY_AVAILABLE",
+      "minVersionCode": 1,
+      "remoteFeatureKey": "player_intro_skip_enabled",
+      "conditionNote": "Appears only when verified intro or recap timestamps are provided by the stream source.",
+      "availableActions": [
+        "OPEN_MOVIE_PLAYER"
+      ],
+      "preconditions": [
+        "Remote feature player_intro_skip_enabled is active",
+        "Verified intro or recap timestamps provided in episode metadata"
+      ],
+      "requiresBackend": false,
+      "aiCopyRequiresBackend": false,
+      "reversible": true,
+      "requiresConfirmation": false,
+      "sideEffects": [
+        "Seeks active playback to the verified end timestamp when tapped"
+      ],
+      "failureRecoveryPaths": [
+        {
+          "condition": "timestamps_unavailable",
+          "explanation": "Skip Intro and Skip Recap only appear when verified timestamps exist in source metadata.",
+          "recoveryDestination": "settings/movies_tv"
+        }
+      ]
+    },
+    {
+      "id": "sharing.deep_links_and_files",
+      "section": "Sharing",
+      "title": "Share Titles & Downloaded Files",
+      "description": "Share Movie or TV Series links directly to Laterbox web/app links, and share generic downloaded files safely via Android FileProvider (individual downloaded episodes share the series link instead).",
+      "defaultStatus": "SUPPORTED",
+      "minVersionCode": 62,
+      "remoteFeatureKey": null,
+      "conditionNote": null,
+      "availableActions": [
+        "OPEN_MOVIE_DETAIL",
+        "OPEN_DOWNLOADS"
+      ],
+      "preconditions": [
+        "App version build 62+",
+        "Target title ID or local downloaded file"
+      ],
+      "requiresBackend": false,
+      "aiCopyRequiresBackend": false,
+      "reversible": true,
+      "requiresConfirmation": false,
+      "sideEffects": [
+        "Invokes Android share sheet with a Laterbox deep link or FileProvider URI"
+      ],
+      "failureRecoveryPaths": [
+        {
+          "condition": "file_missing",
+          "explanation": "Downloaded file could not be found on disk; share the title link or re-download instead.",
+          "recoveryDestination": "downloads"
+        }
+      ]
+    },
+    {
+      "id": "reminders.smart_and_scheduled",
+      "section": "Reminders",
+      "title": "Scheduled & Smart Reminders",
+      "description": "Per-link reminders, Movies & TV viewing alerts, Quiet Hours, and notification history.",
+      "defaultStatus": "SUPPORTED",
+      "minVersionCode": 1,
+      "remoteFeatureKey": "smart_reminders_enabled",
+      "conditionNote": null,
+      "availableActions": [
+        "SCHEDULE_MOVIE_REMINDER",
+        "MUTE_SERIES_REMINDERS",
+        "OPEN_SETTINGS"
+      ],
+      "preconditions": [
+        "android.permission.POST_NOTIFICATIONS on Android 13+",
+        "Smart Reminders enabled for proactive nudges"
+      ],
+      "requiresBackend": false,
+      "aiCopyRequiresBackend": false,
+      "reversible": true,
+      "requiresConfirmation": true,
+      "sideEffects": [
+        "Schedules local AlarmManager reminder broadcasts and posts local notifications"
+      ],
+      "failureRecoveryPaths": [
+        {
+          "condition": "notification_permission_denied",
+          "explanation": "Notifications are disabled in Android system settings.",
+          "recoveryDestination": "settings/reminders_ai"
+        },
+        {
+          "condition": "exact_alarm_denied",
+          "explanation": "Exact alarms are restricted; Laterbox falls back to a flexible reminder window.",
+          "recoveryDestination": "settings/reminders_ai"
+        }
+      ]
+    },
+    {
+      "id": "assistant.chat_and_actions",
+      "section": "Assistant",
+      "title": "Laterbox Assistant & Actions",
+      "description": "Streaming Q&A, live web search grounding for outside facts, and permission-aware in-app actions.",
+      "defaultStatus": "SUPPORTED",
+      "minVersionCode": 1,
+      "remoteFeatureKey": "ai_assistant_enabled",
+      "conditionNote": null,
+      "availableActions": [
+        "OPEN_SETTINGS",
+        "RENAME_CONVERSATION",
+        "DELETE_CONVERSATION"
+      ],
+      "preconditions": [
+        "Remote feature ai_assistant_enabled is active",
+        "Assistant enabled in Reminders & AI settings",
+        "Authenticated backend session or user Gemini key"
+      ],
+      "requiresBackend": true,
+      "aiCopyRequiresBackend": true,
+      "reversible": false,
+      "requiresConfirmation": true,
+      "sideEffects": [
+        "Sends bounded prompt context to backend AI",
+        "Mutating actions update local state or delete conversation history when confirmed"
+      ],
+      "failureRecoveryPaths": [
+        {
+          "condition": "assistant_disabled",
+          "explanation": "Laterbox Assistant is disabled in settings or Remote Configuration.",
+          "recoveryDestination": "settings/reminders_ai"
+        },
+        {
+          "condition": "online_maintenance",
+          "explanation": "Assistant AI streaming is temporarily paused during online maintenance.",
+          "recoveryDestination": "settings/reminders_ai"
+        }
+      ]
+    },
+    {
+      "id": "archive.saved_links",
+      "section": "Archive",
+      "title": "Archived Links",
+      "description": "Store finished links out of the active Inbox with search and one-tap restore.",
+      "defaultStatus": "SUPPORTED",
+      "minVersionCode": 1,
+      "remoteFeatureKey": null,
+      "conditionNote": null,
+      "availableActions": [
+        "SEARCH_LINKS",
+        "OPEN_LINK_DETAIL"
+      ],
+      "preconditions": [
+        "At least one archived link in local Room storage"
+      ],
+      "requiresBackend": false,
+      "aiCopyRequiresBackend": false,
+      "reversible": true,
+      "requiresConfirmation": false,
+      "sideEffects": [
+        "Moves links between Inbox and Archive in local Room storage"
+      ],
+      "failureRecoveryPaths": [
+        {
+          "condition": "archive_empty",
+          "explanation": "No archived links exist yet; archive read items from Inbox to store them here.",
+          "recoveryDestination": "inbox"
+        }
+      ]
+    }
+  ]
+}

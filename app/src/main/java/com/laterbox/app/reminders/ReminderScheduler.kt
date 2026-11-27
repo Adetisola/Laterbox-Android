@@ -25,7 +25,7 @@ class ReminderScheduler(private val context: Context) {
 
         val pendingIntent = PendingIntent.getBroadcast(
             context,
-            linkId.hashCode(),
+            NotificationIds.linkReminderAlarmRequestCode(linkId),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -70,16 +70,22 @@ class ReminderScheduler(private val context: Context) {
         val intent = Intent(context, ReminderReceiver::class.java).apply {
             action = ReminderReceiver.ACTION_TRIGGER_REMINDER
         }
-        val pendingIntent = PendingIntent.getBroadcast(
-            context,
-            linkId.hashCode(),
-            intent,
-            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+        val requestCodes = linkedSetOf(
+            NotificationIds.linkReminderAlarmRequestCode(linkId),
+            linkId.hashCode()
         )
-        if (pendingIntent != null) {
-            alarmManager.cancel(pendingIntent)
-            pendingIntent.cancel()
-            Log.d(TAG, "Cancelled reminder for link $linkId")
+        for (requestCode in requestCodes) {
+            val pendingIntent = PendingIntent.getBroadcast(
+                context,
+                requestCode,
+                intent,
+                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+            )
+            if (pendingIntent != null) {
+                alarmManager.cancel(pendingIntent)
+                pendingIntent.cancel()
+                Log.d(TAG, "Cancelled reminder for link $linkId (req=$requestCode)")
+            }
         }
     }
 
@@ -167,24 +173,30 @@ class ReminderScheduler(private val context: Context) {
         val intent = Intent(context, ReminderReceiver::class.java).apply {
             action = ReminderReceiver.ACTION_TRIGGER_MOVIE_REMINDER
         }
-        val pendingIntent = PendingIntent.getBroadcast(
-            context,
+        val requestCodes = linkedSetOf(
             movieReminderRequestCode(mediaKey),
-            intent,
-            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+            NotificationIds.legacyMovieReminderRequestCode(mediaKey)
         )
-        if (pendingIntent != null) {
-            alarmManager.cancel(pendingIntent)
-            pendingIntent.cancel()
-            Log.d(TAG, "Cancelled movie viewing reminder for $mediaKey")
+        for (requestCode in requestCodes) {
+            val pendingIntent = PendingIntent.getBroadcast(
+                context,
+                requestCode,
+                intent,
+                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+            )
+            if (pendingIntent != null) {
+                alarmManager.cancel(pendingIntent)
+                pendingIntent.cancel()
+                Log.d(TAG, "Cancelled movie viewing reminder for $mediaKey (req=$requestCode)")
+            }
         }
     }
 
     companion object {
         private const val TAG = "ReminderScheduler"
-        const val SMART_DIGEST_REQUEST_CODE = 888_888
+        const val SMART_DIGEST_REQUEST_CODE = NotificationIds.LEGACY_SMART_DIGEST_REQUEST_CODE
 
         fun movieReminderRequestCode(mediaKey: String): Int =
-            700_000 + (mediaKey.hashCode() and 0x0FFF_FFFF) % 250_000
+            NotificationIds.movieReminderId(mediaKey)
     }
 }

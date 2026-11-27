@@ -17,8 +17,12 @@ import com.laterbox.app.reminders.smart.SmartScheduleType
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 class ReminderReceiver : BroadcastReceiver() {
@@ -29,221 +33,283 @@ class ReminderReceiver : BroadcastReceiver() {
         val appContainer = (context.applicationContext as? LaterboxApplication)?.container ?: return
         val linkRepository = appContainer.linkRepository
         val userPreferencesRepository = appContainer.userPreferencesRepository
+        val governor = appContainer.notificationGovernor
 
-        val pendingResult = goAsync()
+        val pendingResult: PendingResult? = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                when (action) {
-                    ACTION_TRIGGER_REMINDER -> {
-                        val linkId = intent.getLongExtra(EXTRA_LINK_ID, -1L)
-                        if (linkId <= 0) return@launch
+                withTimeoutOrNull(GO_ASYNC_BUDGET_MS) {
+                    when (action) {
+                        ACTION_TRIGGER_REMINDER -> {
+                            val linkId = intent.getLongExtra(EXTRA_LINK_ID, -1L)
+                            if (linkId <= 0) return@withTimeoutOrNull
 
-                        var link = linkRepository.getLinkById(linkId).first()
-                        if (link != null && !link.isArchived && !link.nudgeDismissed) {
-                            // Non-blocking metadata enrichment if preview image is missing
-                            if (link.previewImageUrl.isNullOrBlank()) {
-                                withTimeoutOrNull(2500L) {
-                                    linkRepository.fetchMetadataNow(linkId)
+                            val prefs = userPreferencesRepository.userPreferencesFlow.first()
+                            // Tier-1 fast-path: explicit commitments are NEVER delayed or suppressed by Quiet Hours/caps
+                            if (governor.evaluate(NotificationCategory.MANUAL_LINK_REMINDER, prefs) !is GovernorDecision.Allow) {
+                                return@withTimeoutOrNull
+                            }
+
+                            var link = linkRepository.getLinkById(linkId).first()
+                            if (link != null && !link.isArchived && !link.nudgeDismissed) {
+                                if (link.previewImageUrl.isNullOrBlank()) {
+                                    withNonBlockingTimeout(METADATA_FETCH_TIMEOUT_MS) {
+                                        linkRepository.fetchMetadataNow(linkId)
+                                    }
+                                    link = linkRepository.getLinkById(linkId).first() ?: link
                                 }
-                                link = linkRepository.getLinkById(linkId).first() ?: link
+
+                                val userName = prefs.userName.ifBlank { null }
+                                val aiResult = withNonBlockingTimeout(AI_COPY_TIMEOUT_MS) {
+                                    SmartDigestEngine.generateDigestCopy(
+                                        link = link,
+                                        userName = userName,
+                                        origin = ReminderOrigin.MANUAL,
+                                        customApiKey = prefs.geminiApiKey.ifBlank { null }
+                                    )
+                                }
+
+                                val copy = when (aiResult) {
+                                    is AiCopyResult.Success -> aiResult.copy
+                                    else -> {
+                                        if (aiResult is AiCopyResult.Failure) {
+                                            Log.d(TAG, "AI reminder generation failed (${aiResult.reason.userMessage}); using plain copy")
+                                        }
+                                        PlainReminderCopy.forManual(link)
+                                    }
+                                }
+
+                                NotificationHelper.showReminderNotification(
+                                    context = context,
+                                    link = link,
+                                    userName = userName,
+                                    origin = ReminderOrigin.MANUAL,
+                                    copy = copy,
+                                    skipMetadataFetch = true
+                                )
+                                linkRepository.recordNudge(linkId)
+                            }
+                        }
+
+                        ACTION_TRIGGER_SMART_SCHEDULE -> {
+                            val scheduleTypeName = intent.getStringExtra(EXTRA_SCHEDULE_TYPE) ?: return@withTimeoutOrNull
+                            val slotKey = intent.getStringExtra(EXTRA_SLOT_KEY) ?: return@withTimeoutOrNull
+                            val targetMillis = intent.getLongExtra(EXTRA_TARGET_MILLIS, 0L)
+                            val type = try {
+                                SmartScheduleType.valueOf(scheduleTypeName)
+                            } catch (_: Exception) {
+                                return@withTimeoutOrNull
+                            }
+
+                            val scheduler = SmartReminderScheduler(context)
+                            val prefs = userPreferencesRepository.userPreferencesFlow.first()
+                            val settings = prefs.toSmartReminderSettings()
+
+                            if (!settings.enabled) {
+                                Log.d(TAG, "Smart reminders master switch disabled; skipping $slotKey")
+                                return@withTimeoutOrNull
+                            }
+
+                            try {
+                                val nowMillis = System.currentTimeMillis()
+                                if (targetMillis > 0 && (nowMillis - targetMillis) > STALE_THRESHOLD_MS) {
+                                    Log.w(TAG, "Missed schedule slot $slotKey by ${(nowMillis - targetMillis) / 60_000} mins; skipping delivery")
+                                    return@withTimeoutOrNull
+                                }
+
+                                if (prefs.deliveredSlotKeys.contains(slotKey)) {
+                                    Log.d(TAG, "Slot $slotKey already delivered; skipping duplicate execution")
+                                    return@withTimeoutOrNull
+                                }
+
+                                if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) {
+                                    Log.w(TAG, "Notifications disabled; skipping slot $slotKey")
+                                    return@withTimeoutOrNull
+                                }
+
+                                // Enforce at most 1 Tier-3 notification per smart-schedule wakeup
+                                var tier3PostedThisWakeup = false
+
+                                val digestDecision = governor.evaluate(
+                                    category = NotificationCategory.SMART_DIGEST,
+                                    prefs = prefs,
+                                    nowMs = nowMillis,
+                                    postedTier3InCurrentWakeup = tier3PostedThisWakeup
+                                )
+                                if (digestDecision is GovernorDecision.Allow) {
+                                    val candidate = linkRepository.getSmartDigestCandidate(
+                                        maxNudgeCount = settings.persistence.maxNudges
+                                    )
+                                    if (candidate != null) {
+                                        var currentLink = linkRepository.getLinkById(candidate.id).first() ?: candidate
+                                        if (currentLink.previewImageUrl.isNullOrBlank()) {
+                                            withNonBlockingTimeout(METADATA_FETCH_TIMEOUT_MS) {
+                                                linkRepository.fetchMetadataNow(candidate.id)
+                                            }
+                                            currentLink = linkRepository.getLinkById(candidate.id).first() ?: candidate
+                                        }
+
+                                        val result = withNonBlockingTimeout(AI_COPY_TIMEOUT_MS) {
+                                            SmartDigestEngine.generateDigestCopy(
+                                                link = currentLink,
+                                                userName = prefs.userName.ifBlank { null },
+                                                origin = ReminderOrigin.SMART_DIGEST,
+                                                customApiKey = prefs.geminiApiKey.ifBlank { null }
+                                            )
+                                        }
+
+                                        val copy = when (result) {
+                                            is AiCopyResult.Success -> result.copy
+                                            else -> PlainReminderCopy.forSmartDigest(
+                                                link = currentLink,
+                                                userName = prefs.userName.ifBlank { null }
+                                            )
+                                        }
+
+                                        val posted = NotificationHelper.showReminderNotification(
+                                            context = context,
+                                            link = currentLink,
+                                            origin = copy.origin,
+                                            copy = copy,
+                                            skipMetadataFetch = true
+                                        )
+                                        if (posted) {
+                                            linkRepository.recordNudge(currentLink.id)
+                                            userPreferencesRepository.recordDeliveredSlot(slotKey)
+                                            governor.recordTier3Posted(NotificationCategory.SMART_DIGEST, nowMillis)
+                                            tier3PostedThisWakeup = true
+                                            Log.d(TAG, "Delivered smart reminder for slot $slotKey (isAi=${copy.isAiGenerated})")
+                                        }
+                                    }
+                                }
+
+                                // Tier-2 operational health alert uses independent cooldown & does not count toward Tier-3 cap
+                                try {
+                                    appContainer.contextualNotificationEngine.evaluateAndNotifyAppHealthIfNeeded(
+                                        nowMs = nowMillis
+                                    )
+                                } catch (_: Throwable) {}
+
+                                if (!tier3PostedThisWakeup) {
+                                    try {
+                                        val postedSummaryOrTip = appContainer.contextualNotificationEngine
+                                            .maybeSendContextualSummaryOrTip(
+                                                nowMs = nowMillis,
+                                                postedTier3InCurrentWakeup = tier3PostedThisWakeup
+                                            )
+                                        if (postedSummaryOrTip) {
+                                            tier3PostedThisWakeup = true
+                                        }
+                                    } catch (_: Throwable) {}
+                                }
+
+                                if (!tier3PostedThisWakeup) {
+                                    try {
+                                        withTimeoutOrNull(MOVIES_CONTEXTUAL_TIMEOUT_MS) {
+                                            appContainer.contextualNotificationEngine.maybeNotifyMoviesAndTv(
+                                                moviesRepository = appContainer.moviesRepository,
+                                                nowMs = nowMillis,
+                                                postedTier3InCurrentWakeup = tier3PostedThisWakeup
+                                            )
+                                        }
+                                    } catch (_: Throwable) {}
+                                }
+                            } finally {
+                                withContext(NonCancellable) {
+                                    runCatching { scheduler.scheduleNext(type) }
+                                }
+                            }
+                        }
+
+                        ACTION_TRIGGER_SMART_DIGEST -> {
+                            // Legacy alarm action migration: cancel old alarm and sync via scheduler
+                            ReminderScheduler(context).cancelLegacySmartDigest()
+                            val prefs = userPreferencesRepository.userPreferencesFlow.first()
+                            SmartReminderCoordinator.sync(context, prefs.toSmartReminderSettings())
+                        }
+
+                        ACTION_TRIGGER_MOVIE_REMINDER -> {
+                            val mediaKey = intent.getStringExtra(EXTRA_MEDIA_KEY)
+                            val providerId = intent.getStringExtra(EXTRA_PROVIDER_ID)
+                            val titleId = intent.getStringExtra(EXTRA_TITLE_ID)
+                            val fallbackTitle = intent.getStringExtra(EXTRA_TITLE).orEmpty()
+                            val fallbackNote = intent.getStringExtra(EXTRA_NOTE)
+                            if (mediaKey.isNullOrBlank() || providerId.isNullOrBlank() || titleId.isNullOrBlank()) {
+                                return@withTimeoutOrNull
                             }
 
                             val prefs = userPreferencesRepository.userPreferencesFlow.first()
-                            val userName = prefs.userName.ifBlank { null }
-                            val aiResult = SmartDigestEngine.generateDigestCopy(
-                                link = link,
-                                userName = userName,
-                                origin = ReminderOrigin.MANUAL,
-                                customApiKey = prefs.geminiApiKey.ifBlank { null }
-                            )
-
-                            val copy = when (aiResult) {
-                                is AiCopyResult.Success -> aiResult.copy
-                                is AiCopyResult.Failure -> {
-                                    Log.d(TAG, "AI reminder generation failed (${aiResult.reason.userMessage}); using honest plain copy")
-                                    PlainReminderCopy.forManual(link)
-                                }
+                            // Tier-1 fast-path: explicit movie viewing commitments bypass Quiet Hours & caps
+                            if (governor.evaluate(NotificationCategory.MOVIE_VIEWING_REMINDER, prefs) !is GovernorDecision.Allow) {
+                                return@withTimeoutOrNull
                             }
 
-                            NotificationHelper.showReminderNotification(
+                            val moviesDao = appContainer.database.moviesDao()
+                            val reminder = moviesDao.getViewingReminderByMediaKey(mediaKey)
+                            if (reminder == null || reminder.isDismissed) {
+                                return@withTimeoutOrNull
+                            }
+                            val seriesPrefs = moviesDao.getSeriesPreferences(mediaKey)
+                            if (seriesPrefs?.remindersMuted == true) {
+                                return@withTimeoutOrNull
+                            }
+
+                            val posted = NotificationHelper.showMovieViewingReminderNotification(
                                 context = context,
-                                link = link,
-                                userName = userName,
-                                origin = ReminderOrigin.MANUAL,
-                                copy = copy
+                                mediaKey = mediaKey,
+                                providerId = reminder.providerId.ifBlank { providerId },
+                                titleId = reminder.titleId.ifBlank { titleId },
+                                title = reminder.title.ifBlank { fallbackTitle },
+                                note = reminder.note ?: fallbackNote,
+                                posterUrl = reminder.posterUrl
                             )
-                            linkRepository.recordNudge(linkId)
-                        }
-                    }
-
-                    ACTION_TRIGGER_SMART_SCHEDULE -> {
-                        val scheduleTypeName = intent.getStringExtra(EXTRA_SCHEDULE_TYPE) ?: return@launch
-                        val slotKey = intent.getStringExtra(EXTRA_SLOT_KEY) ?: return@launch
-                        val targetMillis = intent.getLongExtra(EXTRA_TARGET_MILLIS, 0L)
-                        val type = try {
-                            SmartScheduleType.valueOf(scheduleTypeName)
-                        } catch (_: Exception) {
-                            return@launch
-                        }
-
-                        val scheduler = SmartReminderScheduler(context)
-                        val prefs = userPreferencesRepository.userPreferencesFlow.first()
-                        val settings = prefs.toSmartReminderSettings()
-
-                        if (!settings.enabled) {
-                            Log.d(TAG, "Smart reminders master switch disabled; skipping $slotKey")
-                            return@launch
-                        }
-
-                        // 1. Stale schedule check (> 3 hours late)
-                        val nowMillis = System.currentTimeMillis()
-                        if (targetMillis > 0 && (nowMillis - targetMillis) > STALE_THRESHOLD_MS) {
-                            Log.w(TAG, "Missed schedule slot $slotKey by ${(nowMillis - targetMillis) / 60_000} mins; skipping delivery")
-                            scheduler.scheduleNext(type)
-                            return@launch
-                        }
-
-                        // 2. Slot deduplication check
-                        if (prefs.deliveredSlotKeys.contains(slotKey)) {
-                            Log.d(TAG, "Slot $slotKey already delivered; skipping duplicate execution")
-                            scheduler.scheduleNext(type)
-                            return@launch
-                        }
-
-                        // 3. Notification permission check
-                        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) {
-                            Log.w(TAG, "Notifications disabled; skipping slot $slotKey")
-                            scheduler.scheduleNext(type)
-                            return@launch
-                        }
-
-                        // 4. Candidate link selection
-                        val candidate = linkRepository.getSmartDigestCandidate(
-                            maxNudgeCount = settings.persistence.maxNudges
-                        )
-                        if (candidate == null) {
-                            Log.d(TAG, "No candidate links to nudge in inbox")
-                            scheduler.scheduleNext(type)
-                            return@launch
-                        }
-
-                        // 5. Enrichment: re-read latest from DB and best-effort fetch if missing
-                        var currentLink = linkRepository.getLinkById(candidate.id).first() ?: candidate
-                        if (currentLink.previewImageUrl.isNullOrBlank()) {
-                            withTimeoutOrNull(2500L) {
-                                linkRepository.fetchMetadataNow(candidate.id)
-                            }
-                            currentLink = linkRepository.getLinkById(candidate.id).first() ?: candidate
-                        }
-
-                        // 6. Generate AI copy with Google AI Studio
-                        val result = SmartDigestEngine.generateDigestCopy(
-                            link = currentLink,
-                            userName = prefs.userName.ifBlank { null },
-                            origin = ReminderOrigin.SMART_DIGEST,
-                            customApiKey = prefs.geminiApiKey.ifBlank { null }
-                        )
-
-                        val copy = when (result) {
-                            is AiCopyResult.Success -> result.copy
-                            is AiCopyResult.Failure -> {
-                                Log.w(TAG, "AI reminder generation failed for slot $slotKey (${result.reason.userMessage}); using honest plain copy fallback")
-                                PlainReminderCopy.forSmartDigest(
-                                    link = currentLink,
-                                    userName = prefs.userName.ifBlank { null }
+                            if (posted) {
+                                appContainer.moviesRepository.dismissViewingReminder(
+                                    providerId = reminder.providerId.ifBlank { providerId },
+                                    titleId = reminder.titleId.ifBlank { titleId }
                                 )
                             }
                         }
 
-                        val posted = NotificationHelper.showSmartDigestNotification(
-                            context = context,
-                            link = currentLink,
-                            copy = copy
-                        )
-                        if (posted) {
-                            linkRepository.recordNudge(currentLink.id)
-                            userPreferencesRepository.recordDeliveredSlot(slotKey)
-                            Log.d(TAG, "Successfully delivered smart reminder for slot $slotKey (isAi=${copy.isAiGenerated})")
-                        }
-                        try {
-                            appContainer.contextualNotificationEngine.evaluateAndNotifyAppHealthIfNeeded()
-                            appContainer.contextualNotificationEngine.maybeSendContextualSummaryOrTip()
-                            appContainer.contextualNotificationEngine.maybeNotifyMoviesAndTv(appContainer.moviesRepository)
-                        } catch (_: Throwable) {}
-                        scheduler.scheduleNext(type)
-                    }
-
-                    ACTION_TRIGGER_SMART_DIGEST -> {
-                        // Legacy alarm action migration: cancel old alarm and sync via scheduler
-                        ReminderScheduler(context).cancelLegacySmartDigest()
-                        val prefs = userPreferencesRepository.userPreferencesFlow.first()
-                        SmartReminderCoordinator.sync(context, prefs.toSmartReminderSettings())
-                    }
-
-                    ACTION_TRIGGER_MOVIE_REMINDER -> {
-                        val mediaKey = intent.getStringExtra(EXTRA_MEDIA_KEY)
-                        val providerId = intent.getStringExtra(EXTRA_PROVIDER_ID)
-                        val titleId = intent.getStringExtra(EXTRA_TITLE_ID)
-                        val fallbackTitle = intent.getStringExtra(EXTRA_TITLE).orEmpty()
-                        val fallbackNote = intent.getStringExtra(EXTRA_NOTE)
-                        if (mediaKey.isNullOrBlank() || providerId.isNullOrBlank() || titleId.isNullOrBlank()) {
-                            return@launch
-                        }
-
-                        val moviesDao = appContainer.database.moviesDao()
-                        val reminder = moviesDao.getViewingReminderByMediaKey(mediaKey)
-                        if (reminder == null || reminder.isDismissed) {
-                            return@launch
-                        }
-                        val seriesPrefs = moviesDao.getSeriesPreferences(mediaKey)
-                        if (seriesPrefs?.remindersMuted == true) {
-                            return@launch
-                        }
-
-                        val posted = NotificationHelper.showMovieViewingReminderNotification(
-                            context = context,
-                            mediaKey = mediaKey,
-                            providerId = reminder.providerId.ifBlank { providerId },
-                            titleId = reminder.titleId.ifBlank { titleId },
-                            title = reminder.title.ifBlank { fallbackTitle },
-                            note = reminder.note ?: fallbackNote,
-                            posterUrl = reminder.posterUrl
-                        )
-                        if (posted) {
-                            appContainer.moviesRepository.dismissViewingReminder(
-                                providerId = reminder.providerId.ifBlank { providerId },
-                                titleId = reminder.titleId.ifBlank { titleId }
-                            )
-                        }
-                    }
-
-                    ACTION_DISMISS_MOVIE_REMINDER -> {
-                        val mediaKey = intent.getStringExtra(EXTRA_MEDIA_KEY)
-                        val providerId = intent.getStringExtra(EXTRA_PROVIDER_ID)
-                        val titleId = intent.getStringExtra(EXTRA_TITLE_ID)
-                        if (!providerId.isNullOrBlank() && !titleId.isNullOrBlank()) {
-                            appContainer.moviesRepository.dismissViewingReminder(providerId, titleId)
-                        }
-                        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-                        val notifId = intent.getIntExtra(EXTRA_NOTIFICATION_ID, -1)
-                        if (notifId != -1) {
-                            notificationManager?.cancel(notifId)
-                        }
-                        if (!mediaKey.isNullOrBlank()) {
-                            notificationManager?.cancel(ReminderScheduler.movieReminderRequestCode(mediaKey))
-                        }
-                    }
-
-                    ACTION_DISMISS_REMINDER -> {
-                        val linkId = intent.getLongExtra(EXTRA_LINK_ID, -1L)
-                        if (linkId > 0) {
-                            linkRepository.dismissReminder(linkId)
+                        ACTION_DISMISS_MOVIE_REMINDER -> {
+                            val mediaKey = intent.getStringExtra(EXTRA_MEDIA_KEY)
+                            val providerId = intent.getStringExtra(EXTRA_PROVIDER_ID)
+                            val titleId = intent.getStringExtra(EXTRA_TITLE_ID)
+                            if (!providerId.isNullOrBlank() && !titleId.isNullOrBlank()) {
+                                appContainer.moviesRepository.dismissViewingReminder(providerId, titleId)
+                            }
                             val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-                            val notifId = intent.getIntExtra(EXTRA_NOTIFICATION_ID, linkId.toInt())
-                            notificationManager?.cancel(notifId)
-                            notificationManager?.cancel(linkId.toInt())
-                            notificationManager?.cancel((linkId + 500_000L).toInt())
-                            Log.d(TAG, "Dismissed reminder for link $linkId (notifId $notifId)")
+                            val notifId = intent.getIntExtra(EXTRA_NOTIFICATION_ID, -1)
+                            if (notifId != -1) {
+                                notificationManager?.cancel(notifId)
+                            }
+                            if (!mediaKey.isNullOrBlank()) {
+                                notificationManager?.cancel(NotificationIds.movieReminderId(mediaKey))
+                            }
+                        }
+
+                        ACTION_DISMISS_REMINDER -> {
+                            val linkId = intent.getLongExtra(EXTRA_LINK_ID, -1L)
+                            if (linkId > 0) {
+                                linkRepository.dismissReminder(linkId)
+                                val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                                val notifId = intent.getIntExtra(EXTRA_NOTIFICATION_ID, NotificationIds.linkReminderNotificationId(linkId))
+                                notificationManager?.cancel(notifId)
+                                notificationManager?.cancel(NotificationIds.linkReminderNotificationId(linkId))
+                                notificationManager?.cancel(NotificationIds.smartDigestNotificationId(linkId))
+                                // Defensive cleanup of any pre-migration notifications
+                                notificationManager?.cancel(linkId.toInt())
+                                notificationManager?.cancel((linkId + 500_000L).toInt())
+                                Log.d(TAG, "Dismissed reminder for link $linkId (notifId $notifId)")
+                            }
+                        }
+
+                        ACTION_NOTIFICATION_SWIPED -> {
+                            val categoryName = intent.getStringExtra(EXTRA_NOTIFICATION_CATEGORY)
+                            val category = categoryName?.let { raw ->
+                                runCatching { NotificationCategory.valueOf(raw) }.getOrNull()
+                            } ?: return@withTimeoutOrNull
+                            governor.onTier3NotificationSwiped(category, System.currentTimeMillis())
                         }
                     }
                 }
@@ -252,12 +318,24 @@ class ReminderReceiver : BroadcastReceiver() {
             } catch (e: Exception) {
                 Log.e(TAG, "Error handling reminder broadcast for action $action", e)
             } finally {
-                pendingResult.finish()
+                pendingResult?.finish()
+            }
+        }
+    }
+
+    private suspend fun <T> withNonBlockingTimeout(timeoutMs: Long, block: suspend () -> T): T? {
+        val deferred = ioBudgetScope.async { block() }
+        return try {
+            withTimeoutOrNull(timeoutMs) { deferred.await() }
+        } finally {
+            if (deferred.isActive) {
+                deferred.cancel()
             }
         }
     }
 
     companion object {
+        private val ioBudgetScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         private const val TAG = "ReminderReceiver"
         const val ACTION_TRIGGER_REMINDER = "com.laterbox.app.action.TRIGGER_REMINDER"
         const val ACTION_TRIGGER_SMART_SCHEDULE = "com.laterbox.app.action.TRIGGER_SMART_SCHEDULE"
@@ -265,8 +343,10 @@ class ReminderReceiver : BroadcastReceiver() {
         const val ACTION_DISMISS_REMINDER = "com.laterbox.app.action.DISMISS_REMINDER"
         const val ACTION_TRIGGER_MOVIE_REMINDER = "com.laterbox.app.action.TRIGGER_MOVIE_REMINDER"
         const val ACTION_DISMISS_MOVIE_REMINDER = "com.laterbox.app.action.DISMISS_MOVIE_REMINDER"
+        const val ACTION_NOTIFICATION_SWIPED = "com.laterbox.app.action.NOTIFICATION_SWIPED"
         const val EXTRA_LINK_ID = "extra_link_id"
         const val EXTRA_NOTIFICATION_ID = "extra_notification_id"
+        const val EXTRA_NOTIFICATION_CATEGORY = "extra_notification_category"
         const val EXTRA_TITLE = "extra_title"
         const val EXTRA_URL = "extra_url"
         const val EXTRA_SCHEDULE_TYPE = "extra_schedule_type"
@@ -277,5 +357,9 @@ class ReminderReceiver : BroadcastReceiver() {
         const val EXTRA_TITLE_ID = "extra_title_id"
         const val EXTRA_NOTE = "extra_note"
         const val STALE_THRESHOLD_MS = 3 * 60 * 60 * 1000L
+        const val GO_ASYNC_BUDGET_MS = 8_500L
+        const val METADATA_FETCH_TIMEOUT_MS = 1_500L
+        const val AI_COPY_TIMEOUT_MS = 3_000L
+        const val MOVIES_CONTEXTUAL_TIMEOUT_MS = 2_500L
     }
 }

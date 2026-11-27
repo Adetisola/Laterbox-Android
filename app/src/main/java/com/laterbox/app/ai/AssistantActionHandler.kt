@@ -111,6 +111,32 @@ sealed interface ChatAction {
             else -> ActionCategory.READ_ONLY
         }
 
+    /** Canonical uppercase wire name for all 21 allowlisted actions (safe for receipts & backend telemetry). */
+    val actionType: String
+        get() = when (this) {
+            is SearchLinks -> "SEARCH_LINKS"
+            is OpenLinkDetail -> "OPEN_LINK_DETAIL"
+            is OpenDownloads -> "OPEN_DOWNLOADS"
+            is OpenYouTubeTranscripts -> "OPEN_YOUTUBE_TRANSCRIPTS"
+            is OpenCollections -> "OPEN_COLLECTIONS"
+            is OpenSettings -> "OPEN_SETTINGS"
+            is RetryInspection -> "RETRY_INSPECTION"
+            is RetryDownload -> "RETRY_DOWNLOAD"
+            is RefreshMetadata -> "REFRESH_METADATA"
+            is OpenMoviesHome -> "OPEN_MOVIES_HOME"
+            is SearchMovies -> "SEARCH_MOVIES"
+            is OpenMovieDetail -> "OPEN_MOVIE_DETAIL"
+            is OpenMoviePlayer -> "OPEN_MOVIE_PLAYER"
+            is ToggleMovieWatchlist -> "TOGGLE_MOVIE_WATCHLIST"
+            is AddMovieToCollection -> "ADD_MOVIE_TO_COLLECTION"
+            is MarkMovieWatched -> "MARK_MOVIE_WATCHED"
+            is ScheduleMovieReminder -> "SCHEDULE_MOVIE_REMINDER"
+            is MuteSeriesReminders -> "MUTE_SERIES_REMINDERS"
+            is RenameConversation -> "RENAME_CONVERSATION"
+            is DeleteConversation -> "DELETE_CONVERSATION"
+            is DeleteDownload -> "DELETE_DOWNLOAD"
+        }
+
     /** Stable per-action-type key used for "Always allow in this conversation" grants. */
     val permissionKey: String?
         get() = when (this) {

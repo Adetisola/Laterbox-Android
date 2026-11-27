@@ -38,6 +38,7 @@ interface AppContainer {
     val activityEventRepository: ActivityEventRepository
     val appHealthChecker: AppHealthChecker
     val laterboxContextEngine: LaterboxContextEngine
+    val notificationGovernor: com.laterbox.app.reminders.NotificationGovernor
     val contextualNotificationEngine: ContextualNotificationEngine
     val speechCoordinator: com.laterbox.app.ai.speech.SpeechTranscriptionCoordinator
     val youTubeTranscriptDataSource: com.laterbox.app.transcript.data.YouTubeTranscriptDataSource
@@ -127,7 +128,10 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
     }
 
     override val backupManager: BackupManager by lazy {
-        BackupManager(database)
+        BackupManager(
+            database = database,
+            reminderScheduler = reminderScheduler
+        )
     }
 
     override val reminderScheduler: com.laterbox.app.reminders.ReminderScheduler by lazy {
@@ -235,7 +239,15 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             userPreferencesRepository = userPreferencesRepository,
             appHealthChecker = appHealthChecker,
             ytDlpRuntimeManager = ytDlpRuntimeManager,
-            appContext = context.applicationContext
+            appContext = context.applicationContext,
+            remoteConfigManager = remoteConfigManager
+        )
+    }
+
+    override val notificationGovernor: com.laterbox.app.reminders.NotificationGovernor by lazy {
+        com.laterbox.app.reminders.NotificationGovernor(
+            userPreferencesRepository = userPreferencesRepository,
+            deferredFlushScope = containerScope
         )
     }
 
@@ -245,7 +257,8 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
             database = database,
             userPreferencesRepository = userPreferencesRepository,
             activityEventRepository = activityEventRepository,
-            appHealthChecker = appHealthChecker
+            appHealthChecker = appHealthChecker,
+            notificationGovernor = notificationGovernor
         )
     }
 

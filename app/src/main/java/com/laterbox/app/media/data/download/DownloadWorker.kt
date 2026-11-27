@@ -154,7 +154,7 @@ class DownloadWorker(
 
         // 3. Setup low-importance silent notification & attempt setForeground
         ensureNotificationChannel()
-        val notificationId = taskId.hashCode()
+        val notificationId = com.laterbox.app.reminders.NotificationIds.downloadProgressNotificationId(taskId)
         val initialNotification = buildNotification(task.title ?: "Downloading media", 0, null, taskId, DownloadStage.PREPARING.label)
         try {
             val foregroundInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -838,7 +838,7 @@ class DownloadWorker(
         }
         val cancelPendingIntent = PendingIntent.getBroadcast(
             appContext,
-            taskId.hashCode(),
+            com.laterbox.app.reminders.NotificationIds.downloadCancelRequestCode(taskId),
             cancelIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )

@@ -203,9 +203,33 @@ data class UserPreferences(
     val subtitleBackgroundColorArgb: Int = 0xFF000000.toInt(),
     val subtitleBackgroundOpacity: Float = 0.67f,
     val subtitleEdgeType: Int = 2,
-    val grantedAssistantActionCategories: Set<String> = emptySet()
+    val grantedAssistantActionCategories: Set<String> = emptySet(),
+    val alarmsMigratedV2: Boolean = false,
+    val tier3BudgetDayEpoch: Long = 0L,
+    val tier3DailyCount: Int = 0,
+    val lastTier3NotificationAt: Long = 0L,
+    val tier3CategoryBackoffUntil: Set<String> = emptySet(),
+    val tier3SwipeStreak: Set<String> = emptySet()
 ) {
     val allowSystemBackup: Boolean get() = includeInBackup
+
+    fun tier3BackoffUntilMap(): Map<String, Long> =
+        tier3CategoryBackoffUntil.mapNotNull { entry ->
+            val sep = entry.indexOf(':')
+            if (sep <= 0 || sep >= entry.length - 1) return@mapNotNull null
+            val key = entry.substring(0, sep)
+            val until = entry.substring(sep + 1).toLongOrNull() ?: return@mapNotNull null
+            key to until
+        }.toMap()
+
+    fun tier3SwipeStreakMap(): Map<String, Int> =
+        tier3SwipeStreak.mapNotNull { entry ->
+            val sep = entry.indexOf(':')
+            if (sep <= 0 || sep >= entry.length - 1) return@mapNotNull null
+            val key = entry.substring(0, sep)
+            val count = entry.substring(sep + 1).toIntOrNull() ?: return@mapNotNull null
+            key to count
+        }.toMap()
 
     fun toSubtitleStyleConfig(): SubtitleStyleConfig = SubtitleStyleConfig(
         useSystemCaptions = subtitleUseSystemCaptions,
@@ -365,6 +389,12 @@ class UserPreferencesRepository(
         val SUBTITLE_BACKGROUND_OPACITY = floatPreferencesKey("subtitle_background_opacity")
         val SUBTITLE_EDGE_TYPE = intPreferencesKey("subtitle_edge_type")
         val GRANTED_ASSISTANT_CATEGORIES = stringSetPreferencesKey("granted_assistant_categories")
+        val ALARMS_MIGRATED_V2 = booleanPreferencesKey("alarms_migrated_v2")
+        val TIER3_BUDGET_DAY_EPOCH = longPreferencesKey("tier3_budget_day_epoch")
+        val TIER3_DAILY_COUNT = intPreferencesKey("tier3_daily_count")
+        val LAST_TIER3_NOTIFICATION_AT = longPreferencesKey("last_tier3_notif_at")
+        val TIER3_CATEGORY_BACKOFF_UNTIL = stringSetPreferencesKey("tier3_cat_backoff_until")
+        val TIER3_SWIPE_STREAK = stringSetPreferencesKey("tier3_swipe_streak")
     }
 
     val userPreferencesFlow: Flow<UserPreferences> = dataStore.data.map { preferences ->
@@ -589,7 +619,13 @@ class UserPreferencesRepository(
             subtitleBackgroundColorArgb = preferences[PreferencesKeys.SUBTITLE_BACKGROUND_COLOR_ARGB] ?: 0xFF000000.toInt(),
             subtitleBackgroundOpacity = (preferences[PreferencesKeys.SUBTITLE_BACKGROUND_OPACITY] ?: 0.67f).coerceIn(0f, 1f),
             subtitleEdgeType = (preferences[PreferencesKeys.SUBTITLE_EDGE_TYPE] ?: 2).coerceIn(0, 2),
-            grantedAssistantActionCategories = preferences[PreferencesKeys.GRANTED_ASSISTANT_CATEGORIES] ?: emptySet()
+            grantedAssistantActionCategories = preferences[PreferencesKeys.GRANTED_ASSISTANT_CATEGORIES] ?: emptySet(),
+            alarmsMigratedV2 = preferences[PreferencesKeys.ALARMS_MIGRATED_V2] ?: false,
+            tier3BudgetDayEpoch = preferences[PreferencesKeys.TIER3_BUDGET_DAY_EPOCH] ?: 0L,
+            tier3DailyCount = (preferences[PreferencesKeys.TIER3_DAILY_COUNT] ?: 0).coerceAtLeast(0),
+            lastTier3NotificationAt = preferences[PreferencesKeys.LAST_TIER3_NOTIFICATION_AT] ?: 0L,
+            tier3CategoryBackoffUntil = preferences[PreferencesKeys.TIER3_CATEGORY_BACKOFF_UNTIL] ?: emptySet(),
+            tier3SwipeStreak = preferences[PreferencesKeys.TIER3_SWIPE_STREAK] ?: emptySet()
         )
     }
 
@@ -1222,6 +1258,70 @@ class UserPreferencesRepository(
             if (preferences.contains(legacyMigratedKey)) {
                 preferences.remove(legacyMigratedKey)
             }
+        }
+    }
+
+    suspend fun markAlarmsMigratedV2() {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.ALARMS_MIGRATED_V2] = true
+        }
+    }
+
+    suspend fun recordTier3NotificationPosted(dayEpoch: Long, timestampMs: Long) {
+        dataStore.edit { preferences ->
+            val currentDay = preferences[PreferencesKeys.TIER3_BUDGET_DAY_EPOCH] ?: 0L
+            val currentCount = (preferences[PreferencesKeys.TIER3_DAILY_COUNT] ?: 0).coerceAtLeast(0)
+            preferences[PreferencesKeys.TIER3_BUDGET_DAY_EPOCH] = dayEpoch
+            preferences[PreferencesKeys.TIER3_DAILY_COUNT] = if (currentDay == dayEpoch) currentCount + 1 else 1
+            preferences[PreferencesKeys.LAST_TIER3_NOTIFICATION_AT] = timestampMs
+        }
+    }
+
+    suspend fun applyTier3SwipeBackoff(
+        categoryName: String,
+        backoffUntilMs: Long,
+        newStreak: Int
+    ) {
+        dataStore.edit { preferences ->
+            val backoffs = (preferences[PreferencesKeys.TIER3_CATEGORY_BACKOFF_UNTIL] ?: emptySet())
+                .filterNot { it.startsWith("$categoryName:") }
+                .toMutableSet()
+            backoffs.add("$categoryName:$backoffUntilMs")
+            preferences[PreferencesKeys.TIER3_CATEGORY_BACKOFF_UNTIL] = backoffs
+
+            val streaks = (preferences[PreferencesKeys.TIER3_SWIPE_STREAK] ?: emptySet())
+                .filterNot { it.startsWith("$categoryName:") }
+                .toMutableSet()
+            streaks.add("$categoryName:$newStreak")
+            preferences[PreferencesKeys.TIER3_SWIPE_STREAK] = streaks
+        }
+    }
+
+    suspend fun clearTier3SwipeBackoff(categoryName: String) {
+        dataStore.edit { preferences ->
+            val backoffs = (preferences[PreferencesKeys.TIER3_CATEGORY_BACKOFF_UNTIL] ?: emptySet())
+                .filterNot { it.startsWith("$categoryName:") }
+                .toSet()
+            preferences[PreferencesKeys.TIER3_CATEGORY_BACKOFF_UNTIL] = backoffs
+
+            val streaks = (preferences[PreferencesKeys.TIER3_SWIPE_STREAK] ?: emptySet())
+                .filterNot { it.startsWith("$categoryName:") }
+                .toSet()
+            preferences[PreferencesKeys.TIER3_SWIPE_STREAK] = streaks
+        }
+    }
+
+    suspend fun resetNotificationGovernorStateForTest() {
+        dataStore.edit { preferences ->
+            preferences.remove(PreferencesKeys.TIER3_BUDGET_DAY_EPOCH)
+            preferences.remove(PreferencesKeys.TIER3_DAILY_COUNT)
+            preferences.remove(PreferencesKeys.LAST_TIER3_NOTIFICATION_AT)
+            preferences.remove(PreferencesKeys.TIER3_CATEGORY_BACKOFF_UNTIL)
+            preferences.remove(PreferencesKeys.TIER3_SWIPE_STREAK)
+            preferences.remove(PreferencesKeys.LAST_APP_HEALTH_ALERT_AT)
+            preferences.remove(PreferencesKeys.LAST_TIP_NOTIFICATION_AT)
+            preferences.remove(PreferencesKeys.LAST_SUMMARY_NOTIFICATION_AT)
+            preferences.remove(PreferencesKeys.LAST_MOVIES_NOTIFICATION_AT)
         }
     }
 }

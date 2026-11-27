@@ -115,7 +115,8 @@ object NotificationHelper {
         link: SavedLink,
         userName: String? = null,
         origin: ReminderOrigin = ReminderOrigin.SMART_DIGEST,
-        copy: SmartReminderCopy? = null
+        copy: SmartReminderCopy? = null,
+        skipMetadataFetch: Boolean = false
     ): Boolean {
         createNotificationChannels(context)
 
@@ -140,9 +141,9 @@ object NotificationHelper {
             repo.getLinkById(link.id).first() ?: link
         } ?: link
 
-        // 2. Best-effort non-blocking metadata retrieval if preview image is missing
-        if (effectiveLink.previewImageUrl.isNullOrBlank() && effectiveLink.id > 0) {
-            withTimeoutOrNull(2500L) {
+        // 2. Best-effort non-blocking metadata retrieval if preview image is missing (skipped if caller already fetched)
+        if (!skipMetadataFetch && effectiveLink.previewImageUrl.isNullOrBlank() && effectiveLink.id > 0) {
+            withTimeoutOrNull(1500L) {
                 app?.container?.linkRepository?.fetchMetadataNow(effectiveLink.id)
             }
             effectiveLink = app?.container?.linkRepository?.let { repo ->
@@ -171,7 +172,27 @@ object NotificationHelper {
             }
         }
 
-        val notificationId = effectiveLink.id.toInt()
+        val isManual = origin == ReminderOrigin.MANUAL
+        val notificationId = if (isManual) {
+            NotificationIds.linkReminderNotificationId(effectiveLink.id)
+        } else {
+            NotificationIds.smartDigestNotificationId(effectiveLink.id)
+        }
+        val contentRequestCode = if (isManual) {
+            NotificationIds.linkReminderContentRequestCode(effectiveLink.id)
+        } else {
+            NotificationIds.smartDigestContentRequestCode(effectiveLink.id)
+        }
+        val openBrowserRequestCode = if (isManual) {
+            NotificationIds.linkReminderOpenBrowserRequestCode(effectiveLink.id)
+        } else {
+            NotificationIds.smartDigestOpenBrowserRequestCode(effectiveLink.id)
+        }
+        val dismissRequestCode = if (isManual) {
+            NotificationIds.linkReminderDismissRequestCode(effectiveLink.id)
+        } else {
+            NotificationIds.smartDigestDismissRequestCode(effectiveLink.id)
+        }
 
         // 3. Record in-app notification history
         val historyRepo = app?.container?.notificationHistoryRepository
@@ -197,11 +218,12 @@ object NotificationHelper {
             url = effectiveLink.originalUrl,
             notificationRecordId = notificationRecordId,
             notificationId = notificationId,
-            mode = NotificationOpenActivity.MODE_OPEN_LINK_DETAIL
+            mode = NotificationOpenActivity.MODE_OPEN_LINK_DETAIL,
+            isReminder = true
         )
         val contentPendingIntent = PendingIntent.getActivity(
             context,
-            effectiveLink.id.hashCode(),
+            contentRequestCode,
             openDetailIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -213,11 +235,12 @@ object NotificationHelper {
             url = effectiveLink.originalUrl,
             notificationRecordId = notificationRecordId,
             notificationId = notificationId,
-            mode = NotificationOpenActivity.MODE_OPEN_BROWSER
+            mode = NotificationOpenActivity.MODE_OPEN_BROWSER,
+            isReminder = true
         )
         val openBrowserPendingIntent = PendingIntent.getActivity(
             context,
-            (effectiveLink.id + 200_000L).hashCode(),
+            openBrowserRequestCode,
             openBrowserIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -230,7 +253,7 @@ object NotificationHelper {
         }
         val dismissPendingIntent = PendingIntent.getBroadcast(
             context,
-            (effectiveLink.id + 100_000L).hashCode(),
+            dismissRequestCode,
             dismissIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -266,6 +289,16 @@ object NotificationHelper {
                 "Dismiss",
                 dismissPendingIntent
             )
+
+        if (!isManual) {
+            builder.setDeleteIntent(
+                createTier3SwipeDeleteIntent(
+                    context = context,
+                    notificationId = notificationId,
+                    category = NotificationCategory.SMART_DIGEST
+                )
+            )
+        }
 
         if (previewBitmap != null) {
             builder.setLargeIcon(previewBitmap)
@@ -335,7 +368,7 @@ object NotificationHelper {
         }
         val title = "Media inspection failed"
         val body = "$linkTitle: $errorMessage"
-        val notificationId = (800_000L + savedLinkId).toInt()
+        val notificationId = NotificationIds.extractionFailedNotificationId(savedLinkId)
 
         val app = context.applicationContext as? com.laterbox.app.LaterboxApplication
         val recordId = app?.container?.notificationHistoryRepository?.recordNotification(
@@ -379,7 +412,7 @@ object NotificationHelper {
         )
         val askAiPendingIntent = PendingIntent.getActivity(
             context,
-            notificationId + 50_000,
+            NotificationIds.extractionFailedAskAiRequestCode(savedLinkId),
             askAiIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -417,7 +450,7 @@ object NotificationHelper {
 
         val notifTitle = "Download failed"
         val body = "$title: $errorMessage"
-        val notificationId = 850_000 + (taskId.hashCode() and 0x7FFF)
+        val notificationId = NotificationIds.downloadFailedNotificationId(taskId)
 
         val app = context.applicationContext as? com.laterbox.app.LaterboxApplication
         val recordId = app?.container?.notificationHistoryRepository?.recordNotification(
@@ -476,7 +509,7 @@ object NotificationHelper {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
             ?: return false
 
-        val notificationId = 890_100
+        val notificationId = NotificationIds.APP_HEALTH_NOTIFICATION_ID
         val app = context.applicationContext as? com.laterbox.app.LaterboxApplication
         val recordId = app?.container?.notificationHistoryRepository?.recordNotification(
             linkId = null,
@@ -529,7 +562,12 @@ object NotificationHelper {
         title: String,
         body: String,
         destination: String,
-        initialPrompt: String?
+        initialPrompt: String?,
+        category: NotificationCategory = if (initialPrompt != null) {
+            NotificationCategory.CONTEXTUAL_SUMMARY
+        } else {
+            NotificationCategory.HELPFUL_TIP
+        }
     ): Boolean {
         createNotificationChannels(context)
         if (!hasNotificationPermission(context)) return false
@@ -575,6 +613,7 @@ object NotificationHelper {
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setContentIntent(pendingIntent)
+            .setDeleteIntent(createTier3SwipeDeleteIntent(context, notificationId, category))
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
@@ -598,7 +637,7 @@ object NotificationHelper {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
             ?: return false
 
-        val notificationId = ReminderScheduler.movieReminderRequestCode(mediaKey)
+        val notificationId = NotificationIds.movieReminderId(mediaKey)
         val destinationRoute = com.laterbox.app.ui.navigation.LaterboxDestination.MovieDetail.createRoute(
             providerId = providerId,
             titleId = titleId
@@ -633,7 +672,8 @@ object NotificationHelper {
             notificationRecordId = recordId,
             notificationId = notificationId,
             mode = NotificationOpenActivity.MODE_OPEN_DESTINATION,
-            destination = destinationRoute
+            destination = destinationRoute,
+            isReminder = true
         )
         val contentPendingIntent = PendingIntent.getActivity(
             context,
@@ -651,7 +691,7 @@ object NotificationHelper {
         }
         val dismissPendingIntent = PendingIntent.getBroadcast(
             context,
-            notificationId + 100_000,
+            NotificationIds.movieReminderDismissRequestCode(mediaKey),
             dismissIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -699,7 +739,8 @@ object NotificationHelper {
         title: String,
         body: String,
         originTag: String = "MOVIES_NUDGE",
-        posterUrl: String? = null
+        posterUrl: String? = null,
+        category: NotificationCategory = NotificationCategory.MOVIES_CONTINUE_WATCHING
     ): Boolean {
         createNotificationChannels(context)
         if (!hasNotificationPermission(context)) return false
@@ -750,6 +791,7 @@ object NotificationHelper {
             .setContentTitle(title)
             .setContentText(body)
             .setContentIntent(pendingIntent)
+            .setDeleteIntent(createTier3SwipeDeleteIntent(context, notificationId, category))
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
@@ -768,6 +810,24 @@ object NotificationHelper {
 
         notificationManager.notify(notificationId, builder.build())
         return true
+    }
+
+    private fun createTier3SwipeDeleteIntent(
+        context: Context,
+        notificationId: Int,
+        category: NotificationCategory
+    ): PendingIntent {
+        val intent = Intent(context, ReminderReceiver::class.java).apply {
+            action = ReminderReceiver.ACTION_NOTIFICATION_SWIPED
+            putExtra(ReminderReceiver.EXTRA_NOTIFICATION_ID, notificationId)
+            putExtra(ReminderReceiver.EXTRA_NOTIFICATION_CATEGORY, category.name)
+        }
+        return PendingIntent.getBroadcast(
+            context,
+            NotificationIds.tier3DeleteIntentRequestCode(notificationId),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
     }
 
     @DrawableRes
