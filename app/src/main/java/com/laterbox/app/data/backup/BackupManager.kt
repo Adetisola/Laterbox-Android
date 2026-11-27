@@ -4,8 +4,13 @@ import com.laterbox.app.data.local.LaterboxDatabase
 import com.laterbox.app.data.local.entity.CollectionEntity
 import com.laterbox.app.data.local.entity.LinkCollectionCrossRef
 import com.laterbox.app.data.local.entity.SavedLinkEntity
+import com.laterbox.app.data.local.entity.TasteFacetType
+import com.laterbox.app.data.local.entity.UserTasteFacetEntity
+import com.laterbox.app.data.preferences.UserPreferencesRepository
 import com.laterbox.app.domain.model.ContentType
 import com.laterbox.app.domain.model.MetadataStatus
+import com.laterbox.app.intelligence.TopicExtractor
+import com.laterbox.app.movies.data.local.entity.MovieWatchlistEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -18,13 +23,16 @@ class BackupManager(
     private val database: LaterboxDatabase,
     private val reminderScheduler: com.laterbox.app.reminders.ReminderScheduler? = null,
     private val onScheduleReminder: ((linkId: Long, triggerAtMillis: Long, title: String?, url: String?) -> Unit)? = null,
-    private val nowMsProvider: () -> Long = { System.currentTimeMillis() }
+    private val nowMsProvider: () -> Long = { System.currentTimeMillis() },
+    private val userPreferencesRepository: UserPreferencesRepository? = null
 ) {
 
     suspend fun exportToJson(outputStream: OutputStream): Result<Int> = withContext(Dispatchers.IO) {
         try {
             val collectionDao = database.collectionDao()
             val savedLinkDao = database.savedLinkDao()
+            val intelligenceDao = database.intelligenceDao()
+            val moviesDao = database.moviesDao()
 
             val collections = collectionDao.getCollections().first().map {
                 BackupCollection(name = it.name, createdAt = it.createdAt)
@@ -54,11 +62,61 @@ class BackupManager(
                 )
             }
 
+            // Omit ephemeral intelligence_signals & movie_cache_entries; export only user taste facets & watchlist
+            val facets = intelligenceDao.getAllFacetsSnapshot().map { f ->
+                BackupTasteFacet(
+                    facetKey = f.facetKey,
+                    facetType = f.facetType,
+                    surfaceScope = f.surfaceScope,
+                    displayLabel = f.displayLabel,
+                    score = f.score,
+                    confidence = f.confidence,
+                    provenance = f.provenance,
+                    evidenceSummary = f.evidenceSummary,
+                    includeInAssistantContext = f.includeInAssistantContext,
+                    isSuppressedByUser = f.isSuppressedByUser,
+                    firstObservedAtMs = f.firstObservedAtMs,
+                    lastReinforcedAtMs = f.lastReinforcedAtMs,
+                    expiresAtMs = f.expiresAtMs
+                )
+            }
+
+            val watchlist = moviesDao.getWatchlistSnapshot().map { w ->
+                BackupMovieWatchlistItem(
+                    compositeId = w.compositeId,
+                    providerId = w.providerId,
+                    titleId = w.titleId,
+                    kind = w.kind,
+                    title = w.title,
+                    posterUrl = w.posterUrl,
+                    backdropUrl = w.backdropUrl,
+                    releaseYear = w.releaseYear,
+                    rating = w.rating,
+                    genresCsv = w.genresCsv,
+                    summary = w.summary,
+                    sourceBadge = w.sourceBadge,
+                    isPlayableHint = w.isPlayableHint,
+                    addedAt = w.addedAt,
+                    canonicalId = w.canonicalId
+                )
+            }
+
+            val personalizationPrefs = userPreferencesRepository?.let { repo ->
+                val prefs = repo.userPreferencesFlow.first()
+                BackupPersonalizationPreferences(
+                    personalizationEnabled = prefs.personalizationEnabled,
+                    assistantPersonalContextEnabled = prefs.assistantPersonalContextEnabled
+                )
+            }
+
             val backup = LaterboxBackup(
-                version = 1,
+                version = LaterboxBackup.CURRENT_BACKUP_VERSION,
                 exportedAt = nowMsProvider(),
                 collections = collections,
-                links = allLinks
+                links = allLinks,
+                userTasteFacets = facets,
+                movieWatchlist = watchlist,
+                personalizationPreferences = personalizationPrefs
             )
 
             val jsonString = serializeBackup(backup)
@@ -77,11 +135,15 @@ class BackupManager(
 
             val collectionDao = database.collectionDao()
             val savedLinkDao = database.savedLinkDao()
+            val intelligenceDao = database.intelligenceDao()
+            val moviesDao = database.moviesDao()
             val nowMs = nowMsProvider()
 
             var restoredCollectionsCount = 0
             var restoredLinksCount = 0
             var skippedDuplicatesCount = 0
+            var restoredFacetsCount = 0
+            var restoredWatchlistCount = 0
 
             // 1. Resolve / Create Collections
             val existingCollections = collectionDao.getCollections().first()
@@ -175,16 +237,99 @@ class BackupManager(
                 }
             }
 
+            // 3. Merge User Taste Facets safely (explicit/user-corrected/suppressed take precedence, else newest timestamp)
+            for (bFacet in backup.userTasteFacets) {
+                if (bFacet.facetKey.isBlank() || !TopicExtractor.isSafeFacetLabel(bFacet.displayLabel)) continue
+                val importedEntity = UserTasteFacetEntity(
+                    facetKey = bFacet.facetKey,
+                    facetType = bFacet.facetType,
+                    surfaceScope = bFacet.surfaceScope,
+                    displayLabel = bFacet.displayLabel,
+                    score = bFacet.score,
+                    confidence = bFacet.confidence,
+                    provenance = bFacet.provenance,
+                    evidenceSummary = bFacet.evidenceSummary,
+                    includeInAssistantContext = bFacet.includeInAssistantContext,
+                    isSuppressedByUser = bFacet.isSuppressedByUser,
+                    firstObservedAtMs = bFacet.firstObservedAtMs,
+                    lastReinforcedAtMs = bFacet.lastReinforcedAtMs,
+                    expiresAtMs = bFacet.expiresAtMs
+                )
+                val existingFacet = intelligenceDao.getFacetByKey(bFacet.facetKey)
+                val shouldWrite = when {
+                    existingFacet == null -> true
+                    isExplicitOrSuppressed(existingFacet) && !isExplicitOrSuppressed(importedEntity) -> false
+                    !isExplicitOrSuppressed(existingFacet) && isExplicitOrSuppressed(importedEntity) -> true
+                    else -> importedEntity.lastReinforcedAtMs > existingFacet.lastReinforcedAtMs
+                }
+                if (shouldWrite) {
+                    intelligenceDao.upsertFacet(importedEntity)
+                    restoredFacetsCount++
+                }
+            }
+
+            // 4. Merge Movies & TV Watchlist without duplicating canonical or composite IDs
+            val existingWatchlist = moviesDao.getWatchlistSnapshot()
+            val knownCompositeIds = existingWatchlist.mapTo(mutableSetOf()) { it.compositeId }
+            val knownCanonicalIds = existingWatchlist.mapNotNullTo(mutableSetOf()) { it.canonicalId?.takeIf { c -> c.isNotBlank() } }
+            for (bWatch in backup.movieWatchlist) {
+                if (bWatch.compositeId.isBlank()) continue
+                val canonical = bWatch.canonicalId?.takeIf { it.isNotBlank() }
+                if (bWatch.compositeId in knownCompositeIds || (canonical != null && canonical in knownCanonicalIds)) {
+                    continue
+                }
+                moviesDao.insertWatchlistItem(
+                    MovieWatchlistEntity(
+                        compositeId = bWatch.compositeId,
+                        providerId = bWatch.providerId,
+                        titleId = bWatch.titleId,
+                        kind = bWatch.kind,
+                        title = bWatch.title,
+                        posterUrl = bWatch.posterUrl,
+                        backdropUrl = bWatch.backdropUrl,
+                        releaseYear = bWatch.releaseYear,
+                        rating = bWatch.rating,
+                        genresCsv = bWatch.genresCsv,
+                        summary = bWatch.summary,
+                        sourceBadge = bWatch.sourceBadge,
+                        isPlayableHint = bWatch.isPlayableHint,
+                        addedAt = bWatch.addedAt,
+                        canonicalId = canonical
+                    )
+                )
+                knownCompositeIds.add(bWatch.compositeId)
+                if (canonical != null) knownCanonicalIds.add(canonical)
+                restoredWatchlistCount++
+            }
+
+            // 5. Restore Personalization Preferences (v2)
+            backup.personalizationPreferences?.let { pPrefs ->
+                userPreferencesRepository?.let { repo ->
+                    repo.setPersonalizationEnabled(pPrefs.personalizationEnabled)
+                    repo.setAssistantPersonalContextEnabled(pPrefs.assistantPersonalContextEnabled)
+                }
+            }
+
             Result.success(
                 BackupRestoreResult(
                     restoredLinksCount = restoredLinksCount,
                     skippedDuplicatesCount = skippedDuplicatesCount,
-                    restoredCollectionsCount = restoredCollectionsCount
+                    restoredCollectionsCount = restoredCollectionsCount,
+                    restoredFacetsCount = restoredFacetsCount,
+                    restoredWatchlistCount = restoredWatchlistCount
                 )
             )
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    private fun isExplicitOrSuppressed(facet: UserTasteFacetEntity): Boolean {
+        return facet.isSuppressedByUser ||
+            facet.facetType == TasteFacetType.EXPLICIT_LIKE.name ||
+            facet.facetType == TasteFacetType.EXPLICIT_DISLIKE.name ||
+            facet.facetType == "USER_STATED" ||
+            facet.facetType == "USER_CORRECTED"
     }
 
     private fun scheduleReminderIfEligible(
@@ -252,6 +397,55 @@ class BackupManager(
             linkArray.put(lObj)
         }
         root.put("links", linkArray)
+
+        val facetsArray = JSONArray()
+        for (facet in backup.userTasteFacets) {
+            val fObj = JSONObject()
+            fObj.put("facetKey", facet.facetKey)
+            fObj.put("facetType", facet.facetType)
+            fObj.put("surfaceScope", facet.surfaceScope)
+            fObj.put("displayLabel", facet.displayLabel)
+            fObj.put("score", facet.score)
+            fObj.put("confidence", facet.confidence)
+            fObj.put("provenance", facet.provenance)
+            fObj.put("evidenceSummary", facet.evidenceSummary)
+            fObj.put("includeInAssistantContext", facet.includeInAssistantContext)
+            fObj.put("isSuppressedByUser", facet.isSuppressedByUser)
+            fObj.put("firstObservedAtMs", facet.firstObservedAtMs)
+            fObj.put("lastReinforcedAtMs", facet.lastReinforcedAtMs)
+            fObj.put("expiresAtMs", facet.expiresAtMs ?: JSONObject.NULL)
+            facetsArray.put(fObj)
+        }
+        root.put("userTasteFacets", facetsArray)
+
+        val watchlistArray = JSONArray()
+        for (item in backup.movieWatchlist) {
+            val wObj = JSONObject()
+            wObj.put("compositeId", item.compositeId)
+            wObj.put("providerId", item.providerId)
+            wObj.put("titleId", item.titleId)
+            wObj.put("kind", item.kind)
+            wObj.put("title", item.title)
+            wObj.put("posterUrl", item.posterUrl ?: JSONObject.NULL)
+            wObj.put("backdropUrl", item.backdropUrl ?: JSONObject.NULL)
+            wObj.put("releaseYear", item.releaseYear ?: JSONObject.NULL)
+            wObj.put("rating", item.rating ?: JSONObject.NULL)
+            wObj.put("genresCsv", item.genresCsv)
+            wObj.put("summary", item.summary ?: JSONObject.NULL)
+            wObj.put("sourceBadge", item.sourceBadge)
+            wObj.put("isPlayableHint", item.isPlayableHint)
+            wObj.put("addedAt", item.addedAt)
+            wObj.put("canonicalId", item.canonicalId ?: JSONObject.NULL)
+            watchlistArray.put(wObj)
+        }
+        root.put("movieWatchlist", watchlistArray)
+
+        backup.personalizationPreferences?.let { pPrefs ->
+            val pObj = JSONObject()
+            pObj.put("personalizationEnabled", pPrefs.personalizationEnabled)
+            pObj.put("assistantPersonalContextEnabled", pPrefs.assistantPersonalContextEnabled)
+            root.put("personalizationPreferences", pObj)
+        }
 
         return root.toString(2)
     }
@@ -328,12 +522,89 @@ class BackupManager(
             }
         }
 
+        val facets = mutableListOf<BackupTasteFacet>()
+        val facetsArray = root.optJSONArray("userTasteFacets")
+        if (facetsArray != null) {
+            for (i in 0 until facetsArray.length()) {
+                val fObj = facetsArray.getJSONObject(i)
+                val expiresAtMs = if (fObj.has("expiresAtMs") && !fObj.isNull("expiresAtMs")) {
+                    fObj.optLong("expiresAtMs", 0L).takeIf { it > 0L }
+                } else {
+                    null
+                }
+                facets.add(
+                    BackupTasteFacet(
+                        facetKey = fObj.getString("facetKey"),
+                        facetType = fObj.optString("facetType", TasteFacetType.ENDURING_INTEREST.name),
+                        surfaceScope = fObj.optString("surfaceScope", "ALL"),
+                        displayLabel = fObj.getString("displayLabel"),
+                        score = fObj.optDouble("score", 0.5),
+                        confidence = fObj.optDouble("confidence", 0.5),
+                        provenance = fObj.optString("provenance", ""),
+                        evidenceSummary = fObj.optString("evidenceSummary", ""),
+                        includeInAssistantContext = fObj.optBoolean("includeInAssistantContext", false),
+                        isSuppressedByUser = fObj.optBoolean("isSuppressedByUser", false),
+                        firstObservedAtMs = fObj.optLong("firstObservedAtMs", 0L),
+                        lastReinforcedAtMs = fObj.optLong("lastReinforcedAtMs", 0L),
+                        expiresAtMs = expiresAtMs
+                    )
+                )
+            }
+        }
+
+        val watchlist = mutableListOf<BackupMovieWatchlistItem>()
+        val watchlistArray = root.optJSONArray("movieWatchlist")
+        if (watchlistArray != null) {
+            for (i in 0 until watchlistArray.length()) {
+                val wObj = watchlistArray.getJSONObject(i)
+                val releaseYear = if (wObj.has("releaseYear") && !wObj.isNull("releaseYear")) {
+                    wObj.optInt("releaseYear")
+                } else {
+                    null
+                }
+                val rating = if (wObj.has("rating") && !wObj.isNull("rating")) {
+                    wObj.optDouble("rating")
+                } else {
+                    null
+                }
+                watchlist.add(
+                    BackupMovieWatchlistItem(
+                        compositeId = wObj.getString("compositeId"),
+                        providerId = wObj.getString("providerId"),
+                        titleId = wObj.getString("titleId"),
+                        kind = wObj.optString("kind", "movie"),
+                        title = wObj.getString("title"),
+                        posterUrl = wObj.optNullableString("posterUrl"),
+                        backdropUrl = wObj.optNullableString("backdropUrl"),
+                        releaseYear = releaseYear,
+                        rating = rating,
+                        genresCsv = wObj.optString("genresCsv", ""),
+                        summary = wObj.optNullableString("summary"),
+                        sourceBadge = wObj.optString("sourceBadge", "OPEN_ARCHIVE"),
+                        isPlayableHint = wObj.optBoolean("isPlayableHint", false),
+                        addedAt = wObj.optLong("addedAt", System.currentTimeMillis()),
+                        canonicalId = wObj.optNullableString("canonicalId")
+                    )
+                )
+            }
+        }
+
+        val personalizationPrefs = root.optJSONObject("personalizationPreferences")?.let { pObj ->
+            BackupPersonalizationPreferences(
+                personalizationEnabled = pObj.optBoolean("personalizationEnabled", true),
+                assistantPersonalContextEnabled = pObj.optBoolean("assistantPersonalContextEnabled", false)
+            )
+        }
+
         return LaterboxBackup(
             version = version,
             exportedAt = exportedAt,
             appName = appName,
             collections = collections,
-            links = links
+            links = links,
+            userTasteFacets = facets,
+            movieWatchlist = watchlist,
+            personalizationPreferences = personalizationPrefs
         )
     }
 

@@ -3,27 +3,48 @@ package com.laterbox.app.ui.inbox
 import android.content.ClipboardManager
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.laterbox.app.ai.RemoteCapabilities
 import com.laterbox.app.capture.ClipboardSuggestion
 import com.laterbox.app.capture.ClipboardSuggestionManager
+import com.laterbox.app.data.local.entity.UserTasteFacetEntity
 import com.laterbox.app.data.preferences.InboxViewMode
 import com.laterbox.app.data.preferences.UserPreferences
 import com.laterbox.app.data.preferences.UserPreferencesRepository
+import com.laterbox.app.data.repository.CollectionRepository
 import com.laterbox.app.data.repository.LinkRepository
+import com.laterbox.app.data.repository.NotificationHistoryRepository
+import com.laterbox.app.domain.model.Collection
 import com.laterbox.app.domain.model.ContentType
 import com.laterbox.app.domain.model.MetadataStatus
 import com.laterbox.app.domain.model.SavedLink
+import com.laterbox.app.intelligence.CollectionSuggester
+import com.laterbox.app.intelligence.InboxResurfacer
+import com.laterbox.app.intelligence.LinkCollectionSuggestion
+import com.laterbox.app.intelligence.ResurfacedLinkSuggestion
+import com.laterbox.app.intelligence.SearchTieBreaker
+import com.laterbox.app.intelligence.UserUnderstandingRepository
+import com.laterbox.app.remoteconfig.RemoteConfigManager
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-import com.laterbox.app.data.repository.NotificationHistoryRepository
-import kotlinx.coroutines.flow.flowOf
+private data class InboxIntelligenceInputs(
+    val facets: List<UserTasteFacetEntity> = emptyList(),
+    val collections: List<Collection> = emptyList(),
+    val remoteIntelligenceEnabled: Boolean = true,
+    val dismissedResurfacedIds: Set<Long> = emptySet(),
+    val dismissedCollectionPairs: Set<Pair<Long, Long>> = emptySet()
+)
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class InboxViewModel(
@@ -31,7 +52,10 @@ class InboxViewModel(
     private val userPreferencesRepository: UserPreferencesRepository,
     private val notificationHistoryRepository: NotificationHistoryRepository? = null,
     private val inspectionDao: com.laterbox.app.media.data.db.dao.MediaInspectionDao? = null,
-    private val intelligenceSignalLogger: com.laterbox.app.intelligence.IntelligenceSignalLogger? = null
+    private val intelligenceSignalLogger: com.laterbox.app.intelligence.IntelligenceSignalLogger? = null,
+    private val userUnderstandingRepository: UserUnderstandingRepository? = null,
+    private val collectionRepository: CollectionRepository? = null,
+    private val remoteConfigManager: RemoteConfigManager? = null
 ) : ViewModel() {
 
     private val _searchQuery = MutableStateFlow("")
@@ -66,6 +90,32 @@ class InboxViewModel(
     private val _selectedLinkIds = MutableStateFlow<Set<Long>>(emptySet())
     val selectedLinkIds: StateFlow<Set<Long>> = _selectedLinkIds
 
+    private val _dismissedResurfacedIds = MutableStateFlow<Set<Long>>(emptySet())
+    private val _dismissedCollectionPairs = MutableStateFlow<Set<Pair<Long, Long>>>(emptySet())
+
+    private val facetsFlow = userUnderstandingRepository?.observeAllFacets() ?: flowOf(emptyList())
+    private val collectionsFlow = collectionRepository?.collections ?: flowOf(emptyList())
+    private val remoteIntelEnabledFlow = remoteConfigManager?.state
+        ?.map { it.activeConfig.isFeatureEnabled(RemoteCapabilities.KEY_EXPERIENCE_INTELLIGENCE, true) }
+        ?.distinctUntilChanged()
+        ?: flowOf(true)
+
+    private val intelligenceInputsFlow = combine(
+        facetsFlow,
+        collectionsFlow,
+        remoteIntelEnabledFlow,
+        _dismissedResurfacedIds,
+        _dismissedCollectionPairs
+    ) { facets, collections, remoteEnabled, dismissedResurfaced, dismissedColPairs ->
+        InboxIntelligenceInputs(
+            facets = facets,
+            collections = collections,
+            remoteIntelligenceEnabled = remoteEnabled,
+            dismissedResurfacedIds = dismissedResurfaced,
+            dismissedCollectionPairs = dismissedColPairs
+        )
+    }
+
     @Suppress("UNCHECKED_CAST")
     val uiState: StateFlow<InboxUiState> = combine(
         baseLinksFlow,
@@ -78,7 +128,8 @@ class InboxViewModel(
         userPreferencesRepository.userPreferences,
         unreadNotificationsFlow,
         mediaReadyFlow,
-        _selectedLinkIds
+        _selectedLinkIds,
+        intelligenceInputsFlow
     ) { args: Array<Any?> ->
         val rawLinks = args[0] as List<SavedLink>
         val query = args[1] as String
@@ -91,6 +142,7 @@ class InboxViewModel(
         val unreadNotifs = args[8] as Int
         val mediaReadyIds = (args[9] as? List<Long>)?.toSet() ?: emptySet()
         val selectedIds = args[10] as Set<Long>
+        val intel = args[11] as InboxIntelligenceInputs
 
         // If searching, filter out archived links since searchLinks searches all
         val unarchived = rawLinks.filter { !it.isArchived }
@@ -114,13 +166,52 @@ class InboxViewModel(
             quickFiltered
         }
 
+        val personalizationActive = prefs.personalizationEnabled && intel.remoteIntelligenceEnabled
+        // Chronological order preserved whenever search is blank; lexical-first SearchTieBreaker only during active search.
+        val orderedLinks = if (query.isNotBlank()) {
+            SearchTieBreaker.rankLinks(
+                links = filtered,
+                query = query,
+                facets = intel.facets,
+                applyTieBreaker = personalizationActive
+            )
+        } else {
+            filtered
+        }
+
+        val isIdle = query.isBlank() &&
+            filterType == null &&
+            dateFilter == DateRangeFilter.ALL &&
+            quickFilter == InboxQuickFilter.ALL
+
+        val resurfaced = if (personalizationActive && isIdle) {
+            InboxResurfacer.selectSuggestions(
+                inboxLinks = unarchived,
+                facets = intel.facets,
+                dismissedLinkIds = intel.dismissedResurfacedIds
+            )
+        } else {
+            emptyList()
+        }
+
+        val colSuggestions = if (personalizationActive && isIdle) {
+            CollectionSuggester.suggestForLinks(
+                links = unarchived,
+                collections = intel.collections,
+                dismissedPairs = intel.dismissedCollectionPairs,
+                maxSuggestions = 2
+            )
+        } else {
+            emptyList()
+        }
+
         val pendingCount = unarchived.count {
             it.metadataStatus == MetadataStatus.PENDING || it.metadataStatus == MetadataStatus.FETCHING
         }
         val readCount = unarchived.count { it.isRead }
 
         InboxUiState(
-            links = filtered,
+            links = orderedLinks,
             isLoading = false,
             isRefreshing = refreshing,
             searchQuery = query,
@@ -134,7 +225,9 @@ class InboxViewModel(
             clipboardSuggestion = suggestion,
             unreadNotificationCount = unreadNotifs,
             mediaReadyLinkIds = mediaReadyIds,
-            selectedLinkIds = selectedIds
+            selectedLinkIds = selectedIds,
+            resurfacedLinks = resurfaced,
+            collectionSuggestions = colSuggestions
         )
     }.stateIn(
         scope = viewModelScope,
@@ -237,7 +330,7 @@ class InboxViewModel(
             }
         }
 
-    fun unarchiveBatch(linkIds: Collection<Long>): kotlinx.coroutines.Job =
+    fun unarchiveBatch(linkIds: kotlin.collections.Collection<Long>): kotlinx.coroutines.Job =
         viewModelScope.launch {
             if (linkIds.isNotEmpty()) {
                 linkRepository.setArchivedBatch(linkIds, false)
@@ -377,5 +470,31 @@ class InboxViewModel(
         viewModelScope.launch {
             linkRepository.seedStarterGuideIfMissing()
         }
+    }
+
+    fun onResurfacedLinkOpened(suggestion: ResurfacedLinkSuggestion) {
+        _dismissedResurfacedIds.update { it + suggestion.link.id }
+        onLinkOpened(suggestion.link.id)
+        viewModelScope.launch {
+            intelligenceSignalLogger?.logResurfaceInteraction(suggestion.link, opened = true)
+        }
+    }
+
+    fun onDismissResurfacedLink(link: SavedLink) {
+        _dismissedResurfacedIds.update { it + link.id }
+        viewModelScope.launch {
+            intelligenceSignalLogger?.logResurfaceInteraction(link, opened = false)
+        }
+    }
+
+    fun onAcceptCollectionSuggestion(suggestion: LinkCollectionSuggestion) {
+        _dismissedCollectionPairs.update { it + (suggestion.link.id to suggestion.collection.id) }
+        viewModelScope.launch {
+            linkRepository.addLinkToCollection(suggestion.link.id, suggestion.collection.id)
+        }
+    }
+
+    fun onDismissCollectionSuggestion(suggestion: LinkCollectionSuggestion) {
+        _dismissedCollectionPairs.update { it + (suggestion.link.id to suggestion.collection.id) }
     }
 }

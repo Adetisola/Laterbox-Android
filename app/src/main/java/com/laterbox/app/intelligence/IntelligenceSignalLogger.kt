@@ -474,6 +474,46 @@ class IntelligenceSignalLogger(
         }
     }
 
+    suspend fun logResurfaceInteraction(link: SavedLink, opened: Boolean) {
+        if (!isActive()) return
+        runCatching {
+            withContext(Dispatchers.IO) {
+                val ts = nowMs()
+                val topics = TopicExtractor.extractLibraryTopics(
+                    url = link.originalUrl,
+                    domain = link.domain,
+                    title = link.title,
+                    description = link.description
+                )
+                intelligenceDao.insertSignal(
+                    IntelligenceSignalEntity(
+                        signalType = if (opened) SIGNAL_RESURFACE_OPENED else SIGNAL_RESURFACE_DISMISSED,
+                        surfaceScope = IntelligenceSurfaceScope.LIBRARY.name,
+                        targetKey = "link:${link.id}",
+                        topicsCsv = topics.joinToString(",") { it.facetKey },
+                        isMediaCue = false,
+                        strength = if (opened) 0.65 else -0.35,
+                        createdAtMs = ts
+                    )
+                )
+                for (topic in topics) {
+                    if (opened) {
+                        userUnderstandingRepository.reinforceFacet(
+                            candidate = topic,
+                            delta = 0.10,
+                            provenance = "Opened resurfaced \"${link.title.take(36)}\"",
+                            evidenceSummary = "Re-engaged with resurfaced ${topic.displayLabel} link",
+                            facetType = TasteFacetType.ENDURING_INTEREST,
+                            timestampMs = ts
+                        )
+                    } else {
+                        userUnderstandingRepository.penalizeFacet(topic.facetKey, 0.05, ts)
+                    }
+                }
+            }
+        }
+    }
+
     private fun categorySurface(category: NotificationCategory): IntelligenceSurfaceScope = when (category) {
         NotificationCategory.MOVIE_VIEWING_REMINDER,
         NotificationCategory.MOVIES_CONTINUE_WATCHING,
@@ -500,6 +540,8 @@ class IntelligenceSignalLogger(
         const val SIGNAL_SEARCH = "SEARCH_QUERY"
         const val SIGNAL_NOTIFICATION_OPENED = "NOTIFICATION_OPENED"
         const val SIGNAL_NOTIFICATION_DISMISSED = "NOTIFICATION_DISMISSED"
+        const val SIGNAL_RESURFACE_OPENED = "RESURFACE_OPENED"
+        const val SIGNAL_RESURFACE_DISMISSED = "RESURFACE_DISMISSED"
 
         private val MEDIA_SEARCH_GENRES = listOf(
             "Sci-Fi", "Action", "Adventure", "Animation", "Anime", "Comedy",

@@ -158,7 +158,8 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
     override val backupManager: BackupManager by lazy {
         BackupManager(
             database = database,
-            reminderScheduler = reminderScheduler
+            reminderScheduler = reminderScheduler,
+            userPreferencesRepository = userPreferencesRepository
         )
     }
 

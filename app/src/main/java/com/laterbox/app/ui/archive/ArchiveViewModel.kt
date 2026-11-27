@@ -2,17 +2,28 @@ package com.laterbox.app.ui.archive
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.laterbox.app.ai.RemoteCapabilities
+import com.laterbox.app.data.preferences.UserPreferencesRepository
 import com.laterbox.app.data.repository.LinkRepository
 import com.laterbox.app.domain.model.SavedLink
+import com.laterbox.app.intelligence.SearchTieBreaker
+import com.laterbox.app.intelligence.UserUnderstandingRepository
+import com.laterbox.app.remoteconfig.RemoteConfigManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 class ArchiveViewModel(
-    private val linkRepository: LinkRepository
+    private val linkRepository: LinkRepository,
+    private val userUnderstandingRepository: UserUnderstandingRepository? = null,
+    private val userPreferencesRepository: UserPreferencesRepository? = null,
+    private val remoteConfigManager: RemoteConfigManager? = null
 ) : ViewModel() {
 
     private val _searchQuery = MutableStateFlow("")
@@ -20,15 +31,28 @@ class ArchiveViewModel(
 
     private val _linkToDelete = MutableStateFlow<SavedLink?>(null)
 
+    private val facetsFlow = userUnderstandingRepository?.observeAllFacets() ?: flowOf(emptyList())
+    private val localPersonalizationFlow = userPreferencesRepository?.userPreferences
+        ?.map { it.personalizationEnabled }
+        ?.distinctUntilChanged()
+        ?: flowOf(true)
+    private val remoteIntelEnabledFlow = remoteConfigManager?.state
+        ?.map { it.activeConfig.isFeatureEnabled(RemoteCapabilities.KEY_EXPERIENCE_INTELLIGENCE, true) }
+        ?.distinctUntilChanged()
+        ?: flowOf(true)
+
     val uiState: StateFlow<ArchiveUiState> = combine(
-        linkRepository.archivedLinks,
-        _searchQuery,
-        _linkToDelete
-    ) { archived, query, toDelete ->
+        combine(linkRepository.archivedLinks, _searchQuery, _linkToDelete) { archived, query, toDelete ->
+            Triple(archived, query, toDelete)
+        },
+        combine(facetsFlow, localPersonalizationFlow, remoteIntelEnabledFlow) { facets, localEnabled, remoteEnabled ->
+            Triple(facets, localEnabled, remoteEnabled)
+        }
+    ) { (archived, query, toDelete), (facets, localEnabled, remoteEnabled) ->
         val filtered = if (query.isBlank()) {
             archived
         } else {
-            archived.filter { link ->
+            val matched = archived.filter { link ->
                 link.title.contains(query, ignoreCase = true) ||
                     link.domain.contains(query, ignoreCase = true) ||
                     link.originalUrl.contains(query, ignoreCase = true) ||
@@ -36,6 +60,12 @@ class ArchiveViewModel(
                     (link.description?.contains(query, ignoreCase = true) == true) ||
                     (link.personalNote?.contains(query, ignoreCase = true) == true)
             }
+            SearchTieBreaker.rankLinks(
+                links = matched,
+                query = query,
+                facets = facets,
+                applyTieBreaker = localEnabled && remoteEnabled
+            )
         }
         ArchiveUiState(
             links = filtered,

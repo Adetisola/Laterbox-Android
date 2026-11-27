@@ -22,7 +22,10 @@ object AppViewModelProvider {
                 userPreferencesRepository = app.container.userPreferencesRepository,
                 notificationHistoryRepository = app.container.notificationHistoryRepository,
                 inspectionDao = app.container.database.mediaInspectionDao(),
-                intelligenceSignalLogger = app.container.intelligenceSignalLogger
+                intelligenceSignalLogger = app.container.intelligenceSignalLogger,
+                userUnderstandingRepository = app.container.userUnderstandingRepository,
+                collectionRepository = app.container.collectionRepository,
+                remoteConfigManager = app.container.remoteConfigManager
             )
         }
         initializer {
@@ -33,7 +36,12 @@ object AppViewModelProvider {
         }
         initializer {
             val app = laterboxApplication()
-            CollectionsViewModel(app.container.collectionRepository)
+            CollectionsViewModel(
+                collectionRepository = app.container.collectionRepository,
+                userUnderstandingRepository = app.container.userUnderstandingRepository,
+                userPreferencesRepository = app.container.userPreferencesRepository,
+                remoteConfigManager = app.container.remoteConfigManager
+            )
         }
         initializer {
             val app = laterboxApplication()
@@ -44,7 +52,12 @@ object AppViewModelProvider {
         }
         initializer {
             val app = laterboxApplication()
-            ArchiveViewModel(app.container.linkRepository)
+            ArchiveViewModel(
+                linkRepository = app.container.linkRepository,
+                userUnderstandingRepository = app.container.userUnderstandingRepository,
+                userPreferencesRepository = app.container.userPreferencesRepository,
+                remoteConfigManager = app.container.remoteConfigManager
+            )
         }
         initializer {
             val app = laterboxApplication()
@@ -61,7 +74,9 @@ object AppViewModelProvider {
                 linkRepository = app.container.linkRepository,
                 collectionRepository = app.container.collectionRepository,
                 mediaRepository = app.container.mediaRepository,
-                platformResolver = app.container.platformResolver
+                platformResolver = app.container.platformResolver,
+                userPreferencesRepository = app.container.userPreferencesRepository,
+                remoteConfigManager = app.container.remoteConfigManager
             )
         }
         initializer {

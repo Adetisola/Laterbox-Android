@@ -33,9 +33,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.ui.text.style.TextOverflow
+import com.laterbox.app.intelligence.LinkCollectionSuggestion
+import com.laterbox.app.intelligence.ResurfacedLinkSuggestion
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -147,6 +151,10 @@ fun InboxScreen(
     dismissedAnnouncementIds: Set<String> = emptySet(),
     onRemoteAction: (String) -> Unit = {},
     onDismissRemoteAnnouncement: (String) -> Unit = {},
+    onOpenResurfacedLink: (ResurfacedLinkSuggestion) -> Unit = {},
+    onDismissResurfacedLink: (SavedLink) -> Unit = {},
+    onAcceptCollectionSuggestion: (LinkCollectionSuggestion) -> Unit = {},
+    onDismissCollectionSuggestion: (LinkCollectionSuggestion) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -747,6 +755,30 @@ fun InboxScreen(
                                 }
                             }
 
+                            if (!uiState.isSelectionMode && uiState.resurfacedLinks.isNotEmpty()) {
+                                item(key = "inbox_resurfacer_strip") {
+                                    InboxResurfacerStrip(
+                                        suggestions = uiState.resurfacedLinks,
+                                        onOpen = { suggestion ->
+                                            onOpenResurfacedLink(suggestion)
+                                            onLinkClick(suggestion.link)
+                                        },
+                                        onDismiss = onDismissResurfacedLink
+                                    )
+                                }
+                            }
+
+                            if (!uiState.isSelectionMode && uiState.collectionSuggestions.isNotEmpty()) {
+                                val topCollectionSuggestion = uiState.collectionSuggestions.first()
+                                item(key = "inbox_collection_suggestion_${topCollectionSuggestion.link.id}_${topCollectionSuggestion.collection.id}") {
+                                    InboxCollectionSuggestionBanner(
+                                        suggestion = topCollectionSuggestion,
+                                        onAccept = { onAcceptCollectionSuggestion(topCollectionSuggestion) },
+                                        onDismiss = { onDismissCollectionSuggestion(topCollectionSuggestion) }
+                                    )
+                                }
+                            }
+
                             groupedLinks.forEach { group ->
                                 stickyHeader(key = "header_${group.title}", contentType = "date_header") {
                                     val isCollapsed = collapsedGroups.contains(group.title)
@@ -961,3 +993,172 @@ private fun ClipboardSuggestionBanner(
         }
     }
 }
+
+@Composable
+private fun InboxResurfacerStrip(
+    suggestions: List<ResurfacedLinkSuggestion>,
+    onOpen: (ResurfacedLinkSuggestion) -> Unit,
+    onDismiss: (SavedLink) -> Unit
+) {
+    val colors = LaterboxTheme.colors
+    val typography = LaterboxTheme.typography
+    val spacing = LaterboxTheme.spacing
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = spacing.xs, bottom = spacing.sm)
+            .testTag("inbox_resurfacer_strip"),
+        verticalArrangement = Arrangement.spacedBy(spacing.xs)
+    ) {
+        Text(
+            text = "Pick back up",
+            style = typography.metaText.copy(fontWeight = FontWeight.SemiBold),
+            color = colors.textSecondary
+        )
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(spacing.xs)
+        ) {
+            items(
+                items = suggestions,
+                key = { "resurface_${it.link.id}" }
+            ) { item ->
+                Surface(
+                    shape = LaterboxShapeTokens.Card,
+                    color = colors.surfacePrimary,
+                    border = BorderStroke(0.75.dp, colors.borderSubtle),
+                    modifier = Modifier
+                        .width(236.dp)
+                        .clickable(role = Role.Button) { onOpen(item) }
+                        .testTag("inbox_resurface_card_${item.link.id}")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = spacing.sm, vertical = spacing.xs),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                text = item.link.title.ifBlank { item.link.domain },
+                                style = typography.uiMedium.copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold),
+                                color = colors.textPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = item.rationale,
+                                style = typography.metaText.copy(fontSize = 11.sp),
+                                color = colors.accentPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(spacing.xxs))
+                        Box(
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(LaterboxShapeTokens.IconButton)
+                                .clickable(role = Role.Button, onClickLabel = "Dismiss suggestion") {
+                                    onDismiss(item.link)
+                                }
+                                .testTag("inbox_resurface_dismiss_${item.link.id}"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                painter = painterResource(id = LaterboxIcons.Close),
+                                contentDescription = "Dismiss",
+                                modifier = Modifier.size(14.dp),
+                                tint = colors.textSecondary
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun InboxCollectionSuggestionBanner(
+    suggestion: LinkCollectionSuggestion,
+    onAccept: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val colors = LaterboxTheme.colors
+    val typography = LaterboxTheme.typography
+    val spacing = LaterboxTheme.spacing
+
+    Surface(
+        shape = LaterboxShapeTokens.Card,
+        color = colors.surfacePrimary,
+        border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.28f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = spacing.sm)
+            .testTag("inbox_collection_suggestion_banner")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = spacing.md, vertical = spacing.xs),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = "Add \"${suggestion.link.title.ifBlank { suggestion.link.domain }}\" to \"${suggestion.collection.name}\"?",
+                    style = typography.uiMedium.copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold),
+                    color = colors.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = suggestion.rationale,
+                    style = typography.metaText.copy(fontSize = 11.sp),
+                    color = colors.textSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Spacer(modifier = Modifier.width(spacing.xs))
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(spacing.radiusSmall))
+                    .background(colors.accentPrimary)
+                    .clickable(role = Role.Button, onClick = onAccept)
+                    .padding(horizontal = spacing.sm, vertical = spacing.xs)
+                    .testTag("inbox_collection_accept_${suggestion.link.id}")
+            ) {
+                Text(
+                    text = "Add",
+                    style = typography.buttonLabel.copy(
+                        color = colors.backgroundPrimary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp
+                    )
+                )
+            }
+            Spacer(modifier = Modifier.width(spacing.xxs))
+            Box(
+                modifier = Modifier
+                    .size(28.dp)
+                    .clip(LaterboxShapeTokens.IconButton)
+                    .clickable(role = Role.Button, onClickLabel = "Dismiss collection suggestion", onClick = onDismiss)
+                    .testTag("inbox_collection_dismiss_${suggestion.link.id}"),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    painter = painterResource(id = LaterboxIcons.Close),
+                    contentDescription = "Dismiss",
+                    modifier = Modifier.size(14.dp),
+                    tint = colors.textSecondary
+                )
+            }
+        }
+    }
+}
+

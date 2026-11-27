@@ -815,7 +815,14 @@ fun LaterboxApp(
                                 remoteConfig = remoteConfig,
                                 dismissedAnnouncementIds = dismissedAnnouncementIds,
                                 onRemoteAction = handleRemoteAction,
-                                onDismissRemoteAnnouncement = { id -> remoteConfigManager?.dismissAnnouncement(id) }
+                                onDismissRemoteAnnouncement = { id -> remoteConfigManager?.dismissAnnouncement(id) },
+                                onOpenResurfacedLink = inboxViewModel::onResurfacedLinkOpened,
+                                onDismissResurfacedLink = inboxViewModel::onDismissResurfacedLink,
+                                onAcceptCollectionSuggestion = { suggestion ->
+                                    inboxViewModel.onAcceptCollectionSuggestion(suggestion)
+                                    toastController.showSuccess("Added to \"${suggestion.collection.name}\"")
+                                },
+                                onDismissCollectionSuggestion = inboxViewModel::onDismissCollectionSuggestion
                             )
                         }
 
@@ -1146,7 +1153,9 @@ fun LaterboxApp(
                                 onSettingsClick = {
                                     navController.navigate(LaterboxDestination.Settings.route)
                                 },
-                                onMenuClick = openMenuHandler
+                                onMenuClick = openMenuHandler,
+                                onSearchQueryChange = collectionsViewModel::onSearchQueryChange,
+                                onClearSearch = collectionsViewModel::onClearSearch
                             )
                         }
 
@@ -2437,6 +2446,8 @@ fun LaterboxApp(
             onTitleChange = savedItemDetailViewModel::onTitleChange,
             onNoteChange = savedItemDetailViewModel::onNoteChange,
             onToggleCollection = savedItemDetailViewModel::onToggleCollection,
+            onAcceptCollectionSuggestion = savedItemDetailViewModel::onAcceptCollectionSuggestion,
+            onDismissCollectionSuggestion = savedItemDetailViewModel::onDismissCollectionSuggestion,
             onCreateCollection = savedItemDetailViewModel::onCreateAndAssignCollection,
             onSetReminder = savedItemDetailViewModel::onSetReminder,
             onSaveEdits = {

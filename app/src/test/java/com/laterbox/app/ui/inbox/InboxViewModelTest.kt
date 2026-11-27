@@ -7,19 +7,39 @@ import androidx.lifecycle.ViewModelStore
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import app.cash.turbine.test
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import com.laterbox.app.ai.RemoteCapabilities
 import com.laterbox.app.data.local.LaterboxDatabase
+import com.laterbox.app.data.local.entity.IntelligenceSurfaceScope
 import com.laterbox.app.data.local.entity.NotificationHistoryEntity
+import com.laterbox.app.data.local.entity.SavedLinkEntity
+import com.laterbox.app.data.local.entity.TasteFacetType
+import com.laterbox.app.data.local.entity.UserTasteFacetEntity
 import com.laterbox.app.data.preferences.UserPreferencesRepository
+import com.laterbox.app.data.repository.CollectionRepository
 import com.laterbox.app.data.repository.LinkRepository
 import com.laterbox.app.data.repository.NotificationHistoryRepository
 import com.laterbox.app.domain.model.ContentType
+import com.laterbox.app.intelligence.IntelligenceSignalLogger
+import com.laterbox.app.intelligence.UserUnderstandingRepository
+import com.laterbox.app.remoteconfig.RemoteConfigCache
+import com.laterbox.app.remoteconfig.RemoteConfigClient
+import com.laterbox.app.remoteconfig.RemoteConfigManager
+import com.laterbox.app.remoteconfig.RemoteConfigRepository
 import com.laterbox.app.util.MainDispatcherRule
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
+import okhttp3.OkHttpClient
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -27,9 +47,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.io.File
 import java.util.concurrent.Executor
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -39,6 +61,9 @@ class InboxViewModelTest {
 
     @get:Rule
     val mainDispatcherRule = MainDispatcherRule()
+
+    @get:Rule
+    val tempFolder = TemporaryFolder()
 
     private lateinit var database: LaterboxDatabase
     private lateinit var linkRepository: LinkRepository
@@ -66,15 +91,24 @@ class InboxViewModelTest {
     }
 
     private fun createViewModel(
-        notificationHistoryRepository: NotificationHistoryRepository? = null
+        notificationHistoryRepository: NotificationHistoryRepository? = null,
+        intelligenceSignalLogger: IntelligenceSignalLogger? = null,
+        userUnderstandingRepository: UserUnderstandingRepository? = null,
+        collectionRepository: CollectionRepository? = null,
+        remoteConfigManager: RemoteConfigManager? = null,
+        repoOverride: LinkRepository = linkRepository
     ): InboxViewModel {
         val factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
                 return InboxViewModel(
-                    linkRepository = linkRepository,
+                    linkRepository = repoOverride,
                     userPreferencesRepository = preferencesRepository,
-                    notificationHistoryRepository = notificationHistoryRepository
+                    notificationHistoryRepository = notificationHistoryRepository,
+                    intelligenceSignalLogger = intelligenceSignalLogger,
+                    userUnderstandingRepository = userUnderstandingRepository,
+                    collectionRepository = collectionRepository,
+                    remoteConfigManager = remoteConfigManager
                 ) as T
             }
         }
@@ -646,6 +680,308 @@ class InboxViewModelTest {
             assertEquals(2, state.links.size)
 
             cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun inboxViewModel_resurfacerPreservesChronologicalOrderAndLogsSignals() = runTest {
+        preferencesRepository.setPersonalizationEnabled(true)
+        val nowMs = System.currentTimeMillis()
+        val dayMs = 24L * 60L * 60L * 1000L
+        val understandingRepo = UserUnderstandingRepository(
+            intelligenceDao = database.intelligenceDao(),
+            userPreferencesRepository = preferencesRepository,
+            moviesDao = database.moviesDao(),
+            savedLinkDao = database.savedLinkDao()
+        )
+        val signalLogger = IntelligenceSignalLogger(
+            intelligenceDao = database.intelligenceDao(),
+            userUnderstandingRepository = understandingRepo,
+            userPreferencesRepository = preferencesRepository
+        )
+
+        database.intelligenceDao().upsertFacet(
+            UserTasteFacetEntity(
+                facetKey = "topic:design",
+                facetType = TasteFacetType.ACTIVE_GOAL.name,
+                surfaceScope = IntelligenceSurfaceScope.LIBRARY.name,
+                displayLabel = "Design",
+                score = 0.9,
+                confidence = 0.95,
+                provenance = "Goal",
+                evidenceSummary = "Goal",
+                firstObservedAtMs = nowMs - 10 * dayMs,
+                lastReinforcedAtMs = nowMs - dayMs
+            )
+        )
+
+        val oldestId = database.savedLinkDao().insertLink(
+            SavedLinkEntity(
+                originalUrl = "https://figma.com/systems",
+                normalizedUrl = "https://figma.com/systems",
+                title = "Figma Systems",
+                domain = "figma.com",
+                createdAt = nowMs - 6 * dayMs,
+                updatedAt = nowMs - 6 * dayMs
+            )
+        )
+        val midOldId = database.savedLinkDao().insertLink(
+            SavedLinkEntity(
+                originalUrl = "https://example.org/essay",
+                normalizedUrl = "https://example.org/essay",
+                title = "Longform Essay",
+                domain = "example.org",
+                createdAt = nowMs - 4 * dayMs,
+                updatedAt = nowMs - 4 * dayMs
+            )
+        )
+        val freshAId = database.savedLinkDao().insertLink(
+            SavedLinkEntity(
+                originalUrl = "https://example.com/fresh-a",
+                normalizedUrl = "https://example.com/fresh-a",
+                title = "Fresh A",
+                domain = "example.com",
+                createdAt = nowMs - 2_000L,
+                updatedAt = nowMs - 2_000L
+            )
+        )
+        val newestId = database.savedLinkDao().insertLink(
+            SavedLinkEntity(
+                originalUrl = "https://example.com/newest",
+                normalizedUrl = "https://example.com/newest",
+                title = "Newest Link",
+                domain = "example.com",
+                createdAt = nowMs - 500L,
+                updatedAt = nowMs - 500L
+            )
+        )
+
+        val viewModel = createViewModel(
+            intelligenceSignalLogger = signalLogger,
+            userUnderstandingRepository = understandingRepo
+        )
+
+        viewModel.uiState.test {
+            var state = awaitItem()
+            while (state.isLoading || state.links.size < 4) {
+                state = awaitItem()
+            }
+            if (state.resurfacedLinks.isEmpty()) {
+                // Allow one more combine cycle if facet/pref emissions arrived sequentially
+                val next = awaitItem()
+                state = next
+            }
+            assertTrue(
+                "Expected non-empty resurfacedLinks for 4 links (createdAt=${state.links.map { it.createdAt }}, nowMs=$nowMs); state=$state",
+                state.resurfacedLinks.isNotEmpty()
+            )
+
+            // Main feed MUST remain strictly chronological (newest -> oldest) regardless of design facet score
+            assertEquals(
+                listOf(newestId, freshAId, midOldId, oldestId),
+                state.links.map { it.id }
+            )
+            val topResurfaced = state.resurfacedLinks.first()
+            assertEquals(oldestId, topResurfaced.link.id)
+
+            viewModel.onDismissResurfacedLink(topResurfaced.link)
+            state = awaitItem()
+            while (state.resurfacedLinks.any { it.link.id == oldestId }) {
+                state = awaitItem()
+            }
+
+            val midSuggestion = state.resurfacedLinks.firstOrNull { it.link.id == midOldId }
+            if (midSuggestion != null) {
+                viewModel.onResurfacedLinkOpened(midSuggestion)
+                state = awaitItem()
+                while (state.resurfacedLinks.any { it.link.id == midOldId }) {
+                    state = awaitItem()
+                }
+            }
+
+            var loggedTypes: List<String> = emptyList()
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                repeat(40) {
+                    loggedTypes = database.intelligenceDao().getRecentSignalsSnapshot(20).map { it.signalType }
+                    if (IntelligenceSignalLogger.SIGNAL_RESURFACE_DISMISSED in loggedTypes) return@withContext
+                    Thread.sleep(25L)
+                }
+            }
+            assertTrue(
+                "Expected RESURFACE_DISMISSED in loggedTypes=$loggedTypes",
+                IntelligenceSignalLogger.SIGNAL_RESURFACE_DISMISSED in loggedTypes
+            )
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun inboxViewModel_collectionSuggestionAcceptLogsSignal_dismissSuppresses_andKillSwitchGatesAllProactiveHelpers() = runTest {
+        preferencesRepository.setPersonalizationEnabled(true)
+        val nowMs = System.currentTimeMillis()
+        val dayMs = 24L * 60L * 60L * 1000L
+        val understandingRepo = UserUnderstandingRepository(
+            intelligenceDao = database.intelligenceDao(),
+            userPreferencesRepository = preferencesRepository,
+            moviesDao = database.moviesDao(),
+            savedLinkDao = database.savedLinkDao()
+        )
+        val signalLogger = IntelligenceSignalLogger(
+            intelligenceDao = database.intelligenceDao(),
+            userUnderstandingRepository = understandingRepo,
+            userPreferencesRepository = preferencesRepository
+        )
+        val loggerAwareLinkRepo = LinkRepository(
+            savedLinkDao = database.savedLinkDao(),
+            intelligenceSignalLogger = signalLogger
+        )
+        val collectionRepo = CollectionRepository(database.collectionDao())
+        val colId = collectionRepo.createCollection("UI Design")
+
+        val categorizedId = loggerAwareLinkRepo.saveLink(
+            originalUrl = "https://figma.com/kit-1",
+            title = "Figma Component Kit"
+        )
+        loggerAwareLinkRepo.setLinkCollections(categorizedId, listOf(colId))
+
+        val uncategorizedMatchId = database.savedLinkDao().insertLink(
+            SavedLinkEntity(
+                originalUrl = "https://figma.com/tokens-guide",
+                normalizedUrl = "https://figma.com/tokens-guide",
+                title = "Figma Design Tokens",
+                domain = "figma.com",
+                createdAt = nowMs - 5 * dayMs,
+                updatedAt = nowMs - 5 * dayMs
+            )
+        )
+        // Add 2 more older links so InboxResurfacer threshold (4 links) is also met
+        database.savedLinkDao().insertLink(
+            SavedLinkEntity(
+                originalUrl = "https://example.org/read1",
+                normalizedUrl = "https://example.org/read1",
+                title = "Readable Essay 1",
+                domain = "example.org",
+                createdAt = nowMs - 6 * dayMs,
+                updatedAt = nowMs - 6 * dayMs
+            )
+        )
+        database.savedLinkDao().insertLink(
+            SavedLinkEntity(
+                originalUrl = "https://example.org/read2",
+                normalizedUrl = "https://example.org/read2",
+                title = "Readable Essay 2",
+                domain = "example.org",
+                createdAt = nowMs - 7 * dayMs,
+                updatedAt = nowMs - 7 * dayMs
+            )
+        )
+
+        val server = MockWebServer()
+        server.start()
+        val rcScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            server.enqueue(
+                MockResponse().setResponseCode(200).setBody(
+                    """
+                    {
+                      "schemaVersion": 1,
+                      "revision": 99,
+                      "publishedAt": "2026-11-26T00:00:00Z",
+                      "expiresAt": "2099-01-01T00:00:00Z",
+                      "general": { "minRefreshIntervalSeconds": 60, "staleCacheMaxAgeSeconds": 86400 },
+                      "features": {
+                        "${RemoteCapabilities.KEY_EXPERIENCE_INTELLIGENCE}": false
+                      }
+                    }
+                    """.trimIndent()
+                )
+            )
+            val dataStore = PreferenceDataStoreFactory.create(
+                scope = rcScope,
+                produceFile = { File(tempFolder.root, "rc_phase3_test.preferences_pb") }
+            )
+            val rcRepo = RemoteConfigRepository(
+                cache = RemoteConfigCache(dataStore),
+                client = RemoteConfigClient(
+                    okHttpClient = OkHttpClient(),
+                    baseUrlProvider = { server.url("/").toString() },
+                    appCheckTokenProvider = { null },
+                    clientVersionCode = 999,
+                    clientVersionName = "1.0.99"
+                ),
+                clientVersionCode = 999
+            )
+            val remoteConfigManager = RemoteConfigManager(rcRepo, rcScope)
+
+            val viewModel = createViewModel(
+                intelligenceSignalLogger = signalLogger,
+                userUnderstandingRepository = understandingRepo,
+                collectionRepository = collectionRepo,
+                remoteConfigManager = remoteConfigManager,
+                repoOverride = loggerAwareLinkRepo
+            )
+
+            viewModel.uiState.test {
+                var state = awaitItem()
+                while (state.isLoading || state.collectionSuggestions.isEmpty() || state.resurfacedLinks.isEmpty()) {
+                    state = awaitItem()
+                }
+                val suggestion = state.collectionSuggestions.first()
+                assertEquals(uncategorizedMatchId, suggestion.link.id)
+                assertEquals(colId, suggestion.collection.id)
+
+                // Accept 1-tap suggestion -> adds to collection and logs COLLECTION_ADD
+                viewModel.onAcceptCollectionSuggestion(suggestion)
+                state = awaitItem()
+                while (state.collectionSuggestions.any { it.link.id == uncategorizedMatchId && it.collection.id == colId }) {
+                    state = awaitItem()
+                }
+                val updated = loggerAwareLinkRepo.getLinkById(uncategorizedMatchId).first()!!
+                assertTrue(colId in updated.collectionIds)
+                var signalTypes: List<String> = emptyList()
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                    repeat(40) {
+                        signalTypes = database.intelligenceDao().getRecentSignalsSnapshot(20).map { it.signalType }
+                        if (IntelligenceSignalLogger.SIGNAL_COLLECTION_ADD in signalTypes) return@withContext
+                        Thread.sleep(25L)
+                    }
+                }
+                assertTrue(
+                    "Expected COLLECTION_ADD in signalTypes=$signalTypes",
+                    IntelligenceSignalLogger.SIGNAL_COLLECTION_ADD in signalTypes
+                )
+
+                // Insert second uncategorized figma link to verify remote kill-switch & local pause gating
+                val secondFigmaId = database.savedLinkDao().insertLink(
+                    SavedLinkEntity(
+                        originalUrl = "https://figma.com/auto-layout-2",
+                        normalizedUrl = "https://figma.com/auto-layout-2",
+                        title = "Auto Layout Part 2",
+                        domain = "figma.com",
+                        createdAt = nowMs - 4 * dayMs,
+                        updatedAt = nowMs - 4 * dayMs
+                    )
+                )
+                state = awaitItem()
+                while (state.collectionSuggestions.none { it.link.id == secondFigmaId }) {
+                    state = awaitItem()
+                }
+
+                // Remote kill-switch flips experience_intelligence_enabled -> false
+                remoteConfigManager.refreshNow()
+                state = awaitItem()
+                while (state.resurfacedLinks.isNotEmpty() || state.collectionSuggestions.isNotEmpty()) {
+                    state = awaitItem()
+                }
+                assertTrue(state.resurfacedLinks.isEmpty())
+                assertTrue(state.collectionSuggestions.isEmpty())
+
+                cancelAndIgnoreRemainingEvents()
+            }
+        } finally {
+            rcScope.cancel()
+            server.shutdown()
         }
     }
 }

@@ -4,6 +4,8 @@ import com.laterbox.app.capture.ClipboardSuggestion
 import com.laterbox.app.data.preferences.InboxViewMode
 import com.laterbox.app.domain.model.ContentType
 import com.laterbox.app.domain.model.SavedLink
+import com.laterbox.app.intelligence.LinkCollectionSuggestion
+import com.laterbox.app.intelligence.ResurfacedLinkSuggestion
 
 enum class InboxQuickFilter(val label: String) {
     ALL("All"),
@@ -27,7 +29,9 @@ data class InboxUiState(
     val clipboardSuggestion: ClipboardSuggestion? = null,
     val unreadNotificationCount: Int = 0,
     val mediaReadyLinkIds: Set<Long> = emptySet(),
-    val selectedLinkIds: Set<Long> = emptySet()
+    val selectedLinkIds: Set<Long> = emptySet(),
+    val resurfacedLinks: List<ResurfacedLinkSuggestion> = emptyList(),
+    val collectionSuggestions: List<LinkCollectionSuggestion> = emptyList()
 ) {
     val isSelectionMode: Boolean
         get() = selectedLinkIds.isNotEmpty()

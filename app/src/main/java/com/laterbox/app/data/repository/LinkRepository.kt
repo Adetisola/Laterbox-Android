@@ -653,6 +653,26 @@ class LinkRepository(
         }
     }
 
+    suspend fun addLinkToCollection(linkId: Long, collectionId: Long) {
+        val currentIds = savedLinkDao.getCollectionIdsForLink(linkId)
+        if (!currentIds.contains(collectionId)) {
+            savedLinkDao.insertLinkCollectionCrossRef(
+                com.laterbox.app.data.local.entity.LinkCollectionCrossRef(linkId, collectionId)
+            )
+            val entity = savedLinkDao.getEntityById(linkId)
+            if (entity != null && entity.collectionId == null) {
+                savedLinkDao.updateLink(entity.copy(collectionId = collectionId, updatedAt = System.currentTimeMillis()))
+            }
+            runCatching {
+                val link = savedLinkDao.getLinkById(linkId).first()?.toDomain()
+                if (link != null) {
+                    val colName = link.collectionNames.firstOrNull()
+                    intelligenceSignalLogger?.logLinkCollectionAdded(link, colName)
+                }
+            }
+        }
+    }
+
     suspend fun setLinkCollections(linkId: Long, collectionIds: List<Long>) {
         savedLinkDao.deleteLinkCollectionCrossRefsForLink(linkId)
         for (colId in collectionIds) {

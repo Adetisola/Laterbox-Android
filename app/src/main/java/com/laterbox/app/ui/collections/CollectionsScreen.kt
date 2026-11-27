@@ -36,6 +36,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.sizeIn
@@ -49,6 +50,7 @@ import com.laterbox.app.ui.components.LaterboxCard
 import com.laterbox.app.ui.components.LaterboxConfirmDialog
 import com.laterbox.app.ui.components.LaterboxIconButton
 import com.laterbox.app.ui.components.LaterboxIcons
+import com.laterbox.app.ui.components.LaterboxSearchField
 import com.laterbox.app.ui.components.LaterboxShapeTokens
 import com.laterbox.app.ui.components.LaterboxTabHeader
 import com.laterbox.app.ui.theme.LaterboxTheme
@@ -68,6 +70,8 @@ fun CollectionsScreen(
     onDeleteCollection: (Long) -> Unit,
     onSettingsClick: () -> Unit = {},
     onMenuClick: (() -> Unit)? = null,
+    onSearchQueryChange: (String) -> Unit = {},
+    onClearSearch: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -92,6 +96,18 @@ fun CollectionsScreen(
                 )
             }
 
+            LaterboxSearchField(
+                query = uiState.searchQuery,
+                onQueryChange = onSearchQueryChange,
+                placeholder = "Search collections...",
+                onClear = onClearSearch,
+                modifier = Modifier
+                    .padding(horizontal = spacing.base, vertical = spacing.xs)
+                    .testTag("collections_search_field")
+            )
+
+            Spacer(modifier = Modifier.height(spacing.xs))
+
             when {
                 uiState.isLoading -> {
                     CollectionsSkeletonGrid(
@@ -111,6 +127,16 @@ fun CollectionsScreen(
                     )
                 }
 
+                uiState.isSearchEmpty -> {
+                    EmptyStateView(
+                        title = "No matching collections",
+                        subtitle = "Nothing matching \"${uiState.searchQuery}\"",
+                        actionText = "Clear search",
+                        onActionClick = onClearSearch,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
                 else -> {
                     LazyVerticalGrid(
                         columns = GridCells.Adaptive(minSize = 156.dp),
@@ -125,6 +151,7 @@ fun CollectionsScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f)
+                            .testTag("collections_grid")
                     ) {
                         items(
                             items = uiState.collections,

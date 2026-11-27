@@ -108,7 +108,15 @@ fun DataStorageSettingsScreen(
                         if (result.isSuccess) {
                             val stats = result.getOrNull()
                             val msg = stats?.let {
-                                "Restored ${it.restoredLinksCount} links and ${it.restoredCollectionsCount} collections."
+                                val extras = buildList {
+                                    if (it.restoredWatchlistCount > 0) add("${it.restoredWatchlistCount} watchlist")
+                                    if (it.restoredFacetsCount > 0) add("${it.restoredFacetsCount} taste facets")
+                                }
+                                if (extras.isEmpty()) {
+                                    "Restored ${it.restoredLinksCount} links and ${it.restoredCollectionsCount} collections."
+                                } else {
+                                    "Restored ${it.restoredLinksCount} links, ${it.restoredCollectionsCount} collections (${extras.joinToString(", ")})."
+                                }
                             } ?: "Backup restored."
                             com.laterbox.app.ui.util.SaveFeedbackHelper.showInAppOrSystem(
                                 context = context,

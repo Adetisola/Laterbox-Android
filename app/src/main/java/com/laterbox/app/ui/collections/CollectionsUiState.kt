@@ -6,10 +6,14 @@ import com.laterbox.app.domain.model.CollectionWithCount
 data class CollectionsUiState(
     val collections: List<CollectionWithCount> = emptyList(),
     val isLoading: Boolean = true,
+    val searchQuery: String = "",
     val showCreateDialog: Boolean = false,
     val collectionToRename: Collection? = null,
     val collectionToDelete: Collection? = null
 ) {
     val isEmpty: Boolean
-        get() = !isLoading && collections.isEmpty()
+        get() = !isLoading && collections.isEmpty() && searchQuery.isBlank()
+
+    val isSearchEmpty: Boolean
+        get() = !isLoading && collections.isEmpty() && searchQuery.isNotBlank()
 }

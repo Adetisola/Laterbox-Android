@@ -86,4 +86,58 @@ class CollectionsViewModelTest {
             cancelAndIgnoreRemainingEvents()
         }
     }
+
+    @Test
+    fun collectionsViewModel_searchQueryFiltersLexicallyAndClears() = runTest {
+        collectionRepository.createCollection("Design")
+        collectionRepository.createCollection("Design Systems")
+        collectionRepository.createCollection("Product Design Notes")
+        collectionRepository.createCollection("Weekend Recipes")
+
+        val prefsRepo = com.laterbox.app.data.preferences.UserPreferencesRepository(
+            ApplicationProvider.getApplicationContext()
+        )
+        val viewModel = CollectionsViewModel(
+            collectionRepository = collectionRepository,
+            userUnderstandingRepository = com.laterbox.app.intelligence.UserUnderstandingRepository(
+                intelligenceDao = database.intelligenceDao(),
+                userPreferencesRepository = prefsRepo
+            ),
+            userPreferencesRepository = prefsRepo
+        )
+
+        viewModel.uiState.test {
+            var state = awaitItem()
+            while (state.isLoading || state.collections.size < 4) {
+                state = awaitItem()
+            }
+
+            viewModel.onSearchQueryChange("Design")
+            state = awaitItem()
+            while (state.searchQuery != "Design" || state.collections.size != 3) {
+                state = awaitItem()
+            }
+            assertEquals(
+                listOf("Design", "Design Systems", "Product Design Notes"),
+                state.collections.map { it.collection.name }
+            )
+
+            viewModel.onSearchQueryChange("NoSuchShelf")
+            state = awaitItem()
+            while (state.searchQuery != "NoSuchShelf") {
+                state = awaitItem()
+            }
+            assertTrue(state.collections.isEmpty())
+            assertTrue(state.isSearchEmpty)
+
+            viewModel.onClearSearch()
+            state = awaitItem()
+            while (state.searchQuery.isNotEmpty() || state.collections.size != 4) {
+                state = awaitItem()
+            }
+            assertEquals(4, state.collections.size)
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
 }

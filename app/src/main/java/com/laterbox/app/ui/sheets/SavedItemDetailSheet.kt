@@ -73,6 +73,7 @@ import androidx.compose.ui.unit.sp
 import com.laterbox.app.domain.model.ContentType
 import com.laterbox.app.domain.model.MetadataStatus
 import com.laterbox.app.domain.model.SavedLink
+import com.laterbox.app.intelligence.LinkCollectionSuggestion
 import com.laterbox.app.media.domain.model.MediaType
 import com.laterbox.app.transcript.domain.YouTubeUrlParser
 import com.laterbox.app.ui.components.ContentTypeBadge
@@ -108,6 +109,8 @@ fun SavedItemDetailSheet(
     onTitleChange: (String) -> Unit,
     onNoteChange: (String) -> Unit,
     onToggleCollection: (Long) -> Unit,
+    onAcceptCollectionSuggestion: (LinkCollectionSuggestion) -> Unit = {},
+    onDismissCollectionSuggestion: (LinkCollectionSuggestion) -> Unit = {},
     onCreateCollection: (String) -> Unit,
     onSetReminder: (Long?) -> Unit = {},
     onSaveEdits: () -> Unit,
@@ -749,6 +752,67 @@ fun SavedItemDetailSheet(
                                 text = "New",
                                 style = typography.metaText.copy(fontSize = 12.sp),
                                 color = colors.accentPrimary
+                            )
+                        }
+                    }
+                }
+            }
+
+            uiState.suggestedCollection?.let { suggestion ->
+                Spacer(modifier = Modifier.height(spacing.xs))
+                Surface(
+                    shape = LaterboxShapeTokens.Chip,
+                    color = colors.surfaceSecondary,
+                    border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.5f))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(start = spacing.sm, end = spacing.xxs, top = 4.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(spacing.xs)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .testTag("detail_collection_suggestion_chip")
+                                .clickable(
+                                    role = Role.Button,
+                                    onClickLabel = "Add to ${suggestion.collection.name}",
+                                    onClick = { onAcceptCollectionSuggestion(suggestion) }
+                                )
+                                .padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                painter = painterResource(id = LaterboxIcons.Plus),
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = colors.accentPrimary
+                            )
+                            Text(
+                                text = "Add to \"${suggestion.collection.name}\"?",
+                                style = typography.metaText.copy(fontSize = 12.sp, fontWeight = FontWeight.Medium),
+                                color = colors.accentPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(24.dp)
+                                .clip(RoundedCornerShape(spacing.radiusSmall))
+                                .testTag("detail_collection_suggestion_dismiss")
+                                .clickable(
+                                    role = Role.Button,
+                                    onClickLabel = "Dismiss collection suggestion",
+                                    onClick = { onDismissCollectionSuggestion(suggestion) }
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                painter = painterResource(id = LaterboxIcons.Close),
+                                contentDescription = "Dismiss collection suggestion",
+                                modifier = Modifier.size(14.dp),
+                                tint = colors.textSecondary
                             )
                         }
                     }

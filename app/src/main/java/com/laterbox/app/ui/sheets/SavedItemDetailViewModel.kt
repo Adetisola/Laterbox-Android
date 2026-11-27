@@ -2,26 +2,34 @@ package com.laterbox.app.ui.sheets
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.laterbox.app.ai.RemoteCapabilities
+import com.laterbox.app.data.preferences.UserPreferencesRepository
 import com.laterbox.app.data.repository.CollectionRepository
 import com.laterbox.app.data.repository.LinkRepository
 import com.laterbox.app.domain.model.Collection
 import com.laterbox.app.domain.model.MetadataStatus
 import com.laterbox.app.domain.model.SavedLink
+import com.laterbox.app.intelligence.CollectionSuggester
+import com.laterbox.app.intelligence.LinkCollectionSuggestion
 import com.laterbox.app.media.data.adapters.direct.DirectUrlAdapter
 import com.laterbox.app.media.domain.model.DownloadTask
 import com.laterbox.app.media.domain.model.InspectionResult
 import com.laterbox.app.media.domain.model.MediaAsset
 import com.laterbox.app.media.domain.model.MediaCandidate
 import com.laterbox.app.media.domain.repository.MediaRepository
+import com.laterbox.app.remoteconfig.RemoteConfigManager
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 
@@ -35,7 +43,8 @@ data class SavedItemDetailUiState(
     val assets: List<MediaAsset> = emptyList(),
     val activeTasks: List<DownloadTask> = emptyList(),
     val inspectionResult: InspectionResult? = null,
-    val isInspecting: Boolean = false
+    val isInspecting: Boolean = false,
+    val suggestedCollection: LinkCollectionSuggestion? = null
 ) {
     val selectedCollectionId: Long?
         get() = selectedCollectionIds.firstOrNull()
@@ -46,7 +55,9 @@ class SavedItemDetailViewModel(
     private val linkRepository: LinkRepository,
     private val collectionRepository: CollectionRepository,
     private val mediaRepository: MediaRepository,
-    private val platformResolver: com.laterbox.app.media.domain.adapter.PlatformResolver
+    private val platformResolver: com.laterbox.app.media.domain.adapter.PlatformResolver,
+    private val userPreferencesRepository: UserPreferencesRepository? = null,
+    private val remoteConfigManager: RemoteConfigManager? = null
 ) : ViewModel() {
 
     private val _currentLink = MutableStateFlow<SavedLink?>(null)
@@ -54,6 +65,7 @@ class SavedItemDetailViewModel(
     private val _editedNote = MutableStateFlow("")
     private val _selectedCollectionIds = MutableStateFlow<Set<Long>>(emptySet())
     private val _isSaving = MutableStateFlow(false)
+    private val _dismissedSuggestionPairs = MutableStateFlow<Set<Pair<Long, Long>>>(emptySet())
     private val _assets = _currentLink.flatMapLatest { link ->
         if (link == null) flowOf(emptyList()) else mediaRepository.getAssetsForLink(link.id)
     }
@@ -70,6 +82,24 @@ class SavedItemDetailViewModel(
         if (link == null) flowOf(false) else mediaRepository.isInspectingLink(link.id)
     }
 
+    private val localPersonalizationFlow = userPreferencesRepository?.userPreferences
+        ?.map { it.personalizationEnabled }
+        ?.distinctUntilChanged()
+        ?: flowOf(true)
+    private val remoteIntelEnabledFlow = remoteConfigManager?.state
+        ?.map { it.activeConfig.isFeatureEnabled(RemoteCapabilities.KEY_EXPERIENCE_INTELLIGENCE, true) }
+        ?.distinctUntilChanged()
+        ?: flowOf(true)
+
+    private val suggestionContextFlow = combine(
+        linkRepository.inboxLinks,
+        _dismissedSuggestionPairs,
+        localPersonalizationFlow,
+        remoteIntelEnabledFlow
+    ) { inboxLinks, dismissed, localEnabled, remoteEnabled ->
+        Triple(inboxLinks, dismissed, localEnabled && remoteEnabled)
+    }
+
     val uiState: StateFlow<SavedItemDetailUiState> = combine(
         combine(_currentLink, _editedTitle, _editedNote, _selectedCollectionIds, _isSaving) { link, title, note, colIds, saving ->
             SavedItemDetailUiState(
@@ -83,14 +113,33 @@ class SavedItemDetailViewModel(
         collectionRepository.collections,
         _assets,
         _tasks,
-        combine(_inspectionResult, _isInspecting) { res, inspecting -> res to inspecting }
-    ) { base, collections, assets, tasks, (res, inspecting) ->
+        combine(_inspectionResult, _isInspecting, suggestionContextFlow) { res, inspecting, sCtx ->
+            Triple(res, inspecting, sCtx)
+        }
+    ) { base, collections, assets, tasks, (res, inspecting, suggestionContext) ->
+        val (inboxLinks, dismissedPairs, intelEnabled) = suggestionContext
+        val link = base.link
+        val suggested = if (
+            intelEnabled &&
+            link != null &&
+            base.selectedCollectionIds.isEmpty()
+        ) {
+            CollectionSuggester.suggestForLink(
+                targetLink = link,
+                collections = collections,
+                allLinks = inboxLinks,
+                dismissedPairs = dismissedPairs
+            )
+        } else {
+            null
+        }
         base.copy(
             collections = collections,
             assets = assets,
             activeTasks = tasks,
             inspectionResult = res,
-            isInspecting = inspecting
+            isInspecting = inspecting,
+            suggestedCollection = suggested
         )
     }.stateIn(
         scope = viewModelScope,
@@ -327,5 +376,16 @@ class SavedItemDetailViewModel(
             val result = mediaRepository.exportAsset(assetId)
             onResult(result.isSuccess)
         }
+    }
+
+    fun onAcceptCollectionSuggestion(suggestion: LinkCollectionSuggestion) {
+        _dismissedSuggestionPairs.update { it + (suggestion.link.id to suggestion.collection.id) }
+        if (!_selectedCollectionIds.value.contains(suggestion.collection.id)) {
+            onToggleCollection(suggestion.collection.id)
+        }
+    }
+
+    fun onDismissCollectionSuggestion(suggestion: LinkCollectionSuggestion) {
+        _dismissedSuggestionPairs.update { it + (suggestion.link.id to suggestion.collection.id) }
     }
 }
