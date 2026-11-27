@@ -7,6 +7,7 @@ import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.net.Uri
 import android.util.Rational
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import com.laterbox.app.movies.playback.LaterboxPipController
 import com.laterbox.app.movies.playback.LaterboxPipSpec
@@ -171,6 +172,7 @@ fun MoviePlayerScreen(
     onOpenExternalUrl: (String) -> Unit,
     onDownloadSource: (PlaybackSource) -> Unit = {},
     onDismissDownloadStatus: () -> Unit = {},
+    onDismissPlaybackNotice: () -> Unit = {},
     onSelectAudioDub: (dub: AudioDubInfo, currentPosMs: Long) -> Unit = { _, _ -> },
     onSelectInStreamAudio: (language: String?, label: String?) -> Unit = { _, _ -> },
     onNextEpisode: () -> Unit = {},
@@ -185,6 +187,13 @@ fun MoviePlayerScreen(
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
+    val toastContext = androidx.compose.ui.platform.LocalContext.current
+
+    LaunchedEffect(uiState.playbackNoticeMessage, uiState.activeTitleId) {
+        val notice = uiState.playbackNoticeMessage?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
+        Toast.makeText(toastContext, notice, Toast.LENGTH_SHORT).show()
+        onDismissPlaybackNotice()
+    }
 
     Box(
         modifier = modifier

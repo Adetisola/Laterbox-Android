@@ -166,6 +166,7 @@ class PlayerActivity : ComponentActivity() {
                                 },
                                 onDownloadSource = moviePlayerViewModel::downloadSource,
                                 onDismissDownloadStatus = moviePlayerViewModel::clearDownloadStatus,
+                                onDismissPlaybackNotice = moviePlayerViewModel::clearPlaybackNotice,
                                 onSelectAudioDub = moviePlayerViewModel::selectAudioDub,
                                 onSelectInStreamAudio = moviePlayerViewModel::saveStreamAudioPreference,
                                 onNextEpisode = moviePlayerViewModel::playNextEpisode,

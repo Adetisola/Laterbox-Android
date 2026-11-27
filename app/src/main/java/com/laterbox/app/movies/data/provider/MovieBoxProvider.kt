@@ -1281,6 +1281,8 @@ class MovieBoxProvider(
         val resolvedTitle = titleCache[titleId]
             ?: root.optCleanString("title")
             ?: "Video"
+        val fallbackDubLabel = root.optCleanString("fallback_dub")
+        val fallbackDubSubjectId = root.optCleanString("fallback_dub_subject_id")
         if (sources.isEmpty()) {
             PlaybackResolution.Unavailable(
                 title = resolvedTitle,
@@ -1289,8 +1291,12 @@ class MovieBoxProvider(
                 sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
             )
         } else {
-            val subtitles = getSubtitles(titleId, seasonNumber, episodeNumber)
-                .getOrDefault(emptyList())
+            val subtitles = fetchSubtitlesInternal(
+                titleId = titleId,
+                seasonNumber = seasonNumber,
+                episodeNumber = episodeNumber,
+                dubSubjectId = fallbackDubSubjectId
+            ).getOrDefault(emptyList())
             val heading = if (se > 0 && ep > 0) "Season $se · Episode $ep" else null
             val cachedDetailMarkers = markerWindowCache[titleId]
             val introWindow = parseMarkerWindow(root, "intro") ?: cachedDetailMarkers?.first
@@ -1303,7 +1309,9 @@ class MovieBoxProvider(
                 providerName = displayName,
                 sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
                 introWindow = introWindow,
-                recapWindow = recapWindow
+                recapWindow = recapWindow,
+                fallbackDubLabel = fallbackDubLabel,
+                fallbackDubTitleId = fallbackDubSubjectId
             )
         }
     }
@@ -1312,18 +1320,34 @@ class MovieBoxProvider(
         titleId: String,
         seasonNumber: Int?,
         episodeNumber: Int?
+    ): Result<List<SubtitleTrack>> =
+        fetchSubtitlesInternal(
+            titleId = titleId,
+            seasonNumber = seasonNumber,
+            episodeNumber = episodeNumber,
+            dubSubjectId = null
+        )
+
+    private suspend fun fetchSubtitlesInternal(
+        titleId: String,
+        seasonNumber: Int?,
+        episodeNumber: Int?,
+        dubSubjectId: String?
     ): Result<List<SubtitleTrack>> = withContext(Dispatchers.IO) {
         runCatching {
             val se = seasonNumber?.takeIf { it > 0 } ?: 0
             val ep = episodeNumber?.takeIf { it > 0 } ?: 0
-            val url = requireBaseHttpUrl().newBuilder()
+            val urlBuilder = requireBaseHttpUrl().newBuilder()
                 .addPathSegment("api")
                 .addPathSegment("stream")
                 .addPathSegment(titleId)
                 .addPathSegment("captions")
                 .addQueryParameter("se", se.toString())
                 .addQueryParameter("ep", ep.toString())
-                .build()
+            dubSubjectId?.takeIf { it.isNotBlank() && it != titleId }?.let { dubId ->
+                urlBuilder.addQueryParameter("dub_subject_id", dubId)
+            }
+            val url = urlBuilder.build()
 
             val body = executeGet(url)
             val root = JSONObject(body)
@@ -1334,10 +1358,12 @@ class MovieBoxProvider(
                     val obj = captions.optJSONObject(i) ?: continue
                     val subUrl = obj.optCleanString("url") ?: continue
                     val language = obj.optCleanString("language") ?: "English"
-                    val code = obj.optCleanString("code")
+                    val code = obj.optCleanString("code")?.takeIf { it.isNotBlank() }
                         ?: language.take(2).lowercase(Locale.US)
                     val id = obj.optCleanString("id") ?: "mb_sub_$i"
-                    val format = if (subUrl.contains(".vtt", ignoreCase = true)) "vtt" else "srt"
+                    val format = obj.optCleanString("format")?.lowercase(Locale.US)?.takeIf { it.isNotBlank() }
+                        ?: if (subUrl.contains(".vtt", ignoreCase = true)) "vtt" else "srt"
+                    val source = obj.optCleanString("source")
                     add(
                         SubtitleTrack(
                             id = id,
@@ -1345,7 +1371,8 @@ class MovieBoxProvider(
                             languageCode = code,
                             label = language,
                             url = subUrl,
-                            format = format
+                            format = format,
+                            source = source
                         )
                     )
                 }

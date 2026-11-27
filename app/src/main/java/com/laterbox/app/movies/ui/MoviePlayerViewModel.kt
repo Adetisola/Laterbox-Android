@@ -75,7 +75,9 @@ data class MoviePlayerUiState(
     val downloadStatusMessage: String? = null,
     val errorMessage: String? = null,
     val failedSourceUrls: Set<String> = emptySet(),
-    val hasAttemptedStreamRefresh: Boolean = false
+    val hasAttemptedStreamRefresh: Boolean = false,
+    val fallbackDubLabel: String? = null,
+    val playbackNoticeMessage: String? = null
 ) {
     val episodeKey: String
         get() = "${activeTitleId}:${seasonNumber ?: 0}:${episodeNumber ?: 0}"
@@ -249,7 +251,17 @@ class MoviePlayerViewModel(
                                 sources = resolution.sources,
                                 preferredQualityHeight = currentPrefs.defaultQualityHeight
                             )
+                            val fallbackDub = resolution.fallbackDubLabel
+                                ?.takeIf { it.isNotBlank() && preferredDubRef == null }
                             val defaultSub = when {
+                                fallbackDub != null -> {
+                                    resolution.subtitles.firstOrNull {
+                                        it.languageCode.equals("en", ignoreCase = true) &&
+                                            it.source.equals("opensubtitles", ignoreCase = true)
+                                    } ?: resolution.subtitles.firstOrNull {
+                                        it.languageCode.equals("en", ignoreCase = true)
+                                    } ?: resolution.subtitles.firstOrNull()
+                                }
                                 seriesPrefs?.subtitlesDisabled == true -> null
                                 !seriesPrefs?.preferredSubtitleLanguage.isNullOrBlank() -> {
                                     val prefSub = seriesPrefs!!.preferredSubtitleLanguage!!
@@ -343,7 +355,9 @@ class MoviePlayerViewModel(
                                     isPlayingOffline = defaultSource?.isOfflineLocal == true,
                                     introWindow = resolution.introWindow,
                                     recapWindow = resolution.recapWindow,
-                                    errorMessage = null
+                                    errorMessage = null,
+                                    fallbackDubLabel = fallbackDub,
+                                    playbackNoticeMessage = fallbackDub?.let { label -> "Playing $label version" }
                                 )
                             }
                         }
@@ -687,7 +701,10 @@ class MoviePlayerViewModel(
             ?: currentState.playbackPreferences.defaultQualityHeight
         val previousDubs = currentState.availableDubs
         val previousSeasons = currentState.seasons
-        val previousSubCode = currentState.selectedSubtitleTrack?.languageCode
+        val previousSubTrack = currentState.selectedSubtitleTrack
+        val previousSubCode = previousSubTrack
+            ?.takeUnless { it.source.equals("opensubtitles", ignoreCase = true) || currentState.fallbackDubLabel != null }
+            ?.languageCode
 
         loadedKey = "$providerId:$targetId:${seasonNumber ?: 0}:${episodeNumber ?: 0}"
         loadJob?.cancel()
@@ -696,6 +713,8 @@ class MoviePlayerViewModel(
                 it.copy(
                     isLoading = true,
                     preferredAudioLanguage = dub.language,
+                    fallbackDubLabel = null,
+                    playbackNoticeMessage = null,
                     errorMessage = null
                 )
             }
@@ -742,7 +761,9 @@ class MoviePlayerViewModel(
                                     recapWindow = resolution.recapWindow,
                                     errorMessage = null,
                                     failedSourceUrls = emptySet(),
-                                    hasAttemptedStreamRefresh = false
+                                    hasAttemptedStreamRefresh = false,
+                                    fallbackDubLabel = null,
+                                    playbackNoticeMessage = null
                                 )
                             }
                         }
@@ -758,6 +779,8 @@ class MoviePlayerViewModel(
                                     isPlayingOffline = false,
                                     introWindow = null,
                                     recapWindow = null,
+                                    fallbackDubLabel = null,
+                                    playbackNoticeMessage = null,
                                     errorMessage = null
                                 )
                             }
@@ -889,6 +912,10 @@ class MoviePlayerViewModel(
 
     fun clearDownloadStatus() {
         _uiState.update { it.copy(downloadStatusMessage = null) }
+    }
+
+    fun clearPlaybackNotice() {
+        _uiState.update { it.copy(playbackNoticeMessage = null) }
     }
 
     companion object {

@@ -1623,4 +1623,65 @@ class MovieBoxProviderTest {
         assertEquals(21L, err.retryAfterSeconds)
         assertEquals(2, streamCalls.get())
     }
+
+    @Test
+    fun `resolvePlaybackSources parses fallback_dub passes dub_subject_id to captions and parses opensubtitles source`() = runTest {
+        var captionsPathSeen: String? = null
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/api/stream/1512813957701091280/captions") -> {
+                        captionsPathSeen = path
+                        MockResponse().setResponseCode(200).setBody(
+                            """
+                            {
+                              "subject_id": "1512813957701091280",
+                              "captions": [
+                                {
+                                  "id": "opensubtitles_222",
+                                  "language": "English",
+                                  "code": "en",
+                                  "format": "srt",
+                                  "source": "opensubtitles",
+                                  "url": "https://www.opensubtitles.com/download/verified-sub.srt"
+                                }
+                              ]
+                            }
+                            """.trimIndent()
+                        )
+                    }
+                    path.startsWith("/api/stream/1512813957701091280") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "subject_id": "1512813957701091280",
+                          "count": 1,
+                          "fallback_dub": "Hindi",
+                          "fallback_dub_subject_id": "1560762024479573272",
+                          "streams": [
+                            {"source": "Web CDN", "format": "MP4", "quality": "1080p", "quality_value": 1080, "url": "https://bcdnxw.hakunaymatata.com/hindi.mp4"}
+                          ]
+                        }
+                        """.trimIndent()
+                    )
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val provider = MovieBoxProvider(
+            okHttpClient = OkHttpClient(),
+            baseUrlProvider = { server.url("/").toString().trimEnd('/') },
+            retryDelayMs = 0L
+        )
+        val res = provider.resolvePlaybackSources("1512813957701091280", null, null).getOrThrow()
+        val available = res as PlaybackResolution.Available
+        assertEquals("Hindi", available.fallbackDubLabel)
+        assertEquals("1560762024479573272", available.fallbackDubTitleId)
+        assertTrue(captionsPathSeen?.contains("dub_subject_id=1560762024479573272") == true)
+        assertEquals(1, available.subtitles.size)
+        assertEquals("srt", available.subtitles.first().format)
+        assertEquals("opensubtitles", available.subtitles.first().source)
+        assertEquals("en", available.subtitles.first().languageCode)
+    }
 }

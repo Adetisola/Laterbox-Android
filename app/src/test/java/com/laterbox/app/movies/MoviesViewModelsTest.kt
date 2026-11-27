@@ -2086,4 +2086,114 @@ class MoviesViewModelsTest {
         assertTrue(lifecycle.any { it.stage == "REFRESH_REQUESTED" && it.refreshRequested && it.statusCode == 403 })
         assertTrue(lifecycle.any { it.stage == "REFRESH_APPLIED" && it.refreshedCredentialsApplied == true && it.host == "sbcdnw.hakunaymatata.com" })
     }
+
+    @Test
+    fun `playerViewModel sets fallback notice selects opensubtitles track and scopes subtitles when switching dubs`() = runTest {
+        val repo = object : MoviesRepository by FakeMoviesRepository() {
+            override suspend fun getDetails(providerId: String, titleId: String, forceRefresh: Boolean): Result<MediaDetails> {
+                return Result.success(
+                    MediaDetails(
+                        summary = MovieTitleSummary(
+                            id = titleId,
+                            providerId = providerId,
+                            kind = MediaKind.MOVIE,
+                            title = if (titleId == "dub_en") "Test [English]" else "Test",
+                            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+                            isPlayableHint = true
+                        ),
+                        fullDescription = "desc",
+                        audioDubs = listOf(
+                            com.laterbox.app.movies.domain.model.AudioDubInfo(language = "Hindi", label = "Hindi dub", referenceId = "dub_hi"),
+                            com.laterbox.app.movies.domain.model.AudioDubInfo(language = "English", label = "English", referenceId = "dub_en")
+                        )
+                    )
+                )
+            }
+
+            override suspend fun resolvePlayback(
+                providerId: String,
+                titleId: String,
+                seasonNumber: Int?,
+                episodeNumber: Int?
+            ): Result<PlaybackResolution> {
+                return if (titleId == "primary_id") {
+                    Result.success(
+                        PlaybackResolution.Available(
+                            title = "Test",
+                            sources = listOf(PlaybackSource("s1", "https://bcdnxw.hakunaymatata.com/hindi.mp4", "MP4", "1080p", 1080, providerName = "MovieBox")),
+                            subtitles = listOf(
+                                SubtitleTrack(
+                                    id = "opensubtitles_222",
+                                    language = "English",
+                                    languageCode = "en",
+                                    label = "English",
+                                    url = "https://www.opensubtitles.com/download/sub.srt",
+                                    format = "srt",
+                                    source = "opensubtitles"
+                                )
+                            ),
+                            providerName = "MovieBox",
+                            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
+                            fallbackDubLabel = "Hindi",
+                            fallbackDubTitleId = "dub_hi"
+                        )
+                    )
+                } else {
+                    Result.success(
+                        PlaybackResolution.Available(
+                            title = "Test [English]",
+                            sources = listOf(PlaybackSource("s2", "https://bcdnxw.hakunaymatata.com/en.mp4", "MP4", "1080p", 1080, providerName = "MovieBox")),
+                            subtitles = emptyList(),
+                            providerName = "MovieBox",
+                            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+                        )
+                    )
+                }
+            }
+        }
+
+        val vm = MoviePlayerViewModel(repo)
+        vm.load("moviebox", "primary_id")
+        val state = vm.uiState.first { !it.isLoading }
+        assertEquals("Hindi", state.fallbackDubLabel)
+        assertEquals("Playing Hindi version", state.playbackNoticeMessage)
+        assertEquals("opensubtitles_222", state.selectedSubtitleTrack?.id)
+
+        vm.clearPlaybackNotice()
+        assertNull(vm.uiState.value.playbackNoticeMessage)
+
+        // Switching to explicit dub clears fallback state and does NOT carry OpenSubtitles track over
+        vm.selectAudioDub(com.laterbox.app.movies.domain.model.AudioDubInfo("English", "English", "dub_en"), 5_000L)
+        advanceUntilIdle()
+        assertNull(vm.uiState.value.fallbackDubLabel)
+        assertNull(vm.uiState.value.playbackNoticeMessage)
+        assertNull(vm.uiState.value.selectedSubtitleTrack)
+    }
+
+    @Test
+    fun `playerViewModel leaves fallback notice null for normal working title`() = runTest {
+        val repo = object : MoviesRepository by FakeMoviesRepository() {
+            override suspend fun resolvePlayback(
+                providerId: String,
+                titleId: String,
+                seasonNumber: Int?,
+                episodeNumber: Int?
+            ): Result<PlaybackResolution> {
+                return Result.success(
+                    PlaybackResolution.Available(
+                        title = "Normal Movie",
+                        sources = listOf(PlaybackSource("s1", "https://bcdnxw.hakunaymatata.com/main.mp4", "MP4", "1080p", 1080, providerName = "MovieBox")),
+                        providerName = "MovieBox",
+                        sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+                    )
+                )
+            }
+        }
+
+        val vm = MoviePlayerViewModel(repo)
+        vm.load("moviebox", "normal_id")
+        val state = vm.uiState.first { !it.isLoading }
+        assertNull(state.fallbackDubLabel)
+        assertNull(state.playbackNoticeMessage)
+    }
 }

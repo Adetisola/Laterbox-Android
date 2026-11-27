@@ -259,7 +259,8 @@ data class SubtitleTrack(
     val url: String,
     val format: String = "srt",
     val headers: Map<String, String> = emptyMap(),
-    val isOfflineLocal: Boolean = false
+    val isOfflineLocal: Boolean = false,
+    val source: String? = null
 )
 
 sealed interface PlaybackResolution {
@@ -272,7 +273,9 @@ sealed interface PlaybackResolution {
         val providerName: String = "",
         val sourceBadge: DataSourceBadge = DataSourceBadge.LIVE_INTERNET_ARCHIVE,
         val introWindow: PlaybackMarkerWindow? = null,
-        val recapWindow: PlaybackMarkerWindow? = null
+        val recapWindow: PlaybackMarkerWindow? = null,
+        val fallbackDubLabel: String? = null,
+        val fallbackDubTitleId: String? = null
     ) : PlaybackResolution
 
     data class Unavailable(

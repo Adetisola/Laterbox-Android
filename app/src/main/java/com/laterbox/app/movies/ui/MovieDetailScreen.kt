@@ -1117,6 +1117,24 @@ fun MovieDetailScreen(
                                     val playEpisode = if (summary.kind.isEpisodic) {
                                         uiState.nextUnwatchedTarget?.second ?: uiState.episodes.firstOrNull()?.episodeNumber ?: 1
                                     } else null
+                                    val fallbackDub = resolution.fallbackDubLabel?.takeIf { it.isNotBlank() }
+                                    if (fallbackDub != null) {
+                                        Surface(
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = colors.accentContainer.copy(alpha = 0.55f),
+                                            border = BorderStroke(0.75.dp, colors.accentPrimary.copy(alpha = 0.35f)),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .testTag("detail_fallback_dub_banner")
+                                        ) {
+                                            Text(
+                                                text = "Original version unavailable. Playing $fallbackDub dub.",
+                                                style = typography.bodySecondary,
+                                                color = colors.textPrimary,
+                                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                                            )
+                                        }
+                                    }
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.spacedBy(10.dp),
