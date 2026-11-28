@@ -1357,12 +1357,10 @@ class MovieBoxProvider(
                     val obj = captions.optJSONObject(i) ?: continue
                     val subUrl = obj.optCleanString("url") ?: continue
                     val language = obj.optCleanString("language") ?: "English"
-                    val code = obj.optCleanString("code")?.takeIf { it.isNotBlank() }
+                    val code = obj.optCleanString("code")
                         ?: language.take(2).lowercase(Locale.US)
                     val id = obj.optCleanString("id") ?: "mb_sub_$i"
-                    val format = obj.optCleanString("format")?.lowercase(Locale.US)?.takeIf { it.isNotBlank() }
-                        ?: if (subUrl.contains(".vtt", ignoreCase = true)) "vtt" else "srt"
-                    val source = obj.optCleanString("source")
+                    val format = if (subUrl.contains(".vtt", ignoreCase = true)) "vtt" else "srt"
                     add(
                         SubtitleTrack(
                             id = id,
@@ -1370,8 +1368,7 @@ class MovieBoxProvider(
                             languageCode = code,
                             label = language,
                             url = subUrl,
-                            format = format,
-                            source = source
+                            format = format
                         )
                     )
                 }

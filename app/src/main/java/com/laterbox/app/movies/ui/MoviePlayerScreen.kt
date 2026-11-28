@@ -23,7 +23,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -1436,16 +1435,47 @@ private fun ActiveVideoPlayerContent(
                 }
             }
     ) {
-        if (ambientModeEnabled) {
-            PlayerAmbientBackdrop(
-                playerView = attachedPlayerView,
-                player = exoPlayer,
-                isEnabled = ambientModeEnabled,
-                isPlaying = isPlaying,
-                isBuffering = isBuffering,
-                isInPip = isInPip,
-                resizeMode = resizeMode
-            )
+        val isLetterboxedMode = resizeMode != AspectRatioFrameLayout.RESIZE_MODE_ZOOM &&
+            resizeMode != AspectRatioFrameLayout.RESIZE_MODE_FILL
+        val ambientColor = com.laterbox.app.movies.ui.player.PlayerAmbientSampler.rememberAmbientColor(
+            playerView = attachedPlayerView,
+            player = exoPlayer,
+            isEnabled = ambientModeEnabled,
+            isPlaying = isPlaying,
+            isBuffering = isBuffering,
+            isInPip = isInPip,
+            resizeMode = resizeMode
+        )
+        val ambientAlpha by animateFloatAsState(
+            targetValue = if (ambientModeEnabled && !isInPip && isLetterboxedMode && ambientColor != Color.Black) 1f else 0f,
+            animationSpec = tween(durationMillis = 240),
+            label = "player_ambient_alpha"
+        )
+        if (ambientAlpha > 0.01f) {
+            Canvas(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag("player_ambient_backdrop")
+            ) {
+                drawRect(color = Color.Black)
+                val maxDim = size.maxDimension.coerceAtLeast(1f)
+                drawRect(
+                    brush = Brush.radialGradient(
+                        0.0f to ambientColor.copy(
+                            alpha = com.laterbox.app.movies.ui.player.PlayerAmbientSampler.AMBIENT_CENTER_ALPHA * ambientAlpha
+                        ),
+                        0.55f to ambientColor.copy(
+                            alpha = com.laterbox.app.movies.ui.player.PlayerAmbientSampler.AMBIENT_MID_ALPHA * ambientAlpha
+                        ),
+                        0.84f to ambientColor.copy(
+                            alpha = com.laterbox.app.movies.ui.player.PlayerAmbientSampler.AMBIENT_OUTER_ALPHA * ambientAlpha
+                        ),
+                        1.0f to Color.Transparent,
+                        center = androidx.compose.ui.geometry.Offset(size.width * 0.5f, size.height * 0.48f),
+                        radius = maxDim * 0.72f
+                    )
+                )
+            }
         }
         LaterboxVideoSurface(
             player = exoPlayer,
@@ -3151,63 +3181,6 @@ private fun PlayerScrubHudSlot(
         durationMs = dur,
         sensitivityTier = sensitivityTier,
         modifier = modifier
-    )
-}
-
-@OptIn(UnstableApi::class)
-@Composable
-private fun PlayerAmbientBackdrop(
-    playerView: androidx.media3.ui.PlayerView?,
-    player: androidx.media3.common.Player?,
-    isEnabled: Boolean,
-    isPlaying: Boolean,
-    isBuffering: Boolean,
-    isInPip: Boolean,
-    resizeMode: Int
-) {
-    val isLetterboxedMode = resizeMode != androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM &&
-        resizeMode != androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FILL
-    val ambientColorState = com.laterbox.app.movies.ui.player.PlayerAmbientSampler.rememberAmbientColorState(
-        playerView = playerView,
-        player = player,
-        isEnabled = isEnabled,
-        isPlaying = isPlaying,
-        isBuffering = isBuffering,
-        isInPip = isInPip,
-        resizeMode = resizeMode
-    )
-    val ambientAlphaState = animateFloatAsState(
-        targetValue = if (isEnabled && !isInPip && isLetterboxedMode) 1f else 0f,
-        animationSpec = tween(durationMillis = com.laterbox.app.movies.ui.player.PlayerAmbientSampler.COLOR_BLEND_NORMAL_MS),
-        label = "player_ambient_alpha"
-    )
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-            .drawBehind {
-                val c = ambientColorState.value
-                val a = ambientAlphaState.value
-                if (a <= 0.01f || c == Color.Black) return@drawBehind
-                val maxDim = size.maxDimension.coerceAtLeast(1f)
-                drawRect(
-                    brush = Brush.radialGradient(
-                        0.0f to c.copy(
-                            alpha = com.laterbox.app.movies.ui.player.PlayerAmbientSampler.AMBIENT_CENTER_ALPHA * a
-                        ),
-                        0.55f to c.copy(
-                            alpha = com.laterbox.app.movies.ui.player.PlayerAmbientSampler.AMBIENT_MID_ALPHA * a
-                        ),
-                        0.84f to c.copy(
-                            alpha = com.laterbox.app.movies.ui.player.PlayerAmbientSampler.AMBIENT_OUTER_ALPHA * a
-                        ),
-                        1.0f to Color.Transparent,
-                        center = androidx.compose.ui.geometry.Offset(size.width * 0.5f, size.height * 0.48f),
-                        radius = maxDim * 0.72f
-                    )
-                )
-            }
-            .testTag("player_ambient_backdrop")
     )
 }
 

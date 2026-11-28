@@ -1626,7 +1626,7 @@ class MovieBoxProviderTest {
     }
 
     @Test
-    fun `resolvePlaybackSources parses fallback_dub passes dub_subject_id to captions and parses opensubtitles source`() = runTest {
+    fun `resolvePlaybackSources parses fallback_dub and passes dub_subject_id for native captions`() = runTest {
         var captionsPathSeen: String? = null
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
@@ -1640,12 +1640,10 @@ class MovieBoxProviderTest {
                               "subject_id": "1512813957701091280",
                               "captions": [
                                 {
-                                  "id": "opensubtitles_222",
+                                  "id": "mb_cap_1",
                                   "language": "English",
                                   "code": "en",
-                                  "format": "srt",
-                                  "source": "opensubtitles",
-                                  "url": "https://www.opensubtitles.com/download/verified-sub.srt"
+                                  "url": "https://bcdnxw.hakunaymatata.com/subs/native-en.vtt"
                                 }
                               ]
                             }
@@ -1681,8 +1679,7 @@ class MovieBoxProviderTest {
         assertEquals("1560762024479573272", available.fallbackDubTitleId)
         assertTrue(captionsPathSeen?.contains("dub_subject_id=1560762024479573272") == true)
         assertEquals(1, available.subtitles.size)
-        assertEquals("srt", available.subtitles.first().format)
-        assertEquals("opensubtitles", available.subtitles.first().source)
+        assertEquals("vtt", available.subtitles.first().format)
         assertEquals("en", available.subtitles.first().languageCode)
     }
 }

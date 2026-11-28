@@ -1636,7 +1636,6 @@ fun LaterboxApp(
                                 onSelectSeason = movieDetailViewModel::selectSeason,
                                 onSelectEpisodeRange = movieDetailViewModel::selectOnePieceEpisodeRange,
                                 onRequestEpisodeSizes = movieDetailViewModel::requestSeasonEpisodeSizes,
-                                onSelectSubtitle = movieDetailViewModel::selectSubtitlePreference,
                                 onOpenRelated = { relProvider, relId ->
                                     if (relProvider.isNotBlank() && relId.isNotBlank()) {
                                         navController.navigate(

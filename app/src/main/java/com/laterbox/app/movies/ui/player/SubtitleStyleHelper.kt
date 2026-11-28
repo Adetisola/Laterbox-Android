@@ -18,11 +18,6 @@ object SubtitleStyleHelper {
     ) {
         if (subtitleView == null) return
 
-        // Prefer WebView subtitle output when supported on device so simultaneous multi-line
-        // cues wrap and stack via CSS layout instead of overlapping or clipping on canvas.
-        runCatching { subtitleView.setViewType(SubtitleView.VIEW_TYPE_WEB) }
-        subtitleView.setBottomPaddingFraction(SubtitleView.DEFAULT_BOTTOM_PADDING_FRACTION)
-
         if (config.useSystemCaptions) {
             subtitleView.setApplyEmbeddedStyles(true)
             subtitleView.setApplyEmbeddedFontSizes(true)

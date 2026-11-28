@@ -2088,7 +2088,7 @@ class MoviesViewModelsTest {
     }
 
     @Test
-    fun `playerViewModel sets fallback notice selects opensubtitles track and scopes subtitles when switching dubs`() = runTest {
+    fun `playerViewModel sets fallback notice without forcing opensubtitles fallback captions`() = runTest {
         val repo = object : MoviesRepository by FakeMoviesRepository() {
             override suspend fun getDetails(providerId: String, titleId: String, forceRefresh: Boolean): Result<MediaDetails> {
                 return Result.success(
@@ -2123,13 +2123,12 @@ class MoviesViewModelsTest {
                             sources = listOf(PlaybackSource("s1", "https://bcdnxw.hakunaymatata.com/hindi.mp4", "MP4", "1080p", 1080, providerName = "MovieBox")),
                             subtitles = listOf(
                                 SubtitleTrack(
-                                    id = "opensubtitles_222",
-                                    language = "English",
-                                    languageCode = "en",
-                                    label = "English",
-                                    url = "https://www.opensubtitles.com/download/sub.srt",
-                                    format = "srt",
-                                    source = "opensubtitles"
+                                    id = "mb_fr_1",
+                                    language = "French",
+                                    languageCode = "fr",
+                                    label = "French",
+                                    url = "https://bcdnxw.hakunaymatata.com/sub.vtt",
+                                    format = "vtt"
                                 )
                             ),
                             providerName = "MovieBox",
@@ -2157,12 +2156,11 @@ class MoviesViewModelsTest {
         val state = vm.uiState.first { !it.isLoading }
         assertEquals("Hindi", state.fallbackDubLabel)
         assertEquals("Playing Hindi version", state.playbackNoticeMessage)
-        assertEquals("opensubtitles_222", state.selectedSubtitleTrack?.id)
+        assertEquals("mb_fr_1", state.selectedSubtitleTrack?.id)
 
         vm.clearPlaybackNotice()
         assertNull(vm.uiState.value.playbackNoticeMessage)
 
-        // Switching to explicit dub clears fallback state and does NOT carry OpenSubtitles track over
         vm.selectAudioDub(com.laterbox.app.movies.domain.model.AudioDubInfo("English", "English", "dub_en"), 5_000L)
         advanceUntilIdle()
         assertNull(vm.uiState.value.fallbackDubLabel)

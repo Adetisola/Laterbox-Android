@@ -325,8 +325,7 @@ class MovieDetailProgressiveAndSkeletonTest {
     }
 
     @Test
-    fun `detail screen limits long description to 2 lines with toggle and supports interactive subtitle selection`() {
-        var selectedSubtitle: SubtitleTrack? = null
+    fun `detail screen limits long description to 2 lines with toggle and omits subtitle row`() {
         val summary = MovieTitleSummary(
             id = "film_long",
             providerId = "moviebox",
@@ -356,16 +355,14 @@ class MovieDetailProgressiveAndSkeletonTest {
                     onPlayClick = { _, _ -> },
                     onSelectSeason = {},
                     onOpenRelated = { _, _ -> },
-                    onOpenExternalUrl = {},
-                    onSelectSubtitle = { selectedSubtitle = it }
+                    onOpenExternalUrl = {}
                 )
             }
         }
 
         composeTestRule.onNodeWithTag("detail_synopsis_text").performScrollTo().assertIsDisplayed()
-        composeTestRule.onNodeWithTag("detail_metadata_subtitle_row").performScrollTo().assertIsDisplayed()
-        composeTestRule.onNodeWithTag("detail_subtitle_chip_sub_fr").performScrollTo().assertIsDisplayed().performClick()
-        assertEquals("sub_fr", selectedSubtitle?.id)
+        composeTestRule.onNodeWithTag("detail_metadata_subtitle_row").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("detail_subtitle_chip_sub_fr").assertDoesNotExist()
     }
 
     @Test

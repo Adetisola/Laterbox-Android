@@ -259,8 +259,7 @@ data class SubtitleTrack(
     val url: String,
     val format: String = "srt",
     val headers: Map<String, String> = emptyMap(),
-    val isOfflineLocal: Boolean = false,
-    val source: String? = null
+    val isOfflineLocal: Boolean = false
 )
 
 sealed interface PlaybackResolution {

@@ -214,7 +214,6 @@ fun MovieDetailScreen(
     onDismissEpisodeResolutionPicker: () -> Unit = {},
     onSelectEpisodeRange: ((String) -> Unit)? = null,
     onRequestEpisodeSizes: () -> Unit = {},
-    onSelectSubtitle: (com.laterbox.app.movies.domain.model.SubtitleTrack) -> Unit = {},
     onSetTitleReaction: (com.laterbox.app.data.local.entity.TitleReaction?) -> Unit = {},
     onSetRelatedTitleReaction: (MovieTitleSummary, com.laterbox.app.data.local.entity.TitleReaction?) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
@@ -1604,10 +1603,9 @@ fun MovieDetailScreen(
                                 }
                             }
 
-                            // Single-Line Horizontal Rows with Muted Vertical Dividers & Edge Fades:
-                            // Row 1: Descriptive Metadata (Country | Non-Dub Language | Genres)
-                            // Row 2: Audio Track Selector
-                            // Row 3: Subtitle Selector
+                            // Two Horizontally Scrolling Rows with Subtle Edge Fades:
+                            // Row 1: Descriptive Metadata (Country | Non-Dub Language | Genres) with muted dividers
+                            // Row 2: Audio Track Selector (pill/capsule items without dividers)
                             val countryTags = remember(summary.country) {
                                 summary.country
                                     ?.split(",")
@@ -1637,14 +1635,10 @@ fun MovieDetailScreen(
                                     genreTags.forEach { add("detail_genre_chip_$it" to it) }
                                 }
                             }
-                            val subtitleTracks = remember(availableRes?.subtitles, details.availableSubtitles) {
-                                availableRes?.subtitles.orEmpty().ifEmpty { details.availableSubtitles }
-                            }
                             val hasDescriptiveRow = descriptiveEntries.isNotEmpty()
                             val hasAudioRow = details.audioDubs.isNotEmpty() || uiState.isRefreshingDetails
-                            val hasSubtitleRow = subtitleTracks.isNotEmpty()
 
-                            if (hasDescriptiveRow || hasAudioRow || hasSubtitleRow) {
+                            if (hasDescriptiveRow || hasAudioRow) {
                                 Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -1673,92 +1667,79 @@ fun MovieDetailScreen(
                                         }
                                     }
 
-                                    if (details.audioDubs.isNotEmpty()) {
-                                        DetailHorizontalDividerRow(
-                                            modifier = Modifier.testTag("detail_metadata_audio_row")
-                                        ) {
-                                            details.audioDubs.forEachIndexed { index, dub ->
-                                                if (index > 0) {
-                                                    DetailVerticalDivider()
-                                                }
-                                                val refId = dub.referenceId
-                                                val isActiveDub = refId == null || refId == summary.id
-                                                val isSwitchableDub = !refId.isNullOrBlank() && refId != summary.id
-                                                Text(
-                                                    text = dub.label,
-                                                    style = typography.caption.copy(
-                                                        fontWeight = if (isActiveDub && details.audioDubs.size > 1) {
-                                                            FontWeight.SemiBold
+                                    if (hasAudioRow) {
+                                        if (details.audioDubs.isNotEmpty()) {
+                                            DetailHorizontalDividerRow(
+                                                modifier = Modifier.testTag("detail_metadata_audio_row"),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                details.audioDubs.forEach { dub ->
+                                                    val refId = dub.referenceId
+                                                    val isActiveDub = refId == null || refId == summary.id
+                                                    val isSwitchableDub = !refId.isNullOrBlank() && refId != summary.id
+                                                    Surface(
+                                                        shape = RoundedCornerShape(20.dp),
+                                                        color = if (isActiveDub && details.audioDubs.size > 1) {
+                                                            colors.accentContainer
                                                         } else {
-                                                            FontWeight.Normal
-                                                        }
-                                                    ),
-                                                    color = if (isActiveDub && details.audioDubs.size > 1) {
-                                                        colors.accentPrimary
-                                                    } else {
-                                                        colors.textSecondary
-                                                    },
-                                                    maxLines = 1,
-                                                    softWrap = false,
-                                                    modifier = Modifier
-                                                        .clickable(enabled = isSwitchableDub) {
-                                                            if (!refId.isNullOrBlank()) {
-                                                                onOpenRelated(summary.providerId, refId)
+                                                            colors.surfacePrimary
+                                                        },
+                                                        border = BorderStroke(
+                                                            0.75.dp,
+                                                            if (isActiveDub && details.audioDubs.size > 1) {
+                                                                colors.accentPrimary
+                                                            } else {
+                                                                colors.borderSubtle
                                                             }
-                                                        }
-                                                        .padding(vertical = 2.dp)
-                                                        .testTag("detail_dub_chip_${refId ?: dub.language}")
-                                                )
-                                            }
-                                        }
-                                    } else if (uiState.isRefreshingDetails) {
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .testTag("detail_metadata_audio_skeleton"),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .width(98.dp)
-                                                    .height(20.dp)
-                                                    .skeletonShimmer(shape = RoundedCornerShape(4.dp))
-                                            )
-                                            Box(
-                                                modifier = Modifier
-                                                    .width(88.dp)
-                                                    .height(20.dp)
-                                                    .skeletonShimmer(shape = RoundedCornerShape(4.dp))
-                                            )
-                                        }
-                                    }
-
-                                    if (subtitleTracks.isNotEmpty()) {
-                                        val prefSubLang = uiState.seriesPreferences?.preferredSubtitleLanguage
-                                        val prefSubLabel = uiState.seriesPreferences?.preferredSubtitleLabel
-                                        DetailHorizontalDividerRow(
-                                            modifier = Modifier.testTag("detail_metadata_subtitle_row")
-                                        ) {
-                                            subtitleTracks.forEachIndexed { index, track ->
-                                                if (index > 0) {
-                                                    DetailVerticalDivider()
+                                                        ),
+                                                        modifier = Modifier
+                                                            .clip(RoundedCornerShape(20.dp))
+                                                            .clickable(enabled = isSwitchableDub) {
+                                                                if (!refId.isNullOrBlank()) {
+                                                                    onOpenRelated(summary.providerId, refId)
+                                                                }
+                                                            }
+                                                            .testTag("detail_dub_chip_${refId ?: dub.language}")
+                                                    ) {
+                                                        Text(
+                                                            text = dub.label,
+                                                            style = typography.caption.copy(
+                                                                fontWeight = if (isActiveDub && details.audioDubs.size > 1) {
+                                                                    FontWeight.SemiBold
+                                                                } else {
+                                                                    FontWeight.Normal
+                                                                }
+                                                            ),
+                                                            color = if (isActiveDub && details.audioDubs.size > 1) {
+                                                                colors.accentPrimary
+                                                            } else {
+                                                                colors.textSecondary
+                                                            },
+                                                            maxLines = 1,
+                                                            softWrap = false,
+                                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                                        )
+                                                    }
                                                 }
-                                                val isSelectedSub = (!prefSubLang.isNullOrBlank() &&
-                                                    track.languageCode.equals(prefSubLang, ignoreCase = true)) ||
-                                                    (!prefSubLabel.isNullOrBlank() &&
-                                                        track.language.equals(prefSubLabel, ignoreCase = true))
-                                                Text(
-                                                    text = track.language,
-                                                    style = typography.caption.copy(
-                                                        fontWeight = if (isSelectedSub) FontWeight.SemiBold else FontWeight.Normal
-                                                    ),
-                                                    color = if (isSelectedSub) colors.accentPrimary else colors.textSecondary,
-                                                    maxLines = 1,
-                                                    softWrap = false,
+                                            }
+                                        } else if (uiState.isRefreshingDetails) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .testTag("detail_metadata_audio_skeleton"),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                Box(
                                                     modifier = Modifier
-                                                        .clickable { onSelectSubtitle(track) }
-                                                        .padding(vertical = 2.dp)
-                                                        .testTag("detail_subtitle_chip_${track.id}")
+                                                        .width(98.dp)
+                                                        .height(20.dp)
+                                                        .skeletonShimmer(shape = RoundedCornerShape(10.dp))
+                                                )
+                                                Box(
+                                                    modifier = Modifier
+                                                        .width(88.dp)
+                                                        .height(20.dp)
+                                                        .skeletonShimmer(shape = RoundedCornerShape(10.dp))
                                                 )
                                             }
                                         }
@@ -3443,6 +3424,7 @@ internal fun formatEpisodeReleaseDate(rawAirDate: String?): String? {
 @Composable
 private fun DetailHorizontalDividerRow(
     modifier: Modifier = Modifier,
+    horizontalArrangement: Arrangement.Horizontal = Arrangement.Start,
     backgroundColor: Color = LaterboxTheme.colors.backgroundPrimary,
     content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit
 ) {
@@ -3457,6 +3439,7 @@ private fun DetailHorizontalDividerRow(
                 .fillMaxWidth()
                 .horizontalScroll(scrollState)
                 .height(IntrinsicSize.Min),
+            horizontalArrangement = horizontalArrangement,
             verticalAlignment = Alignment.CenterVertically,
             content = content
         )

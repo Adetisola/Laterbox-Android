@@ -256,14 +256,6 @@ class MoviePlayerViewModel(
                             val fallbackDub = resolution.fallbackDubLabel
                                 ?.takeIf { it.isNotBlank() && preferredDubRef == null }
                             val defaultSub = when {
-                                fallbackDub != null -> {
-                                    resolution.subtitles.firstOrNull {
-                                        it.languageCode.equals("en", ignoreCase = true) &&
-                                            it.source.equals("opensubtitles", ignoreCase = true)
-                                    } ?: resolution.subtitles.firstOrNull {
-                                        it.languageCode.equals("en", ignoreCase = true)
-                                    } ?: resolution.subtitles.firstOrNull()
-                                }
                                 seriesPrefs?.subtitlesDisabled == true -> null
                                 !seriesPrefs?.preferredSubtitleLanguage.isNullOrBlank() -> {
                                     val prefSub = seriesPrefs!!.preferredSubtitleLanguage!!
@@ -703,10 +695,7 @@ class MoviePlayerViewModel(
             ?: currentState.playbackPreferences.defaultQualityHeight
         val previousDubs = currentState.availableDubs
         val previousSeasons = currentState.seasons
-        val previousSubTrack = currentState.selectedSubtitleTrack
-        val previousSubCode = previousSubTrack
-            ?.takeUnless { it.source.equals("opensubtitles", ignoreCase = true) || currentState.fallbackDubLabel != null }
-            ?.languageCode
+        val previousSubCode = currentState.selectedSubtitleTrack?.languageCode
 
         loadedKey = "$providerId:$targetId:${seasonNumber ?: 0}:${episodeNumber ?: 0}"
         loadJob?.cancel()
