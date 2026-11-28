@@ -74,8 +74,8 @@ class PlayerAmbientSamplerTest {
     fun ambientSamplingAndBlending_stayWithinResponsiveRealTimeTargets() {
         val normalInterval = PlayerAmbientSampler.resolveSampleIntervalMs(1.0f)
         val fastInterval = PlayerAmbientSampler.resolveSampleIntervalMs(2.0f)
-        assertTrue("Expected >= 4Hz (<=250ms), got $normalInterval", normalInterval in 120L..250L)
-        assertTrue("Expected fast speed <= normal interval", fastInterval <= normalInterval)
+        assertEquals(100L, normalInterval)
+        assertEquals(100L, fastInterval)
 
         val sceneCutBlend = PlayerAmbientSampler.computeBlendDurationMs(
             previous = Color(0.54f, 0.50f, 0.45f, 1f),
@@ -85,8 +85,7 @@ class PlayerAmbientSamplerTest {
             previous = Color(0.30f, 0.25f, 0.20f, 1f),
             next = Color(0.33f, 0.27f, 0.22f, 1f)
         )
-        assertTrue("Scene cut blend should fall in 150-300ms target, got $sceneCutBlend", sceneCutBlend in 150..300)
-        assertTrue("Gentle blend should fall in 150-300ms target, got $subtleBlend", subtleBlend in 150..300)
-        assertTrue(sceneCutBlend < subtleBlend)
+        assertEquals(300, sceneCutBlend)
+        assertEquals(300, subtleBlend)
     }
 }

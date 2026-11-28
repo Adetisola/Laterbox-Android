@@ -12,6 +12,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.Player
+import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -37,6 +38,33 @@ fun LaterboxVideoSurface(
 ) {
     var appliedResizeMode by remember { mutableIntStateOf(-1) }
     var appliedSubtitleStyle by remember { mutableStateOf<SubtitleStyleConfig?>(null) }
+    var attachedPlayer by remember { mutableStateOf<Player?>(null) }
+    var attachedPlayerView by remember { mutableStateOf<PlayerView?>(null) }
+
+    val cueStackingListener = remember {
+        object : Player.Listener {
+            override fun onCues(cueGroup: CueGroup) {
+                attachedPlayerView?.subtitleView?.setCues(
+                    SubtitleStyleHelper.stackSimultaneousBottomCues(cueGroup.cues)
+                )
+            }
+        }
+    }
+
+    fun syncPlayerCueListener(view: PlayerView, nextPlayer: Player?) {
+        attachedPlayerView = view
+        if (attachedPlayer !== nextPlayer) {
+            attachedPlayer?.removeListener(cueStackingListener)
+            attachedPlayer = nextPlayer
+            nextPlayer?.addListener(cueStackingListener)
+            val currentCues = nextPlayer?.currentCues?.cues.orEmpty()
+            if (currentCues.isNotEmpty()) {
+                view.subtitleView?.setCues(
+                    SubtitleStyleHelper.stackSimultaneousBottomCues(currentCues)
+                )
+            }
+        }
+    }
 
     AndroidView(
         factory = { ctx ->
@@ -62,6 +90,7 @@ fun LaterboxVideoSurface(
                 }
                 subtitleView?.visibility = if (hideSubtitles) android.view.View.GONE else android.view.View.VISIBLE
                 this.player = player
+                syncPlayerCueListener(this, player)
                 onPlayerViewAttached?.invoke(this)
             }
         },
@@ -69,6 +98,7 @@ fun LaterboxVideoSurface(
             if (view.player !== player) {
                 view.player = player
             }
+            syncPlayerCueListener(view, player)
             if (view.keepScreenOn != keepScreenOn) {
                 view.keepScreenOn = keepScreenOn
             }
@@ -87,6 +117,9 @@ fun LaterboxVideoSurface(
             onPlayerViewAttached?.invoke(view)
         },
         onRelease = { view ->
+            attachedPlayer?.removeListener(cueStackingListener)
+            attachedPlayer = null
+            attachedPlayerView = null
             view.keepScreenOn = false
             view.player = null
             onPlayerViewAttached?.invoke(null)

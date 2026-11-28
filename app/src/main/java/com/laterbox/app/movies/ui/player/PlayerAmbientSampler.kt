@@ -9,6 +9,7 @@ import android.view.SurfaceView
 import android.view.TextureView
 import androidx.annotation.OptIn
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -25,8 +26,10 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 import kotlin.math.max
@@ -35,11 +38,11 @@ import kotlin.math.min
 internal object PlayerAmbientSampler {
     private const val SAMPLE_WIDTH = 16
     private const val SAMPLE_HEIGHT = 9
-    internal const val SAMPLE_INTERVAL_PLAYING_MS = 160L
-    internal const val SAMPLE_INTERVAL_FAST_MS = 125L
-    internal const val POST_SEEK_REFRESH_DELAY_MS = 110L
-    internal const val COLOR_BLEND_NORMAL_MS = 220
-    internal const val COLOR_BLEND_SCENE_CUT_MS = 160
+    internal const val SAMPLE_INTERVAL_PLAYING_MS = 100L
+    internal const val SAMPLE_INTERVAL_FAST_MS = 100L
+    internal const val POST_SEEK_REFRESH_DELAY_MS = 100L
+    internal const val COLOR_BLEND_NORMAL_MS = 300
+    internal const val COLOR_BLEND_SCENE_CUT_MS = 300
     internal const val SCENE_CUT_DELTA_THRESHOLD = 0.22f
     const val AMBIENT_CENTER_ALPHA = 0.69f
     const val AMBIENT_MID_ALPHA = 0.39f
@@ -250,7 +253,7 @@ internal object PlayerAmbientSampler {
             val activeView = if (shouldSample) playerView else null
             if (activeView == null) return@LaunchedEffect
 
-            fun requestSample() {
+            suspend fun requestSample() {
                 if (samplerState.disposed.get() || samplerState.bitmap.isRecycled) return
                 if (!inFlight.compareAndSet(false, true)) return
 
@@ -301,16 +304,25 @@ internal object PlayerAmbientSampler {
                         try {
                             if (videoSurface.isAvailable && !samplerState.disposed.get() && !samplerState.bitmap.isRecycled) {
                                 videoSurface.getBitmap(samplerState.bitmap)
-                                samplerState.bitmap.getPixels(
-                                    samplerState.pixelBuffer,
-                                    0,
-                                    SAMPLE_WIDTH,
-                                    0,
-                                    0,
-                                    SAMPLE_WIDTH,
-                                    SAMPLE_HEIGHT
-                                )
-                                targetColor = extractAmbientColor(samplerState.pixelBuffer)
+                                val extractedColor = withContext(Dispatchers.Default) {
+                                    if (samplerState.disposed.get() || samplerState.bitmap.isRecycled) {
+                                        null
+                                    } else {
+                                        samplerState.bitmap.getPixels(
+                                            samplerState.pixelBuffer,
+                                            0,
+                                            SAMPLE_WIDTH,
+                                            0,
+                                            0,
+                                            SAMPLE_WIDTH,
+                                            SAMPLE_HEIGHT
+                                        )
+                                        extractAmbientColor(samplerState.pixelBuffer)
+                                    }
+                                }
+                                if (extractedColor != null) {
+                                    targetColor = extractedColor
+                                }
                             }
                         } finally {
                             inFlight.set(false)
@@ -345,7 +357,7 @@ internal object PlayerAmbientSampler {
         }
         val animatedColor by animateColorAsState(
             targetValue = desiredColor,
-            animationSpec = tween(durationMillis = blendDurationMs),
+            animationSpec = tween(durationMillis = blendDurationMs, easing = LinearEasing),
             label = "player_ambient_color"
         )
         return animatedColor
