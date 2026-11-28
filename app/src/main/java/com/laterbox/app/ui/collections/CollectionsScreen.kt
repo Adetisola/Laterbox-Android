@@ -16,8 +16,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -72,6 +74,7 @@ fun CollectionsScreen(
     onMenuClick: (() -> Unit)? = null,
     onSearchQueryChange: (String) -> Unit = {},
     onClearSearch: () -> Unit = {},
+    gridState: LazyGridState = rememberLazyGridState(),
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -139,6 +142,7 @@ fun CollectionsScreen(
 
                 else -> {
                     LazyVerticalGrid(
+                        state = gridState,
                         columns = GridCells.Adaptive(minSize = 156.dp),
                         contentPadding = PaddingValues(
                             start = spacing.base,
@@ -155,7 +159,8 @@ fun CollectionsScreen(
                     ) {
                         items(
                             items = uiState.collections,
-                            key = { it.collection.id }
+                            key = { it.collection.id },
+                            contentType = { "collection_card" }
                         ) { item ->
                             CollectionCard(
                                 item = item,

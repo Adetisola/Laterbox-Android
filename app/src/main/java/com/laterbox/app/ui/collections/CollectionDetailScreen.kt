@@ -16,7 +16,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -41,6 +43,7 @@ import com.laterbox.app.movies.domain.model.CollectionMediaItem
 import com.laterbox.app.ui.components.EmptyStateView
 import com.laterbox.app.ui.components.LaterboxIcons
 import com.laterbox.app.ui.components.SavedLinkCard
+import com.laterbox.app.ui.components.savedLinkCardContentType
 import com.laterbox.app.ui.theme.LaterboxTheme
 
 @Composable
@@ -55,6 +58,7 @@ fun CollectionDetailScreen(
     onArchive: ((SavedLink) -> Unit)? = null,
     onOpenMovieDetail: (providerId: String, titleId: String) -> Unit = { _, _ -> },
     onRemoveMediaItem: (CollectionMediaItem) -> Unit = {},
+    listState: LazyListState = rememberLazyListState(),
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -127,6 +131,7 @@ fun CollectionDetailScreen(
 
                 else -> {
                     LazyColumn(
+                        state = listState,
                         contentPadding = PaddingValues(
                             start = spacing.base,
                             end = spacing.base,
@@ -139,7 +144,7 @@ fun CollectionDetailScreen(
                             .weight(1f)
                     ) {
                         if (uiState.mediaItems.isNotEmpty()) {
-                            item(key = "section_media_header") {
+                            item(key = "section_media_header", contentType = "section_header") {
                                 Text(
                                     text = "Movies & TV",
                                     style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
@@ -149,7 +154,8 @@ fun CollectionDetailScreen(
                             }
                             items(
                                 items = uiState.mediaItems,
-                                key = { "media_${it.mediaKey}" }
+                                key = { "media_${it.mediaKey}" },
+                                contentType = { "collection_media_item" }
                             ) { media ->
                                 val summary = media.summary
                                 Surface(
@@ -234,7 +240,7 @@ fun CollectionDetailScreen(
                         }
 
                         if (uiState.links.isNotEmpty() && uiState.mediaItems.isNotEmpty()) {
-                            item(key = "section_links_header") {
+                            item(key = "section_links_header", contentType = "section_header") {
                                 Text(
                                     text = "Saved Links",
                                     style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
@@ -246,7 +252,8 @@ fun CollectionDetailScreen(
 
                         items(
                             items = uiState.links,
-                            key = { it.id }
+                            key = { it.id },
+                            contentType = { savedLinkCardContentType(it, viewMode) }
                         ) { link ->
                             SavedLinkCard(
                                 link = link,

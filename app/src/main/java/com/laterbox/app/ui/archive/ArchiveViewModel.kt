@@ -73,7 +73,7 @@ class ArchiveViewModel(
             searchQuery = query,
             linkToDelete = toDelete
         )
-    }.stateIn(
+    }.distinctUntilChanged().stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = ArchiveUiState(isLoading = true)

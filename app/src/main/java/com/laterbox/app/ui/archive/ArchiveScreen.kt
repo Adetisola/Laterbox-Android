@@ -17,8 +17,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -57,6 +59,7 @@ import com.laterbox.app.ui.components.LaterboxSearchField
 import com.laterbox.app.ui.components.LaterboxShapeTokens
 import com.laterbox.app.ui.components.LaterboxTabHeader
 import com.laterbox.app.ui.components.SavedLinkCard
+import com.laterbox.app.ui.components.savedLinkCardContentType
 import com.laterbox.app.ui.theme.LaterboxTheme
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -76,6 +79,7 @@ fun ArchiveScreen(
     viewMode: InboxViewMode = InboxViewMode.HERO,
     mediaReadyLinkIds: Set<Long> = emptySet(),
     onToggleRead: ((SavedLink) -> Unit)? = null,
+    listState: LazyListState = rememberLazyListState(),
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -147,6 +151,7 @@ fun ArchiveScreen(
                     }
 
                     LazyColumn(
+                        state = listState,
                         contentPadding = PaddingValues(
                             start = spacing.base,
                             end = spacing.base,
@@ -178,7 +183,7 @@ fun ArchiveScreen(
                                 itemsIndexed(
                                     items = group.links,
                                     key = { _, it -> it.id },
-                                    contentType = { _, _ -> "archived_card" }
+                                    contentType = { _, it -> savedLinkCardContentType(it, viewMode) }
                                 ) { index, link ->
                                     val cardShape = if (index == 0) {
                                         RoundedCornerShape(

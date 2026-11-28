@@ -182,6 +182,24 @@ fun InboxScreen(
     var scrollJob by remember { mutableStateOf<Job?>(null) }
     var headerHeightPx by remember { mutableFloatStateOf(0f) }
     var headerOffsetPx by rememberSaveable { mutableFloatStateOf(0f) }
+    var pendingViewModeAnchor by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+
+    LaunchedEffect(headerHeightPx) {
+        if (headerHeightPx > 0f) {
+            val clamped = headerOffsetPx.coerceIn(-headerHeightPx, 0f)
+            if (clamped != headerOffsetPx) {
+                headerOffsetPx = clamped
+            }
+        }
+    }
+
+    LaunchedEffect(uiState.viewMode) {
+        val anchor = pendingViewModeAnchor
+        if (anchor != null) {
+            pendingViewModeAnchor = null
+            runCatching { listState.scrollToItem(anchor.first, anchor.second) }
+        }
+    }
 
     LaunchedEffect(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset) {
         if (listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0) {
@@ -316,16 +334,27 @@ fun InboxScreen(
                         .clipToBounds()
                         .layout { measurable, constraints ->
                             val placeable = measurable.measure(constraints)
-                            val currentHeight = (placeable.height + headerOffsetPx.roundToInt()).coerceAtLeast(0)
+                            val clampedOffset = if (placeable.height > 0) {
+                                headerOffsetPx.roundToInt().coerceIn(-placeable.height, 0)
+                            } else {
+                                0
+                            }
+                            val currentHeight = (placeable.height + clampedOffset).coerceAtLeast(0)
                             layout(placeable.width, currentHeight) {
-                                placeable.place(0, headerOffsetPx.roundToInt())
+                                placeable.place(0, clampedOffset)
                             }
                         }
                 ) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .onSizeChanged { headerHeightPx = it.height.toFloat() }
+                            .onSizeChanged { size ->
+                                val nextH = size.height.toFloat()
+                                headerHeightPx = nextH
+                                if (nextH > 0f) {
+                                    headerOffsetPx = headerOffsetPx.coerceIn(-nextH, 0f)
+                                }
+                            }
                     ) {
                         // Header: Shared LaterboxTabHeader with Menu, Brand, Notification Bell & Settings
                         LaterboxTabHeader(
@@ -456,7 +485,11 @@ fun InboxScreen(
                                 iconRes = if (uiState.viewMode == InboxViewMode.COMPACT) LaterboxIcons.ViewCard else LaterboxIcons.ViewList,
                                 contentDescription = viewToggleDesc,
                                 selected = uiState.viewMode != InboxViewMode.HERO,
-                                onClick = onToggleViewMode
+                                onClick = {
+                                    pendingViewModeAnchor =
+                                        listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+                                    onToggleViewMode()
+                                }
                             )
                         }
 
@@ -480,45 +513,6 @@ fun InboxScreen(
                                         onClick = { onFilterDateRange(filter) }
                                     )
                                 }
-                            }
-                        }
-
-                        // Background Metadata Sync Banner (Quiet editorial bar)
-                        if (uiState.pendingMetadataCount > 0) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .background(colors.accentContainer.copy(alpha = 0.5f))
-                                    .padding(horizontal = spacing.base, vertical = spacing.xxs),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.Center
-                            ) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(10.dp),
-                                    strokeWidth = 1.5.dp,
-                                    color = colors.accentPrimary
-                                )
-                                Spacer(modifier = Modifier.width(spacing.xs))
-                                Text(
-                                    text = "Enriching ${uiState.pendingMetadataCount} ${if (uiState.pendingMetadataCount == 1) "link" else "links"} in the background…",
-                                    style = typography.metaText,
-                                    color = colors.textSecondary
-                                )
-                            }
-                        }
-
-                        // Foreground Clipboard Suggestion Banner
-                        AnimatedVisibility(
-                            visible = uiState.clipboardSuggestion != null,
-                            enter = fadeIn() + expandVertically(),
-                            exit = fadeOut() + shrinkVertically()
-                        ) {
-                            uiState.clipboardSuggestion?.let { suggestion ->
-                                ClipboardSuggestionBanner(
-                                    suggestion = suggestion,
-                                    onSave = { onSaveClipboardSuggestion(suggestion) },
-                                    onDismiss = { onDismissClipboardSuggestion(suggestion) }
-                                )
                             }
                         }
                     }
@@ -737,6 +731,50 @@ fun InboxScreen(
                                 bottom = listBottomClearance
                             )
                         ) {
+                            // Background Metadata Sync Banner (Quiet editorial bar)
+                            if (uiState.pendingMetadataCount > 0) {
+                                item(
+                                    key = "inbox_pending_metadata_banner",
+                                    contentType = "pending_metadata_banner"
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(bottom = spacing.xs)
+                                            .background(colors.accentContainer.copy(alpha = 0.5f))
+                                            .padding(horizontal = spacing.base, vertical = spacing.xxs),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.Center
+                                    ) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(10.dp),
+                                            strokeWidth = 1.5.dp,
+                                            color = colors.accentPrimary
+                                        )
+                                        Spacer(modifier = Modifier.width(spacing.xs))
+                                        Text(
+                                            text = "Enriching ${uiState.pendingMetadataCount} ${if (uiState.pendingMetadataCount == 1) "link" else "links"} in the background…",
+                                            style = typography.metaText,
+                                            color = colors.textSecondary
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Foreground Clipboard Suggestion Banner
+                            uiState.clipboardSuggestion?.let { suggestion ->
+                                item(
+                                    key = "inbox_clipboard_banner",
+                                    contentType = "clipboard_suggestion_banner"
+                                ) {
+                                    ClipboardSuggestionBanner(
+                                        suggestion = suggestion,
+                                        onSave = { onSaveClipboardSuggestion(suggestion) },
+                                        onDismiss = { onDismissClipboardSuggestion(suggestion) }
+                                    )
+                                }
+                            }
+
                             val inboxComponents = remoteConfig.componentsForSurface(
                                 com.laterbox.app.remoteconfig.RemoteUiSurface.INBOX
                             ).filter { it.visible }
@@ -744,7 +782,10 @@ fun InboxScreen(
                                 when (comp.type) {
                                     com.laterbox.app.ai.RemoteCapabilities.TYPE_ANNOUNCEMENT_BANNER -> Unit
                                     com.laterbox.app.ai.RemoteCapabilities.TYPE_FEATURED_CALLOUT_CARD -> {
-                                        item(key = "remote_sdui_callout_${comp.id}") {
+                                        item(
+                                            key = "remote_sdui_callout_${comp.id}",
+                                            contentType = "remote_sdui_callout"
+                                        ) {
                                             com.laterbox.app.remoteconfig.RemoteFeaturedCalloutCard(
                                                 component = comp,
                                                 onActionClick = onRemoteAction,
@@ -756,7 +797,10 @@ fun InboxScreen(
                             }
 
                             if (!uiState.isSelectionMode && uiState.resurfacedLinks.isNotEmpty()) {
-                                item(key = "inbox_resurfacer_strip") {
+                                item(
+                                    key = "inbox_resurfacer_strip",
+                                    contentType = "resurfacer_strip"
+                                ) {
                                     InboxResurfacerStrip(
                                         suggestions = uiState.resurfacedLinks,
                                         onOpen = { suggestion ->
@@ -770,7 +814,10 @@ fun InboxScreen(
 
                             if (!uiState.isSelectionMode && uiState.collectionSuggestions.isNotEmpty()) {
                                 val topCollectionSuggestion = uiState.collectionSuggestions.first()
-                                item(key = "inbox_collection_suggestion_${topCollectionSuggestion.link.id}_${topCollectionSuggestion.collection.id}") {
+                                item(
+                                    key = "inbox_collection_suggestion_${topCollectionSuggestion.link.id}_${topCollectionSuggestion.collection.id}",
+                                    contentType = "collection_suggestion_banner"
+                                ) {
                                     InboxCollectionSuggestionBanner(
                                         suggestion = topCollectionSuggestion,
                                         onAccept = { onAcceptCollectionSuggestion(topCollectionSuggestion) },
@@ -800,7 +847,7 @@ fun InboxScreen(
                                     itemsIndexed(
                                         items = group.links,
                                         key = { _, it -> it.id },
-                                        contentType = { _, _ -> "link_card" }
+                                        contentType = { _, it -> com.laterbox.app.ui.components.savedLinkCardContentType(it, uiState.viewMode) }
                                     ) { index, link ->
                                         val cardShape = if (index == 0) {
                                             RoundedCornerShape(

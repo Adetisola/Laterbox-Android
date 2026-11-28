@@ -19,6 +19,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -45,24 +46,58 @@ class LinkRepository(
     private val extractionSemaphore = Semaphore(permits = 4)
     private val inFlightIds = ConcurrentHashMap.newKeySet<Long>()
 
+    private fun Flow<List<SavedLink>>.distinctListChanges(): Flow<List<SavedLink>> =
+        distinctUntilChanged { oldList, newList ->
+            if (oldList.size != newList.size) return@distinctUntilChanged false
+            for (i in oldList.indices) {
+                val a = oldList[i]
+                val b = newList[i]
+                val aPending = a.metadataStatus == MetadataStatus.PENDING || a.metadataStatus == MetadataStatus.FETCHING
+                val bPending = b.metadataStatus == MetadataStatus.PENDING || b.metadataStatus == MetadataStatus.FETCHING
+                if (a.id != b.id ||
+                    a.title != b.title ||
+                    a.description != b.description ||
+                    a.siteName != b.siteName ||
+                    a.domain != b.domain ||
+                    a.faviconUrl != b.faviconUrl ||
+                    a.previewImageUrl != b.previewImageUrl ||
+                    a.contentType != b.contentType ||
+                    a.personalNote != b.personalNote ||
+                    a.collectionId != b.collectionId ||
+                    a.collectionName != b.collectionName ||
+                    a.collectionIds != b.collectionIds ||
+                    a.collectionNames != b.collectionNames ||
+                    a.reminderAt != b.reminderAt ||
+                    a.nudgeDismissed != b.nudgeDismissed ||
+                    a.isRead != b.isRead ||
+                    a.isArchived != b.isArchived ||
+                    a.createdAt != b.createdAt ||
+                    aPending != bPending
+                ) {
+                    return@distinctUntilChanged false
+                }
+            }
+            true
+        }
+
     val inboxLinks: Flow<List<SavedLink>> = savedLinkDao.getInboxLinks().map { list ->
         list.map { it.toDomain() }
-    }
+    }.distinctListChanges()
 
     val archivedLinks: Flow<List<SavedLink>> = savedLinkDao.getArchivedLinks().map { list ->
         list.map { it.toDomain() }
-    }
+    }.distinctListChanges()
 
     fun getLinksByCollection(collectionId: Long): Flow<List<SavedLink>> {
         return savedLinkDao.getLinksByCollection(collectionId).map { list ->
             list.map { it.toDomain() }
-        }
+        }.distinctListChanges()
     }
 
     fun searchLinks(query: String): Flow<List<SavedLink>> {
         return savedLinkDao.searchLinks(query.trim()).map { list ->
             list.map { it.toDomain() }
-        }
+        }.distinctListChanges()
     }
 
     suspend fun findDuplicate(rawUrl: String): SavedLink? {

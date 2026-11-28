@@ -16,9 +16,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
@@ -52,6 +53,18 @@ import com.laterbox.app.domain.model.SavedLink
 import com.laterbox.app.ui.theme.LaterboxTheme
 import com.laterbox.app.ui.util.rememberLaterboxHaptics
 
+fun savedLinkCardContentType(link: SavedLink, viewMode: InboxViewMode): String {
+    val hasHttpImage = link.previewImageUrl?.let {
+        it.startsWith("http://", ignoreCase = true) || it.startsWith("https://", ignoreCase = true)
+    } == true
+    return when {
+        viewMode == InboxViewMode.HERO && hasHttpImage -> "link_hero"
+        viewMode == InboxViewMode.EDITORIAL -> "link_editorial"
+        hasHttpImage -> "link_compact"
+        else -> "link_text"
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun SavedLinkCard(
@@ -71,7 +84,7 @@ fun SavedLinkCard(
 ) {
     val context = LocalContext.current
     val haptics = rememberLaterboxHaptics()
-    var showMenu by remember { mutableStateOf(false) }
+    var showMenu by remember(link.id) { mutableStateOf(false) }
 
     val handleLongClick: () -> Unit = {
         haptics.dragHandle()
@@ -85,10 +98,11 @@ fun SavedLinkCard(
     val imageUrl = link.previewImageUrl?.takeIf {
         it.startsWith("http://", ignoreCase = true) || it.startsWith("https://", ignoreCase = true)
     }
-    var imageLoadFailed by remember(imageUrl) { mutableStateOf(false) }
+    var imageLoadFailed by remember(link.id, imageUrl) { mutableStateOf(false) }
 
-    val hasRenderableImage = imageUrl != null && !imageLoadFailed
-    val isHeroMode = viewMode == InboxViewMode.HERO && hasRenderableImage
+    val hasHttpImage = imageUrl != null
+    val hasRenderableImage = hasHttpImage && !imageLoadFailed
+    val isHeroMode = viewMode == InboxViewMode.HERO && hasHttpImage
 
     val heroImageRequest = remember(imageUrl, context) {
         imageUrl?.let {
@@ -363,29 +377,37 @@ fun SavedLinkCard(
                 }
             }
 
-            // Hero Mode: Full-width OG Image at the bottom of the card hugging aspect ratio
+            // Hero Mode: Fixed 16:9 OG Image container so async Coil decode or errors never resize cards mid-scroll
             if (isHeroMode && heroImageRequest != null) {
                 Spacer(modifier = Modifier.height(LaterboxTheme.spacing.xs))
-                AsyncImage(
-                    model = heroImageRequest,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    onError = { imageLoadFailed = true },
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 140.dp, max = 260.dp)
-                        .clip(
-                            RoundedCornerShape(
-                                bottomStart = 0.dp,
-                                bottomEnd = 0.dp
-                            )
-                        )
+                        .aspectRatio(16f / 9f)
                         .background(LaterboxTheme.colors.surfaceSecondary)
                         .border(
                             width = LaterboxTheme.spacing.hairline,
                             color = LaterboxTheme.colors.borderSubtle
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (!imageLoadFailed) {
+                        AsyncImage(
+                            model = heroImageRequest,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            onError = { imageLoadFailed = true },
+                            modifier = Modifier.fillMaxSize()
                         )
-                )
+                    } else {
+                        Icon(
+                            painter = painterResource(id = LaterboxIcons.Globe),
+                            contentDescription = null,
+                            tint = LaterboxTheme.colors.textTertiary.copy(alpha = 0.55f),
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                }
             }
 
             // Card Footer Row: Relative Saved Time + Collection tag on Left; View ↗ and More (⋮) on Right
@@ -405,8 +427,11 @@ fun SavedLinkCard(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.weight(1f, fill = false)
                 ) {
+                    val relativeTime = remember(link.id, link.createdAt) {
+                        DateGrouper.formatRelativeTime(link.createdAt)
+                    }
                     Text(
-                        text = DateGrouper.formatRelativeTime(link.createdAt),
+                        text = relativeTime,
                         style = LaterboxTheme.typography.metadataMono,
                         color = LaterboxTheme.colors.textTertiary
                     )

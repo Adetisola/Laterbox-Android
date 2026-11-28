@@ -229,7 +229,7 @@ class InboxViewModel(
             resurfacedLinks = resurfaced,
             collectionSuggestions = colSuggestions
         )
-    }.stateIn(
+    }.distinctUntilChanged().stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = InboxUiState(isLoading = true)

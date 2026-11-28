@@ -35,6 +35,8 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -84,6 +86,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.laterbox.app.update.AppUpdateDialog
 import com.laterbox.app.update.GitHubUpdateChecker
@@ -168,7 +171,7 @@ fun LaterboxApp(
     LaunchedEffect(currentRoute) {
         currentRoute?.let { onRouteChanged?.invoke(it) }
     }
-    val preferences by settingsViewModel.preferences.collectAsState()
+    val preferences by settingsViewModel.preferences.collectAsStateWithLifecycle()
     val remoteConfigManager = remember(context) {
         (context.applicationContext as? LaterboxApplication)?.container?.remoteConfigManager
     }
@@ -257,7 +260,7 @@ fun LaterboxApp(
         }
     }
 
-    val inboxUiState by inboxViewModel.uiState.collectAsState()
+    val inboxUiState by inboxViewModel.uiState.collectAsStateWithLifecycle()
     val chatUiState by chatViewModel.uiState.collectAsState()
     val recentConversations by chatViewModel.recentConversations.collectAsState()
     val speechState by chatViewModel.speechState.collectAsState()
@@ -271,8 +274,10 @@ fun LaterboxApp(
         }
     }
 
-    // Hoisted Inbox list state & composer state so scroll & draft survive navigation
+    // Hoisted nav-scoped list/grid states & composer state so scroll & draft survive navigation
     val inboxListState = rememberLazyListState()
+    val collectionsGridState = rememberLazyGridState()
+    val archiveListState = rememberLazyListState()
     var inboxComposerText by rememberSaveable { mutableStateOf("") }
     var isInboxComposerExpanded by rememberSaveable { mutableStateOf(false) }
     var inboxOverlayHeightPx by remember { mutableIntStateOf(0) }
@@ -1131,7 +1136,7 @@ fun LaterboxApp(
                                     collectionsViewModel.onOpenCreateDialog()
                                 }
                             }
-                            val uiState by collectionsViewModel.uiState.collectAsState()
+                            val uiState by collectionsViewModel.uiState.collectAsStateWithLifecycle()
                             CollectionsScreen(
                                 uiState = uiState,
                                 onCollectionClick = { collection ->
@@ -1156,7 +1161,8 @@ fun LaterboxApp(
                                 },
                                 onMenuClick = openMenuHandler,
                                 onSearchQueryChange = collectionsViewModel::onSearchQueryChange,
-                                onClearSearch = collectionsViewModel::onClearSearch
+                                onClearSearch = collectionsViewModel::onClearSearch,
+                                gridState = collectionsGridState
                             )
                         }
 
@@ -1176,7 +1182,10 @@ fun LaterboxApp(
                                 collectionDetailViewModel.setCollection(collectionId, collectionName)
                             }
 
-                            val uiState by collectionDetailViewModel.uiState.collectAsState()
+                            val uiState by collectionDetailViewModel.uiState.collectAsStateWithLifecycle()
+                            val detailListState = rememberSaveable(collectionId, saver = LazyListState.Saver) {
+                                LazyListState()
+                            }
                             CollectionDetailScreen(
                                 uiState = uiState,
                                 onBackClick = { navController.popBackStack() },
@@ -1202,14 +1211,15 @@ fun LaterboxApp(
                                         LaterboxDestination.MovieDetail.createRoute(providerId, titleId)
                                     )
                                 },
-                                onRemoveMediaItem = collectionDetailViewModel::onRemoveMediaItem
+                                onRemoveMediaItem = collectionDetailViewModel::onRemoveMediaItem,
+                                listState = detailListState
                             )
                         }
 
                         // Archive Screen
                         composable(LaterboxDestination.Archive.route) {
                             val archiveViewModel: ArchiveViewModel = viewModel(factory = AppViewModelProvider.Factory)
-                            val uiState by archiveViewModel.uiState.collectAsState()
+                            val uiState by archiveViewModel.uiState.collectAsStateWithLifecycle()
                             ArchiveScreen(
                                 uiState = uiState,
                                 onSearchQueryChange = archiveViewModel::onSearchQueryChange,
@@ -1226,7 +1236,8 @@ fun LaterboxApp(
                                 onMenuClick = openMenuHandler,
                                 viewMode = preferences.inboxViewMode,
                                 mediaReadyLinkIds = inboxUiState.mediaReadyLinkIds,
-                                onToggleRead = { link -> inboxViewModel.onToggleRead(link.id, link.isRead) }
+                                onToggleRead = { link -> inboxViewModel.onToggleRead(link.id, link.isRead) },
+                                listState = archiveListState
                             )
                         }
 

@@ -79,7 +79,7 @@ class CollectionsViewModel(
             )
         }
         baseState.copy(collections = rankedCollections)
-    }.stateIn(
+    }.distinctUntilChanged().stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = CollectionsUiState(isLoading = true)
