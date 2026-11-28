@@ -1518,9 +1518,8 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithTag("movies_home_runtime_quick").performClick()
         assertEquals(com.laterbox.app.movies.domain.model.RuntimeBucket.QUICK, selectedRuntime)
 
-        // Check curated rails & Surprise reroll
-        composeTestRule.onNodeWithTag("movies_home_list").performScrollToNode(hasTestTag("movies_home_recently_viewed_rail"))
-        composeTestRule.onNodeWithTag("movies_home_recently_viewed_rail").assertIsDisplayed()
+        // Recently Viewed strip is hidden from Movies & TV home feed (Viewing History tab keeps the data)
+        composeTestRule.onNodeWithTag("movies_home_recently_viewed_rail").assertDoesNotExist()
 
         composeTestRule.onNodeWithTag("movies_home_collections_rail").assertDoesNotExist()
         assertEquals(null, openedCollectionId)
@@ -2117,23 +2116,15 @@ class MoviesUiAndNavigationTest {
             }
         }
 
-        // Movies Home Recently Viewed rail -> Remove from Viewed -> Cancel does not delete -> Confirm deletes
-        composeTestRule.onNodeWithTag("movies_home_list")
-            .performScrollToNode(hasTestTag("movies_home_recently_viewed_rail"))
-        composeTestRule.onNodeWithTag("poster_menu_recent_recent_1").performClick()
-        composeTestRule.onNodeWithTag("poster_remove_viewed_recent_1").performClick()
-        composeTestRule.onNodeWithText("Remove from Viewed").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("movies_home_cancel_remove_viewed").performClick()
+        // Movies Home omits the Recently Viewed strip
+        composeTestRule.onNodeWithTag("movies_home_recently_viewed_rail").assertDoesNotExist()
         assertEquals(null, homeRemoved)
 
-        composeTestRule.onNodeWithTag("poster_menu_recent_recent_1").performClick()
-        composeTestRule.onNodeWithTag("poster_remove_viewed_recent_1").performClick()
-        composeTestRule.onNodeWithTag("movies_home_confirm_remove_viewed").performClick()
-        assertEquals("recent_1", homeRemoved?.id)
-
-        // Viewing History Recently Viewed tab -> Cancel does not delete -> Confirm deletes
+        // Viewing History header has no subtitle and Recently Viewed tab -> Cancel does not delete -> Confirm deletes
         composeTestRule.runOnIdle { showViewingHistory = true }
+        composeTestRule.onNodeWithText("0 recorded entries").assertDoesNotExist()
         composeTestRule.onNodeWithTag("viewing_history_tab_recent").performClick()
+        composeTestRule.onNodeWithText("1 recently viewed title").assertDoesNotExist()
         composeTestRule.onNodeWithTag("viewing_history_remove_recent_recent_1").performClick()
         composeTestRule.onNodeWithText("Remove from Viewed").assertIsDisplayed()
         composeTestRule.onNodeWithTag("viewing_history_cancel_remove_viewed").performClick()

@@ -136,4 +136,67 @@ class LaterboxAnalyticsOptOutTest {
         val resumedReq = server.takeRequest(2, TimeUnit.SECONDS)
         assertNotNull(resumedReq)
     }
+
+    @Test
+    fun foregroundReopen_emitsColdThenWarmSessionStarted_withSessionEndAndSharedSessionId() = runBlocking {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        ctx.getSharedPreferences("laterbox_analytics_prefs", Context.MODE_PRIVATE).edit().clear().commit()
+
+        val base = server.url("/").toString().trimEnd('/')
+        val remoteEnabled = MutableStateFlow(true)
+        val capturedEvents = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                val arr = JSONObject(request.body.readUtf8()).getJSONArray("events")
+                for (i in 0 until arr.length()) {
+                    capturedEvents.add(arr.getJSONObject(i))
+                }
+                return MockResponse().setResponseCode(200).setBody("""{"acceptedCount":1,"paused":false}""")
+            }
+        }
+        val tracker = LaterboxAnalyticsTracker(
+            appContext = ctx,
+            okHttpClient = OkHttpClient(),
+            baseUrlProvider = { base },
+            appCheckTokenProvider = { "token-1" },
+            remoteCollectionFlow = remoteEnabled,
+            heartbeatIntervalMs = 60_000L,
+        )
+
+        // Cold foreground -> screen navigation -> background stop -> warm foreground reopen
+        tracker.onAppForegrounded()
+        val d1 = System.currentTimeMillis() + 3_000L
+        while (!capturedEvents.any { it.getString("eventType") == "app_session_started" } && System.currentTimeMillis() < d1) {
+            kotlinx.coroutines.delay(20L)
+        }
+        tracker.trackScreenView("movies")
+        val d2 = System.currentTimeMillis() + 3_000L
+        while (!capturedEvents.any { it.getString("eventType") == "screen_viewed" } && System.currentTimeMillis() < d2) {
+            kotlinx.coroutines.delay(20L)
+        }
+        tracker.onAppBackgrounded()
+        val d3 = System.currentTimeMillis() + 3_000L
+        while (!capturedEvents.any { it.getString("eventType") == "app_session_ended" } && System.currentTimeMillis() < d3) {
+            kotlinx.coroutines.delay(20L)
+        }
+        tracker.onAppForegrounded()
+        val d4 = System.currentTimeMillis() + 3_000L
+        while (capturedEvents.count { it.getString("eventType") == "app_session_started" } < 2 && System.currentTimeMillis() < d4) {
+            kotlinx.coroutines.delay(20L)
+        }
+
+        val starts = capturedEvents.filter { it.getString("eventType") == "app_session_started" }
+        assertEquals(2, starts.size)
+        assertTrue(starts[0].getBoolean("coldStart"))
+        assertFalse(starts[1].getBoolean("coldStart"))
+
+        val firstSessionId = starts[0].getString("sessionId")
+        val secondSessionId = starts[1].getString("sessionId")
+        assertTrue(firstSessionId != secondSessionId)
+
+        val screenEv = capturedEvents.first { it.getString("eventType") == "screen_viewed" }
+        val endEv = capturedEvents.first { it.getString("eventType") == "app_session_ended" }
+        assertEquals(firstSessionId, screenEv.getString("sessionId"))
+        assertEquals(firstSessionId, endEv.getString("sessionId"))
+    }
 }

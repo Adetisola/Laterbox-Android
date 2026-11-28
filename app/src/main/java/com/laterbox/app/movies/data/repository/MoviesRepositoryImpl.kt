@@ -2054,7 +2054,9 @@ class MoviesRepositoryImpl(
         val resolved = if (item.canonicalId != null) item else mediaResolver.resolveOrRegister(item)
         cacheSummaries(listOf(resolved))
         val key = buildHistoryKey(resolved.providerId, resolved.id, seasonNumber, episodeNumber)
+        val rawKey = buildHistoryKey(item.providerId, item.id, seasonNumber, episodeNumber)
         val existing = moviesDao.getWatchHistoryByKey(key)
+            ?: (if (rawKey != key) moviesDao.getWatchHistoryByKey(rawKey) else null)
             ?: resolved.canonicalId?.let {
                 moviesDao.getWatchHistoryByCanonical(it, seasonNumber ?: 0, episodeNumber ?: 0)
             }
@@ -2073,6 +2075,7 @@ class MoviesRepositoryImpl(
         }
         val isCompleted = wasCompleted || reachedCompletion
         val completedAt = when {
+            wasCompleted -> existing?.completedAt ?: now
             reachedCompletion -> now
             else -> existing?.completedAt
         }
@@ -2858,6 +2861,31 @@ class MoviesRepositoryImpl(
             }
         }.flowOn(ioDispatcher)
     }
+
+    override suspend fun reconcileOfflineAssetsExist() = withContext(ioDispatcher) {
+        val dao = downloadedAssetDao ?: return@withContext
+        val resolver = localMediaUriResolver ?: return@withContext
+        val assets = dao.getAvailableOfflineMovieAssetsSnapshot()
+        for (asset in assets) {
+            if (resolver.invoke(asset.localPath) == null) {
+                dao.deleteAssetById(asset.id)
+            }
+        }
+    }
+
+    override fun observeTitleCompleted(providerId: String, titleId: String): Flow<Boolean> = flow {
+        val (resolvedProviderId, resolvedTitleId) = mediaResolver.resolveConcreteTarget(providerId, titleId, preferPlayable = false)
+        val cid = mediaResolver.resolveCanonicalIdForProvider(providerId, titleId)
+            ?: mediaResolver.resolveCanonicalIdForProvider(resolvedProviderId, resolvedTitleId)
+        val compositeId = "$resolvedProviderId:$resolvedTitleId"
+        emitAll(
+            moviesDao.observeHistoryForTitle(compositeId, cid).map { entries ->
+                entries.any { entry ->
+                    entry.isCompleted || (entry.durationMs > 0L && entry.positionMs.toFloat() / entry.durationMs.toFloat() >= 0.96f)
+                }
+            }
+        )
+    }.flowOn(ioDispatcher)
 
     private suspend fun findOfflineEpisodeAssets(
         providerId: String,

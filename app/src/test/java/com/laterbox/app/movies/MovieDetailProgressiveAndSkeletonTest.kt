@@ -11,6 +11,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.unit.dp
 import com.laterbox.app.movies.domain.model.AudioDubInfo
 import com.laterbox.app.movies.domain.model.CataloguePage
@@ -313,14 +314,58 @@ class MovieDetailProgressiveAndSkeletonTest {
         }
 
         composeTestRule.onNodeWithTag("detail_metadata_descriptive_row").performScrollTo().assertIsDisplayed()
-        composeTestRule.onNodeWithTag("detail_country_chip_United States").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("detail_language_chip_English").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("detail_genre_chip_Sci-Fi").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("detail_country_chip_United States").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("detail_language_chip_English").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("detail_genre_chip_Sci-Fi").performScrollTo().assertIsDisplayed()
 
         composeTestRule.onNodeWithTag("detail_metadata_audio_row").performScrollTo().assertIsDisplayed()
-        composeTestRule.onNodeWithTag("detail_dub_chip_dub_en").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("detail_dub_chip_dub_es").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("detail_dub_chip_dub_en").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("detail_dub_chip_dub_es").performScrollTo().assertIsDisplayed().performClick()
         assertEquals("dub_es", clickedDubId)
+    }
+
+    @Test
+    fun `detail screen limits long description to 2 lines with toggle and supports interactive subtitle selection`() {
+        var selectedSubtitle: SubtitleTrack? = null
+        val summary = MovieTitleSummary(
+            id = "film_long",
+            providerId = "moviebox",
+            kind = MediaKind.MOVIE,
+            title = "Long Description Film",
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+        )
+        val details = MediaDetails(
+            summary = summary,
+            fullDescription = "Line one of a very long movie synopsis designed to wrap well beyond two lines in a standard mobile viewport. Line two continues the plot summary with extra character details, twists, and setting descriptions so truncation activates reliably.",
+            availableSubtitles = listOf(
+                SubtitleTrack("sub_en", "English", "en", "English", "https://cdn.example/en.srt"),
+                SubtitleTrack("sub_fr", "French", "fr", "French", "https://cdn.example/fr.srt")
+            )
+        )
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                MovieDetailScreen(
+                    uiState = MovieDetailUiState(
+                        isLoading = false,
+                        details = details
+                    ),
+                    onBackClick = {},
+                    onRetry = {},
+                    onToggleWatchlist = {},
+                    onPlayClick = { _, _ -> },
+                    onSelectSeason = {},
+                    onOpenRelated = { _, _ -> },
+                    onOpenExternalUrl = {},
+                    onSelectSubtitle = { selectedSubtitle = it }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("detail_synopsis_text").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("detail_metadata_subtitle_row").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("detail_subtitle_chip_sub_fr").performScrollTo().assertIsDisplayed().performClick()
+        assertEquals("sub_fr", selectedSubtitle?.id)
     }
 
     @Test
@@ -410,5 +455,62 @@ class MovieDetailProgressiveAndSkeletonTest {
             }
         }
         composeTestRule.onNodeWithTag("viewing_history_skeleton").assertIsDisplayed()
+    }
+
+    @Test
+    fun `batch download bottom sheet replaces checkbox with checkmark only for selected downloaded quality`() {
+        val sources = listOf(
+            PlaybackSource(id = "src_720", url = "https://cdn.example.com/720.mp4", format = "MP4", qualityLabel = "720p", qualityHeight = 720, providerName = "MovieBox"),
+            PlaybackSource(id = "src_1080", url = "https://cdn.example.com/1080.mp4", format = "MP4", qualityLabel = "1080p", qualityHeight = 1080, providerName = "MovieBox")
+        )
+        val seasons = listOf(SeasonSummary(seasonNumber = 1, episodeCount = 2))
+        val episodes = listOf(
+            EpisodeItem(id = "ep1", seasonNumber = 1, episodeNumber = 1, title = "Pilot", runtimeMinutes = 30),
+            EpisodeItem(id = "ep2", seasonNumber = 1, episodeNumber = 2, title = "Chapter 2", runtimeMinutes = 30)
+        )
+        val offlineMatches = listOf(
+            com.laterbox.app.movies.domain.model.OfflineMediaMatch(
+                assetId = "asset_ep1_720",
+                sourceRef = "moviebox|show_1|1|1",
+                localPath = "/tmp/show_1_s1_e1_720p.mp4",
+                qualityLabel = "720p",
+                fileSizeBytes = 100_000L,
+                seasonNumber = 1,
+                episodeNumber = 1
+            )
+        )
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                com.laterbox.app.movies.ui.DownloadOptionsBottomSheet(
+                    title = "Severance",
+                    kind = MediaKind.TV_SERIES,
+                    sources = sources,
+                    subtitles = emptyList(),
+                    seasons = seasons,
+                    selectedSeasonNumber = 1,
+                    currentEpisodes = episodes,
+                    offlineMatches = offlineMatches,
+                    onSelectSource = {},
+                    onDownloadBatch = { _, _, _ -> },
+                    onDismiss = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("batch_quality_chip_720").performClick()
+        composeTestRule.onNodeWithTag("download_options_list")
+            .performScrollToNode(androidx.compose.ui.test.hasTestTag("batch_episode_row_1"))
+        composeTestRule.onNodeWithTag("batch_episode_downloaded_1", useUnmergedTree = true).assertIsDisplayed()
+        composeTestRule.onNodeWithTag("batch_episode_checkbox_1", useUnmergedTree = true).assertDoesNotExist()
+        composeTestRule.onNodeWithTag("download_options_list")
+            .performScrollToNode(androidx.compose.ui.test.hasTestTag("batch_episode_row_2"))
+        composeTestRule.onNodeWithTag("batch_episode_checkbox_2", useUnmergedTree = true).assertIsDisplayed()
+
+        composeTestRule.onNodeWithTag("batch_quality_chip_1080").performClick()
+        composeTestRule.onNodeWithTag("download_options_list")
+            .performScrollToNode(androidx.compose.ui.test.hasTestTag("batch_episode_row_1"))
+        composeTestRule.onNodeWithTag("batch_episode_downloaded_1", useUnmergedTree = true).assertDoesNotExist()
+        composeTestRule.onNodeWithTag("batch_episode_checkbox_1", useUnmergedTree = true).assertIsDisplayed()
     }
 }

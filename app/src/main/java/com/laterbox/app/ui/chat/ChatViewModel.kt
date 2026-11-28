@@ -185,20 +185,19 @@ class ChatViewModel(
                 action: ChatAction
             ): Boolean {
                 if (action.isIrreversibleDestructive) return false
-                if (!action.permissionCategory.requiresApprovalByDefault) return true
-                val prefs = userPreferencesRepository.userPreferencesFlow.first()
-                if (action.permissionCategory.key in prefs.grantedAssistantActionCategories) return true
-                val permissionKey = action.permissionKey
-                return conversationId != null &&
-                    permissionKey != null &&
-                    chatRepository.isActionAlwaysAllowed(conversationId, permissionKey)
+                if (conversationId == null) return false
+                if (chatRepository.isActionAlwaysAllowed(conversationId, action.permissionCategory.key)) {
+                    return true
+                }
+                val permissionKey = action.permissionKey ?: return false
+                return chatRepository.isActionAlwaysAllowed(conversationId, permissionKey)
             }
 
             override suspend fun grantAlwaysAllow(conversationId: String?, action: ChatAction) {
-                if (action.isIrreversibleDestructive) return
-                userPreferencesRepository.setAssistantCategoryPermission(action.permissionCategory.key, true)
+                if (action.isIrreversibleDestructive || conversationId == null) return
+                chatRepository.grantActionPermission(conversationId, action.permissionCategory.key)
                 val key = action.permissionKey
-                if (conversationId != null && key != null) {
+                if (key != null && key != action.permissionCategory.key) {
                     chatRepository.grantActionPermission(conversationId, key)
                 }
             }
@@ -715,7 +714,6 @@ class ChatViewModel(
         messageId: String? = null,
         actionId: String? = null
     ) {
-        if (action.category != ActionCategory.STATE_CHANGING) return
         val convId = _activeConversationId.value
         viewModelScope.launch {
             actionQueueCoordinator.enqueueSingle(
@@ -890,7 +888,7 @@ class ChatViewModel(
             action.taskId.isNullOrBlank() && action.assetId.isNullOrBlank() -> "that download reference is incomplete."
             else -> null
         }
-        else -> "that action isn't supported."
+        else -> validateReadOnlyActionTarget(action)
     }
 
     private suspend fun validateLink(linkId: Long): String? {
@@ -908,6 +906,29 @@ class ChatViewModel(
         messageId: String? = null,
         actionId: String? = null
     ): ActionExecutionOutcome {
+        if (action.category == ActionCategory.READ_ONLY) {
+            if (conversationId != null && messageId != null && actionId != null) {
+                chatRepository.updateMessageActionStatus(
+                    conversationId = conversationId,
+                    messageId = messageId,
+                    actionId = actionId,
+                    status = ChatActionStatus.AUTO_EXECUTING
+                )
+            }
+            enqueueUiAction(
+                UiActionDispatch(
+                    requestId = UUID.randomUUID().toString(),
+                    messageId = messageId.orEmpty(),
+                    actionId = actionId.orEmpty(),
+                    action = action,
+                    conversationId = conversationId.orEmpty()
+                )
+            )
+            return ActionExecutionOutcome(
+                succeeded = true,
+                skipStandardStatusAndReceipt = true
+            )
+        }
         var actionSucceeded = true
         val receipt: String = when (action) {
             is ChatAction.RetryInspection -> {
@@ -1164,6 +1185,24 @@ class ChatViewModel(
         }
     }
 
+    fun sendDictatedChatPrompt() {
+        stopDictation { text ->
+            val cleanTranscript = text.trim()
+            val current = _composerText.value
+            val combined = when {
+                current.isBlank() -> cleanTranscript
+                cleanTranscript.isBlank() -> current.trim()
+                else -> current.trimEnd() + " " + cleanTranscript
+            }.trim()
+            if (combined.isNotBlank()) {
+                _composerText.value = ""
+                sendMessage(combined)
+            } else if (speechState.value.message.isNullOrBlank()) {
+                _statusNotice.value = "Couldn't hear anything to send."
+            }
+        }
+    }
+
     fun acceptAudioConsent() {
         viewModelScope.launch {
             userPreferencesRepository.setAudioTranscriptionConsentAccepted(true)
@@ -1211,7 +1250,7 @@ class ChatViewModel(
                         capabilitySnapshot = builtContext.capabilitySnapshot,
                         runtimeContextBlock = builtContext.contextBlock,
                         actionSpecBlock = com.laterbox.app.ai.LaterboxKnowledgeBase.ALLOWED_ACTION_SPEC,
-                        grantedCategories = prefs.grantedAssistantActionCategories,
+                        grantedCategories = emptySet(),
                         enableWebSearch = true,
                         recentActionResults = recentActionReceipts
                     ).collect { event ->
@@ -1433,55 +1472,12 @@ class ChatViewModel(
         @Suppress("UNUSED_PARAMETER") prefs: com.laterbox.app.data.preferences.UserPreferences
     ) {
         if (trackedActions.isEmpty()) return
-        val mutatingBatch = mutableListOf<com.laterbox.app.ai.TrackedChatAction>()
-        for (tracked in trackedActions) {
-            if (tracked.status != ChatActionStatus.PROPOSED) continue
-            val action = tracked.action
-            if (action.category == ActionCategory.READ_ONLY) {
-                if (!processedReadOnlyActionKeys.add("$messageId:${tracked.actionId}")) continue
-                val problem = validateReadOnlyActionTarget(action)
-                if (problem != null) {
-                    chatRepository.updateMessageActionStatus(
-                        conversationId = conversationId,
-                        messageId = messageId,
-                        actionId = tracked.actionId,
-                        status = ChatActionStatus.FAILED,
-                        statusDetail = problem
-                    )
-                    reportActionOutcome(
-                        conversationId = conversationId,
-                        action = action,
-                        status = "failed",
-                        detail = problem,
-                        actionId = tracked.actionId,
-                        postFollowUpIfMissing = true
-                    )
-                } else {
-                    chatRepository.updateMessageActionStatus(
-                        conversationId = conversationId,
-                        messageId = messageId,
-                        actionId = tracked.actionId,
-                        status = ChatActionStatus.AUTO_EXECUTING
-                    )
-                    enqueueUiAction(
-                        UiActionDispatch(
-                            requestId = UUID.randomUUID().toString(),
-                            messageId = messageId,
-                            actionId = tracked.actionId,
-                            action = action,
-                            conversationId = conversationId
-                        )
-                    )
-                }
-            } else {
-                mutatingBatch.add(tracked)
-            }
-        }
-        if (mutatingBatch.isNotEmpty()) {
+        val proposedBatch = trackedActions.filter { it.status == ChatActionStatus.PROPOSED }
+        if (proposedBatch.isNotEmpty()) {
             actionQueueCoordinator.processBatch(
                 conversationId = conversationId,
                 messageId = messageId,
-                mutatingActions = mutatingBatch
+                mutatingActions = proposedBatch
             )
         }
     }

@@ -12,12 +12,12 @@ class AssistantPermissionAndMarkdownTest {
     fun `action permission categories and irreversible destructive guards are enforced`() {
         val navAction = ChatAction.OpenMoviesHome
         assertEquals(AssistantPermissionCategory.NAVIGATION_DISCOVERY, navAction.permissionCategory)
-        assertFalse(navAction.permissionCategory.requiresApprovalByDefault)
+        assertTrue(navAction.permissionCategory.requiresApprovalByDefault)
         assertFalse(navAction.isIrreversibleDestructive)
 
         val playAction = ChatAction.OpenMoviePlayer("moviebox", "123", title = "Film")
         assertEquals(AssistantPermissionCategory.PLAYBACK_CONTROL, playAction.permissionCategory)
-        assertFalse(playAction.permissionCategory.requiresApprovalByDefault)
+        assertTrue(playAction.permissionCategory.requiresApprovalByDefault)
         assertFalse(playAction.isIrreversibleDestructive)
 
         val watchlistAction = ChatAction.ToggleMovieWatchlist("moviebox", "123", add = true, title = "Film")
@@ -120,5 +120,27 @@ class AssistantPermissionAndMarkdownTest {
         for (act in allActions) {
             assertTrue(act.actionType.matches(Regex("[A-Z_]+")))
         }
+    }
+
+    @Test
+    fun `schedule reminder action parses triggerAtIso and normalizes unix seconds to future millis`() {
+        val futureIso = java.time.Instant.ofEpochMilli(System.currentTimeMillis() + 7_200_000L).toString()
+        val futureSeconds = (System.currentTimeMillis() / 1000L) + 3_600L
+        val raw = """
+            Got it, scheduling those reminders.
+            [ACTIONS]
+            [
+              {"type":"SCHEDULE_MOVIE_REMINDER","providerId":"moviebox","titleId":"101","triggerAtMillis":0,"triggerAtIso":"$futureIso","title":"Dune"},
+              {"type":"SCHEDULE_MOVIE_REMINDER","providerId":"moviebox","titleId":"102","triggerAtMillis":$futureSeconds,"title":"Andor"}
+            ]
+            [/ACTIONS]
+        """.trimIndent()
+
+        val parsed = AssistantActionHandler.parseModelResponse(raw)
+        assertEquals(2, parsed.actions.size)
+        val first = parsed.actions[0] as ChatAction.ScheduleMovieReminder
+        val second = parsed.actions[1] as ChatAction.ScheduleMovieReminder
+        assertTrue(first.triggerAtMillis > System.currentTimeMillis() + 3_600_000L)
+        assertEquals(futureSeconds * 1000L, second.triggerAtMillis)
     }
 }

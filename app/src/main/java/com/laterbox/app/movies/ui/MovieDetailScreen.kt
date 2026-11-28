@@ -35,11 +35,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.displayCutoutPadding
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -211,6 +213,7 @@ fun MovieDetailScreen(
     onDismissEpisodeResolutionPicker: () -> Unit = {},
     onSelectEpisodeRange: ((String) -> Unit)? = null,
     onRequestEpisodeSizes: () -> Unit = {},
+    onSelectSubtitle: (com.laterbox.app.movies.domain.model.SubtitleTrack) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -246,6 +249,7 @@ fun MovieDetailScreen(
             selectedSeasonNumber = uiState.selectedSeasonNumber,
             currentEpisodes = uiState.episodes,
             seriesSummary = currentDetails.summary,
+            offlineMatches = uiState.offlineMatches,
             isEnqueuing = uiState.isEnqueuingDownload,
             isLoadingEpisodeSizes = uiState.isLoadingEpisodeSizes,
             onSelectSeason = onSelectSeason,
@@ -1513,14 +1517,38 @@ fun MovieDetailScreen(
                                     )
                                 }
                             } else {
-                                Text(
-                                    text = details.fullDescription.ifBlank { "No description available." },
-                                    style = typography.bodyPrimary,
-                                    color = colors.textPrimary
-                                )
+                                val synopsisText = details.fullDescription.ifBlank { "No description available." }
+                                var descriptionExpanded by remember(synopsisText, summary.id) { mutableStateOf(false) }
+                                var descriptionHasOverflow by remember(synopsisText, summary.id) { mutableStateOf(false) }
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(
+                                        text = synopsisText,
+                                        style = typography.bodyPrimary,
+                                        color = colors.textPrimary,
+                                        maxLines = if (descriptionExpanded) Int.MAX_VALUE else 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                        onTextLayout = { layoutResult ->
+                                            if (!descriptionExpanded) {
+                                                descriptionHasOverflow = layoutResult.hasVisualOverflow
+                                            }
+                                        },
+                                        modifier = Modifier.testTag("detail_synopsis_text")
+                                    )
+                                    if (descriptionHasOverflow || descriptionExpanded) {
+                                        Text(
+                                            text = if (descriptionExpanded) "Show less" else "Show more",
+                                            style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
+                                            color = colors.accentPrimary,
+                                            modifier = Modifier
+                                                .clickable { descriptionExpanded = !descriptionExpanded }
+                                                .padding(vertical = 2.dp)
+                                                .testTag("detail_synopsis_toggle")
+                                        )
+                                    }
+                                }
                             }
 
-                            if (details.directorOrCreator != null || details.networkOrStudio != null || details.availableSubtitles.isNotEmpty()) {
+                            if (details.directorOrCreator != null || details.networkOrStudio != null) {
                                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     details.directorOrCreator?.let { director ->
                                         val isDirectorClickable = !details.directorPersonId.isNullOrBlank()
@@ -1562,20 +1590,14 @@ fun MovieDetailScreen(
                                             color = colors.textSecondary
                                         )
                                     }
-                                    if (details.availableSubtitles.isNotEmpty()) {
-                                        Text(
-                                            text = "Subtitles: ${details.availableSubtitles.joinToString { it.language }}",
-                                            style = typography.metaText,
-                                            color = colors.textSecondary
-                                        )
-                                    }
                                 }
                             }
 
-                            // 2-Row Responsive Metadata Pills:
-                            // Row 1: Descriptive Metadata (Country, Non-Dub Language, Genres)
-                            // Row 2: Audio Availability (Original Audio + Switchable Dubs)
-                            val countryPills = remember(summary.country) {
+                            // Single-Line Horizontal Rows with Muted Vertical Dividers & Edge Fades:
+                            // Row 1: Descriptive Metadata (Country | Non-Dub Language | Genres)
+                            // Row 2: Audio Track Selector
+                            // Row 3: Subtitle Selector
+                            val countryTags = remember(summary.country) {
                                 summary.country
                                     ?.split(",")
                                     ?.map { it.trim() }
@@ -1586,7 +1608,7 @@ fun MovieDetailScreen(
                             val dubLabelsLower = remember(details.audioDubs) {
                                 details.audioDubs.map { it.label.lowercase(Locale.US) }.toSet()
                             }
-                            val languagePills = remember(summary.language, dubLabelsLower) {
+                            val languageTags = remember(summary.language, dubLabelsLower) {
                                 summary.language
                                     ?.split(",")
                                     ?.map { it.trim() }
@@ -1594,103 +1616,88 @@ fun MovieDetailScreen(
                                     .orEmpty()
                                     .distinct()
                             }
-                            val genrePills = remember(summary.genres) {
+                            val genreTags = remember(summary.genres) {
                                 summary.genres.filter { it.isNotBlank() }.distinct()
                             }
-                            val hasDescriptivePills = countryPills.isNotEmpty() ||
-                                languagePills.isNotEmpty() ||
-                                genrePills.isNotEmpty()
+                            val descriptiveEntries = remember(countryTags, languageTags, genreTags) {
+                                buildList<Pair<String, String>> {
+                                    countryTags.forEach { add("detail_country_chip_$it" to it) }
+                                    languageTags.forEach { add("detail_language_chip_$it" to it) }
+                                    genreTags.forEach { add("detail_genre_chip_$it" to it) }
+                                }
+                            }
+                            val subtitleTracks = remember(availableRes?.subtitles, details.availableSubtitles) {
+                                availableRes?.subtitles.orEmpty().ifEmpty { details.availableSubtitles }
+                            }
+                            val hasDescriptiveRow = descriptiveEntries.isNotEmpty()
                             val hasAudioRow = details.audioDubs.isNotEmpty() || uiState.isRefreshingDetails
+                            val hasSubtitleRow = subtitleTracks.isNotEmpty()
 
-                            if (hasDescriptivePills || hasAudioRow) {
+                            if (hasDescriptiveRow || hasAudioRow || hasSubtitleRow) {
                                 Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .testTag("detail_metadata_pills_row"),
                                     verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    if (hasDescriptivePills) {
-                                        FlowRow(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .testTag("detail_metadata_descriptive_row"),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    if (hasDescriptiveRow) {
+                                        DetailHorizontalDividerRow(
+                                            modifier = Modifier.testTag("detail_metadata_descriptive_row")
                                         ) {
-                                            countryPills.forEach { country ->
-                                                MetadataPillChip(
-                                                    label = country,
-                                                    modifier = Modifier.testTag("detail_country_chip_$country")
-                                                )
-                                            }
-                                            languagePills.forEach { lang ->
-                                                MetadataPillChip(
-                                                    label = lang,
-                                                    modifier = Modifier.testTag("detail_language_chip_$lang")
-                                                )
-                                            }
-                                            genrePills.forEach { genre ->
-                                                MetadataPillChip(
-                                                    label = genre,
-                                                    modifier = Modifier.testTag("detail_genre_chip_$genre")
+                                            descriptiveEntries.forEachIndexed { index, (tag, label) ->
+                                                if (index > 0) {
+                                                    DetailVerticalDivider()
+                                                }
+                                                Text(
+                                                    text = label,
+                                                    style = typography.caption,
+                                                    color = colors.textSecondary,
+                                                    maxLines = 1,
+                                                    softWrap = false,
+                                                    modifier = Modifier
+                                                        .padding(vertical = 2.dp)
+                                                        .testTag(tag)
                                                 )
                                             }
                                         }
                                     }
 
                                     if (details.audioDubs.isNotEmpty()) {
-                                        FlowRow(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .testTag("detail_metadata_audio_row"),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        DetailHorizontalDividerRow(
+                                            modifier = Modifier.testTag("detail_metadata_audio_row")
                                         ) {
-                                            details.audioDubs.forEach { dub ->
+                                            details.audioDubs.forEachIndexed { index, dub ->
+                                                if (index > 0) {
+                                                    DetailVerticalDivider()
+                                                }
                                                 val refId = dub.referenceId
                                                 val isActiveDub = refId == null || refId == summary.id
                                                 val isSwitchableDub = !refId.isNullOrBlank() && refId != summary.id
-                                                Surface(
-                                                    shape = RoundedCornerShape(20.dp),
-                                                    color = if (isActiveDub && details.audioDubs.size > 1) {
-                                                        colors.accentContainer
-                                                    } else {
-                                                        colors.surfacePrimary
-                                                    },
-                                                    border = BorderStroke(
-                                                        0.75.dp,
-                                                        if (isActiveDub && details.audioDubs.size > 1) {
-                                                            colors.accentPrimary
+                                                Text(
+                                                    text = dub.label,
+                                                    style = typography.caption.copy(
+                                                        fontWeight = if (isActiveDub && details.audioDubs.size > 1) {
+                                                            FontWeight.SemiBold
                                                         } else {
-                                                            colors.borderSubtle
+                                                            FontWeight.Normal
                                                         }
                                                     ),
+                                                    color = if (isActiveDub && details.audioDubs.size > 1) {
+                                                        colors.accentPrimary
+                                                    } else {
+                                                        colors.textSecondary
+                                                    },
+                                                    maxLines = 1,
+                                                    softWrap = false,
                                                     modifier = Modifier
-                                                        .clip(RoundedCornerShape(20.dp))
                                                         .clickable(enabled = isSwitchableDub) {
                                                             if (!refId.isNullOrBlank()) {
                                                                 onOpenRelated(summary.providerId, refId)
                                                             }
                                                         }
+                                                        .padding(vertical = 2.dp)
                                                         .testTag("detail_dub_chip_${refId ?: dub.language}")
-                                                ) {
-                                                    Text(
-                                                        text = dub.label,
-                                                        style = typography.caption.copy(
-                                                            fontWeight = if (isActiveDub && details.audioDubs.size > 1) {
-                                                                FontWeight.SemiBold
-                                                            } else {
-                                                                FontWeight.Normal
-                                                            }
-                                                        ),
-                                                        color = if (isActiveDub && details.audioDubs.size > 1) {
-                                                            colors.accentPrimary
-                                                        } else {
-                                                            colors.textSecondary
-                                                        },
-                                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                                                    )
-                                                }
+                                                )
                                             }
                                         }
                                     } else if (uiState.isRefreshingDetails) {
@@ -1703,15 +1710,46 @@ fun MovieDetailScreen(
                                             Box(
                                                 modifier = Modifier
                                                     .width(98.dp)
-                                                    .height(26.dp)
-                                                    .skeletonShimmer(shape = RoundedCornerShape(20.dp))
+                                                    .height(20.dp)
+                                                    .skeletonShimmer(shape = RoundedCornerShape(4.dp))
                                             )
                                             Box(
                                                 modifier = Modifier
                                                     .width(88.dp)
-                                                    .height(26.dp)
-                                                    .skeletonShimmer(shape = RoundedCornerShape(20.dp))
+                                                    .height(20.dp)
+                                                    .skeletonShimmer(shape = RoundedCornerShape(4.dp))
                                             )
+                                        }
+                                    }
+
+                                    if (subtitleTracks.isNotEmpty()) {
+                                        val prefSubLang = uiState.seriesPreferences?.preferredSubtitleLanguage
+                                        val prefSubLabel = uiState.seriesPreferences?.preferredSubtitleLabel
+                                        DetailHorizontalDividerRow(
+                                            modifier = Modifier.testTag("detail_metadata_subtitle_row")
+                                        ) {
+                                            subtitleTracks.forEachIndexed { index, track ->
+                                                if (index > 0) {
+                                                    DetailVerticalDivider()
+                                                }
+                                                val isSelectedSub = (!prefSubLang.isNullOrBlank() &&
+                                                    track.languageCode.equals(prefSubLang, ignoreCase = true)) ||
+                                                    (!prefSubLabel.isNullOrBlank() &&
+                                                        track.language.equals(prefSubLabel, ignoreCase = true))
+                                                Text(
+                                                    text = track.language,
+                                                    style = typography.caption.copy(
+                                                        fontWeight = if (isSelectedSub) FontWeight.SemiBold else FontWeight.Normal
+                                                    ),
+                                                    color = if (isSelectedSub) colors.accentPrimary else colors.textSecondary,
+                                                    maxLines = 1,
+                                                    softWrap = false,
+                                                    modifier = Modifier
+                                                        .clickable { onSelectSubtitle(track) }
+                                                        .padding(vertical = 2.dp)
+                                                        .testTag("detail_subtitle_chip_${track.id}")
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -3386,5 +3424,67 @@ internal fun formatEpisodeReleaseDate(rawAirDate: String?): String? {
     val formatter = SimpleDateFormat("MMM dd, yy", Locale.US)
     return formatter.format(parsedDate)
 }
+
+@Composable
+private fun DetailHorizontalDividerRow(
+    modifier: Modifier = Modifier,
+    backgroundColor: Color = LaterboxTheme.colors.backgroundPrimary,
+    content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit
+) {
+    val scrollState = rememberScrollState()
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(IntrinsicSize.Min)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(scrollState)
+                .height(IntrinsicSize.Min),
+            verticalAlignment = Alignment.CenterVertically,
+            content = content
+        )
+        if (scrollState.canScrollBackward) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .width(24.dp)
+                    .fillMaxHeight()
+                    .background(
+                        Brush.horizontalGradient(
+                            colors = listOf(backgroundColor, Color.Transparent)
+                        )
+                    )
+            )
+        }
+        if (scrollState.canScrollForward) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .width(28.dp)
+                    .fillMaxHeight()
+                    .background(
+                        Brush.horizontalGradient(
+                            colors = listOf(Color.Transparent, backgroundColor)
+                        )
+                    )
+            )
+        }
+    }
+}
+
+@Composable
+private fun DetailVerticalDivider() {
+    val colors = LaterboxTheme.colors
+    Box(
+        modifier = Modifier
+            .padding(horizontal = 8.dp, vertical = 2.dp)
+            .width(1.dp)
+            .fillMaxHeight()
+            .background(colors.textSecondary.copy(alpha = 0.28f))
+    )
+}
+
 
 

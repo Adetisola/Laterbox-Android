@@ -169,7 +169,26 @@ fun RemoteMaintenanceStatusStrip(
     reducedMotion: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    if (!maintenance.shouldShowStatusStrip) return
+    var scheduleTickNowMs by androidx.compose.runtime.remember(maintenance) {
+        androidx.compose.runtime.mutableLongStateOf(System.currentTimeMillis())
+    }
+    androidx.compose.runtime.LaunchedEffect(maintenance) {
+        val now = System.currentTimeMillis()
+        scheduleTickNowMs = now
+        val startMs = parseScheduleEpochMs(maintenance.startsAt)
+        val endMs = parseScheduleEpochMs(maintenance.endsAt ?: maintenance.expiresAt)
+        val nextBoundaryMs = listOfNotNull(
+            startMs?.takeIf { it > now },
+            endMs?.takeIf { it > now }
+        ).minOrNull()
+        if (nextBoundaryMs != null) {
+            val waitMs = (nextBoundaryMs - now + 50L).coerceAtMost(24L * 3600L * 1000L)
+            kotlinx.coroutines.delay(waitMs)
+            scheduleTickNowMs = System.currentTimeMillis()
+        }
+    }
+    val isScheduleActive = maintenance.isWithinSchedule(scheduleTickNowMs)
+    if (!isScheduleActive || !((maintenance.enabled && maintenance.mode != RemoteMaintenanceMode.NONE) || (!maintenance.enabled && maintenance.showBannerInNormalMode && maintenance.message.isNotBlank()))) return
 
     val backgroundColor = when {
         maintenance.isFullActive -> androidx.compose.ui.graphics.Color(0xFFB71C1C)

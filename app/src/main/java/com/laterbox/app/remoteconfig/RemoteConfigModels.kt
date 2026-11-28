@@ -113,6 +113,31 @@ data class RemoteVersionPolicy(
     }
 }
 
+internal fun parseScheduleEpochMs(raw: String?): Long? {
+    val clean = raw?.trim().orEmpty()
+    if (clean.isEmpty()) return null
+    return runCatching { Instant.parse(clean).toEpochMilli() }.getOrNull()
+        ?: runCatching { java.time.OffsetDateTime.parse(clean).toInstant().toEpochMilli() }.getOrNull()
+}
+
+internal fun isScheduleWindowActive(
+    startsAt: String?,
+    endsAt: String?,
+    expiresAt: String?,
+    nowEpochMs: Long = System.currentTimeMillis(),
+): Boolean {
+    if (!startsAt.isNullOrBlank()) {
+        val startMs = parseScheduleEpochMs(startsAt) ?: return false
+        if (startMs > nowEpochMs) return false
+    }
+    val endSource = endsAt?.takeIf { it.isNotBlank() } ?: expiresAt?.takeIf { it.isNotBlank() }
+    if (endSource != null) {
+        val endMs = parseScheduleEpochMs(endSource) ?: return false
+        if (endMs < nowEpochMs) return false
+    }
+    return true
+}
+
 data class RemoteMaintenanceConfig(
     val enabled: Boolean = false,
     val mode: RemoteMaintenanceMode = RemoteMaintenanceMode.NONE,
@@ -120,19 +145,29 @@ data class RemoteMaintenanceConfig(
     val message: String = "",
     val allowLocalOfflineAccess: Boolean = true,
     val showBannerInNormalMode: Boolean = false,
+    val startsAt: String? = null,
+    val endsAt: String? = null,
+    val expiresAt: String? = null,
 ) {
+    fun isWithinSchedule(nowEpochMs: Long = System.currentTimeMillis()): Boolean =
+        isScheduleWindowActive(startsAt, endsAt, expiresAt, nowEpochMs)
+
     val isPartialActive: Boolean
-        get() = enabled && mode == RemoteMaintenanceMode.PARTIAL
+        get() = enabled && mode == RemoteMaintenanceMode.PARTIAL && isWithinSchedule()
 
     val isFullActive: Boolean
-        get() = enabled && mode == RemoteMaintenanceMode.FULL
+        get() = enabled && mode == RemoteMaintenanceMode.FULL && isWithinSchedule()
 
     val isOnlineServicesPaused: Boolean
-        get() = enabled && (mode == RemoteMaintenanceMode.PARTIAL || mode == RemoteMaintenanceMode.FULL)
+        get() = enabled &&
+            (mode == RemoteMaintenanceMode.PARTIAL || mode == RemoteMaintenanceMode.FULL) &&
+            isWithinSchedule()
 
     val shouldShowStatusStrip: Boolean
-        get() = (enabled && mode != RemoteMaintenanceMode.NONE) ||
-            (!enabled && showBannerInNormalMode && message.isNotBlank())
+        get() = isWithinSchedule() && (
+            (enabled && mode != RemoteMaintenanceMode.NONE) ||
+                (!enabled && showBannerInNormalMode && message.isNotBlank())
+            )
 }
 
 data class RemoteAnnouncementItem(
@@ -148,7 +183,13 @@ data class RemoteAnnouncementItem(
     val minVersionCode: Int = 0,
     val maxVersionCode: Int = 0,
     val enabled: Boolean = true,
+    val startsAt: String? = null,
+    val endsAt: String? = null,
+    val expiresAt: String? = null,
 ) {
+    fun isWithinSchedule(nowEpochMs: Long = System.currentTimeMillis()): Boolean =
+        isScheduleWindowActive(startsAt, endsAt, expiresAt, nowEpochMs)
+
     fun targetsSurface(target: RemoteUiSurface): Boolean {
         return target in surfaces || (surfaces.isEmpty() && surface == target)
     }
@@ -263,10 +304,12 @@ data class RemoteConfigSnapshot(
     fun activeAnnouncementsForSurface(
         surface: RemoteUiSurface,
         dismissedIds: Set<String> = emptySet(),
+        nowEpochMs: Long = System.currentTimeMillis(),
     ): List<RemoteAnnouncementItem> {
         return announcements
             .filter { item ->
                 item.enabled &&
+                    item.isWithinSchedule(nowEpochMs) &&
                     item.targetsSurface(surface) &&
                     (!item.dismissible || (item.id !in dismissedIds && item.dismissalKey() !in dismissedIds))
             }

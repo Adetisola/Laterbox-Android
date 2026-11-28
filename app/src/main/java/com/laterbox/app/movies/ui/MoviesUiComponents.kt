@@ -1637,6 +1637,7 @@ fun DownloadOptionsBottomSheet(
     selectedSeasonNumber: Int?,
     currentEpisodes: List<EpisodeItem>,
     seriesSummary: MovieTitleSummary? = null,
+    offlineMatches: List<com.laterbox.app.movies.domain.model.OfflineMediaMatch> = emptyList(),
     isEnqueuing: Boolean = false,
     isLoadingEpisodeSizes: Boolean = false,
     onSelectSeason: (Int) -> Unit = {},
@@ -1679,6 +1680,31 @@ fun DownloadOptionsBottomSheet(
 
     var batchPreferredQualityHeight by remember(availableQualityHeights) {
         mutableStateOf(availableQualityHeights.firstOrNull())
+    }
+
+    val downloadedEpisodesForSelectedQuality = remember(
+        offlineMatches,
+        seriesSummary?.providerId,
+        seriesSummary?.id,
+        batchSeason,
+        batchPreferredQualityHeight
+    ) {
+        if (offlineMatches.isEmpty()) return@remember emptySet()
+        buildSet {
+            for (match in offlineMatches) {
+                val s = match.seasonNumber ?: continue
+                val e = match.episodeNumber ?: continue
+                if (s != batchSeason) continue
+                if (seriesSummary != null && !match.matchesTitleEpisode(seriesSummary.providerId, seriesSummary.id, batchSeason, e)) {
+                    continue
+                }
+                val matchHeight = Regex("(\\d{3,4})").find(match.qualityLabel.orEmpty())
+                    ?.groupValues?.getOrNull(1)?.toIntOrNull()
+                if (batchPreferredQualityHeight == null || matchHeight == batchPreferredQualityHeight) {
+                    add(e)
+                }
+            }
+        }
     }
 
     val batchSourceEpisodes = remember(batchSeason, seasons, currentEpisodes, selectedSeasonNumber) {
@@ -1743,6 +1769,14 @@ fun DownloadOptionsBottomSheet(
     // Keyed only by batchSeason / series id so switching episode ranges preserves multi-range selections
     var selectedEpisodes by remember(batchSeason, seriesSummary?.id) {
         mutableStateOf(emptySet<Int>())
+    }
+    LaunchedEffect(downloadedEpisodesForSelectedQuality) {
+        if (downloadedEpisodesForSelectedQuality.isNotEmpty()) {
+            val filtered = selectedEpisodes - downloadedEpisodesForSelectedQuality
+            if (filtered != selectedEpisodes) {
+                selectedEpisodes = filtered
+            }
+        }
     }
     val episodeListState = rememberLazyListState()
     LaunchedEffect(activeRange?.key) {
@@ -1950,14 +1984,15 @@ fun DownloadOptionsBottomSheet(
                             style = typography.uiLabel.copy(fontWeight = FontWeight.SemiBold),
                             color = colors.textPrimary
                         )
-                        if (displayedEpisodeNumbers.isNotEmpty()) {
-                            val allDisplayedSelected = displayedEpisodeNumbers.all { it in selectedEpisodes }
+                        val selectableEpisodeNumbers = displayedEpisodeNumbers.filterNot { it in downloadedEpisodesForSelectedQuality }
+                        if (selectableEpisodeNumbers.isNotEmpty()) {
+                            val allDisplayedSelected = selectableEpisodeNumbers.all { it in selectedEpisodes }
                             TextButton(
                                 onClick = {
                                     selectedEpisodes = if (allDisplayedSelected) {
-                                        selectedEpisodes - displayedEpisodeNumbers.toSet()
+                                        selectedEpisodes - selectableEpisodeNumbers.toSet()
                                     } else {
-                                        selectedEpisodes + displayedEpisodeNumbers
+                                        selectedEpisodes + selectableEpisodeNumbers
                                     }
                                 },
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
@@ -1967,7 +2002,7 @@ fun DownloadOptionsBottomSheet(
                                     text = if (allDisplayedSelected) {
                                         if (activeRange != null) "Clear Range" else "Clear All"
                                     } else {
-                                        "Select All (${displayedEpisodeNumbers.size})"
+                                        "Select All (${selectableEpisodeNumbers.size})"
                                     },
                                     style = typography.caption.copy(fontWeight = FontWeight.SemiBold),
                                     color = colors.accentPrimary
@@ -2006,7 +2041,8 @@ fun DownloadOptionsBottomSheet(
                             contentType = { _, _ -> "batch_episode" }
                         ) { _, episodeItem ->
                             val epNum = episodeItem.episodeNumber
-                            val checked = epNum in selectedEpisodes
+                            val isDownloadedForQuality = epNum in downloadedEpisodesForSelectedQuality
+                            val checked = !isDownloadedForQuality && (epNum in selectedEpisodes)
                             val targetQ = batchPreferredQualityHeight
                             val exactSizeMb = targetQ?.let { q ->
                                 episodeItem.sizesMbByQuality[q]
@@ -2026,6 +2062,8 @@ fun DownloadOptionsBottomSheet(
                             }
 
                             val sizeSubtitle = when {
+                                isDownloadedForQuality ->
+                                    targetQ?.let { "Downloaded · ${it}p" } ?: "Already downloaded"
                                 exactSizeMb != null && exactSizeMb > 0.0 ->
                                     "${targetQ}p · ${formatDownloadSizeMb(exactSizeMb)}"
                                 fallbackLowerEntry != null ->
@@ -2053,7 +2091,7 @@ fun DownloadOptionsBottomSheet(
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(10.dp))
                                     .background(colors.surfaceSecondary)
-                                    .clickable {
+                                    .clickable(enabled = !isDownloadedForQuality) {
                                         selectedEpisodes = if (checked) {
                                             selectedEpisodes - epNum
                                         } else {
@@ -2074,29 +2112,45 @@ fun DownloadOptionsBottomSheet(
                                     Text(
                                         text = primaryLabel,
                                         style = typography.uiLabel.copy(fontWeight = FontWeight.Medium),
-                                        color = colors.textPrimary,
+                                        color = if (isDownloadedForQuality) colors.textSecondary else colors.textPrimary,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
                                         text = sizeSubtitle,
                                         style = typography.caption,
-                                        color = colors.textSecondary,
+                                        color = if (isDownloadedForQuality) colors.accentPrimary else colors.textSecondary,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                 }
-                                Checkbox(
-                                    checked = checked,
-                                    onCheckedChange = { nowChecked ->
-                                        selectedEpisodes = if (nowChecked) {
-                                            selectedEpisodes + epNum
-                                        } else {
-                                            selectedEpisodes - epNum
-                                        }
-                                    },
-                                    modifier = Modifier.testTag("batch_episode_checkbox_$epNum")
-                                )
+                                if (isDownloadedForQuality) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .testTag("batch_episode_downloaded_$epNum"),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(LaterboxIcons.Check),
+                                            contentDescription = "Already downloaded",
+                                            tint = colors.accentPrimary,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                } else {
+                                    Checkbox(
+                                        checked = checked,
+                                        onCheckedChange = { nowChecked ->
+                                            selectedEpisodes = if (nowChecked) {
+                                                selectedEpisodes + epNum
+                                            } else {
+                                                selectedEpisodes - epNum
+                                            }
+                                        },
+                                        modifier = Modifier.testTag("batch_episode_checkbox_$epNum")
+                                    )
+                                }
                             }
                         }
                     }

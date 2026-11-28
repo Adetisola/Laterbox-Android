@@ -1894,4 +1894,31 @@ class MoviesRepositoryTest {
         val detail = repo.getDetails(com.laterbox.app.movies.data.provider.MovieBoxProvider.PROVIDER_ID, "8906").getOrThrow()
         assertEquals("https://macdn.aoneroom.com/media/avatar-sd.mp4", detail.summary.trailerUrl)
     }
+
+    @Test
+    fun saveWatchProgress_preservesPermanentIsCompletedAndCompletedAtAcrossLowerPositions() = runTest {
+        val repo = MoviesRepositoryImpl(
+            moviesDao = db.moviesDao(),
+            internetArchiveProvider = InternetArchiveMoviesProvider(OkHttpClient(), server.url("/").toString().trimEnd('/')),
+            tvMazeProvider = TvMazeSeriesProvider(OkHttpClient(), server.url("/").toString().trimEnd('/')),
+            tmdbProvider = TmdbOptionalMoviesProvider(OkHttpClient(), apiKeyProvider = { "" }, baseUrl = server.url("/").toString().trimEnd('/')),
+            useSampleFixturesOnlyProvider = { false },
+            nowMs = { fakeClockMs }
+        )
+        val movie = MovieTitleSummary(
+            id = "perm_movie_1",
+            providerId = "moviebox",
+            title = "Permanent Watched Film",
+            kind = MediaKind.MOVIE,
+            releaseYear = 2024,
+            sourceBadge = DataSourceBadge.LIVE_MOVIEBOX
+        )
+        repo.markWatched(movie, durationMs = 1_000_000L)
+        fakeClockMs += 5_000L
+        repo.saveWatchProgress(movie, positionMs = 120_000L, durationMs = 1_000_000L)
+
+        val historyItem = repo.observeMovieWatchHistory().first().first { it.titleId == "perm_movie_1" }
+        assertTrue(historyItem.isCompleted)
+        assertEquals(120_000L, historyItem.positionMs)
+    }
 }

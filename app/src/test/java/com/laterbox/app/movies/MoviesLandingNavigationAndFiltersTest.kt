@@ -282,11 +282,15 @@ class MoviesLandingNavigationAndFiltersTest {
         composeTestRule.onNodeWithTag("movies_home_collections_rail").assertDoesNotExist()
         composeTestRule.onNodeWithText("Your Collections").assertDoesNotExist()
 
+        // Confirm Recently Viewed is hidden from Movies landing while remaining in Viewing History
+        composeTestRule.onNodeWithTag("movies_home_recently_viewed_rail").assertDoesNotExist()
+
         // Measure vertical bounds in exact required order inside tall viewport
-        val heroTop = composeTestRule.onNodeWithTag("movies_hero_pager").getBoundsInRoot().top
+        val heroTop = composeTestRule.onNodeWithTag("movies_home_pager").let {
+            composeTestRule.onNodeWithTag("movies_hero_pager").getBoundsInRoot().top
+        }
         val continueTop = composeTestRule.onNodeWithText("Continue Watching").getBoundsInRoot().top
         val watchlistTop = composeTestRule.onNodeWithTag("movies_home_watchlist_rail").getBoundsInRoot().top
-        val recentTop = composeTestRule.onNodeWithTag("movies_home_recently_viewed_rail").getBoundsInRoot().top
         val bywTop = composeTestRule.onNodeWithTag("movies_home_byw_rail_0").getBoundsInRoot().top
         val surpriseTop = composeTestRule.onNodeWithTag("movies_home_surprise_card").getBoundsInRoot().top
         val topRatedTop = composeTestRule.onNodeWithTag("movies_home_top_rated_rail").getBoundsInRoot().top
@@ -294,8 +298,7 @@ class MoviesLandingNavigationAndFiltersTest {
 
         assertTrue(heroTop < continueTop)
         assertTrue(continueTop < watchlistTop)
-        assertTrue(watchlistTop < recentTop)
-        assertTrue(recentTop < bywTop)
+        assertTrue(watchlistTop < bywTop)
         assertTrue(bywTop < surpriseTop)
         assertTrue(surpriseTop < topRatedTop)
         assertTrue(topRatedTop < newestTop)

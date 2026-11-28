@@ -134,7 +134,6 @@ class AssistantActionQueueCoordinator(
         messageId: String? = null,
         actionId: String? = null
     ) {
-        if (action.category != ActionCategory.STATE_CHANGING) return
         val autoExecuteItem: QueuedMutatingAction? = enqueueMutex.withLock {
             val item = QueuedMutatingAction(
                 action = action,
@@ -215,7 +214,6 @@ class AssistantActionQueueCoordinator(
         synchronized(stateLock) {
             for (tracked in mutatingActions) {
                 if (tracked.status != ChatActionStatus.PROPOSED) continue
-                if (tracked.action.category != ActionCategory.STATE_CHANGING) continue
                 if (!processedMessageActionKeys.add("$messageId:${tracked.actionId}")) continue
                 batchItems.add(
                     QueuedMutatingAction(
@@ -680,7 +678,7 @@ class AssistantActionQueueCoordinator(
         }
     }
 
-    private fun dedupeKeyFor(action: ChatAction, conversationId: String?): String? = when (action) {
+    private fun dedupeKeyFor(action: ChatAction, conversationId: String?): String = when (action) {
         is ChatAction.RetryInspection -> "RI:${action.linkId}"
         is ChatAction.RefreshMetadata -> "RM:${action.linkId}"
         is ChatAction.RetryDownload -> "RD:${action.taskId}"
@@ -692,7 +690,7 @@ class AssistantActionQueueCoordinator(
         is ChatAction.RenameConversation -> "RC:${action.conversationId ?: conversationId.orEmpty()}:${action.title}"
         is ChatAction.DeleteConversation -> "DC:${action.conversationId ?: conversationId.orEmpty()}"
         is ChatAction.DeleteDownload -> "DD:${action.taskId.orEmpty()}:${action.assetId.orEmpty()}"
-        else -> null
+        else -> "RO:${conversationId.orEmpty()}:${AssistantActionHandler.actionSignature(action)}"
     }
 
     companion object {

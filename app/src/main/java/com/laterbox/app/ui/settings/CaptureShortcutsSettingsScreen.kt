@@ -63,21 +63,22 @@ fun CaptureShortcutsSettingsScreen(
         AccessibilityServiceStateHelper.isAccessibilityServiceEnabled(context)
     }
 
-    Box(
+    Column(
         modifier = modifier
             .fillMaxSize()
             .background(colors.backgroundPrimary)
     ) {
+        SettingsSubpageHeader(
+            title = "Capture & Shortcuts",
+            onBackClick = onBackClick
+        )
+
         Column(
             modifier = Modifier
-                .fillMaxSize()
+                .weight(1f)
+                .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
         ) {
-            SettingsSubpageHeader(
-                title = "Capture & Shortcuts",
-                onBackClick = onBackClick
-            )
-
             Spacer(modifier = Modifier.height(spacing.xs))
 
             SettingsSectionHeader(title = "Quick Capture")

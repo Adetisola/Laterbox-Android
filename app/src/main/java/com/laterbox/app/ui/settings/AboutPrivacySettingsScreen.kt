@@ -57,21 +57,22 @@ fun AboutPrivacySettingsScreen(
     val colors = LaterboxTheme.colors
     val spacing = LaterboxTheme.spacing
 
-    Box(
+    Column(
         modifier = modifier
             .fillMaxSize()
             .background(colors.backgroundPrimary)
     ) {
+        SettingsSubpageHeader(
+            title = "About Laterbox",
+            onBackClick = onBackClick
+        )
+
         Column(
             modifier = Modifier
-                .fillMaxSize()
+                .weight(1f)
+                .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
         ) {
-            SettingsSubpageHeader(
-                title = "About Laterbox",
-                onBackClick = onBackClick
-            )
-
             Spacer(modifier = Modifier.height(spacing.xs))
 
             AboutLaterboxSection(

@@ -296,27 +296,6 @@ fun MoviesViewingHistoryScreen(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    val subtitleCount = when {
-                        activeSeasonGroup != null ->
-                            "${activeSeasonGroup.watchedEpisodeCount} watched ${if (activeSeasonGroup.watchedEpisodeCount == 1) "episode" else "episodes"}"
-                        activeSeriesGroup != null ->
-                            if (activeSeriesGroup.shouldGroupBySeason) {
-                                "${activeSeriesGroup.seasonCountInHistory} seasons · ${activeSeriesGroup.watchedEpisodeCount} watched episodes"
-                            } else {
-                                "${activeSeriesGroup.watchedEpisodeCount} watched episodes"
-                            }
-                        selectedTab == ViewingHistoryTab.RECENTLY_VIEWED ->
-                            "${recentlyViewed.size} recently viewed ${if (recentlyViewed.size == 1) "title" else "titles"}"
-                        selectedTab == ViewingHistoryTab.HIDDEN ->
-                            "${hiddenTitles.size} hidden ${if (hiddenTitles.size == 1) "title" else "titles"}"
-                        else ->
-                            "${items.size} recorded ${if (items.size == 1) "entry" else "entries"}"
-                    }
-                    Text(
-                        text = subtitleCount,
-                        style = typography.metaText,
-                        color = colors.textSecondary
-                    )
                 }
             }
 

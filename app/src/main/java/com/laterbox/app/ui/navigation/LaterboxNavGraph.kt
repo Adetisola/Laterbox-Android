@@ -1087,6 +1087,7 @@ fun LaterboxApp(
                                 onMicClick = { beginDictationFor("CHAT") },
                                 speechState = speechState,
                                 onStopDictation = { chatViewModel.stopDictationIntoChatDraft() },
+                                onSendDictation = { chatViewModel.sendDictatedChatPrompt() },
                                 onCancelDictation = { chatViewModel.cancelDictation() },
                                 showAudioConsent = pendingAudioConsentTarget == "CHAT",
                                 onAcceptAudioConsent = acceptAudioConsentAndStart,
@@ -1621,6 +1622,7 @@ fun LaterboxApp(
                                 onSelectSeason = movieDetailViewModel::selectSeason,
                                 onSelectEpisodeRange = movieDetailViewModel::selectOnePieceEpisodeRange,
                                 onRequestEpisodeSizes = movieDetailViewModel::requestSeasonEpisodeSizes,
+                                onSelectSubtitle = movieDetailViewModel::selectSubtitlePreference,
                                 onOpenRelated = { relProvider, relId ->
                                     if (relProvider.isNotBlank() && relId.isNotBlank()) {
                                         navController.navigate(
@@ -1787,9 +1789,7 @@ fun LaterboxApp(
                                 onSmartNotificationsTipsChange = settingsViewModel::setSmartNotificationsTips,
                                 onSmartNotificationsMoviesTvChange = settingsViewModel::setSmartNotificationsMoviesTv,
                                 onQuietHoursEnabledChange = settingsViewModel::setQuietHoursEnabled,
-                                onQuietHoursWindowChange = settingsViewModel::setQuietHoursWindow,
-                                onSetAssistantCategoryPermission = settingsViewModel::setAssistantCategoryPermission,
-                                onRevokeAllAssistantPermissions = settingsViewModel::revokeAllAssistantCategoryPermissions
+                                onQuietHoursWindowChange = settingsViewModel::setQuietHoursWindow
                             )
                         }
 
@@ -2121,6 +2121,19 @@ fun LaterboxApp(
                                                 onStopDictation = {
                                                     chatViewModel.stopDictation { transcript ->
                                                         inboxComposerText = appendDictatedTranscript(inboxComposerText, transcript)
+                                                    }
+                                                },
+                                                onSendDictation = {
+                                                    chatViewModel.stopDictation { transcript ->
+                                                        val combined = appendDictatedTranscript(inboxComposerText, transcript).trim()
+                                                        if (combined.isNotBlank()) {
+                                                            haptics.tick()
+                                                            inboxComposerText = ""
+                                                            collapseInboxComposer()
+                                                            navController.navigate(
+                                                                LaterboxDestination.Chat.createRoute(initialPrompt = combined)
+                                                            )
+                                                        }
                                                     }
                                                 },
                                                 onCancelDictation = { chatViewModel.cancelDictation() },

@@ -142,22 +142,23 @@ fun DataStorageSettingsScreen(
         }
     }
 
-    Box(
+    Column(
         modifier = modifier
             .fillMaxSize()
             .background(colors.backgroundPrimary)
             .testTag("data_storage_settings_screen")
     ) {
+        SettingsSubpageHeader(
+            title = "Data & Storage",
+            onBackClick = onBackClick
+        )
+
         Column(
             modifier = Modifier
-                .fillMaxSize()
+                .weight(1f)
+                .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
         ) {
-            SettingsSubpageHeader(
-                title = "Data & Storage",
-                onBackClick = onBackClick
-            )
-
             Spacer(modifier = Modifier.height(spacing.xs))
 
             SettingsSectionHeader(title = "Backup & Restore")

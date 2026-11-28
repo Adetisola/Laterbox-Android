@@ -193,13 +193,16 @@ class AssistantActionPermissionsTest {
         vm.alwaysAllowMutatingActionInConversation()
         awaitCondition(this) {
             mediaRepo.inspectedLinkIds.size == 1 &&
-                "LIBRARY_MANAGEMENT" in kotlinx.coroutines.runBlocking { prefs.userPreferencesFlow.first().grantedAssistantActionCategories }
+                chatRepo.getGrantedActionTypes(convA).isNotEmpty()
         }
 
         assertEquals(1, mediaRepo.inspectedLinkIds.size)
-        assertEquals(listOf("RETRY_INSPECTION"), chatRepo.getGrantedActionTypes(convA))
+        val convAGrants = chatRepo.getGrantedActionTypes(convA)
+        assertTrue("LIBRARY_MANAGEMENT" in convAGrants)
+        assertTrue("RETRY_INSPECTION" in convAGrants)
+        assertTrue(kotlinx.coroutines.runBlocking { prefs.userPreferencesFlow.first().grantedAssistantActionCategories.isEmpty() })
 
-        // Repeat Library Management action runs automatically without prompting
+        // Repeat Library Management action runs automatically without prompting in Conv A
         vm.requestMutatingActionConfirmation(ChatAction.RetryDownload("task-1", "Demo Video"))
         awaitCondition(this) { mediaRepo.retriedTaskIds.size == 1 }
         assertNull(vm.uiState.value.pendingMutatingAction)
@@ -220,8 +223,7 @@ class AssistantActionPermissionsTest {
         vm.dismissMutatingAction()
         awaitCondition(this) { vm.uiState.value.pendingMutatingAction == null }
 
-        // Revoking categories restores prompting in Conv B
-        kotlinx.coroutines.runBlocking { prefs.revokeAllAssistantCategoryPermissions() }
+        // Switching to Conv B prompts again automatically since Always Allow is conversation-scoped
         vm.selectConversation(convB)
         awaitCondition(this) { vm.uiState.value.activeConversationId == convB }
         vm.requestMutatingActionConfirmation(ChatAction.RetryInspection(linkId, "Demo"))
@@ -421,6 +423,7 @@ class AssistantActionPermissionsTest {
                 )
             )
             prefs.setAssistantAiDisclosureAccepted(true)
+            // Global category permissions are ignored; all actions start awaiting inline approval.
             prefs.setAssistantCategoryPermission("LIBRARY_MANAGEMENT", true)
 
             val activityRepo = ActivityEventRepository(db.activityEventDao())
@@ -444,19 +447,17 @@ class AssistantActionPermissionsTest {
 
             streamVm.sendMessage("Open Severance and add it to my watchlist")
             awaitCondition(this, timeoutMs = 5_000L) {
-                streamVm.pendingUiActionDispatch.value != null &&
-                    moviesRepo.observeWatchlist().first().any { it.id == "66" } &&
-                    streamVm.uiState.value.pendingMutatingAction is ChatAction.DeleteDownload
+                streamVm.uiState.value.pendingMutatingAction is ChatAction.OpenMovieDetail
             }
-
-            // Navigation dispatched ONCE, granted watchlist ran ONCE, destructive delete awaits approval
-            val dispatch = streamVm.pendingUiActionDispatch.value!!
-            assertTrue(dispatch.action is ChatAction.OpenMovieDetail)
-            assertEquals(1, moviesRepo.observeWatchlist().first().count { it.id == "66" })
-            assertTrue(streamVm.uiState.value.pendingMutatingAction is ChatAction.DeleteDownload)
+            assertEquals(null, streamVm.pendingUiActionDispatch.value)
+            assertTrue(moviesRepo.observeWatchlist().first().isEmpty())
             assertTrue(streamVm.uiState.value.manifestOutOfSync)
 
-            // UI reports navigation outcome -> updates chip status to EXECUTED
+            // 1. User approves navigation action inline -> dispatches ONCE -> UI reports outcome
+            streamVm.confirmMutatingAction()
+            awaitCondition(this, timeoutMs = 5_000L) { streamVm.pendingUiActionDispatch.value != null }
+            val dispatch = streamVm.pendingUiActionDispatch.value!!
+            assertTrue(dispatch.action is ChatAction.OpenMovieDetail)
             streamVm.reportUiActionOutcome(
                 requestId = dispatch.requestId,
                 messageId = dispatch.messageId,
@@ -466,6 +467,18 @@ class AssistantActionPermissionsTest {
                 detail = "Opened details for Severance"
             )
             awaitCondition(this) { streamVm.pendingUiActionDispatch.value == null }
+
+            // 2. Watchlist action waits inline even when legacy global grant was set -> approve once
+            awaitCondition(this, timeoutMs = 5_000L) {
+                streamVm.uiState.value.pendingMutatingAction is ChatAction.ToggleMovieWatchlist
+            }
+            streamVm.confirmMutatingAction()
+            awaitCondition(this, timeoutMs = 5_000L) {
+                moviesRepo.observeWatchlist().first().any { it.id == "66" } &&
+                    streamVm.uiState.value.pendingMutatingAction is ChatAction.DeleteDownload
+            }
+            assertEquals(1, moviesRepo.observeWatchlist().first().count { it.id == "66" })
+            assertTrue(streamVm.uiState.value.pendingMutatingAction is ChatAction.DeleteDownload)
 
             val convId = streamVm.uiState.value.activeConversationId!!
             val assistantMsg = chatRepo.getMessagesSnapshot(convId)
@@ -522,6 +535,10 @@ class AssistantActionPermissionsTest {
 
             streamVm.sendMessage("Open movies home then open Inception")
             awaitCondition(this, timeoutMs = 5_000L) {
+                streamVm.uiState.value.pendingMutatingAction is ChatAction.OpenMoviesHome
+            }
+            streamVm.confirmMutatingAction()
+            awaitCondition(this, timeoutMs = 5_000L) {
                 streamVm.pendingUiActionDispatch.value?.action is ChatAction.OpenMoviesHome
             }
 
@@ -535,7 +552,11 @@ class AssistantActionPermissionsTest {
                 detail = "Opened Movies & TV"
             )
 
-            // Second READ_ONLY action must dequeue immediately instead of being dropped!
+            // Second READ_ONLY action prompts inline sequentially in FIFO order instead of being dropped!
+            awaitCondition(this, timeoutMs = 5_000L) {
+                streamVm.uiState.value.pendingMutatingAction is ChatAction.OpenMovieDetail
+            }
+            streamVm.confirmMutatingAction()
             awaitCondition(this, timeoutMs = 5_000L) {
                 streamVm.pendingUiActionDispatch.value?.action is ChatAction.OpenMovieDetail
             }

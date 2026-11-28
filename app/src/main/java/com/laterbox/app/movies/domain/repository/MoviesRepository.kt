@@ -276,6 +276,8 @@ interface MoviesRepository {
 
     // Offline availability lookup
     fun observeOfflineAvailability(): Flow<List<OfflineMediaMatch>> = kotlinx.coroutines.flow.emptyFlow()
+    suspend fun reconcileOfflineAssetsExist() = Unit
+    fun observeTitleCompleted(providerId: String, titleId: String): Flow<Boolean> = kotlinx.coroutines.flow.flowOf(false)
     suspend fun findOfflineEpisodeAsset(
         providerId: String,
         titleId: String,

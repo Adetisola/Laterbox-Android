@@ -194,12 +194,10 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
             }
         }
 
-        // Register foreground transition observer to reconcile media inspections cleanly (debounced)
-        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
-            private var startedActivities = 0
-
-            override fun onActivityStarted(activity: android.app.Activity) {
-                if (startedActivities == 0) {
+        // Observe app-level foreground/background transitions reliably via ProcessLifecycleOwner
+        androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.addObserver(
+            object : androidx.lifecycle.DefaultLifecycleObserver {
+                override fun onStart(owner: androidx.lifecycle.LifecycleOwner) {
                     container.connectivityObserver.refresh()
                     container.remoteConfigManager.onAppForegrounded()
                     container.analyticsTracker.onAppForegrounded()
@@ -207,23 +205,12 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
                         reconcileInspectionsIfNeeded()
                     }
                 }
-                startedActivities++
-            }
 
-            override fun onActivityStopped(activity: android.app.Activity) {
-                val wasForeground = startedActivities > 0
-                startedActivities = (startedActivities - 1).coerceAtLeast(0)
-                if (wasForeground && startedActivities == 0) {
+                override fun onStop(owner: androidx.lifecycle.LifecycleOwner) {
                     container.remoteConfigManager.onAppBackgrounded()
                     container.analyticsTracker.onAppBackgrounded()
                 }
             }
-
-            override fun onActivityCreated(activity: android.app.Activity, savedInstanceState: android.os.Bundle?) {}
-            override fun onActivityResumed(activity: android.app.Activity) {}
-            override fun onActivityPaused(activity: android.app.Activity) {}
-            override fun onActivitySaveInstanceState(activity: android.app.Activity, outState: android.os.Bundle) {}
-            override fun onActivityDestroyed(activity: android.app.Activity) {}
-        })
+        )
     }
 }

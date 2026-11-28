@@ -104,6 +104,8 @@ fun SettingsScreen(
             }
         }
 
+        SettingsDivider()
+
         Column(
             modifier = Modifier
                 .weight(1f)

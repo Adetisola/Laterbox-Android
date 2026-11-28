@@ -1033,45 +1033,9 @@ fun MoviesScreen(
                                                 }
                                             }
 
-                                            "recently_viewed" -> if (uiState.recentlyViewed.isNotEmpty()) {
-                                                item(key = "recently_viewed_rail") {
-                                                    Column(
-                                                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                                                        modifier = Modifier.testTag("movies_home_recently_viewed_rail")
-                                                    ) {
-                                                        SectionHeaderRow(
-                                                            title = slot.customTitle.ifBlank { "Recently Viewed" },
-                                                            subtitle = "Titles you checked out recently",
-                                                            onSeeAll = null
-                                                        )
-                                                        LazyRow(
-                                                            contentPadding = PaddingValues(horizontal = 16.dp),
-                                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                                        ) {
-                                                            items(
-                                                                uiState.recentlyViewed.take(slot.maxItems),
-                                                                key = { "rv_${it.compositeId}" },
-                                                                contentType = { "movie_card" }
-                                                            ) { item ->
-                                                                val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
-                                                                MoviePosterCard(
-                                                                    item = item,
-                                                                    onClick = { onOpenDetail(item.providerId, item.id) },
-                                                                    isOfflineDownloaded = isOffline,
-                                                                    isInWatchlist = item.compositeId in watchlistIds,
-                                                                    onToggleWatchlist = onToggleWatchlist,
-                                                                    onAddToCollection = { collectionPickerTarget = it },
-                                                                    onMarkWatched = onMarkWatched,
-                                                                    onHideTitle = onHideTitle,
-                                                                    onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) },
-                                                                    onRemoveFromViewed = { pendingRemoveViewed = it },
-                                                                    menuButtonTestTag = "poster_menu_recent_${item.id}"
-                                                                )
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
+                                            // Recently Viewed is intentionally hidden from the Movies & TV main feed;
+                                            // the full tab and history remain preserved in Viewing History.
+                                            "recently_viewed" -> Unit
 
                                             "because_you_watched" -> if (recommendationsEnabled) {
                                                 if (uiState.isPersonalizationActive && uiState.personalizedForYouRail.isNotEmpty()) {

@@ -48,21 +48,22 @@ fun ReadingBehaviorSettingsScreen(
     val typography = LaterboxTheme.typography
     val spacing = LaterboxTheme.spacing
 
-    Box(
+    Column(
         modifier = modifier
             .fillMaxSize()
             .background(colors.backgroundPrimary)
     ) {
+        SettingsSubpageHeader(
+            title = "Reading & Behaviour",
+            onBackClick = onBackClick
+        )
+
         Column(
             modifier = Modifier
-                .fillMaxSize()
+                .weight(1f)
+                .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
         ) {
-            SettingsSubpageHeader(
-                title = "Reading & Behaviour",
-                onBackClick = onBackClick
-            )
-
             Spacer(modifier = Modifier.height(spacing.xs))
 
             SettingsSectionHeader(title = "Reading Behaviour")

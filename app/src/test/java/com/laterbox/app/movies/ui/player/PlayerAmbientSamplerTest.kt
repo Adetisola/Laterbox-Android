@@ -74,8 +74,10 @@ class PlayerAmbientSamplerTest {
     fun ambientSamplingAndBlending_stayWithinResponsiveRealTimeTargets() {
         val normalInterval = PlayerAmbientSampler.resolveSampleIntervalMs(1.0f)
         val fastInterval = PlayerAmbientSampler.resolveSampleIntervalMs(2.0f)
-        assertTrue("Expected >= 4Hz (<=250ms), got $normalInterval", normalInterval in 120L..250L)
-        assertTrue("Expected fast speed <= normal interval", fastInterval <= normalInterval)
+        assertTrue("Expected 67ms..100ms (~10-15fps) interval, got $normalInterval", normalInterval in 67L..100L)
+        assertTrue("Expected fast speed >= 67ms battery floor and <= normal interval", fastInterval in 67L..normalInterval)
+        assertEquals(32, PlayerAmbientSampler.SAMPLE_WIDTH)
+        assertEquals(18, PlayerAmbientSampler.SAMPLE_HEIGHT)
 
         val sceneCutBlend = PlayerAmbientSampler.computeBlendDurationMs(
             previous = Color(0.54f, 0.50f, 0.45f, 1f),
@@ -85,8 +87,21 @@ class PlayerAmbientSamplerTest {
             previous = Color(0.30f, 0.25f, 0.20f, 1f),
             next = Color(0.33f, 0.27f, 0.22f, 1f)
         )
-        assertTrue("Scene cut blend should fall in 150-300ms target, got $sceneCutBlend", sceneCutBlend in 150..300)
-        assertTrue("Gentle blend should fall in 150-300ms target, got $subtleBlend", subtleBlend in 150..300)
+        assertTrue("Scene cut blend should fall in 100-150ms target, got $sceneCutBlend", sceneCutBlend in 100..150)
+        assertTrue("Gentle blend should fall in 100-150ms target, got $subtleBlend", subtleBlend in 100..150)
         assertTrue(sceneCutBlend < subtleBlend)
+    }
+
+    @Test
+    fun extractAmbientColor_5BucketQuantizationPicksDominantColorOverGreyMush() {
+        val dominantRed = argb(230, 35, 35)
+        val minorityCyan = argb(25, 220, 230)
+        val pixels = IntArray(32 * 18) { idx ->
+            if (idx < 360) dominantRed else minorityCyan
+        }
+
+        val extracted = PlayerAmbientSampler.extractAmbientColor(pixels)
+        assertTrue("Expected dominant red cluster to win over cyan", extracted.red > extracted.blue * 2f)
+        assertTrue("Expected vivid saturated glow rather than neutral grey mush", (extracted.red - extracted.green) > 0.15f)
     }
 }

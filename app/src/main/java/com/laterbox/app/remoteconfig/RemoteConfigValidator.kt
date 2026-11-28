@@ -122,6 +122,9 @@ object RemoteConfigValidator {
             message = sanitizePlainText(maintObj?.optString("message", "") ?: "", 600),
             allowLocalOfflineAccess = maintObj?.optBoolean("allowLocalOfflineAccess", true) ?: true,
             showBannerInNormalMode = maintObj?.optBoolean("showBannerInNormalMode", false) ?: false,
+            startsAt = maintObj?.optString("starts_at", "")?.trim()?.takeIf { it.isNotEmpty() },
+            endsAt = maintObj?.optString("ends_at", "")?.trim()?.takeIf { it.isNotEmpty() },
+            expiresAt = maintObj?.optString("expires_at", "")?.trim()?.takeIf { it.isNotEmpty() },
         )
 
         // Allowlist-filtered features; unknown keys ignored safely without failure
@@ -344,6 +347,9 @@ object RemoteConfigValidator {
         maint.put("message", snapshot.maintenance.message)
         maint.put("allowLocalOfflineAccess", snapshot.maintenance.allowLocalOfflineAccess)
         maint.put("showBannerInNormalMode", snapshot.maintenance.showBannerInNormalMode)
+        maint.put("starts_at", snapshot.maintenance.startsAt ?: JSONObject.NULL)
+        maint.put("ends_at", snapshot.maintenance.endsAt ?: JSONObject.NULL)
+        maint.put("expires_at", snapshot.maintenance.expiresAt ?: JSONObject.NULL)
         root.put("maintenance", maint)
 
         val announcementsArr = JSONArray()
@@ -368,6 +374,9 @@ object RemoteConfigValidator {
                     put("minVersionCode", ann.minVersionCode)
                     put("maxVersionCode", ann.maxVersionCode)
                     put("enabled", ann.enabled)
+                    put("starts_at", ann.startsAt ?: JSONObject.NULL)
+                    put("ends_at", ann.endsAt ?: JSONObject.NULL)
+                    put("expires_at", ann.expiresAt ?: JSONObject.NULL)
                 }
             )
         }
@@ -480,6 +489,9 @@ object RemoteConfigValidator {
             minVersionCode = minVersion,
             maxVersionCode = maxVersion,
             enabled = true,
+            startsAt = obj.optString("starts_at", "").trim().takeIf { it.isNotEmpty() },
+            endsAt = obj.optString("ends_at", "").trim().takeIf { it.isNotEmpty() },
+            expiresAt = obj.optString("expires_at", "").trim().takeIf { it.isNotEmpty() },
         )
     }
 

@@ -93,21 +93,22 @@ fun MediaDownloadsSettingsScreen(
         }
     }
 
-    Box(
+    Column(
         modifier = modifier
             .fillMaxSize()
             .background(colors.backgroundPrimary)
     ) {
+        SettingsSubpageHeader(
+            title = "Media & Downloads",
+            onBackClick = onBackClick
+        )
+
         Column(
             modifier = Modifier
-                .fillMaxSize()
+                .weight(1f)
+                .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
         ) {
-            SettingsSubpageHeader(
-                title = "Media & Downloads",
-                onBackClick = onBackClick
-            )
-
             Spacer(modifier = Modifier.height(spacing.xs))
 
             SettingsSectionHeader(title = "Media Library & Downloads")

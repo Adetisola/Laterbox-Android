@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -95,6 +96,7 @@ fun FloatingChatComposer(
     onMicClick: (() -> Unit)? = null,
     speechState: ComposerSpeechUiState = ComposerSpeechUiState(),
     onStopDictation: () -> Unit = {},
+    onSendDictation: () -> Unit = onStopDictation,
     onCancelDictation: () -> Unit = {},
     pendingApproval: ChatAction? = null,
     onDenyAction: () -> Unit = {},
@@ -249,7 +251,7 @@ fun FloatingChatComposer(
                 }
 
                 if (isRecording) {
-                    RecordingBar(speechState.elapsedMs, onCancelDictation, onStopDictation)
+                    RecordingBar(speechState.elapsedMs, onCancelDictation, onStopDictation, onSendDictation)
                 } else {
                     PersistentComposerBar(
                         value = textFieldValueState,
@@ -520,7 +522,12 @@ private fun SendOrStop(
 }
 
 @Composable
-private fun RecordingBar(elapsedMs: Long, onCancel: () -> Unit, onStop: () -> Unit) {
+private fun RecordingBar(
+    elapsedMs: Long,
+    onCancel: () -> Unit,
+    onStop: () -> Unit,
+    onSend: () -> Unit = onStop
+) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
     val seconds = (elapsedMs / 1000).toInt()
@@ -555,13 +562,25 @@ private fun RecordingBar(elapsedMs: Long, onCancel: () -> Unit, onStop: () -> Un
             modifier = Modifier
                 .size(36.dp)
                 .clip(CircleShape)
-                .background(colors.accentPrimary)
                 .clickable(role = Role.Button, onClickLabel = "Stop and transcribe", onClick = onStop)
                 .semantics { contentDescription = "Stop and transcribe" }
                 .testTag("composer_stop_dictation"),
             contentAlignment = Alignment.Center
         ) {
-            Icon(painterResource(LaterboxIcons.Check), null, Modifier.size(18.dp), tint = colors.onAccentPrimary)
+            Icon(painterResource(LaterboxIcons.Stop), null, Modifier.size(18.dp), tint = colors.textSecondary)
+        }
+        Spacer(Modifier.width(4.dp))
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(CircleShape)
+                .background(colors.accentPrimary)
+                .clickable(role = Role.Button, onClickLabel = "Stop and send", onClick = onSend)
+                .semantics { contentDescription = "Stop and send" }
+                .testTag("composer_send_dictation"),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(painterResource(LaterboxIcons.Send), null, Modifier.size(18.dp), tint = colors.onAccentPrimary)
         }
     }
 }

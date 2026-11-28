@@ -372,4 +372,41 @@ class FloatingChatComposerInputTest {
         assertEquals("Short\nSecond line", text)
         assertEquals(TextRange(3), currentSelection())
     }
+
+    @Test
+    fun recordingBar_separatesStopToDraftAndImmediateSendControls() {
+        var stoppedCount = 0
+        var sentCount = 0
+        var cancelledCount = 0
+
+        composeTestRule.setContent {
+            LaterboxTheme {
+                Box(modifier = Modifier.width(340.dp)) {
+                    FloatingChatComposer(
+                        text = "",
+                        onTextChange = {},
+                        onSend = {},
+                        speechState = com.laterbox.app.ai.speech.ComposerSpeechUiState(
+                            status = com.laterbox.app.ai.speech.SpeechStatus.RECORDING,
+                            elapsedMs = 3_000L
+                        ),
+                        onStopDictation = { stoppedCount++ },
+                        onSendDictation = { sentCount++ },
+                        onCancelDictation = { cancelledCount++ }
+                    )
+                }
+            }
+        }
+
+        composeTestRule.onNodeWithTag("composer_recording_bar").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("composer_stop_dictation").assertIsDisplayed().performClick()
+        assertEquals(1, stoppedCount)
+        assertEquals(0, sentCount)
+
+        composeTestRule.onNodeWithTag("composer_send_dictation").assertIsDisplayed().performClick()
+        assertEquals(1, sentCount)
+
+        composeTestRule.onNodeWithTag("composer_cancel_dictation").assertIsDisplayed().performClick()
+        assertEquals(1, cancelledCount)
+    }
 }

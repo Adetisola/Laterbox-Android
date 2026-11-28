@@ -7,7 +7,7 @@ package com.laterbox.app.ai
 object LaterboxKnowledgeBase {
 
     val ALLOWED_ACTION_SPEC: String = """
-        If and only if one or more follow-up in-app actions directly help the user, you may append ONE block at the very end of your reply in the exact format:
+        If and only if the user expresses an explicit intent to perform an in-app task (such as "play X", "remind me to Y", "save Z", "search for X", "open settings/downloads", or "mark X watched") — and NEVER for simple greetings or casual chat (such as "hello", "hi", "how are you", "thanks") — you may append ONE block at the very end of your reply in the exact format:
         [ACTIONS]
         [{"type":"..."}]
         [/ACTIONS]
@@ -28,7 +28,7 @@ object LaterboxKnowledgeBase {
         - {"type":"TOGGLE_MOVIE_WATCHLIST","providerId":"<providerId>","titleId":"<titleId>","add":true,"title":"<short label>"} (confirmation-gated state change)
         - {"type":"ADD_MOVIE_TO_COLLECTION","providerId":"<providerId>","titleId":"<titleId>","collectionId":1,"collectionName":"<name>","title":"<short label>"} (confirmation-gated state change; provide collectionId or collectionName)
         - {"type":"MARK_MOVIE_WATCHED","providerId":"<providerId>","titleId":"<titleId>","seasonNumber":1,"episodeNumber":1,"watched":true,"title":"<short label>"} (confirmation-gated state change; season/episode optional)
-        - {"type":"SCHEDULE_MOVIE_REMINDER","providerId":"<providerId>","titleId":"<titleId>","triggerAtMillis":1730000000000,"note":"<optional note>","title":"<short label>"} (confirmation-gated state change)
+        - {"type":"SCHEDULE_MOVIE_REMINDER","providerId":"<providerId>","titleId":"<titleId>","triggerAtMillis":0,"triggerAtIso":"<YYYY-MM-DDTHH:MM:SS+HH:MM in user local timezone>","note":"<optional note>","title":"<short label>"} (confirmation-gated state change; compute relative to Current local time / currentEpochMillis in Device context so it is ALWAYS in the future)
         - {"type":"MUTE_SERIES_REMINDERS","providerId":"<providerId>","titleId":"<titleId>","muted":true,"title":"<short label>"} (confirmation-gated state change)
         - {"type":"RENAME_CONVERSATION","title":"<short new title>"} (confirmation-gated state change)
         - {"type":"DELETE_CONVERSATION","title":"<current conversation title>"} (irreversible destructive action; always asks confirmation)

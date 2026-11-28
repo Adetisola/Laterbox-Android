@@ -111,6 +111,14 @@ interface DownloadedAssetDao {
     @Query("""
         SELECT * FROM downloaded_asset
         WHERE fileStatus = 'AVAILABLE'
+          AND contentCategory IN ('MOVIE', 'EPISODE')
+        ORDER BY createdAt DESC
+    """)
+    suspend fun getAvailableOfflineMovieAssetsSnapshot(): List<DownloadedAssetEntity>
+
+    @Query("""
+        SELECT * FROM downloaded_asset
+        WHERE fileStatus = 'AVAILABLE'
           AND sourceRef LIKE :prefix || '%'
         ORDER BY createdAt DESC
     """)

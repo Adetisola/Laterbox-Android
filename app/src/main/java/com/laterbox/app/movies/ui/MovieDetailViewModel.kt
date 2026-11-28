@@ -22,6 +22,7 @@ import com.laterbox.app.movies.domain.model.ProviderLinkRecord
 import com.laterbox.app.movies.domain.model.SeasonSummary
 import com.laterbox.app.movies.domain.model.SeriesPreferences
 import com.laterbox.app.movies.domain.model.SeriesProgressSummary
+import com.laterbox.app.movies.domain.model.SubtitleTrack
 import com.laterbox.app.movies.domain.model.ViewingReminderItem
 import com.laterbox.app.movies.domain.repository.MoviesRepository
 import com.laterbox.app.reminders.ReminderScheduler
@@ -29,6 +30,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -258,14 +262,23 @@ class MovieDetailViewModel(
                 }
             }
             launch {
-                moviesRepository.observeMovieWatchHistory(100).collect { history ->
-                    val currentDetails = _uiState.value.details ?: return@collect
-                    if (currentDetails.summary.kind == MediaKind.MOVIE) {
-                        val mKey = currentDetails.summary.stableMediaKey
-                        val completed = history.any {
-                            (it.stableMediaKey == mKey || it.compositeId == currentDetails.summary.compositeId) && it.isCompleted
+                combine(
+                    moviesRepository.observeTitleCompleted(providerId, titleId),
+                    moviesRepository.observeMovieWatchHistory(200),
+                    _uiState.map { it.details?.summary }.distinctUntilChanged()
+                ) { directCompleted, history, summary ->
+                    if (summary?.kind == MediaKind.MOVIE) {
+                        val mKey = summary.stableMediaKey
+                        val historyCompleted = history.any {
+                            (it.stableMediaKey == mKey || it.compositeId == summary.compositeId) && it.isCompleted
                         }
-                        _uiState.update { it.copy(isTitleCompleted = completed) }
+                        directCompleted || historyCompleted
+                    } else {
+                        null
+                    }
+                }.collect { movieCompleted ->
+                    if (movieCompleted != null) {
+                        _uiState.update { it.copy(isTitleCompleted = movieCompleted) }
                     }
                 }
             }
@@ -308,6 +321,9 @@ class MovieDetailViewModel(
             val cachedFast = if (!forceRefresh) {
                 moviesRepository.getCachedDetailsFast(providerId, titleId)
             } else null
+            launch {
+                runCatching { moviesRepository.reconcileOfflineAssetsExist() }
+            }
             val fastSummary = cachedFast?.details?.summary ?: cachedSummary
             val cachedIsSeries = fastSummary?.kind?.isEpisodic == true
             val prefillSeason = if (cachedIsSeries) {
@@ -379,6 +395,10 @@ class MovieDetailViewModel(
                         hiddenMediaKeys = prev.hiddenMediaKeys,
                         episodeDownloads = prev.episodeDownloads
                     )
+                }
+                if (!providerId.equals("tvmaze", ignoreCase = true)) {
+                    startedPlaybackTarget = null to null
+                    checkPlayback(providerId, titleId, null, null)
                 }
             }
 
@@ -872,6 +892,24 @@ class MovieDetailViewModel(
         }
     }
 
+    fun selectSubtitlePreference(subtitle: SubtitleTrack) {
+        val summary = _uiState.value.details?.summary ?: return
+        viewModelScope.launch {
+            moviesRepository.saveSeriesSubtitlePreference(
+                providerId = summary.providerId,
+                titleId = summary.id,
+                language = subtitle.languageCode,
+                label = subtitle.language,
+                disabled = false
+            )
+            _uiState.update {
+                it.copy(
+                    actionFeedbackMessage = "Subtitles set to ${subtitle.language}"
+                )
+            }
+        }
+    }
+
     fun onPlayTrailerClick() {
         val summary = _uiState.value.details?.summary ?: return
         val url = summary.trailerUrl?.trim().orEmpty()
@@ -1308,13 +1346,34 @@ class MovieDetailViewModel(
         if (cleanEpisodes.isEmpty() || state.isEnqueuingDownload) return
 
         viewModelScope.launch {
+            runCatching { moviesRepository.reconcileOfflineAssetsExist() }
             _uiState.update { it.copy(isEnqueuingDownload = true, downloadStatusMessage = null) }
+            val currentOfflineMatches = _uiState.value.offlineMatches
             var queuedCount = 0
             var lowerFallbackCount = 0
+            var alreadyDownloadedCount = 0
             var skippedCount = 0
             var lastError: String? = null
 
             for (epNum in cleanEpisodes) {
+                val alreadyHasQuality = currentOfflineMatches.any { match ->
+                    val s = match.seasonNumber ?: return@any false
+                    val e = match.episodeNumber ?: return@any false
+                    if (s != seasonNumber || e != epNum) return@any false
+                    val parts = match.sourceRef.split("|")
+                    val matchProvider = parts.getOrNull(0).orEmpty()
+                    val matchTitle = parts.getOrNull(1).orEmpty()
+                    if (!matchProvider.equals(summary.providerId, ignoreCase = true) || matchTitle != summary.id) {
+                        return@any false
+                    }
+                    val matchHeight = parseQualityHeight(match.qualityLabel.orEmpty())
+                    preferredQualityHeight == null || matchHeight == preferredQualityHeight
+                }
+                if (alreadyHasQuality) {
+                    alreadyDownloadedCount++
+                    continue
+                }
+
                 val res = moviesRepository.resolvePlayback(summary.providerId, summary.id, seasonNumber, epNum)
                 val available = res.getOrNull() as? PlaybackResolution.Available
                 val progressiveSources = available?.sources?.filter { src ->
@@ -1363,6 +1422,8 @@ class MovieDetailViewModel(
                     "Queued $queuedCount episode${if (queuedCount == 1) "" else "s"} from Season $seasonNumber ($lowerFallbackCount at lower available quality)."
                 queuedCount > 0 ->
                     "Queued $queuedCount episode${if (queuedCount == 1) "" else "s"} ($skippedCount unavailable at ${preferredQualityHeight?.let { "${it}p" } ?: "selected quality"})."
+                alreadyDownloadedCount > 0 ->
+                    "Selected episode${if (alreadyDownloadedCount == 1) " is" else "s are"} already downloaded."
                 else ->
                     lastError ?: "No downloadable video streams found for the selected episodes."
             }
@@ -1792,7 +1853,7 @@ internal fun computeEpisodeDownloadStates(
                     qualityLabel = task.qualityLabel
                 )
                 com.laterbox.app.media.domain.model.DownloadState.COMPLETED -> {
-                    if (isOfflineDone || task.assetId != null) {
+                    if (isOfflineDone) {
                         EpisodeDownloadUiState(
                             status = EpisodeDownloadStatus.COMPLETED,
                             taskId = task.id,

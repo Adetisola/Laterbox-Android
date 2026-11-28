@@ -15,13 +15,13 @@ enum class AssistantPermissionCategory(
         key = "NAVIGATION_DISCOVERY",
         displayName = "Navigation & Discovery",
         description = "Open sections, search links, or search Movies & TV catalogue.",
-        requiresApprovalByDefault = false
+        requiresApprovalByDefault = true
     ),
     PLAYBACK_CONTROL(
         key = "PLAYBACK_CONTROL",
         displayName = "Playback Control",
         description = "Launch playback for movies, episodes, or downloaded videos.",
-        requiresApprovalByDefault = false
+        requiresApprovalByDefault = true
     ),
     LIBRARY_MANAGEMENT(
         key = "LIBRARY_MANAGEMENT",
@@ -149,7 +149,7 @@ sealed interface ChatAction {
             is ScheduleMovieReminder -> "SCHEDULE_MOVIE_REMINDER"
             is MuteSeriesReminders -> "MUTE_SERIES_REMINDERS"
             is RenameConversation -> "RENAME_CONVERSATION"
-            else -> null
+            else -> if (isIrreversibleDestructive) null else actionType
         }
 
     val actionName: String
@@ -843,7 +843,9 @@ object AssistantActionHandler {
             "SCHEDULE_MOVIE_REMINDER" -> {
                 val providerId = obj.optString("providerId").trim().take(40)
                 val titleId = obj.optString("titleId").trim().take(80)
-                val triggerAtMillis = obj.optLong("triggerAtMillis", -1L)
+                val rawMillis = obj.optLong("triggerAtMillis", -1L)
+                val triggerAtIso = obj.optString("triggerAtIso").trim()
+                val triggerAtMillis = resolveReminderTriggerMillis(rawMillis, triggerAtIso)
                 val note = obj.optString("note").trim().takeIf { it.isNotBlank() }?.take(120)
                 val title = obj.optString("title").trim().ifBlank { "Title" }.take(60)
                 if (providerId.isNotBlank() && titleId.isNotBlank() && triggerAtMillis > 0L) {
@@ -908,5 +910,35 @@ object AssistantActionHandler {
             // Unknown types are never accepted.
             else -> null
         }
+    }
+
+    private fun resolveReminderTriggerMillis(rawMillis: Long, triggerAtIso: String): Long {
+        val normalizedRaw = when {
+            rawMillis in 1_000_000_000L..9_999_999_999L -> rawMillis * 1000L
+            rawMillis > 0L -> rawMillis
+            else -> -1L
+        }
+        val parsedIso = parseIsoMillis(triggerAtIso)
+        val nowMs = System.currentTimeMillis()
+        return when {
+            normalizedRaw > nowMs -> normalizedRaw
+            parsedIso != null && parsedIso > nowMs -> parsedIso
+            normalizedRaw > 0L -> normalizedRaw
+            parsedIso != null -> parsedIso
+            else -> -1L
+        }
+    }
+
+    private fun parseIsoMillis(rawIso: String): Long? {
+        val clean = rawIso.trim()
+        if (clean.isEmpty()) return null
+        return runCatching { java.time.Instant.parse(clean).toEpochMilli() }.getOrNull()
+            ?: runCatching { java.time.OffsetDateTime.parse(clean).toInstant().toEpochMilli() }.getOrNull()
+            ?: runCatching {
+                java.time.LocalDateTime.parse(clean)
+                    .atZone(java.time.ZoneId.systemDefault())
+                    .toInstant()
+                    .toEpochMilli()
+            }.getOrNull()
     }
 }

@@ -87,22 +87,23 @@ fun PersonalizationPrivacyScreen(
 
     val facetByKey = remember(facets) { facets.associateBy { it.facetKey } }
 
-    Box(
+    Column(
         modifier = modifier
             .fillMaxSize()
             .background(colors.backgroundPrimary)
             .testTag("personalization_privacy_screen")
     ) {
+        SettingsSubpageHeader(
+            title = "Personalization & Privacy",
+            onBackClick = onBackClick
+        )
+
         Column(
             modifier = Modifier
-                .fillMaxSize()
+                .weight(1f)
+                .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
         ) {
-            SettingsSubpageHeader(
-                title = "Personalization & Privacy",
-                onBackClick = onBackClick
-            )
-
             Spacer(modifier = Modifier.height(spacing.xs))
 
             Box(modifier = Modifier.padding(horizontal = spacing.base)) {

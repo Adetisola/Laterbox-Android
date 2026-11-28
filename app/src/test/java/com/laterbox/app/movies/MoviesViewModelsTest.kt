@@ -623,11 +623,11 @@ class MoviesViewModelsTest {
             val vm = MovieDetailViewModel(customRepo, bridge)
             vm.load("moviebox", "mb_series_1")
             advanceUntilIdle()
-            assertEquals(listOf(1 to 1), resolvedPairs)
+            assertEquals(listOf<Pair<Int?, Int?>>(null to null, 1 to 1), resolvedPairs)
 
             vm.selectSeason(2)
             advanceUntilIdle()
-            assertEquals(listOf(1 to 1, 2 to 1), resolvedPairs)
+            assertEquals(listOf<Pair<Int?, Int?>>(null to null, 1 to 1, 2 to 1), resolvedPairs)
             val src = (vm.uiState.value.playbackResolution as PlaybackResolution.Available).sources.first()
             vm.downloadSource(src)
             vm.uiState.first { it.downloadStatusMessage != null }
@@ -2195,5 +2195,67 @@ class MoviesViewModelsTest {
         val state = vm.uiState.first { !it.isLoading }
         assertNull(state.fallbackDubLabel)
         assertNull(state.playbackNoticeMessage)
+    }
+
+    @Test
+    fun `computeEpisodeDownloadStates requires verified offline file and reverts deleted files to IDLE`() {
+        val ep1 = EpisodeItem(id = "ep1", seasonNumber = 1, episodeNumber = 1, title = "Ep 1")
+        val ep2 = EpisodeItem(id = "ep2", seasonNumber = 1, episodeNumber = 2, title = "Ep 2")
+        val staleCompletedTask = com.laterbox.app.media.domain.model.DownloadTask(
+            id = "task_ep1",
+            savedLinkId = null,
+            sourceUrl = "https://cdn.example.com/ep1.mp4",
+            sourcePlatform = "moviebox",
+            candidateId = null,
+            formatSelector = null,
+            mediaType = com.laterbox.app.media.domain.model.MediaType.VIDEO,
+            qualityLabel = "720p",
+            title = "Show Ep 1",
+            assetId = "asset_deleted_1",
+            status = com.laterbox.app.media.domain.model.DownloadState.COMPLETED,
+            progress = 100,
+            downloadedBytes = 1024L,
+            totalBytes = 1024L,
+            createdAt = 1_000L,
+            updatedAt = 2_000L,
+            sourceRef = "moviebox|show_1|1|1"
+        )
+        val statesWithoutDiskFile = com.laterbox.app.movies.ui.computeEpisodeDownloadStates(
+            providerId = "moviebox",
+            titleId = "show_1",
+            episodes = listOf(ep1, ep2),
+            tasks = listOf(staleCompletedTask),
+            offlineMatches = emptyList(),
+            startingKeys = emptySet()
+        )
+        assertEquals(
+            com.laterbox.app.movies.ui.EpisodeDownloadStatus.IDLE,
+            statesWithoutDiskFile[1 to 1]?.status
+        )
+
+        val statesWithDiskFile = com.laterbox.app.movies.ui.computeEpisodeDownloadStates(
+            providerId = "moviebox",
+            titleId = "show_1",
+            episodes = listOf(ep1, ep2),
+            tasks = listOf(staleCompletedTask),
+            offlineMatches = listOf(
+                com.laterbox.app.movies.domain.model.OfflineMediaMatch(
+                    assetId = "asset_verified_1",
+                    sourceRef = "moviebox|show_1|1|1",
+                    localPath = "/tmp/ep1.mp4",
+                    qualityLabel = "720p",
+                    fileSizeBytes = 1024L,
+                    seasonNumber = 1,
+                    episodeNumber = 1
+                )
+            ),
+            startingKeys = emptySet()
+        )
+        assertEquals(
+            com.laterbox.app.movies.ui.EpisodeDownloadStatus.COMPLETED,
+            statesWithDiskFile[1 to 1]?.status
+        )
+        assertEquals("task_ep1", statesWithDiskFile[1 to 1]?.taskId)
+        assertEquals("720p", statesWithDiskFile[1 to 1]?.qualityLabel)
     }
 }

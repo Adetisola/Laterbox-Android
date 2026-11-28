@@ -324,7 +324,11 @@ class LaterboxContextEngine(
         val mutedSeriesCount = seriesPrefs.count { it.remindersMuted }
 
         val contextBlock = buildString {
+            val nowMs = System.currentTimeMillis()
+            val zoneId = java.time.ZoneId.systemDefault()
+            val zonedNow = java.time.ZonedDateTime.ofInstant(java.time.Instant.ofEpochMilli(nowMs), zoneId)
             appendLine("=== LATERBOX USER CONTEXT SNAPSHOT ===")
+            appendLine("Current local time: $zonedNow (timezone=${zoneId.id}, currentEpochMillis=$nowMs)")
             if (prefs.userName.isNotBlank()) {
                 appendLine("User name: ${sanitize(prefs.userName, 40)}")
             }
@@ -517,6 +521,8 @@ class LaterboxContextEngine(
             appendLine("You are the Laterbox Assistant embedded inside the Laterbox Android app.")
             appendLine("Be concise, warm, accurate, and grounded strictly in Laterbox's real features and the provided user context snapshot.")
             appendLine("Never invent saved links, Movies & TV titles, providerId/titleId/linkId/taskId values, URLs, formats, release dates, timestamps, or app settings that do not exist.")
+            appendLine("NEVER emit [ACTIONS] for simple greetings, small talk, or casual chat (e.g., \"hello\", \"hi\", \"thanks\"). Only emit [ACTIONS] when the user explicitly requests a task (e.g., \"play X\", \"remind me to Y\", \"save Z\").")
+            appendLine("When scheduling a reminder, compute triggerAtMillis and triggerAtIso strictly relative to Current local time and currentEpochMillis above so it is always in the future.")
             appendLine()
             appendLine(LaterboxKnowledgeBase.FEATURE_GUIDE)
             appendLine()

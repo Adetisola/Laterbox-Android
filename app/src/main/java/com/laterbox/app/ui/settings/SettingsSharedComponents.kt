@@ -37,24 +37,34 @@ fun SettingsSubpageHeader(
     val typography = LaterboxTheme.typography
     val spacing = LaterboxTheme.spacing
 
-    Row(
+    Column(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = spacing.base, vertical = spacing.sm),
-        verticalAlignment = Alignment.CenterVertically
+            .background(colors.backgroundPrimary)
     ) {
-        LaterboxIconButton(
-            iconRes = LaterboxIcons.ArrowLeft,
-            contentDescription = "Back",
-            onClick = onBackClick
-        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = spacing.base, vertical = spacing.sm),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            LaterboxIconButton(
+                iconRes = LaterboxIcons.ArrowLeft,
+                contentDescription = "Back",
+                onClick = onBackClick
+            )
 
-        Spacer(modifier = Modifier.width(spacing.sm))
+            Spacer(modifier = Modifier.width(spacing.sm))
 
-        Text(
-            text = title,
-            style = typography.wordmark,
-            color = colors.textPrimary
+            Text(
+                text = title,
+                style = typography.wordmark,
+                color = colors.textPrimary
+            )
+        }
+        androidx.compose.material3.HorizontalDivider(
+            thickness = spacing.hairline,
+            color = colors.borderSubtle
         )
     }
 }

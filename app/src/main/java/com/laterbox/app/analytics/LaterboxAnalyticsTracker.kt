@@ -150,6 +150,7 @@ data class AnalyticsEventRecord(
     val metricValueMs: Int? = null,
     val timestampMs: Long,
     val isOfflineReplay: Boolean = false,
+    val coldStart: Boolean? = null,
 ) {
     fun toJson(overrideOfflineReplay: Boolean = isOfflineReplay): JSONObject = JSONObject().apply {
         put("eventId", eventId)
@@ -165,6 +166,7 @@ data class AnalyticsEventRecord(
         if (httpStatus != null) put("httpStatus", httpStatus)
         if (metricName != null) put("metricName", metricName)
         if (metricValueMs != null) put("durationMs", metricValueMs)
+        if (coldStart != null && eventType == "app_session_started") put("coldStart", coldStart)
         put("timestampMs", timestampMs)
         put("isOfflineReplay", overrideOfflineReplay)
     }
@@ -220,6 +222,12 @@ data class AnalyticsEventRecord(
             val timestampMs = obj.optLong("timestampMs", 0L)
             if (versionCode <= 0 || versionName.isEmpty() || timestampMs <= 0L) return null
 
+            val coldStart = if (eventType == "app_session_started" && obj.has("coldStart") && !obj.isNull("coldStart")) {
+                obj.optBoolean("coldStart")
+            } else {
+                null
+            }
+
             return AnalyticsEventRecord(
                 eventId = eventId,
                 eventType = eventType,
@@ -236,6 +244,7 @@ data class AnalyticsEventRecord(
                 metricValueMs = durationMs,
                 timestampMs = timestampMs,
                 isOfflineReplay = obj.optBoolean("isOfflineReplay", false),
+                coldStart = coldStart,
             )
         }
     }
@@ -274,6 +283,9 @@ class LaterboxAnalyticsTracker(
 
     @Volatile
     private var isForegrounded: Boolean = false
+
+    @Volatile
+    private var isColdLaunch: Boolean = true
 
     @Volatile
     private var currentSessionId: String = UUID.randomUUID().toString()
@@ -352,15 +364,21 @@ class LaterboxAnalyticsTracker(
         return fresh
     }
 
-    fun onAppForegrounded() {
+    fun onAppForegrounded(coldStartOverride: Boolean? = null) {
         isForegrounded = true
+        val coldStart = coldStartOverride ?: isColdLaunch
+        isColdLaunch = false
         currentSessionId = UUID.randomUUID().toString()
         lastTrackedScreenId = null
         _foregroundEpoch.value = _foregroundEpoch.value + 1
         val sessionIdSnapshot = currentSessionId
         scope.launch {
             if (!enabled) return@launch
-            recordAndDispatchUnlocked("app_session_started", sessionId = sessionIdSnapshot)
+            recordAndDispatchUnlocked(
+                eventType = "app_session_started",
+                sessionId = sessionIdSnapshot,
+                coldStart = coldStart,
+            )
             recordAndDispatchUnlocked("application_version_seen", sessionId = sessionIdSnapshot)
             if (isForegrounded && enabled) {
                 startHeartbeatLoop()
@@ -492,6 +510,7 @@ class LaterboxAnalyticsTracker(
         httpStatus: Int? = null,
         metricName: String? = null,
         metricValueMs: Int? = null,
+        coldStart: Boolean? = null,
     ): AnalyticsEventRecord = AnalyticsEventRecord(
         eventId = UUID.randomUUID().toString(),
         eventType = eventType,
@@ -508,6 +527,7 @@ class LaterboxAnalyticsTracker(
         metricValueMs = metricValueMs,
         timestampMs = System.currentTimeMillis(),
         isOfflineReplay = false,
+        coldStart = if (eventType == "app_session_started") coldStart else null,
     )
 
     private suspend fun recordAndDispatchUnlocked(
@@ -519,6 +539,7 @@ class LaterboxAnalyticsTracker(
         httpStatus: Int? = null,
         metricName: String? = null,
         metricValueMs: Int? = null,
+        coldStart: Boolean? = null,
         flushImmediately: Boolean = true,
     ) {
         if (!enabled) return
@@ -532,6 +553,7 @@ class LaterboxAnalyticsTracker(
             httpStatus = httpStatus,
             metricName = metricName,
             metricValueMs = metricValueMs,
+            coldStart = coldStart,
         )
         if (!flushImmediately) {
             enqueueOffline(record)

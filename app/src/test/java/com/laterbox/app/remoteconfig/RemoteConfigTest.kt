@@ -786,4 +786,88 @@ class RemoteConfigTest {
             scope.cancel()
         }
     }
+
+    @Test
+    fun validator_parsesSerializesAndEnforcesMaintenanceAndAnnouncementScheduleTimers() {
+        val nowMs = 1_795_800_000_000L // 2026-11-27T...
+        val pastIso = java.time.Instant.ofEpochMilli(nowMs - 600_000L).toString()
+        val futureStartIso = java.time.Instant.ofEpochMilli(nowMs + 600_000L).toString()
+        val futureEndIso = java.time.Instant.ofEpochMilli(nowMs + 3_600_000L).toString()
+
+        val payload = """
+            {
+              "schemaVersion": 1,
+              "revision": 99,
+              "publishedAt": "$pastIso",
+              "general": { "minRefreshIntervalSeconds": 60, "staleCacheMaxAgeSeconds": 3600 },
+              "versionPolicy": {
+                "minimumSupportedVersionCode": 1,
+                "recommendedVersionCode": 65,
+                "enforcementEnabled": false
+              },
+              "maintenance": {
+                "enabled": false,
+                "mode": "none",
+                "title": "Timed Strip",
+                "message": "Scheduled window notice",
+                "showBannerInNormalMode": true,
+                "starts_at": "$futureStartIso",
+                "ends_at": "$futureEndIso"
+              },
+              "announcements": [
+                {
+                  "id": "active_ann",
+                  "message": "Currently active notice",
+                  "surface": "inbox",
+                  "enabled": true,
+                  "starts_at": "$pastIso",
+                  "expires_at": "$futureEndIso"
+                },
+                {
+                  "id": "expired_ann",
+                  "message": "Expired notice",
+                  "surface": "inbox",
+                  "enabled": true,
+                  "starts_at": "$pastIso",
+                  "expires_at": "$pastIso"
+                }
+              ],
+              "features": { "movies_tv_enabled": true },
+              "ui": { "components": [] }
+            }
+        """.trimIndent()
+
+        val parsed = RemoteConfigValidator.parseAndValidate(
+            rawJson = payload,
+            etag = "\"rev-99\"",
+            fetchedAtEpochMs = nowMs,
+            source = RemoteConfigSource.NETWORK,
+            clientVersionCode = 84,
+        ) as RemoteConfigParseResult.Valid
+
+        // Future start window for normal-mode top strip must NOT be active yet
+        assertFalse(parsed.snapshot.maintenance.isWithinSchedule(nowMs))
+        assertTrue(parsed.snapshot.maintenance.isWithinSchedule(nowMs + 900_000L))
+        assertFalse(parsed.snapshot.maintenance.isWithinSchedule(nowMs + 4_000_000L))
+
+        // Only active announcement passes local schedule filter at nowMs
+        val activeAtNow = parsed.snapshot.activeAnnouncementsForSurface(
+            surface = RemoteUiSurface.INBOX,
+            nowEpochMs = nowMs,
+        )
+        assertEquals(listOf("active_ann"), activeAtNow.map { it.id })
+
+        // Cache serialization round-trips starts_at / ends_at / expires_at cleanly
+        val reserialized = RemoteConfigValidator.serializeToJson(parsed.snapshot)
+        val reparsed = RemoteConfigValidator.parseAndValidate(
+            rawJson = reserialized,
+            etag = "\"rev-99\"",
+            fetchedAtEpochMs = nowMs,
+            source = RemoteConfigSource.CACHE,
+            clientVersionCode = 84,
+        ) as RemoteConfigParseResult.Valid
+        assertEquals(futureStartIso, reparsed.snapshot.maintenance.startsAt)
+        assertEquals(futureEndIso, reparsed.snapshot.maintenance.endsAt)
+        assertEquals(futureEndIso, reparsed.snapshot.announcements[0].expiresAt)
+    }
 }
