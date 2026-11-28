@@ -140,6 +140,7 @@ import com.laterbox.app.movies.data.provider.MovieBoxProvider
 import com.laterbox.app.movies.domain.model.CastMember
 import com.laterbox.app.movies.domain.model.EpisodeItem
 import com.laterbox.app.movies.domain.model.MediaKind
+import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.model.OfflineMediaMatch
 import com.laterbox.app.ui.components.EpisodeListSkeleton
 import com.laterbox.app.ui.components.MovieDetailCastRailSkeleton
@@ -214,6 +215,8 @@ fun MovieDetailScreen(
     onSelectEpisodeRange: ((String) -> Unit)? = null,
     onRequestEpisodeSizes: () -> Unit = {},
     onSelectSubtitle: (com.laterbox.app.movies.domain.model.SubtitleTrack) -> Unit = {},
+    onSetTitleReaction: (com.laterbox.app.data.local.entity.TitleReaction?) -> Unit = {},
+    onSetRelatedTitleReaction: (MovieTitleSummary, com.laterbox.app.data.local.entity.TitleReaction?) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -926,6 +929,14 @@ fun MovieDetailScreen(
                                                                     onSetTitleHidden(true)
                                                                 },
                                                                 modifier = Modifier.testTag("detail_action_hide")
+                                                            )
+                                                            TitleReactionMenuSection(
+                                                                currentReaction = uiState.titleReaction,
+                                                                onReact = { reaction ->
+                                                                    showMoreActionsMenu = false
+                                                                    onSetTitleReaction(reaction)
+                                                                },
+                                                                testTagPrefix = "detail_feedback_${summary.id}"
                                                             )
                                                         }
                                                     }
@@ -1868,6 +1879,10 @@ fun MovieDetailScreen(
                                             onShareTitle = {
                                                 com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(relContext, it)
                                             },
+                                            titleReaction = uiState.titleReactions[rel.stableMediaKey]
+                                                ?: rel.canonicalId?.let { uiState.titleReactions[it] }
+                                                ?: uiState.titleReactions[rel.compositeId],
+                                            onSetTitleReaction = onSetRelatedTitleReaction,
                                             onClick = { onOpenRelated(rel.providerId, rel.id) }
                                         )
                                     }

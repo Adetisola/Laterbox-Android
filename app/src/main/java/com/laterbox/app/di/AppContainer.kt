@@ -465,12 +465,14 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
                 )
             },
             intelligenceSignalLogger = intelligenceSignalLogger,
+            userUnderstandingRepository = userUnderstandingRepository,
         )
     }
 
     override val moviesDownloadBridge: com.laterbox.app.movies.data.download.MoviesDownloadBridge by lazy {
         com.laterbox.app.movies.data.download.MoviesDownloadBridge(
-            mediaRepository = mediaRepository
+            mediaRepository = mediaRepository,
+            intelligenceSignalLogger = intelligenceSignalLogger
         )
     }
 

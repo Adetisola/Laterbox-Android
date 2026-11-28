@@ -14,6 +14,10 @@ import com.laterbox.app.movies.data.download.MoviesDownloadBridge
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.ui.navigation.LaterboxDeepLinks
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import java.io.File
 
 sealed interface LaterboxShareTarget {
@@ -35,6 +39,8 @@ sealed interface LaterboxShareTarget {
 }
 
 object LaterboxShareHelper {
+
+    private val shareSignalScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     fun isBlockedEpisodeAsset(asset: MediaAsset): Boolean {
         if (asset.contentCategory.equals(MoviesDownloadBridge.CATEGORY_EPISODE, ignoreCase = true)) {
@@ -126,7 +132,11 @@ object LaterboxShareHelper {
             )
             return false
         }
-        return launchTextShare(context, title = item.title, url = url)
+        val launched = launchTextShare(context, title = item.title, url = url)
+        if (launched) {
+            recordShareIntelligenceSignal(context, item)
+        }
+        return launched
     }
 
     fun shareMovieDetails(
@@ -145,7 +155,33 @@ object LaterboxShareHelper {
             )
             return false
         }
-        return launchTextShare(context, title = title, url = url)
+        val launched = launchTextShare(context, title = title, url = url)
+        if (launched) {
+            recordShareIntelligenceSignal(
+                context,
+                MovieTitleSummary(
+                    id = titleId,
+                    providerId = providerId,
+                    kind = kind,
+                    title = title
+                )
+            )
+        }
+        return launched
+    }
+
+    private fun recordShareIntelligenceSignal(context: Context, item: MovieTitleSummary) {
+        val app = context.applicationContext as? com.laterbox.app.LaterboxApplication ?: return
+        app.container.let { container ->
+            shareSignalScope.launch {
+                val enriched = runCatching {
+                    container.moviesRepository.getDetails(item.providerId, item.id, forceRefresh = false)
+                        .getOrNull()
+                        ?.summary
+                }.getOrNull() ?: item
+                container.intelligenceSignalLogger.logTitleShared(enriched)
+            }
+        }
     }
 
     fun shareSeriesGroup(context: Context, group: DownloadLibraryEntry.SeriesGroup): Boolean {

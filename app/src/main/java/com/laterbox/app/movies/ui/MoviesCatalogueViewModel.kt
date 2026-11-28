@@ -54,10 +54,16 @@ data class MoviesCatalogueUiState(
     val hiddenMediaKeys: Set<String> = emptySet(),
     val watchlistIds: Set<String> = emptySet(),
     val collections: List<Collection> = emptyList(),
+    val titleReactions: Map<String, com.laterbox.app.data.local.entity.TitleReaction> = emptyMap(),
     val actionFeedbackMessage: String? = null,
     val actionErrorMessage: String? = null,
     val activeProviderNotice: String? = null
 ) {
+    fun reactionFor(item: MovieTitleSummary): com.laterbox.app.data.local.entity.TitleReaction? =
+        titleReactions[item.stableMediaKey]
+            ?: item.canonicalId?.let { titleReactions[it] }
+            ?: titleReactions[item.compositeId]
+
     companion object {
         val DEFAULT_GENRES = MovieBoxProvider.DEFAULT_GENRES
     }
@@ -130,6 +136,20 @@ class MoviesCatalogueViewModel(
                 pendingHiddenKeys.removeAll(rawHiddenKeys)
                 _uiState.update { it.copy(hiddenMediaKeys = effectiveHiddenKeys()) }
                 applyClientFilters()
+            }
+        }
+        viewModelScope.launch {
+            moviesRepository.observeAllTitleFeedback().collect { list ->
+                val mapped = LinkedHashMap<String, com.laterbox.app.data.local.entity.TitleReaction>(list.size * 3)
+                for (entry in list) {
+                    val reaction = runCatching {
+                        com.laterbox.app.data.local.entity.TitleReaction.valueOf(entry.reaction)
+                    }.getOrNull() ?: continue
+                    mapped[entry.mediaKey] = reaction
+                    mapped[entry.compositeId] = reaction
+                    entry.canonicalId?.takeIf { it.isNotBlank() }?.let { mapped[it] = reaction }
+                }
+                _uiState.update { it.copy(titleReactions = mapped) }
             }
         }
         if (collectionRepository != null) {
@@ -607,6 +627,15 @@ class MoviesCatalogueViewModel(
             val id = collectionRepository.createCollection(clean)
             moviesRepository.addMediaToCollection(item, id)
             _uiState.update { it.copy(actionFeedbackMessage = "Added ${item.title} to $clean") }
+        }
+    }
+
+    fun setTitleReaction(
+        item: MovieTitleSummary,
+        reaction: com.laterbox.app.data.local.entity.TitleReaction?
+    ) {
+        viewModelScope.launch {
+            runCatching { moviesRepository.setTitleReaction(item, reaction) }
         }
     }
 

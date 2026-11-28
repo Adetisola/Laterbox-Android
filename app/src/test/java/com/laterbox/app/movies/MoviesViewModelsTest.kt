@@ -88,6 +88,7 @@ class MoviesViewModelsTest {
             kind = MediaKind.MOVIE,
             title = "His Girl Friday",
             releaseYear = 1940,
+            releaseDate = "1940-01-11",
             rating = 8.8,
             genres = listOf("Comedy", "Drama"),
             sourceBadge = DataSourceBadge.LIVE_INTERNET_ARCHIVE,
@@ -100,6 +101,7 @@ class MoviesViewModelsTest {
             kind = MediaKind.TV_SERIES,
             title = "Breaking Bad",
             releaseYear = 2008,
+            releaseDate = "2008-01-20",
             rating = 9.2,
             genres = listOf("Drama", "Crime"),
             sourceBadge = DataSourceBadge.LIVE_TVMAZE,
@@ -776,7 +778,7 @@ class MoviesViewModelsTest {
         val initial = vm.uiState.first { !it.isLoading }
 
         assertTrue(initial.topRatedRail.isNotEmpty())
-        assertTrue(initial.newestRail.isNotEmpty())
+        assertTrue(initial.recentlyAddedRail.isNotEmpty())
         assertTrue(repo.catalogueCalls.any { it.sort == CatalogueSort.TOP_RATED })
         assertTrue(repo.catalogueCalls.any { it.sort == CatalogueSort.NEWEST })
 
@@ -1238,8 +1240,6 @@ class MoviesViewModelsTest {
                 "Expected [All, English, French] in ${vm.uiState.value.availableLanguages} (topRated=${vm.uiState.value.topRatedRail.size}, feed=${vm.uiState.value.feed?.featuredBanners?.size})",
                 vm.uiState.value.availableLanguages.containsAll(listOf("All", "English", "French"))
             )
-            assertTrue(vm.uiState.value.quickRuntimePicks.any { it.id == "m_short" })
-            assertTrue(vm.uiState.value.quickRuntimePicks.none { it.id == "m_long" })
 
             // Expanded filters: 4-digit year passes to getCatalogue, runtime & language filter client-side
             vm.selectYear("2024")

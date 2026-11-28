@@ -47,7 +47,6 @@ data class MoviesHomeUiState(
     val isRefreshing: Boolean = false,
     val feed: MoviesHomeFeed? = null,
     val topRatedRail: List<MovieTitleSummary> = emptyList(),
-    val newestRail: List<MovieTitleSummary> = emptyList(),
     val watchlist: List<MovieTitleSummary> = emptyList(),
     val continueWatching: List<WatchHistoryItem> = emptyList(),
     val errorMessage: String? = null,
@@ -81,9 +80,10 @@ data class MoviesHomeUiState(
     val becauseYouWatchedGroups: List<BecauseYouWatchedGroup> = emptyList(),
     val personalizedForYouRail: List<PersonalizedTitleRecommendation> = emptyList(),
     val isPersonalizationActive: Boolean = false,
-    val quickRuntimePicks: List<MovieTitleSummary> = emptyList(),
     val recentlyAddedRail: List<MovieTitleSummary> = emptyList(),
+    val personalizedSections: List<com.laterbox.app.movies.domain.model.BrowseSection> = emptyList(),
     val surprisePick: SurprisePickResult? = null,
+    val titleReactions: Map<String, com.laterbox.app.data.local.entity.TitleReaction> = emptyMap(),
     val offlineMatches: List<OfflineMediaMatch> = emptyList(),
     val hiddenMediaKeys: Set<String> = emptySet(),
     val availableLanguages: List<String> = listOf("All"),
@@ -95,6 +95,16 @@ data class MoviesHomeUiState(
 ) {
     val collections: List<Collection>
         get() = collectionsWithCounts.map { it.collection }
+
+    fun reactionFor(item: MovieTitleSummary): com.laterbox.app.data.local.entity.TitleReaction? =
+        titleReactions[item.stableMediaKey]
+            ?: item.canonicalId?.let { titleReactions[it] }
+            ?: titleReactions[item.compositeId]
+
+    fun reactionForHistory(entry: WatchHistoryItem): com.laterbox.app.data.local.entity.TitleReaction? =
+        titleReactions[entry.stableMediaKey]
+            ?: entry.canonicalId?.let { titleReactions[it] }
+            ?: titleReactions[entry.compositeId]
 
     val isFilteredMode: Boolean
         get() = selectedKind != null ||
@@ -148,6 +158,7 @@ class MoviesHomeViewModel(
     private var rawContinueWatching: List<WatchHistoryItem> = emptyList()
     private var rawRecentlyViewed: List<MovieTitleSummary> = emptyList()
     private var rawHiddenKeys: Set<String> = emptySet()
+    private var latestNewestPool: List<MovieTitleSummary> = emptyList()
     private val pendingRemovedContinueWatchingKeys = mutableMapOf<String, Long>()
     private val pendingRemovedRecentlyViewedKeys = mutableMapOf<String, Long>()
     private val pendingHiddenMediaKeys = mutableSetOf<String>()
@@ -158,6 +169,8 @@ class MoviesHomeViewModel(
     private var surprisePreferredKind: MediaKind? = null
     @Volatile private var latestFacets: List<UserTasteFacetEntity> = emptyList()
     @Volatile private var latestMediaCues: List<IntelligenceSignalEntity> = emptyList()
+    @Volatile private var latestTitleFeedback: List<com.laterbox.app.data.local.entity.TitleFeedbackEntity> = emptyList()
+    @Volatile private var latestBehavioralSignals: List<IntelligenceSignalEntity> = emptyList()
     @Volatile private var remoteExperienceIntelligenceEnabled: Boolean = true
     private val sessionExposureCounts = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
@@ -374,8 +387,27 @@ class MoviesHomeViewModel(
                     latestMediaCues = runCatching {
                         userUnderstandingRepository.getRecentMediaCueSignals()
                     }.getOrDefault(emptyList())
+                    latestBehavioralSignals = runCatching {
+                        userUnderstandingRepository.getRecentSignals(limit = 120)
+                    }.getOrDefault(emptyList())
                     scheduleDiscoveryRecompute()
                 }
+            }
+        }
+        viewModelScope.launch {
+            moviesRepository.observeAllTitleFeedback().collect { list ->
+                latestTitleFeedback = list
+                val mapped = LinkedHashMap<String, com.laterbox.app.data.local.entity.TitleReaction>(list.size * 3)
+                for (entry in list) {
+                    val reaction = runCatching {
+                        com.laterbox.app.data.local.entity.TitleReaction.valueOf(entry.reaction)
+                    }.getOrNull() ?: continue
+                    mapped[entry.mediaKey] = reaction
+                    mapped[entry.compositeId] = reaction
+                    entry.canonicalId?.takeIf { it.isNotBlank() }?.let { mapped[it] = reaction }
+                }
+                _uiState.update { it.copy(titleReactions = mapped) }
+                scheduleDiscoveryRecompute()
             }
         }
     }
@@ -513,7 +545,7 @@ class MoviesHomeViewModel(
             }
             val newest = newestDeferred.await()
             if (newest.isNotEmpty()) {
-                _uiState.update { it.copy(newestRail = newest) }
+                latestNewestPool = newest
                 scheduleDiscoveryRecompute()
             }
         }
@@ -1106,6 +1138,31 @@ class MoviesHomeViewModel(
         _uiState.update { it.copy(actionErrorMessage = null) }
     }
 
+    fun setTitleReaction(
+        item: MovieTitleSummary,
+        reaction: com.laterbox.app.data.local.entity.TitleReaction?
+    ) {
+        viewModelScope.launch {
+            runCatching { moviesRepository.setTitleReaction(item, reaction) }
+        }
+    }
+
+    fun setHistoryTitleReaction(
+        entry: WatchHistoryItem,
+        reaction: com.laterbox.app.data.local.entity.TitleReaction?
+    ) {
+        val summary = MovieTitleSummary(
+            id = entry.titleId,
+            providerId = entry.providerId,
+            kind = entry.kind,
+            title = entry.title,
+            posterUrl = entry.posterUrl,
+            backdropUrl = entry.backdropUrl,
+            canonicalId = entry.canonicalId
+        )
+        setTitleReaction(summary, reaction)
+    }
+
     private fun scheduleDiscoveryRecompute() {
         discoveryJob?.cancel()
         discoveryJob = viewModelScope.launch {
@@ -1118,8 +1175,8 @@ class MoviesHomeViewModel(
                     becauseYouWatchedGroups = updated.becauseYouWatchedGroups,
                     personalizedForYouRail = updated.personalizedForYouRail,
                     isPersonalizationActive = updated.isPersonalizationActive,
-                    quickRuntimePicks = updated.quickRuntimePicks,
                     recentlyAddedRail = updated.recentlyAddedRail,
+                    personalizedSections = updated.personalizedSections,
                     availableLanguages = updated.availableLanguages,
                     surprisePick = updated.surprisePick
                 )
@@ -1136,7 +1193,7 @@ class MoviesHomeViewModel(
                 state.feed?.featuredBanners.orEmpty() +
                     state.feed?.sections.orEmpty().flatMap { it.items } +
                     state.topRatedRail +
-                    state.newestRail
+                    latestNewestPool
             )
 
         val personalizationActive = remoteExperienceIntelligenceEnabled
@@ -1144,6 +1201,8 @@ class MoviesHomeViewModel(
             enabled = personalizationActive,
             facets = latestFacets,
             recentMediaCues = latestMediaCues,
+            titleFeedback = latestTitleFeedback,
+            behavioralSignals = latestBehavioralSignals,
             sessionExposureCounts = sessionExposureCounts.toMap()
         )
 
@@ -1161,13 +1220,15 @@ class MoviesHomeViewModel(
             hiddenMediaKeys = hidden,
             profile = profile
         )
-        val quick = MoviesDiscoveryEngine.selectQuickRuntimePicks(
-            items = candidatePool,
-            hiddenMediaKeys = hidden
-        )
         val recentAdded = MoviesDiscoveryEngine.selectRecentlyAdded(
             items = candidatePool,
-            hiddenMediaKeys = hidden
+            hiddenMediaKeys = hidden,
+            profile = profile
+        )
+        val personalizedSections = MoviesDiscoveryEngine.personalizeBrowseSections(
+            sections = state.feed?.sections.orEmpty(),
+            hiddenMediaKeys = hidden,
+            profile = profile
         )
         val languages = MoviesDiscoveryEngine.extractAvailableLanguages(candidatePool)
         val surprise = MoviesDiscoveryEngine.pickSurpriseMe(
@@ -1185,8 +1246,8 @@ class MoviesHomeViewModel(
             becauseYouWatchedGroups = byw,
             personalizedForYouRail = forYou,
             isPersonalizationActive = personalizationActive,
-            quickRuntimePicks = quick,
             recentlyAddedRail = recentAdded,
+            personalizedSections = personalizedSections,
             availableLanguages = languages,
             surprisePick = surprise
         )

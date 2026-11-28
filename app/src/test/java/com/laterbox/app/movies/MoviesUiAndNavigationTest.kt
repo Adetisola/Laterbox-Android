@@ -840,7 +840,7 @@ class MoviesUiAndNavigationTest {
                     uiState = MoviesHomeUiState(
                         isLoading = false,
                         topRatedRail = listOf(sampleMovie.copy(id = "tr1", title = "Top Classic")),
-                        newestRail = listOf(sampleMovie.copy(id = "nw1", title = "Fresh Premiere")),
+                        recentlyAddedRail = listOf(sampleMovie.copy(id = "nw1", title = "Fresh Premiere")),
                         feed = MoviesHomeFeed(
                             featuredBanners = listOf(sampleMovie),
                             sections = listOf(
@@ -879,9 +879,10 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithTag("movies_home_list").performScrollToNode(hasTestTag("movies_home_top_rated_rail"))
         composeTestRule.onNodeWithTag("movies_home_top_rated_rail").assertIsDisplayed()
         composeTestRule.onNodeWithText("Highest-rated movies & TV series").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("movies_home_list").performScrollToNode(hasTestTag("movies_home_newest_rail"))
-        composeTestRule.onNodeWithTag("movies_home_newest_rail").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Latest releases added").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("movies_home_newest_rail").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("movies_home_list").performScrollToNode(hasTestTag("movies_home_recently_added_rail"))
+        composeTestRule.onNodeWithTag("movies_home_recently_added_rail").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Latest verified additions & releases").assertIsDisplayed()
         assertEquals(null, clickedSortSeeAll)
     }
 
@@ -1491,7 +1492,6 @@ class MoviesUiAndNavigationTest {
                             pick = surpriseMovie,
                             rationale = "Classic wit matching your history"
                         ),
-                        quickRuntimePicks = listOf(recMovie),
                         recentlyAddedRail = listOf(sampleMovie),
                         availableLanguages = listOf("All", "English", "French")
                     ),
@@ -1533,8 +1533,9 @@ class MoviesUiAndNavigationTest {
         composeTestRule.onNodeWithTag("movies_surprise_reroll").performClick()
         assertTrue(rerolled)
 
-        composeTestRule.onNodeWithTag("movies_home_list").performScrollToNode(hasTestTag("movies_home_quick_picks_rail"))
-        composeTestRule.onNodeWithTag("movies_home_quick_picks_rail").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("movies_home_quick_picks_rail").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("movies_home_list").performScrollToNode(hasTestTag("movies_home_recently_added_rail"))
+        composeTestRule.onNodeWithTag("movies_home_recently_added_rail").assertIsDisplayed()
     }
 
     @Test

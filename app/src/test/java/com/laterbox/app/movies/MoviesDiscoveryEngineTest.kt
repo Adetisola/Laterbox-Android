@@ -3,12 +3,18 @@ package com.laterbox.app.movies
 import com.laterbox.app.data.local.entity.IntelligenceSignalEntity
 import com.laterbox.app.data.local.entity.IntelligenceSurfaceScope
 import com.laterbox.app.data.local.entity.TasteFacetType
+import com.laterbox.app.data.local.entity.TitleFeedbackEntity
+import com.laterbox.app.data.local.entity.TitleReaction
 import com.laterbox.app.data.local.entity.UserTasteFacetEntity
+import com.laterbox.app.intelligence.IntelligenceSignalLogger
 import com.laterbox.app.movies.domain.engine.IntelligenceDiscoveryProfile
+import com.laterbox.app.movies.domain.engine.MediaContentAnalyzer
 import com.laterbox.app.movies.domain.engine.MoviesDiscoveryEngine
+import com.laterbox.app.movies.domain.model.BrowseSection
 import com.laterbox.app.movies.domain.model.MediaKind
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.movies.domain.model.RuntimeBucket
+import com.laterbox.app.movies.domain.model.SectionStyle
 import com.laterbox.app.movies.domain.model.WatchHistoryItem
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -30,7 +36,8 @@ class MoviesDiscoveryEngineTest {
         country: String? = "United States",
         year: Int? = 2023,
         releaseDate: String? = null,
-        addedAtMs: Long? = null
+        addedAtMs: Long? = null,
+        synopsis: String? = null
     ) = MovieTitleSummary(
         id = id,
         providerId = "moviebox",
@@ -42,6 +49,7 @@ class MoviesDiscoveryEngineTest {
         genres = genres,
         language = language,
         country = country,
+        summary = synopsis,
         releaseDate = releaseDate,
         addedAtMs = addedAtMs,
         isPlayableHint = true
@@ -222,8 +230,8 @@ class MoviesDiscoveryEngineTest {
         evidenceSummary = "Test summary",
         includeInAssistantContext = false,
         isSuppressedByUser = suppressed,
-        firstObservedAtMs = 1000L,
-        lastReinforcedAtMs = 2000L,
+        firstObservedAtMs = System.currentTimeMillis() - 10_000L,
+        lastReinforcedAtMs = System.currentTimeMillis() - 1_000L,
         expiresAtMs = null
     )
 
@@ -328,5 +336,270 @@ class MoviesDiscoveryEngineTest {
             profile = IntelligenceDiscoveryProfile(enabled = false, facets = listOf(facet))
         )
         assertTrue(paused.isEmpty())
+    }
+
+    @Test
+    fun becauseYouWatched_usesRichContentUnderstandingAcrossFormatsAndRejectsGenericDramaNoise() {
+        val sciFiSeriesAnchor = sampleTitle(
+            id = "tv_time",
+            title = "Chrono Fracture",
+            kind = MediaKind.TV_SERIES,
+            genres = listOf("Sci-Fi", "Mystery"),
+            synopsis = "A physicist trapped in a quantum time loop investigates alternate timelines and memory loss while mourning her late husband.",
+            rating = 8.4
+        )
+        val crossFormatMatch = sampleTitle(
+            id = "mov_time",
+            title = "Echoes of Yesterday",
+            kind = MediaKind.MOVIE,
+            genres = listOf("Mystery", "Thriller"),
+            synopsis = "After a lab accident triggers a recurring time loop, an engineer uncovers memories of a grieving widow across parallel realities.",
+            rating = 8.1
+        )
+        val unrelatedSeries = sampleTitle(
+            id = "tv_sitcom",
+            title = "Office Brunch",
+            kind = MediaKind.TV_SERIES,
+            genres = listOf("Comedy"),
+            synopsis = "A cheerful bakery staff prepares weekend brunch in downtown Chicago.",
+            rating = 8.9
+        )
+
+        val simCross = MediaContentAnalyzer.computeContentSimilarity(
+            MediaContentAnalyzer.analyze(sciFiSeriesAnchor),
+            MediaContentAnalyzer.analyze(crossFormatMatch)
+        )
+        assertTrue(simCross.hasMeaningfulSignal)
+        assertTrue(simCross.score > 0.25)
+
+        val bywGroups = MoviesDiscoveryEngine.buildBecauseYouWatchedGroups(
+            watchHistory = listOf(
+                WatchHistoryItem(
+                    compositeId = "moviebox:tv_time",
+                    providerId = "moviebox",
+                    titleId = "tv_time",
+                    kind = MediaKind.TV_SERIES,
+                    title = "Chrono Fracture",
+                    positionMs = 1_800_000L,
+                    durationMs = 1_800_000L,
+                    lastWatchedAt = 10_000L,
+                    isCompleted = true
+                )
+            ),
+            watchlist = listOf(sciFiSeriesAnchor),
+            candidatePool = listOf(sciFiSeriesAnchor, crossFormatMatch, unrelatedSeries)
+        )
+        assertEquals(1, bywGroups.size)
+        assertEquals(listOf("mov_time"), bywGroups[0].items.map { it.id })
+
+        // Generic Drama TV Series without rich matching metadata must NOT match another generic Drama TV Series
+        val genericDramaA = sampleTitle(
+            id = "drama_a",
+            title = "Untitled Town",
+            kind = MediaKind.TV_SERIES,
+            genres = listOf("Drama"),
+            synopsis = null
+        )
+        val genericDramaB = sampleTitle(
+            id = "drama_b",
+            title = "Another Street",
+            kind = MediaKind.TV_SERIES,
+            genres = listOf("Drama"),
+            synopsis = null
+        )
+        val genericSim = MediaContentAnalyzer.computeContentSimilarity(
+            MediaContentAnalyzer.analyze(genericDramaA),
+            MediaContentAnalyzer.analyze(genericDramaB)
+        )
+        assertFalse(genericSim.hasMeaningfulSignal)
+
+        val genericGroups = MoviesDiscoveryEngine.buildBecauseYouWatchedGroups(
+            watchHistory = listOf(
+                WatchHistoryItem(
+                    compositeId = "moviebox:drama_a",
+                    providerId = "moviebox",
+                    titleId = "drama_a",
+                    kind = MediaKind.TV_SERIES,
+                    title = "Untitled Town",
+                    positionMs = 1_800_000L,
+                    durationMs = 1_800_000L,
+                    lastWatchedAt = 20_000L,
+                    isCompleted = true
+                )
+            ),
+            watchlist = listOf(genericDramaA),
+            candidatePool = listOf(genericDramaA, genericDramaB)
+        )
+        assertTrue(genericGroups.isEmpty())
+    }
+
+    @Test
+    fun behavioralSignalsAndSingleDislike_steerPersonalizationWithoutBanningWholeGenre() {
+        val now = 1_000_000_000L
+        val likedAnchor = sampleTitle(
+            id = "sf_anchor",
+            title = "Solaris Orbit",
+            genres = listOf("Sci-Fi", "Mystery"),
+            synopsis = "Astronauts investigating an alien ocean confront haunted memories.",
+            rating = 8.5
+        )
+        val dislikedSciFi = sampleTitle(
+            id = "sf_bad",
+            title = "Cheap Laser",
+            genres = listOf("Sci-Fi"),
+            synopsis = "Robots race across a desert track.",
+            rating = 7.9
+        )
+        val matchingSciFi = sampleTitle(
+            id = "sf_good",
+            title = "Orbit Memory",
+            genres = listOf("Sci-Fi", "Mystery"),
+            synopsis = "A deep space astronaut aboard a quiet spacecraft unlocks buried memories.",
+            rating = 8.0
+        )
+        val passiveOpenedRomance = sampleTitle(
+            id = "rom_passive",
+            title = "Summer Villa",
+            genres = listOf("Romance"),
+            synopsis = "Two tourists share gelato in Tuscany.",
+            rating = 8.6
+        )
+
+        val profile = IntelligenceDiscoveryProfile(
+            enabled = true,
+            nowMs = now,
+            titleFeedback = listOf(
+                TitleFeedbackEntity(
+                    mediaKey = likedAnchor.stableMediaKey,
+                    compositeId = likedAnchor.compositeId,
+                    providerId = likedAnchor.providerId,
+                    titleId = likedAnchor.id,
+                    canonicalId = null,
+                    kind = MediaKind.MOVIE.name,
+                    title = likedAnchor.title,
+                    reaction = TitleReaction.LIKE.name,
+                    updatedAtMs = now - 1_000L
+                ),
+                TitleFeedbackEntity(
+                    mediaKey = dislikedSciFi.stableMediaKey,
+                    compositeId = dislikedSciFi.compositeId,
+                    providerId = dislikedSciFi.providerId,
+                    titleId = dislikedSciFi.id,
+                    canonicalId = null,
+                    kind = MediaKind.MOVIE.name,
+                    title = dislikedSciFi.title,
+                    reaction = TitleReaction.DISLIKE.name,
+                    updatedAtMs = now - 500L
+                )
+            ),
+            behavioralSignals = listOf(
+                IntelligenceSignalEntity(
+                    id = 10L,
+                    signalType = IntelligenceSignalLogger.SIGNAL_REWATCH,
+                    surfaceScope = IntelligenceSurfaceScope.MOVIES.name,
+                    targetKey = likedAnchor.stableMediaKey,
+                    topicsCsv = "genre:sci_fi,genre:mystery",
+                    isMediaCue = true,
+                    strength = 0.95,
+                    createdAtMs = now - 2_000L
+                ),
+                IntelligenceSignalEntity(
+                    id = 11L,
+                    signalType = IntelligenceSignalLogger.SIGNAL_DETAIL_OPEN,
+                    surfaceScope = IntelligenceSurfaceScope.MOVIES.name,
+                    targetKey = passiveOpenedRomance.stableMediaKey,
+                    topicsCsv = "genre:romance",
+                    isMediaCue = true,
+                    strength = 0.35,
+                    createdAtMs = now - 1_500L
+                )
+            )
+        )
+
+        val forYou = MoviesDiscoveryEngine.buildPersonalizedForYouRail(
+            watchHistory = emptyList(),
+            watchlist = listOf(likedAnchor, dislikedSciFi),
+            candidatePool = listOf(dislikedSciFi, matchingSciFi, passiveOpenedRomance),
+            profile = profile
+        )
+        // Disliked title itself is excluded, yet matching Sci-Fi still surfaces (one dislike doesn't ban Sci-Fi)
+        assertFalse(forYou.any { it.item.id == "sf_bad" })
+        assertTrue(forYou.any { it.item.id == "sf_good" })
+        // Cold-start guard rejects weak passive-only candidate when no positive threshold is cleared
+        val coldStart = MoviesDiscoveryEngine.buildPersonalizedForYouRail(
+            watchHistory = emptyList(),
+            watchlist = emptyList(),
+            candidatePool = listOf(passiveOpenedRomance),
+            profile = IntelligenceDiscoveryProfile(enabled = true)
+        )
+        assertTrue(coldStart.isEmpty())
+
+        val surprise = MoviesDiscoveryEngine.pickSurpriseMe(
+            watchHistory = listOf(
+                WatchHistoryItem(
+                    compositeId = likedAnchor.compositeId,
+                    providerId = likedAnchor.providerId,
+                    titleId = likedAnchor.id,
+                    kind = likedAnchor.kind,
+                    title = likedAnchor.title,
+                    positionMs = 100_000L,
+                    durationMs = 100_000L,
+                    lastWatchedAt = now - 500L,
+                    isCompleted = true
+                )
+            ),
+            recentlyViewed = emptyList(),
+            hiddenMediaKeys = emptySet(),
+            watchlist = listOf(likedAnchor),
+            candidatePool = listOf(dislikedSciFi, matchingSciFi),
+            profile = profile
+        )
+        assertEquals("sf_good", surprise?.pick?.id)
+    }
+
+    @Test
+    fun recentlyAdded_tieBreaksInsideNarrowBucket_andPersonalizeBrowseSectionsPreservesGlobalOrder() {
+        val now = 1_800_000_000_000L
+        val olderBucketItem = sampleTitle("old_sf", "Older Sci-Fi", genres = listOf("Sci-Fi"), addedAtMs = now - 25L * 86_400_000L)
+        val sameBucketUnaligned = sampleTitle("new_com", "Today Comedy", genres = listOf("Comedy"), addedAtMs = now - 1L * 3_600_000L)
+        val sameBucketAligned = sampleTitle("new_sf", "Yesterday Sci-Fi", genres = listOf("Sci-Fi"), addedAtMs = now - 3L * 3_600_000L)
+
+        val profile = IntelligenceDiscoveryProfile(
+            enabled = true,
+            nowMs = now,
+            facets = listOf(testFacet("genre:sci_fi", "Sci-Fi", TasteFacetType.EXPLICIT_LIKE, score = 0.95))
+        )
+
+        val recent = MoviesDiscoveryEngine.selectRecentlyAdded(
+            items = listOf(olderBucketItem, sameBucketUnaligned, sameBucketAligned),
+            profile = profile
+        )
+        // Aligned Sci-Fi item breaks tie within the same 14-day bucket, while 25-day-old item stays last
+        assertEquals(listOf("new_sf", "new_com", "old_sf"), recent.map { it.id })
+
+        val trendingSection = BrowseSection(
+            id = "trending_now",
+            title = "Trending Now",
+            subtitle = null,
+            style = SectionStyle.RAIL,
+            items = listOf(sameBucketUnaligned, sameBucketAligned)
+        )
+        val cyberpunkSection = BrowseSection(
+            id = "cyberpunk_picks",
+            title = "Cyberpunk Picks",
+            subtitle = null,
+            style = SectionStyle.RAIL,
+            items = listOf(sameBucketUnaligned, sameBucketAligned, olderBucketItem)
+        )
+        val processed = MoviesDiscoveryEngine.personalizeBrowseSections(
+            sections = listOf(trendingSection, cyberpunkSection),
+            hiddenMediaKeys = emptySet(),
+            profile = profile
+        )
+        // Global Trending stays untouched in canonical order
+        assertEquals(listOf("new_com", "new_sf"), processed[0].items.map { it.id })
+        // Category section subtly reorders aligned items to front while preserving all eligible items
+        assertEquals("new_sf", processed[1].items.first().id)
+        assertEquals(3, processed[1].items.size)
     }
 }

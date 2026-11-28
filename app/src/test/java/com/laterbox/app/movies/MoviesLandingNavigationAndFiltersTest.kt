@@ -265,7 +265,7 @@ class MoviesLandingNavigationAndFiltersTest {
                         ),
                         surprisePick = SurprisePickResult(surpriseItem, "Great match"),
                         topRatedRail = listOf(movie("tr1", "Top Gem")),
-                        newestRail = listOf(movie("nw1", "Newest Gem"))
+                        recentlyAddedRail = listOf(movie("nw1", "Newest Gem"))
                     ),
                     onRefresh = {},
                     onOpenCatalogue = { _, _ -> },
@@ -293,15 +293,16 @@ class MoviesLandingNavigationAndFiltersTest {
         val watchlistTop = composeTestRule.onNodeWithTag("movies_home_watchlist_rail").getBoundsInRoot().top
         val bywTop = composeTestRule.onNodeWithTag("movies_home_byw_rail_0").getBoundsInRoot().top
         val surpriseTop = composeTestRule.onNodeWithTag("movies_home_surprise_card").getBoundsInRoot().top
+        val recentlyAddedTop = composeTestRule.onNodeWithTag("movies_home_recently_added_rail").getBoundsInRoot().top
         val topRatedTop = composeTestRule.onNodeWithTag("movies_home_top_rated_rail").getBoundsInRoot().top
-        val newestTop = composeTestRule.onNodeWithTag("movies_home_newest_rail").getBoundsInRoot().top
+        composeTestRule.onNodeWithTag("movies_home_newest_rail").assertDoesNotExist()
 
         assertTrue(heroTop < continueTop)
         assertTrue(continueTop < watchlistTop)
         assertTrue(watchlistTop < bywTop)
         assertTrue(bywTop < surpriseTop)
-        assertTrue(surpriseTop < topRatedTop)
-        assertTrue(topRatedTop < newestTop)
+        assertTrue(surpriseTop < recentlyAddedTop)
+        assertTrue(recentlyAddedTop < topRatedTop)
 
         // Tap Watchlist "See all"
         composeTestRule.onNode(
@@ -421,7 +422,7 @@ class MoviesLandingNavigationAndFiltersTest {
             "drawer_movies_sub_watchlist",
             "drawer_movies_sub_popular_movies",
             "drawer_movies_sub_popular_series",
-            "drawer_movies_sub_newest",
+            "drawer_movies_sub_recently_added",
             "drawer_movies_sub_top_rated"
         )
         subTags.forEach { tag ->

@@ -304,4 +304,56 @@ interface MoviesRepository {
 
     suspend fun getProviderLinks(providerId: String, titleId: String): List<ProviderLinkRecord> = emptyList()
     suspend fun unlinkProviderTitle(providerId: String, titleId: String): String? = null
+
+    // Title-level feedback (Like / Dislike) & EI behavioral hooks
+    fun observeAllTitleFeedback(): Flow<List<com.laterbox.app.data.local.entity.TitleFeedbackEntity>> =
+        kotlinx.coroutines.flow.emptyFlow()
+
+    fun observeTitleReaction(
+        providerId: String,
+        titleId: String,
+        canonicalId: String? = null
+    ): Flow<com.laterbox.app.data.local.entity.TitleReaction?> = kotlinx.coroutines.flow.flowOf(null)
+
+    suspend fun setTitleReaction(
+        item: MovieTitleSummary,
+        reaction: com.laterbox.app.data.local.entity.TitleReaction?,
+        recordSignal: Boolean = true
+    ) = Unit
+
+    suspend fun logPlaybackStarted(item: MovieTitleSummary) = Unit
+    suspend fun logEarlyPlaybackExit(item: MovieTitleSummary) = Unit
+
+    // Signal-policy overloads so Assistant actions can avoid polluting EI signals
+    suspend fun toggleWatchlistWithSignalPolicy(item: MovieTitleSummary, recordSignal: Boolean): Boolean =
+        toggleWatchlist(item)
+
+    suspend fun markWatchedWithSignalPolicy(
+        item: MovieTitleSummary,
+        durationMs: Long = 0L,
+        isRewatch: Boolean = false,
+        recordSignal: Boolean
+    ) = markWatched(item, durationMs = durationMs, isRewatch = isRewatch)
+
+    suspend fun scheduleViewingReminderWithSignalPolicy(
+        item: MovieTitleSummary,
+        triggerAtMillis: Long,
+        note: String? = null,
+        seasonNumber: Int? = null,
+        episodeNumber: Int? = null,
+        recordSignal: Boolean
+    ) = scheduleViewingReminder(item, triggerAtMillis, note, seasonNumber, episodeNumber)
+
+    suspend fun addMediaToCollectionWithSignalPolicy(
+        item: MovieTitleSummary,
+        collectionId: Long,
+        recordSignal: Boolean
+    ) = addMediaToCollection(item, collectionId)
+
+    suspend fun setSeriesRemindersMutedWithSignalPolicy(
+        providerId: String,
+        titleId: String,
+        muted: Boolean,
+        recordSignal: Boolean
+    ) = setSeriesRemindersMuted(providerId, titleId, muted)
 }

@@ -62,10 +62,8 @@ object RemoteConfigLayoutHelper {
         "watchlist" to MoviesHomeSlotKind.CONTENT_RAIL,
         "recently_viewed" to MoviesHomeSlotKind.CONTENT_RAIL,
         "because_you_watched" to MoviesHomeSlotKind.CONTENT_RAIL,
-        "quick_picks" to MoviesHomeSlotKind.CONTENT_RAIL,
         "recently_added" to MoviesHomeSlotKind.CONTENT_RAIL,
         "top_rated" to MoviesHomeSlotKind.CONTENT_RAIL,
-        "newest" to MoviesHomeSlotKind.CONTENT_RAIL,
         "discovery_sections" to MoviesHomeSlotKind.CONTENT_RAIL,
     )
 
@@ -103,7 +101,7 @@ object RemoteConfigLayoutHelper {
         var railOrder = 100
         for ((id, kind) in defaultMoviesOrder) {
             if (kind != MoviesHomeSlotKind.CONTENT_RAIL) continue
-            if (!recommendationsEnabled && (id == "because_you_watched" || id == "quick_picks")) {
+            if (!recommendationsEnabled && id == "because_you_watched") {
                 continue
             }
             railOrder += 10

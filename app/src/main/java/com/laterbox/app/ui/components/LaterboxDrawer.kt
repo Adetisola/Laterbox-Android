@@ -689,10 +689,10 @@ private fun MoviesAccordionNavSection(
                     }
                 )
                 DrawerSubNavItem(
-                    label = "Newest",
+                    label = "Recently Added",
                     iconRes = LaterboxIcons.Sparkles,
                     selected = currentRoute?.contains("sort=newest") == true,
-                    testTag = "drawer_movies_sub_newest",
+                    testTag = "drawer_movies_sub_recently_added",
                     onClick = {
                         onNavigateSubRoute(
                             LaterboxDestination.MoviesCatalogue.createRoute(

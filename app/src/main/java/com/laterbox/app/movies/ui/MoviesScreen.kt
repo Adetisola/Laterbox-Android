@@ -130,6 +130,8 @@ fun MoviesScreen(
     onRemoteAction: (String) -> Unit = {},
     onDismissRemoteAnnouncement: (String) -> Unit = {},
     onRecordCardExposure: (String) -> Unit = {},
+    onSetTitleReaction: (MovieTitleSummary, com.laterbox.app.data.local.entity.TitleReaction?) -> Unit = { _, _ -> },
+    onSetHistoryTitleReaction: (WatchHistoryItem, com.laterbox.app.data.local.entity.TitleReaction?) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -795,7 +797,9 @@ fun MoviesScreen(
                                                         onAddToCollection = { collectionPickerTarget = it },
                                                         onMarkWatched = onMarkWatched,
                                                         onHideTitle = onHideTitle,
-                                                        onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) }
+                                                        onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) },
+                                                        titleReaction = uiState.reactionFor(item),
+                                                        onSetTitleReaction = onSetTitleReaction
                                                     )
                                                 }
                                                 repeat(3 - rowItems.size) {
@@ -839,11 +843,9 @@ fun MoviesScreen(
                             val visibleTopRated = remember(uiState.topRatedRail, uiState.hiddenMediaKeys) {
                                 uiState.topRatedRail.filterNot { it.stableMediaKey in uiState.hiddenMediaKeys }
                             }
-                            val visibleNewest = remember(uiState.newestRail, uiState.hiddenMediaKeys) {
-                                uiState.newestRail.filterNot { it.stableMediaKey in uiState.hiddenMediaKeys }
-                            }
-                            val visibleSections = remember(feed.sections, uiState.hiddenMediaKeys) {
-                                feed.sections.mapNotNull { section ->
+                            val sourceSections = uiState.personalizedSections.ifEmpty { feed.sections }
+                            val visibleSections = remember(sourceSections, uiState.hiddenMediaKeys) {
+                                sourceSections.mapNotNull { section ->
                                     val filtered = section.items.filterNot { it.stableMediaKey in uiState.hiddenMediaKeys }
                                     if (filtered.isEmpty()) null else section to filtered
                                 }
@@ -990,7 +992,9 @@ fun MoviesScreen(
                                                                     onOpenDetail = { onOpenDetail(entry.providerId, entry.titleId) },
                                                                     onRestartFromBeginning = { onRestartContinueWatching(entry) },
                                                                     onMarkWatched = { onMarkContinueWatchingWatched(entry) },
-                                                                    onRemoveFromContinueWatching = { onRemoveContinueWatching(entry) }
+                                                                    onRemoveFromContinueWatching = { onRemoveContinueWatching(entry) },
+                                                                    titleReaction = uiState.reactionForHistory(entry),
+                                                                    onSetTitleReaction = { reaction -> onSetHistoryTitleReaction(entry, reaction) }
                                                                 )
                                                             }
                                                         }
@@ -1024,7 +1028,9 @@ fun MoviesScreen(
                                                                     onAddToCollection = { collectionPickerTarget = it },
                                                                     onMarkWatched = onMarkWatched,
                                                                     onHideTitle = onHideTitle,
-                                                                    onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) }
+                                                                    onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) },
+                                                                    titleReaction = uiState.reactionFor(item),
+                                                                    onSetTitleReaction = onSetTitleReaction
                                                                 )
                                                             }
                                                         }
@@ -1081,6 +1087,8 @@ fun MoviesScreen(
                                                                         onMarkWatched = onMarkWatched,
                                                                         onHideTitle = onHideTitle,
                                                                         onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) },
+                                                                        titleReaction = uiState.reactionFor(item),
+                                                                        onSetTitleReaction = onSetTitleReaction,
                                                                         modifier = Modifier.width(126.dp)
                                                                     )
                                                                 }
@@ -1097,7 +1105,7 @@ fun MoviesScreen(
                                                             ) {
                                                                 SectionHeaderRow(
                                                                     title = "Because You Watched ${group.anchorTitle}",
-                                                                    subtitle = group.rationale ?: "Recommended from your viewing history",
+                                                                    subtitle = group.rationale ?: "Matched on story & tone",
                                                                     onSeeAll = null
                                                                 )
                                                                 LazyRow(
@@ -1118,7 +1126,9 @@ fun MoviesScreen(
                                                                             onAddToCollection = { collectionPickerTarget = it },
                                                                             onMarkWatched = onMarkWatched,
                                                                             onHideTitle = onHideTitle,
-                                                                            onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) }
+                                                                            onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) },
+                                                                            titleReaction = uiState.reactionFor(item),
+                                                                            onSetTitleReaction = onSetTitleReaction
                                                                         )
                                                                     }
                                                                 }
@@ -1237,40 +1247,6 @@ fun MoviesScreen(
                                                 }
                                             }
 
-                                            "quick_picks" -> if (recommendationsEnabled && uiState.quickRuntimePicks.isNotEmpty()) {
-                                                item(key = "quick_picks_rail") {
-                                                    Column(
-                                                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                                                        modifier = Modifier.testTag("movies_home_quick_picks_rail")
-                                                    ) {
-                                                        SectionHeaderRow(
-                                                            title = slot.customTitle.ifBlank { "Quick Picks (<90m)" },
-                                                            subtitle = "Easy to finish tonight",
-                                                            onSeeAll = null
-                                                        )
-                                                        LazyRow(
-                                                            contentPadding = PaddingValues(horizontal = 16.dp),
-                                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                                        ) {
-                                                            items(uiState.quickRuntimePicks.take(slot.maxItems), key = { "qp_${it.compositeId}" }, contentType = { "movie_card" }) { item ->
-                                                                val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
-                                                                MoviePosterCard(
-                                                                    item = item,
-                                                                    onClick = { onOpenDetail(item.providerId, item.id) },
-                                                                    isOfflineDownloaded = isOffline,
-                                                                    isInWatchlist = item.compositeId in watchlistIds,
-                                                                    onToggleWatchlist = onToggleWatchlist,
-                                                                    onAddToCollection = { collectionPickerTarget = it },
-                                                                    onMarkWatched = onMarkWatched,
-                                                                    onHideTitle = onHideTitle,
-                                                                    onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) }
-                                                                )
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-
                                             "recently_added" -> if (uiState.recentlyAddedRail.isNotEmpty()) {
                                                 item(key = "recently_added_rail") {
                                                     Column(
@@ -1280,7 +1256,7 @@ fun MoviesScreen(
                                                         SectionHeaderRow(
                                                             title = slot.customTitle.ifBlank { "Recently Added" },
                                                             subtitle = "Latest verified additions & releases",
-                                                            onSeeAll = null
+                                                            onSeeAll = { onOpenCatalogueWithSort(null, null, CatalogueSort.NEWEST, null) }
                                                         )
                                                         LazyRow(
                                                             contentPadding = PaddingValues(horizontal = 16.dp),
@@ -1297,7 +1273,9 @@ fun MoviesScreen(
                                                                     onAddToCollection = { collectionPickerTarget = it },
                                                                     onMarkWatched = onMarkWatched,
                                                                     onHideTitle = onHideTitle,
-                                                                    onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) }
+                                                                    onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) },
+                                                                    titleReaction = uiState.reactionFor(item),
+                                                                    onSetTitleReaction = onSetTitleReaction
                                                                 )
                                                             }
                                                         }
@@ -1331,41 +1309,9 @@ fun MoviesScreen(
                                                                     onAddToCollection = { collectionPickerTarget = it },
                                                                     onMarkWatched = onMarkWatched,
                                                                     onHideTitle = onHideTitle,
-                                                                    onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) }
-                                                                )
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            "newest" -> if (visibleNewest.isNotEmpty()) {
-                                                item(key = "newest_rail") {
-                                                    Column(
-                                                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                                                        modifier = Modifier.testTag("movies_home_newest_rail")
-                                                    ) {
-                                                        SectionHeaderRow(
-                                                            title = slot.customTitle.ifBlank { "Newest" },
-                                                            subtitle = "Latest releases added",
-                                                            onSeeAll = { onOpenCatalogueWithSort(null, null, CatalogueSort.NEWEST, null) }
-                                                        )
-                                                        LazyRow(
-                                                            contentPadding = PaddingValues(horizontal = 16.dp),
-                                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                                        ) {
-                                                            items(visibleNewest.take(slot.maxItems), key = { "nw_${it.compositeId}" }, contentType = { "movie_card" }) { item ->
-                                                                val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
-                                                                MoviePosterCard(
-                                                                    item = item,
-                                                                    onClick = { onOpenDetail(item.providerId, item.id) },
-                                                                    isOfflineDownloaded = isOffline,
-                                                                    isInWatchlist = item.compositeId in watchlistIds,
-                                                                    onToggleWatchlist = onToggleWatchlist,
-                                                                    onAddToCollection = { collectionPickerTarget = it },
-                                                                    onMarkWatched = onMarkWatched,
-                                                                    onHideTitle = onHideTitle,
-                                                                    onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) }
+                                                                    onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) },
+                                                                    titleReaction = uiState.reactionFor(item),
+                                                                    onSetTitleReaction = onSetTitleReaction
                                                                 )
                                                             }
                                                         }
@@ -1397,7 +1343,9 @@ fun MoviesScreen(
                                                                     onAddToCollection = { collectionPickerTarget = it },
                                                                     onMarkWatched = onMarkWatched,
                                                                     onHideTitle = onHideTitle,
-                                                                    onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) }
+                                                                    onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) },
+                                                                    titleReaction = uiState.reactionFor(item),
+                                                                    onSetTitleReaction = onSetTitleReaction
                                                                 )
                                                             }
                                                         }

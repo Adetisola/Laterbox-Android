@@ -1440,7 +1440,9 @@ fun LaterboxApp(
                                 dismissedAnnouncementIds = dismissedAnnouncementIds,
                                 onRemoteAction = handleRemoteAction,
                                 onDismissRemoteAnnouncement = { id -> remoteConfigManager?.dismissAnnouncement(id) },
-                                onRecordCardExposure = moviesHomeViewModel::recordCardExposure
+                                onRecordCardExposure = moviesHomeViewModel::recordCardExposure,
+                                onSetTitleReaction = moviesHomeViewModel::setTitleReaction,
+                                onSetHistoryTitleReaction = moviesHomeViewModel::setHistoryTitleReaction
                             )
                         }
 
@@ -1486,7 +1488,9 @@ fun LaterboxApp(
                                 onMarkWatched = moviesHomeViewModel::markWatched,
                                 onHideTitle = moviesHomeViewModel::hideTitle,
                                 onAddToCollection = moviesHomeViewModel::addToCollection,
-                                onCreateAndAddToCollection = moviesHomeViewModel::createAndAddToCollection
+                                onCreateAndAddToCollection = moviesHomeViewModel::createAndAddToCollection,
+                                titleReactions = watchlistUiState.titleReactions,
+                                onSetTitleReaction = moviesHomeViewModel::setTitleReaction
                             )
                         }
 
@@ -1577,6 +1581,7 @@ fun LaterboxApp(
                                 onHideTitle = moviesCatalogueViewModel::hideTitle,
                                 onAddToCollection = moviesCatalogueViewModel::addToCollection,
                                 onCreateAndAddToCollection = moviesCatalogueViewModel::createAndAddToCollection,
+                                onSetTitleReaction = moviesCatalogueViewModel::setTitleReaction,
                                 onClearActionFeedback = moviesCatalogueViewModel::clearActionFeedback,
                                 autoFocusSearch = focusSearch
                             )
@@ -1674,7 +1679,9 @@ fun LaterboxApp(
                                 onClearActionFeedback = movieDetailViewModel::clearActionFeedback,
                                 onEpisodeDownloadClick = movieDetailViewModel::onEpisodeDownloadButtonClick,
                                 onSelectEpisodeDownloadSource = movieDetailViewModel::startEpisodeDownloadWithSource,
-                                onDismissEpisodeResolutionPicker = movieDetailViewModel::dismissEpisodeResolutionPicker
+                                onDismissEpisodeResolutionPicker = movieDetailViewModel::dismissEpisodeResolutionPicker,
+                                onSetTitleReaction = movieDetailViewModel::setTitleReaction,
+                                onSetRelatedTitleReaction = movieDetailViewModel::setRelatedTitleReaction
                             )
                         }
 

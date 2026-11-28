@@ -53,4 +53,6 @@ object LaterboxIcons {
     @DrawableRes val Speed = R.drawable.ic_huge_speed
     @DrawableRes val Subtitles = R.drawable.ic_huge_subtitles
     @DrawableRes val Bookmark = R.drawable.ic_huge_bookmark
+    @DrawableRes val ThumbsUp = R.drawable.ic_huge_thumbs_up
+    @DrawableRes val ThumbsDown = R.drawable.ic_huge_thumbs_down
 }

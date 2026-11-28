@@ -173,6 +173,12 @@ class PlayerActivity : ComponentActivity() {
                                 onSubtitleStyleChange = moviePlayerViewModel::updateSubtitleStyle,
                                 onToggleAmbientMode = moviePlayerViewModel::setAmbientModeEnabled,
                                 onOpenRelatedTitle = { relProvider, relId ->
+                                    LaterboxPlaybackBridge.activePlayer?.let { player ->
+                                        moviePlayerViewModel.reportPlaybackExit(
+                                            positionMs = player.currentPosition,
+                                            durationMs = player.duration
+                                        )
+                                    }
                                     LaterboxPlaybackBridge.stopAndDetach(applicationContext)
                                     val detailIntent = Intent(this@PlayerActivity, MainActivity::class.java).apply {
                                         flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP

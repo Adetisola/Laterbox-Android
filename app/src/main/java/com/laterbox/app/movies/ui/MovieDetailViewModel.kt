@@ -75,6 +75,8 @@ data class MovieDetailUiState(
     val seriesPreferences: SeriesPreferences? = null,
     val hiddenMediaKeys: Set<String> = emptySet(),
     val rankedRelatedTitles: List<MovieTitleSummary> = emptyList(),
+    val titleReaction: com.laterbox.app.data.local.entity.TitleReaction? = null,
+    val titleReactions: Map<String, com.laterbox.app.data.local.entity.TitleReaction> = emptyMap(),
     val episodeDownloads: Map<Pair<Int, Int>, EpisodeDownloadUiState> = emptyMap(),
     val episodeResolutionPicker: EpisodeResolutionPickerState? = null,
     val actionFeedbackMessage: String? = null,
@@ -113,7 +115,8 @@ class MovieDetailViewModel(
     private val collectionRepository: CollectionRepository? = null,
     private val reminderScheduler: ReminderScheduler? = null,
     private val computeDispatcher: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.Main.immediate,
-    private val mediaRepository: com.laterbox.app.media.domain.repository.MediaRepository? = null
+    private val mediaRepository: com.laterbox.app.media.domain.repository.MediaRepository? = null,
+    private val userUnderstandingRepository: com.laterbox.app.intelligence.UserUnderstandingRepository? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MovieDetailUiState())
@@ -121,6 +124,7 @@ class MovieDetailViewModel(
 
     private var loadJob: Job? = null
     private var watchlistJob: Job? = null
+    private var feedbackJob: Job? = null
     private var libraryObserversJob: Job? = null
     private var episodesJob: Job? = null
     private var episodeSizesJob: Job? = null
@@ -178,15 +182,36 @@ class MovieDetailViewModel(
             }
         }
         viewModelScope.launch {
+            moviesRepository.observeAllTitleFeedback().collect { list ->
+                val mapped = LinkedHashMap<String, com.laterbox.app.data.local.entity.TitleReaction>(list.size * 3)
+                for (entry in list) {
+                    val reaction = runCatching {
+                        com.laterbox.app.data.local.entity.TitleReaction.valueOf(entry.reaction)
+                    }.getOrNull() ?: continue
+                    mapped[entry.mediaKey] = reaction
+                    mapped[entry.compositeId] = reaction
+                    entry.canonicalId?.takeIf { it.isNotBlank() }?.let { mapped[it] = reaction }
+                }
+                _uiState.update { it.copy(titleReactions = mapped) }
+            }
+        }
+        viewModelScope.launch {
             moviesRepository.observeHiddenHistory(100).collect { hidden ->
                 val keys = hidden.map { it.stableMediaKey }.toSet()
                 _uiState.update { current ->
                     val reranked = current.details?.let { details ->
+                        val activeFacets = runCatching {
+                            userUnderstandingRepository?.getActiveFacetsForMovies().orEmpty()
+                        }.getOrDefault(emptyList())
                         MoviesDiscoveryEngine.rankMoreLikeThis(
                             anchor = details.summary,
                             relatedTitles = details.relatedTitles,
                             candidatePool = emptyList(),
-                            hiddenMediaKeys = keys
+                            hiddenMediaKeys = keys,
+                            profile = com.laterbox.app.movies.domain.engine.IntelligenceDiscoveryProfile(
+                                enabled = true,
+                                facets = activeFacets
+                            )
                         )
                     } ?: current.rankedRelatedTitles
                     current.copy(hiddenMediaKeys = keys, rankedRelatedTitles = reranked)
@@ -214,6 +239,13 @@ class MovieDetailViewModel(
         watchlistJob = viewModelScope.launch {
             moviesRepository.observeIsInWatchlist("$providerId:$titleId").collect { inWatchlist ->
                 _uiState.update { it.copy(isInWatchlist = inWatchlist) }
+            }
+        }
+
+        feedbackJob?.cancel()
+        feedbackJob = viewModelScope.launch {
+            moviesRepository.observeTitleReaction(providerId, titleId).collect { reaction ->
+                _uiState.update { it.copy(titleReaction = reaction) }
             }
         }
 
@@ -477,11 +509,21 @@ class MovieDetailViewModel(
                     // Priority 4: Rank related titles off Main
                     launch {
                         val rankedRelated = kotlinx.coroutines.withContext(computeDispatcher) {
+                            val activeFacets = runCatching {
+                                userUnderstandingRepository?.getActiveFacetsForMovies().orEmpty()
+                            }.getOrDefault(emptyList())
                             MoviesDiscoveryEngine.rankMoreLikeThis(
                                 anchor = details.summary,
                                 relatedTitles = details.relatedTitles,
                                 candidatePool = emptyList(),
-                                hiddenMediaKeys = _uiState.value.hiddenMediaKeys
+                                hiddenMediaKeys = _uiState.value.hiddenMediaKeys,
+                                profile = com.laterbox.app.movies.domain.engine.IntelligenceDiscoveryProfile(
+                                    enabled = true,
+                                    facets = activeFacets,
+                                    titleFeedback = runCatching {
+                                        userUnderstandingRepository?.getAllTitleFeedbackSnapshot().orEmpty()
+                                    }.getOrDefault(emptyList())
+                                )
                             )
                         }
                         if (loadRequestSeq == requestSeq) {
@@ -1717,6 +1759,22 @@ class MovieDetailViewModel(
 
     fun dismissEpisodeResolutionPicker() {
         _uiState.update { it.copy(episodeResolutionPicker = null) }
+    }
+
+    fun setTitleReaction(reaction: com.laterbox.app.data.local.entity.TitleReaction?) {
+        val summary = _uiState.value.details?.summary ?: return
+        viewModelScope.launch {
+            runCatching { moviesRepository.setTitleReaction(summary, reaction) }
+        }
+    }
+
+    fun setRelatedTitleReaction(
+        item: MovieTitleSummary,
+        reaction: com.laterbox.app.data.local.entity.TitleReaction?
+    ) {
+        viewModelScope.launch {
+            runCatching { moviesRepository.setTitleReaction(item, reaction) }
+        }
     }
 
     private fun recomputeEpisodeDownloadStates() {

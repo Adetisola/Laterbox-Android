@@ -15,7 +15,8 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
  * at the user's chosen resolution without creating Inbox link clutter.
  */
 class MoviesDownloadBridge(
-    private val mediaRepository: MediaRepository
+    private val mediaRepository: MediaRepository,
+    private val intelligenceSignalLogger: com.laterbox.app.intelligence.IntelligenceSignalLogger? = null
 ) {
     suspend fun enqueueAuthorisedDownload(
         summary: MovieTitleSummary,
@@ -99,7 +100,7 @@ class MoviesDownloadBridge(
         )
         val urlExpiresAt = parseUrlExpiryMillis(source.url)
 
-        mediaRepository.enqueueStandaloneDownload(
+        val taskId = mediaRepository.enqueueStandaloneDownload(
             candidate = candidate,
             sourcePlatform = source.providerName,
             title = displayTitle,
@@ -109,6 +110,8 @@ class MoviesDownloadBridge(
             sourceRef = sourceRef,
             urlExpiresAt = urlExpiresAt
         )
+        runCatching { intelligenceSignalLogger?.logMovieDownload(summary, removed = false) }
+        taskId
     }
 
     companion object {

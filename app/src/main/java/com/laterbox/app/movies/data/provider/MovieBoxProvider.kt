@@ -379,15 +379,10 @@ class MovieBoxProvider(
             val normalizedGenre = normalizeVerifiedGenre(genre)
             val normalizedCountry = normalizeVerifiedCountry(country)
             val normalizedYear = year?.trim()?.takeIf { YEAR_REGEX.matches(it) }
-            val rawApiSort = when (sort) {
+            val apiSort = when (sort) {
                 CatalogueSort.POPULAR -> "Hottest"
                 CatalogueSort.TOP_RATED -> "Rating"
                 CatalogueSort.NEWEST -> "Latest"
-            }
-            val apiSort = if (normalizedGenre == "Western" && rawApiSort == "Hottest") {
-                "ForYou"
-            } else {
-                rawApiSort
             }
 
             val urlBuilder = requireBaseHttpUrl().newBuilder()
@@ -427,6 +422,8 @@ class MovieBoxProvider(
                     val stillsBlurHash = parseBlurHash(stillsObj, obj, "stills_blur_hash")
                     val itemKind = subjectType?.let { parseMediaKind(it, null) } ?: kind
                     val releaseDateStr = obj.optCleanString("release_date")
+                    val description = obj.optCleanString("description")
+                    val imdbId = obj.optCleanString("imdbId") ?: obj.optCleanString("imdb_id")
                     add(
                         MovieTitleSummary(
                             id = id,
@@ -439,11 +436,13 @@ class MovieBoxProvider(
                             posterUrl = cover,
                             backdropUrl = stillsUrl,
                             genres = parseGenres(obj.optCleanString("genre")),
+                            summary = description,
                             language = obj.optCleanString("language"),
                             country = obj.optCleanString("country"),
                             detailPath = dp,
                             sourceBadge = DataSourceBadge.LIVE_MOVIEBOX,
                             isPlayableHint = true,
+                            imdbId = imdbId,
                             releaseDate = releaseDateStr,
                             subjectType = subjectType ?: inferSubjectType(itemKind),
                             posterBlurHash = coverBlurHash,

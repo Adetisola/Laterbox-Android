@@ -67,6 +67,8 @@ fun MoviesWatchlistScreen(
     onHideTitle: (MovieTitleSummary) -> Unit = {},
     onAddToCollection: (MovieTitleSummary, Long) -> Unit = { _, _ -> },
     onCreateAndAddToCollection: (MovieTitleSummary, String) -> Unit = { _, _ -> },
+    titleReactions: Map<String, com.laterbox.app.data.local.entity.TitleReaction> = emptyMap(),
+    onSetTitleReaction: (MovieTitleSummary, com.laterbox.app.data.local.entity.TitleReaction?) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val colors = LaterboxTheme.colors
@@ -252,6 +254,10 @@ fun MoviesWatchlistScreen(
                             onMarkWatched = onMarkWatched,
                             onHideTitle = onHideTitle,
                             onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(watchlistContext, it) },
+                            titleReaction = titleReactions[item.stableMediaKey]
+                                ?: item.canonicalId?.let { titleReactions[it] }
+                                ?: titleReactions[item.compositeId],
+                            onSetTitleReaction = onSetTitleReaction,
                             menuButtonTestTag = "watchlist_card_menu_${item.id}"
                         )
                     }

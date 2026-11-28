@@ -76,6 +76,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -177,6 +178,8 @@ fun MoviePosterCard(
     onHideTitle: ((MovieTitleSummary) -> Unit)? = null,
     onRemoveFromViewed: ((MovieTitleSummary) -> Unit)? = null,
     onShareTitle: ((MovieTitleSummary) -> Unit)? = null,
+    titleReaction: com.laterbox.app.data.local.entity.TitleReaction? = null,
+    onSetTitleReaction: ((MovieTitleSummary, com.laterbox.app.data.local.entity.TitleReaction?) -> Unit)? = null,
     menuButtonTestTag: String = "poster_actions_${item.id}",
     showSourceStatusBadge: Boolean = false
 ) {
@@ -188,7 +191,8 @@ fun MoviePosterCard(
         onMarkWatched != null ||
         onHideTitle != null ||
         onRemoveFromViewed != null ||
-        onShareTitle != null
+        onShareTitle != null ||
+        onSetTitleReaction != null
 
     Column(
         modifier = modifier
@@ -403,6 +407,16 @@ fun MoviePosterCard(
                                             }
                                         )
                                     }
+                                    onSetTitleReaction?.let { react ->
+                                        TitleReactionMenuSection(
+                                            currentReaction = titleReaction,
+                                            onReact = { nextReaction ->
+                                                menuExpanded = false
+                                                react(item, nextReaction)
+                                            },
+                                            testTagPrefix = "poster_feedback_${item.id}"
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -595,7 +609,9 @@ fun ContinueWatchingCard(
     onRestartFromBeginning: (() -> Unit)? = null,
     onMarkWatched: (() -> Unit)? = null,
     onOpenDetail: (() -> Unit)? = null,
-    onRemoveFromContinueWatching: (() -> Unit)? = null
+    onRemoveFromContinueWatching: (() -> Unit)? = null,
+    titleReaction: com.laterbox.app.data.local.entity.TitleReaction? = null,
+    onSetTitleReaction: ((com.laterbox.app.data.local.entity.TitleReaction?) -> Unit)? = null
 ) {
     val colors = LaterboxTheme.colors
     val typography = LaterboxTheme.typography
@@ -603,7 +619,8 @@ fun ContinueWatchingCard(
     val hasMenuActions = onRestartFromBeginning != null ||
         onMarkWatched != null ||
         onOpenDetail != null ||
-        onRemoveFromContinueWatching != null
+        onRemoveFromContinueWatching != null ||
+        onSetTitleReaction != null
 
     Surface(
         modifier = modifier
@@ -766,6 +783,16 @@ fun ContinueWatchingCard(
                                             menuExpanded = false
                                             remove()
                                         }
+                                    )
+                                }
+                                onSetTitleReaction?.let { react ->
+                                    TitleReactionMenuSection(
+                                        currentReaction = titleReaction,
+                                        onReact = { nextReaction ->
+                                            menuExpanded = false
+                                            react(nextReaction)
+                                        },
+                                        testTagPrefix = "cw_feedback_${item.titleId}"
                                     )
                                 }
                             }
@@ -2682,12 +2709,12 @@ fun MoviesSearchSuggestionsDropdown(
                                         color = colors.accentPrimary
                                     )
                                 }
-                                Icon(
-                                    painter = painterResource(LaterboxIcons.Search),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                    tint = colors.accentPrimary
-                                )
+                                    Icon(
+                                        painter = painterResource(LaterboxIcons.Search),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = colors.accentPrimary
+                                    )
                             }
                         }
                     }
@@ -2696,3 +2723,82 @@ fun MoviesSearchSuggestionsDropdown(
         }
     }
 }
+
+@Composable
+fun TitleReactionMenuSection(
+    currentReaction: com.laterbox.app.data.local.entity.TitleReaction?,
+    onReact: (com.laterbox.app.data.local.entity.TitleReaction?) -> Unit,
+    testTagPrefix: String = "title_feedback",
+    modifier: Modifier = Modifier
+) {
+    val colors = LaterboxTheme.colors
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(top = 2.dp)
+            .testTag("${testTagPrefix}_section"),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        HorizontalDivider(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 4.dp)
+                .testTag("${testTagPrefix}_divider"),
+            thickness = 0.75.dp,
+            color = colors.borderSubtle.copy(alpha = 0.75f)
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            val isLiked = currentReaction == com.laterbox.app.data.local.entity.TitleReaction.LIKE
+            val isDisliked = currentReaction == com.laterbox.app.data.local.entity.TitleReaction.DISLIKE
+
+            IconButton(
+                onClick = {
+                    onReact(if (isLiked) null else com.laterbox.app.data.local.entity.TitleReaction.LIKE)
+                },
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (isLiked) colors.accentPrimary.copy(alpha = 0.14f) else Color.Transparent
+                    )
+                    .semantics { selected = isLiked }
+                    .testTag("${testTagPrefix}_like")
+            ) {
+                Icon(
+                    painter = painterResource(LaterboxIcons.ThumbsUp),
+                    contentDescription = if (isLiked) "Remove like" else "Like title",
+                    tint = if (isLiked) colors.accentPrimary else colors.textSecondary,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+
+            IconButton(
+                onClick = {
+                    onReact(if (isDisliked) null else com.laterbox.app.data.local.entity.TitleReaction.DISLIKE)
+                },
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (isDisliked) colors.statusDanger.copy(alpha = 0.14f) else Color.Transparent
+                    )
+                    .semantics { selected = isDisliked }
+                    .testTag("${testTagPrefix}_dislike")
+            ) {
+                Icon(
+                    painter = painterResource(LaterboxIcons.ThumbsDown),
+                    contentDescription = if (isDisliked) "Remove dislike" else "Dislike title",
+                    tint = if (isDisliked) colors.statusDanger else colors.textSecondary,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+    }
+}
+

@@ -165,7 +165,8 @@ object AppViewModelProvider {
                 collectionRepository = app.container.collectionRepository,
                 reminderScheduler = app.container.reminderScheduler,
                 mediaRepository = app.container.mediaRepository,
-                computeDispatcher = kotlinx.coroutines.Dispatchers.Default
+                computeDispatcher = kotlinx.coroutines.Dispatchers.Default,
+                userUnderstandingRepository = app.container.userUnderstandingRepository
             )
         }
         initializer {

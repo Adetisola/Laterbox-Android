@@ -77,7 +77,8 @@ class RemoteConfigLayoutAndFlagsTest {
         assertEquals(1, slots[1].component?.slides?.size)
 
         // Legacy content_rail cannot hide core rails; recommendations flag still gates personalized shelves
-        assertTrue(slots.any { it.railId == "newest" })
+        assertFalse(slots.any { it.railId == "newest" })
+        assertTrue(slots.any { it.railId == "recently_added" })
         assertFalse(slots.any { it.railId == "because_you_watched" })
         assertFalse(slots.any { it.railId == "quick_picks" })
         assertTrue(slots.any { it.railId == "continue_watching" })

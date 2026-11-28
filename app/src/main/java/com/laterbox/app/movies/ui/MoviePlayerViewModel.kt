@@ -118,6 +118,8 @@ class MoviePlayerViewModel(
     private var activeProviderId: String = ""
     private val rateLimitedDomainsUntilMs = ConcurrentHashMap<String, Long>()
     private val failedSourceAuthFingerprints = ConcurrentHashMap<String, String>()
+    private val loggedStartKeys = mutableSetOf<String>()
+    private val loggedEarlyExitKeys = mutableSetOf<String>()
 
     init {
         userPreferencesRepository?.let { prefsRepo ->
@@ -864,6 +866,9 @@ class MoviePlayerViewModel(
         }
         if (clamped < 1_000L && durationMs <= 0L) return
         viewModelScope.launch {
+            if (clamped >= 3_000L && loggedStartKeys.add(summary.stableMediaKey)) {
+                runCatching { moviesRepository.logPlaybackStarted(summary) }
+            }
             moviesRepository.saveWatchProgress(
                 item = summary,
                 positionMs = clamped,
@@ -872,6 +877,20 @@ class MoviePlayerViewModel(
                 episodeNumber = episodeNumber,
                 episodeLabel = episodeLabel
             )
+        }
+    }
+
+    fun reportPlaybackExit(positionMs: Long, durationMs: Long) {
+        val summary = _uiState.value.summary ?: return
+        val clamped = positionMs.coerceAtLeast(0L)
+        if (durationMs >= 600_000L &&
+            clamped in 5_000L..120_000L &&
+            (clamped.toFloat() / durationMs.toFloat()) < 0.06f &&
+            loggedEarlyExitKeys.add(summary.stableMediaKey)
+        ) {
+            viewModelScope.launch {
+                runCatching { moviesRepository.logEarlyPlaybackExit(summary) }
+            }
         }
     }
 

@@ -105,6 +105,7 @@ fun MoviesCatalogueScreen(
     onHideTitle: (MovieTitleSummary) -> Unit = {},
     onAddToCollection: (MovieTitleSummary, Long) -> Unit = { _, _ -> },
     onCreateAndAddToCollection: (MovieTitleSummary, String) -> Unit = { _, _ -> },
+    onSetTitleReaction: (MovieTitleSummary, com.laterbox.app.data.local.entity.TitleReaction?) -> Unit = { _, _ -> },
     onClearActionFeedback: () -> Unit = {},
     autoFocusSearch: Boolean = false,
     modifier: Modifier = Modifier
@@ -729,7 +730,9 @@ fun MoviesCatalogueScreen(
                             onAddToCollection = { collectionPickerTarget = it },
                             onMarkWatched = onMarkWatched,
                             onHideTitle = onHideTitle,
-                            onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(catContext, it) }
+                            onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(catContext, it) },
+                            titleReaction = uiState.reactionFor(item),
+                            onSetTitleReaction = onSetTitleReaction
                         )
                     }
 
@@ -790,6 +793,8 @@ fun MoviesCatalogueScreen(
                                 onMarkWatched = onMarkWatched,
                                 onHideTitle = onHideTitle,
                                 onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(suppContext, it) },
+                                titleReaction = uiState.reactionFor(item),
+                                onSetTitleReaction = onSetTitleReaction,
                                 showSourceStatusBadge = true
                             )
                         }
