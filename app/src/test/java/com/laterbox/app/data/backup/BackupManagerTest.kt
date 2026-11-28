@@ -50,7 +50,6 @@ class BackupManagerTest {
     @After
     fun tearDown() {
         kotlinx.coroutines.runBlocking {
-            userPreferencesRepository.setPersonalizationEnabled(true)
             userPreferencesRepository.setAssistantPersonalContextEnabled(false)
         }
         database.close()
@@ -377,14 +376,13 @@ class BackupManagerTest {
     }
 
     @Test
-    fun exportAndImportV2_roundTripsFacetsWatchlistAndPrefs_andOmitsEphemeralSignals() = runTest {
+    fun exportAndImportV3_roundTripsFacetsWatchlistSanitizedSignalsFeedbackAndDismissals() = runTest {
         val nowMs = 1_800_000_000_000L
         val futureMs = nowMs + 7_200_000L
         val intelligenceDao = database.intelligenceDao()
         val moviesDao = database.moviesDao()
         val savedLinkDao = database.savedLinkDao()
 
-        userPreferencesRepository.setPersonalizationEnabled(false)
         userPreferencesRepository.setAssistantPersonalContextEnabled(true)
 
         savedLinkDao.insertLink(
@@ -416,14 +414,38 @@ class BackupManagerTest {
                 lastReinforcedAtMs = nowMs
             )
         )
-        // Ephemeral history signal MUST be omitted from exported JSON
+        // Raw query in targetKey MUST be sanitized/hashed during v3 export
         intelligenceDao.insertSignal(
             IntelligenceSignalEntity(
-                signalType = "SEARCH",
+                signalType = "SEARCH_QUERY",
                 surfaceScope = IntelligenceSurfaceScope.LIBRARY.name,
-                targetKey = "secret query",
+                targetKey = "search:secret query",
                 topicsCsv = "topic:design",
                 createdAtMs = nowMs
+            )
+        )
+        intelligenceDao.upsertTitleFeedback(
+            com.laterbox.app.data.local.entity.TitleFeedbackEntity(
+                mediaKey = "moviebox:42",
+                compositeId = "moviebox:42",
+                providerId = "moviebox",
+                titleId = "42",
+                canonicalId = "imdb:tt2543164",
+                kind = "MOVIE",
+                title = "Arrival",
+                reaction = com.laterbox.app.data.local.entity.TitleReaction.LIKE.name,
+                genresCsv = "Sci-Fi,Drama",
+                updatedAtMs = nowMs
+            )
+        )
+        intelligenceDao.upsertDismissal(
+            com.laterbox.app.data.local.entity.SuggestionDismissalEntity(
+                dismissalKey = "${com.laterbox.app.data.local.entity.SuggestionDismissalType.PICK_BACK_UP.name}:hash_abc123",
+                suggestionType = com.laterbox.app.data.local.entity.SuggestionDismissalType.PICK_BACK_UP.name,
+                linkId = 1L,
+                linkIdentityHash = "hash_abc123",
+                dismissedAtMs = nowMs,
+                suppressUntilMs = futureMs
             )
         )
 
@@ -447,14 +469,21 @@ class BackupManagerTest {
             )
         )
 
+        val exportBackupManager = BackupManager(
+            database = database,
+            nowMsProvider = { nowMs },
+            userPreferencesRepository = userPreferencesRepository
+        )
         val outStream = ByteArrayOutputStream()
-        assertTrue(backupManager.exportToJson(outStream).isSuccess)
+        assertTrue(exportBackupManager.exportToJson(outStream).isSuccess)
         val exportedJson = outStream.toString(Charsets.UTF_8.name())
 
         val root = JSONObject(exportedJson)
         assertEquals(LaterboxBackup.CURRENT_BACKUP_VERSION, root.getInt("version"))
-        assertFalse(root.has("intelligenceSignals"))
-        assertFalse(root.has("intelligence_signals"))
+        assertTrue(root.has("intelligenceSignals"))
+        assertTrue(root.has("titleFeedback"))
+        assertTrue(root.has("suggestionDismissals"))
+        assertFalse(exportedJson.contains("secret query"))
         assertFalse(root.has("movieCacheEntries"))
         assertFalse(root.has("movie_cache_entries"))
 
@@ -464,7 +493,6 @@ class BackupManagerTest {
             .allowMainThreadQueries()
             .build()
         try {
-            userPreferencesRepository.setPersonalizationEnabled(true)
             userPreferencesRepository.setAssistantPersonalContextEnabled(false)
 
             val scheduled = mutableListOf<Triple<Long, Long, String?>>()
@@ -484,6 +512,9 @@ class BackupManagerTest {
             assertEquals(1, restoreResult.restoredLinksCount)
             assertEquals(1, restoreResult.restoredFacetsCount)
             assertEquals(1, restoreResult.restoredWatchlistCount)
+            assertEquals(1, restoreResult.restoredSignalsCount)
+            assertEquals(1, restoreResult.restoredTitleFeedbackCount)
+            assertEquals(1, restoreResult.restoredDismissalsCount)
             assertEquals(1, scheduled.size)
             assertEquals("V2 Reminder Link", scheduled[0].third)
 
@@ -492,13 +523,24 @@ class BackupManagerTest {
             assertEquals(TasteFacetType.EXPLICIT_LIKE.name, restoredFacet!!.facetType)
             assertTrue(restoredFacet.includeInAssistantContext)
 
+            val restoredSignals = targetDb.intelligenceDao().getRecentSignalsSnapshot(10)
+            assertEquals(1, restoredSignals.size)
+            assertFalse(restoredSignals[0].targetKey.contains("secret query"))
+
+            val restoredFeedback = targetDb.intelligenceDao().getAllTitleFeedbackSnapshot()
+            assertEquals(1, restoredFeedback.size)
+            assertEquals(com.laterbox.app.data.local.entity.TitleReaction.LIKE.name, restoredFeedback[0].reaction)
+
+            val restoredDismissals = targetDb.intelligenceDao().getAllDismissalsSnapshot()
+            assertEquals(1, restoredDismissals.size)
+            assertEquals("hash_abc123", restoredDismissals[0].linkIdentityHash)
+
             val restoredWatchlist = targetDb.moviesDao().getWatchlistSnapshot()
             assertEquals(1, restoredWatchlist.size)
             assertEquals("Arrival", restoredWatchlist[0].title)
             assertEquals("imdb:tt2543164", restoredWatchlist[0].canonicalId)
 
             val restoredPrefs = userPreferencesRepository.userPreferences.first()
-            assertFalse(restoredPrefs.personalizationEnabled)
             assertTrue(restoredPrefs.assistantPersonalContextEnabled)
         } finally {
             targetDb.close()

@@ -720,6 +720,7 @@ fun LaterboxApp(
                             InboxScreen(
                                 uiState = inboxUiState,
                                 onSearchQueryChange = inboxViewModel::onSearchQueryChange,
+                                onSearchSubmit = { inboxViewModel.onSearchSubmit(it) },
                                 onClearSearch = inboxViewModel::onClearSearch,
                                 onFilterContentType = inboxViewModel::onFilterContentType,
                                 onFilterDateRange = inboxViewModel::onFilterDateRange,
@@ -1439,9 +1440,6 @@ fun LaterboxApp(
                                 dismissedAnnouncementIds = dismissedAnnouncementIds,
                                 onRemoteAction = handleRemoteAction,
                                 onDismissRemoteAnnouncement = { id -> remoteConfigManager?.dismissAnnouncement(id) },
-                                onOpenPersonalizationPrivacy = {
-                                    navController.navigate(LaterboxDestination.SettingsPersonalizationPrivacy.route)
-                                },
                                 onRecordCardExposure = moviesHomeViewModel::recordCardExposure
                             )
                         }
@@ -1733,7 +1731,6 @@ fun LaterboxApp(
                                 onNavigateToMediaDownloads = { navController.navigate(LaterboxDestination.SettingsMediaDownloads.route) },
                                 onNavigateToMoviesTv = { navController.navigate(LaterboxDestination.SettingsMoviesTv.route) },
                                 onNavigateToDataStorage = { navController.navigate(LaterboxDestination.SettingsDataStorage.route) },
-                                onNavigateToPersonalizationPrivacy = { navController.navigate(LaterboxDestination.SettingsPersonalizationPrivacy.route) },
                                 onBackClick = { navController.popBackStack() },
                                 isCheckingUpdate = isCheckingUpdate,
                                 availableUpdateInfo = availableUpdateInfo,
@@ -1792,6 +1789,7 @@ fun LaterboxApp(
                                 onSendTestSmartDigest = settingsViewModel::sendTestSmartDigest,
                                 onBackClick = { navController.popBackStack() },
                                 onAssistantEnabledChange = settingsViewModel::setAssistantEnabled,
+                                onAssistantPersonalContextEnabledChange = settingsViewModel::setAssistantPersonalContextEnabled,
                                 onResetAiDisclosureConsent = { settingsViewModel.setAssistantAiDisclosureAccepted(false) },
                                 onSmartNotificationsExtractionFailureChange = settingsViewModel::setSmartNotificationsExtractionFailure,
                                 onSmartNotificationsDownloadFailureChange = settingsViewModel::setSmartNotificationsDownloadFailure,
@@ -1950,29 +1948,6 @@ fun LaterboxApp(
                                         launchSingleTop = true
                                     }
                                 }
-                            )
-                        }
-
-                        // Settings: Personalization & Privacy
-                        composable(LaterboxDestination.SettingsPersonalizationPrivacy.route) {
-                            val facets by settingsViewModel.tasteFacets.collectAsState()
-                            val signalCount by settingsViewModel.intelligenceSignalCount.collectAsState()
-                            com.laterbox.app.ui.settings.PersonalizationPrivacyScreen(
-                                preferences = preferences,
-                                facets = facets,
-                                signalCount = signalCount,
-                                onPersonalizationEnabledChange = settingsViewModel::setPersonalizationEnabled,
-                                onAssistantPersonalContextEnabledChange = settingsViewModel::setAssistantPersonalContextEnabled,
-                                onSetExplicitPreference = settingsViewModel::setExplicitTastePreference,
-                                onToggleSuppressFacet = settingsViewModel::toggleSuppressTasteFacet,
-                                onToggleIncludeInAssistant = settingsViewModel::setFacetIncludeInAssistant,
-                                onDeleteFacet = settingsViewModel::deleteTasteFacet,
-                                onRebuildFromLibrary = settingsViewModel::rebuildTasteModelFromLibrary,
-                                onResetModel = {
-                                    settingsViewModel.resetTasteModel()
-                                    toastController.showSuccess("Personalization model reset.")
-                                },
-                                onBackClick = { navController.popBackStack() }
                             )
                         }
 

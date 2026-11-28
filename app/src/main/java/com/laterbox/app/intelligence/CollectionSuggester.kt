@@ -40,13 +40,20 @@ object CollectionSuggester {
         collections: List<Collection>,
         categorizedLinks: List<SavedLink> = links.filter { it.collectionIds.isNotEmpty() || it.collectionId != null },
         dismissedPairs: Set<Pair<Long, Long>> = emptySet(),
+        dismissedLinkIds: Set<Long> = emptySet(),
+        dismissedLinkHashes: Set<String> = emptySet(),
         maxSuggestions: Int = 3
     ): List<LinkCollectionSuggestion> {
         if (maxSuggestions <= 0 || collections.isEmpty() || links.isEmpty()) return emptyList()
 
         val profiles = buildProfiles(collections, categorizedLinks)
         val uncategorized = links.filter {
-            !it.isArchived && it.collectionIds.isEmpty() && it.collectionId == null
+            val linkHash = TopicExtractor.stableLinkIdentityHash(it.normalizedUrl)
+            !it.isArchived &&
+                it.collectionIds.isEmpty() &&
+                it.collectionId == null &&
+                it.id !in dismissedLinkIds &&
+                linkHash !in dismissedLinkHashes
         }
         if (uncategorized.isEmpty()) return emptyList()
 
@@ -64,10 +71,14 @@ object CollectionSuggester {
         targetLink: SavedLink,
         collections: List<Collection>,
         allLinks: List<SavedLink>,
-        dismissedPairs: Set<Pair<Long, Long>> = emptySet()
+        dismissedPairs: Set<Pair<Long, Long>> = emptySet(),
+        dismissedLinkIds: Set<Long> = emptySet(),
+        dismissedLinkHashes: Set<String> = emptySet()
     ): LinkCollectionSuggestion? {
         if (collections.isEmpty()) return null
         if (targetLink.collectionIds.isNotEmpty() || targetLink.collectionId != null) return null
+        val linkHash = TopicExtractor.stableLinkIdentityHash(targetLink.normalizedUrl)
+        if (targetLink.id in dismissedLinkIds || linkHash in dismissedLinkHashes) return null
         val profiles = buildProfiles(
             collections = collections,
             categorizedLinks = allLinks.filter { it.id != targetLink.id && (it.collectionIds.isNotEmpty() || it.collectionId != null) }

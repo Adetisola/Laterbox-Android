@@ -32,10 +32,6 @@ class ArchiveViewModel(
     private val _linkToDelete = MutableStateFlow<SavedLink?>(null)
 
     private val facetsFlow = userUnderstandingRepository?.observeAllFacets() ?: flowOf(emptyList())
-    private val localPersonalizationFlow = userPreferencesRepository?.userPreferences
-        ?.map { it.personalizationEnabled }
-        ?.distinctUntilChanged()
-        ?: flowOf(true)
     private val remoteIntelEnabledFlow = remoteConfigManager?.state
         ?.map { it.activeConfig.isFeatureEnabled(RemoteCapabilities.KEY_EXPERIENCE_INTELLIGENCE, true) }
         ?.distinctUntilChanged()
@@ -45,10 +41,10 @@ class ArchiveViewModel(
         combine(linkRepository.archivedLinks, _searchQuery, _linkToDelete) { archived, query, toDelete ->
             Triple(archived, query, toDelete)
         },
-        combine(facetsFlow, localPersonalizationFlow, remoteIntelEnabledFlow) { facets, localEnabled, remoteEnabled ->
-            Triple(facets, localEnabled, remoteEnabled)
+        combine(facetsFlow, remoteIntelEnabledFlow) { facets, remoteEnabled ->
+            facets to remoteEnabled
         }
-    ) { (archived, query, toDelete), (facets, localEnabled, remoteEnabled) ->
+    ) { (archived, query, toDelete), (facets, remoteEnabled) ->
         val filtered = if (query.isBlank()) {
             archived
         } else {
@@ -64,7 +60,7 @@ class ArchiveViewModel(
                 links = matched,
                 query = query,
                 facets = facets,
-                applyTieBreaker = localEnabled && remoteEnabled
+                applyTieBreaker = remoteEnabled
             )
         }
         ArchiveUiState(

@@ -43,7 +43,8 @@ private data class InboxIntelligenceInputs(
     val collections: List<Collection> = emptyList(),
     val remoteIntelligenceEnabled: Boolean = true,
     val dismissedResurfacedIds: Set<Long> = emptySet(),
-    val dismissedCollectionPairs: Set<Pair<Long, Long>> = emptySet()
+    val dismissedCollectionLinkIds: Set<Long> = emptySet(),
+    val persistedDismissals: List<com.laterbox.app.data.local.entity.SuggestionDismissalEntity> = emptyList()
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -91,9 +92,10 @@ class InboxViewModel(
     val selectedLinkIds: StateFlow<Set<Long>> = _selectedLinkIds
 
     private val _dismissedResurfacedIds = MutableStateFlow<Set<Long>>(emptySet())
-    private val _dismissedCollectionPairs = MutableStateFlow<Set<Pair<Long, Long>>>(emptySet())
+    private val _dismissedCollectionLinkIds = MutableStateFlow<Set<Long>>(emptySet())
 
     private val facetsFlow = userUnderstandingRepository?.observeAllFacets() ?: flowOf(emptyList())
+    private val activeDismissalsFlow = userUnderstandingRepository?.observeActiveDismissals() ?: flowOf(emptyList())
     private val collectionsFlow = collectionRepository?.collections ?: flowOf(emptyList())
     private val remoteIntelEnabledFlow = remoteConfigManager?.state
         ?.map { it.activeConfig.isFeatureEnabled(RemoteCapabilities.KEY_EXPERIENCE_INTELLIGENCE, true) }
@@ -101,18 +103,20 @@ class InboxViewModel(
         ?: flowOf(true)
 
     private val intelligenceInputsFlow = combine(
-        facetsFlow,
-        collectionsFlow,
-        remoteIntelEnabledFlow,
-        _dismissedResurfacedIds,
-        _dismissedCollectionPairs
-    ) { facets, collections, remoteEnabled, dismissedResurfaced, dismissedColPairs ->
+        combine(facetsFlow, collectionsFlow, remoteIntelEnabledFlow) { facets, collections, remoteEnabled ->
+            Triple(facets, collections, remoteEnabled)
+        },
+        combine(_dismissedResurfacedIds, _dismissedCollectionLinkIds, activeDismissalsFlow) { dismissedResurfaced, dismissedColLinks, persisted ->
+            Triple(dismissedResurfaced, dismissedColLinks, persisted)
+        }
+    ) { (facets, collections, remoteEnabled), (dismissedResurfaced, dismissedColLinks, persisted) ->
         InboxIntelligenceInputs(
             facets = facets,
             collections = collections,
             remoteIntelligenceEnabled = remoteEnabled,
             dismissedResurfacedIds = dismissedResurfaced,
-            dismissedCollectionPairs = dismissedColPairs
+            dismissedCollectionLinkIds = dismissedColLinks,
+            persistedDismissals = persisted
         )
     }
 
@@ -166,14 +170,14 @@ class InboxViewModel(
             quickFiltered
         }
 
-        val personalizationActive = prefs.personalizationEnabled && intel.remoteIntelligenceEnabled
+        val intelligenceActive = intel.remoteIntelligenceEnabled
         // Chronological order preserved whenever search is blank; lexical-first SearchTieBreaker only during active search.
         val orderedLinks = if (query.isNotBlank()) {
             SearchTieBreaker.rankLinks(
                 links = filtered,
                 query = query,
                 facets = intel.facets,
-                applyTieBreaker = personalizationActive
+                applyTieBreaker = intelligenceActive
             )
         } else {
             filtered
@@ -184,21 +188,41 @@ class InboxViewModel(
             dateFilter == DateRangeFilter.ALL &&
             quickFilter == InboxQuickFilter.ALL
 
-        val resurfaced = if (personalizationActive && isIdle) {
+        val nowMs = System.currentTimeMillis()
+        val activePersistedPickBackUp = intel.persistedDismissals.filter {
+            it.suggestionType == com.laterbox.app.data.local.entity.SuggestionDismissalType.PICK_BACK_UP.name &&
+                (it.suppressUntilMs == null || it.suppressUntilMs > nowMs)
+        }
+        val resurfaceDismissedIds = intel.dismissedResurfacedIds +
+            activePersistedPickBackUp.mapNotNull { it.linkId.takeIf { id -> id > 0L } }
+        val resurfaceDismissedHashes = activePersistedPickBackUp.map { it.linkIdentityHash }.toSet()
+
+        val activePersistedCollection = intel.persistedDismissals.filter {
+            it.suggestionType == com.laterbox.app.data.local.entity.SuggestionDismissalType.COLLECTION_SUGGESTION.name &&
+                (it.suppressUntilMs == null || it.suppressUntilMs > nowMs)
+        }
+        val colDismissedIds = intel.dismissedCollectionLinkIds +
+            activePersistedCollection.mapNotNull { it.linkId.takeIf { id -> id > 0L } }
+        val colDismissedHashes = activePersistedCollection.map { it.linkIdentityHash }.toSet()
+
+        val resurfaced = if (intelligenceActive && isIdle) {
             InboxResurfacer.selectSuggestions(
                 inboxLinks = unarchived,
                 facets = intel.facets,
-                dismissedLinkIds = intel.dismissedResurfacedIds
+                dismissedLinkIds = resurfaceDismissedIds,
+                dismissedLinkHashes = resurfaceDismissedHashes,
+                nowMs = nowMs
             )
         } else {
             emptyList()
         }
 
-        val colSuggestions = if (personalizationActive && isIdle) {
+        val colSuggestions = if (intelligenceActive && isIdle) {
             CollectionSuggester.suggestForLinks(
                 links = unarchived,
                 collections = intel.collections,
-                dismissedPairs = intel.dismissedCollectionPairs,
+                dismissedLinkIds = colDismissedIds,
+                dismissedLinkHashes = colDismissedHashes,
                 maxSuggestions = 2
             )
         } else {
@@ -287,15 +311,17 @@ class InboxViewModel(
         }
     }
 
-    private var searchSignalJob: kotlinx.coroutines.Job? = null
-
     fun onSearchQueryChange(query: String) {
         _searchQuery.value = query
-        searchSignalJob?.cancel()
-        val clean = query.trim()
-        if (clean.length >= 3 && intelligenceSignalLogger != null) {
-            searchSignalJob = viewModelScope.launch {
-                kotlinx.coroutines.delay(900L)
+    }
+
+    fun onSearchSubmit(overrideQuery: String? = null) {
+        val clean = (overrideQuery ?: _searchQuery.value).trim()
+        if (overrideQuery != null) {
+            _searchQuery.value = overrideQuery
+        }
+        if (clean.length >= 2 && intelligenceSignalLogger != null) {
+            viewModelScope.launch {
                 intelligenceSignalLogger.logSearch(
                     surfaceScope = com.laterbox.app.data.local.entity.IntelligenceSurfaceScope.LIBRARY,
                     query = clean
@@ -483,18 +509,30 @@ class InboxViewModel(
     fun onDismissResurfacedLink(link: SavedLink) {
         _dismissedResurfacedIds.update { it + link.id }
         viewModelScope.launch {
+            userUnderstandingRepository?.recordSuggestionDismissal(
+                type = com.laterbox.app.data.local.entity.SuggestionDismissalType.PICK_BACK_UP,
+                linkId = link.id,
+                normalizedUrl = link.normalizedUrl
+            )
             intelligenceSignalLogger?.logResurfaceInteraction(link, opened = false)
         }
     }
 
     fun onAcceptCollectionSuggestion(suggestion: LinkCollectionSuggestion) {
-        _dismissedCollectionPairs.update { it + (suggestion.link.id to suggestion.collection.id) }
+        _dismissedCollectionLinkIds.update { it + suggestion.link.id }
         viewModelScope.launch {
             linkRepository.addLinkToCollection(suggestion.link.id, suggestion.collection.id)
         }
     }
 
     fun onDismissCollectionSuggestion(suggestion: LinkCollectionSuggestion) {
-        _dismissedCollectionPairs.update { it + (suggestion.link.id to suggestion.collection.id) }
+        _dismissedCollectionLinkIds.update { it + suggestion.link.id }
+        viewModelScope.launch {
+            userUnderstandingRepository?.recordSuggestionDismissal(
+                type = com.laterbox.app.data.local.entity.SuggestionDismissalType.COLLECTION_SUGGESTION,
+                linkId = suggestion.link.id,
+                normalizedUrl = suggestion.link.normalizedUrl
+            )
+        }
     }
 }

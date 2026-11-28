@@ -76,7 +76,8 @@ object AppViewModelProvider {
                 mediaRepository = app.container.mediaRepository,
                 platformResolver = app.container.platformResolver,
                 userPreferencesRepository = app.container.userPreferencesRepository,
-                remoteConfigManager = app.container.remoteConfigManager
+                remoteConfigManager = app.container.remoteConfigManager,
+                userUnderstandingRepository = app.container.userUnderstandingRepository
             )
         }
         initializer {

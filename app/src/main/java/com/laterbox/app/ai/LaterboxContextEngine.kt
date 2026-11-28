@@ -297,7 +297,6 @@ class LaterboxContextEngine(
             selected.ifEmpty { evaluatedCapabilities.take(3) }
         }
         val optInTasteSummary = if (
-            prefs.personalizationEnabled &&
             prefs.assistantPersonalContextEnabled &&
             remoteExperienceIntelligence
         ) {

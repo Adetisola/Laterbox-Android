@@ -53,22 +53,27 @@ class LaterboxAnalyticsOptOutTest {
 
         val legacyAnalyticsKey = booleanPreferencesKey("analytics_enabled")
         val legacyMigratedKey = booleanPreferencesKey("analytics_policy_migrated_v1")
+        val legacyPersonalizationKey = booleanPreferencesKey("personalization_enabled")
         val userNameKey = stringPreferencesKey("user_name")
         ctx.userDataStore.edit { prefs ->
             prefs[legacyAnalyticsKey] = false
             prefs[legacyMigratedKey] = true
+            prefs[legacyPersonalizationKey] = false
             prefs[userNameKey] = "Laterbox Reader"
         }
 
         val repo = UserPreferencesRepository(ctx)
         repo.setThemeMode(ThemeMode.DARK)
         repo.retireLegacyAnalyticsOptOutPreferences()
+        repo.retireLegacyPersonalizationOptOutPreferences()
         // Idempotent second invocation must not fail or alter unrelated keys
         repo.retireLegacyAnalyticsOptOutPreferences()
+        repo.retireLegacyPersonalizationOptOutPreferences()
 
         val afterDataStore = ctx.userDataStore.data.first()
         assertFalse(afterDataStore.contains(legacyAnalyticsKey))
         assertFalse(afterDataStore.contains(legacyMigratedKey))
+        assertFalse(afterDataStore.contains(legacyPersonalizationKey))
         assertEquals("Laterbox Reader", repo.userPreferencesFlow.first().userName)
         assertEquals(ThemeMode.DARK, repo.userPreferencesFlow.first().themeMode)
 

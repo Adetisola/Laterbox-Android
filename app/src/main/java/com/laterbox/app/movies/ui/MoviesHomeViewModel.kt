@@ -158,7 +158,6 @@ class MoviesHomeViewModel(
     private var surprisePreferredKind: MediaKind? = null
     @Volatile private var latestFacets: List<UserTasteFacetEntity> = emptyList()
     @Volatile private var latestMediaCues: List<IntelligenceSignalEntity> = emptyList()
-    @Volatile private var localPersonalizationEnabled: Boolean = true
     @Volatile private var remoteExperienceIntelligenceEnabled: Boolean = true
     private val sessionExposureCounts = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
@@ -345,15 +344,6 @@ class MoviesHomeViewModel(
                             loadFiltered(page = 1, append = false)
                         }
                     }
-                }
-        }
-        viewModelScope.launch {
-            userPreferencesRepository.userPreferencesFlow
-                .map { it.personalizationEnabled }
-                .distinctUntilChanged()
-                .collect { enabled ->
-                    localPersonalizationEnabled = enabled
-                    scheduleDiscoveryRecompute()
                 }
         }
         if (remoteConfigManager != null) {
@@ -1149,7 +1139,7 @@ class MoviesHomeViewModel(
                     state.newestRail
             )
 
-        val personalizationActive = localPersonalizationEnabled && remoteExperienceIntelligenceEnabled
+        val personalizationActive = remoteExperienceIntelligenceEnabled
         val profile = IntelligenceDiscoveryProfile(
             enabled = personalizationActive,
             facets = latestFacets,

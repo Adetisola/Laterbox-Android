@@ -19,6 +19,16 @@ enum class IntelligenceSurfaceScope {
     LIBRARY
 }
 
+enum class TitleReaction {
+    LIKE,
+    DISLIKE
+}
+
+enum class SuggestionDismissalType {
+    PICK_BACK_UP,
+    COLLECTION_SUGGESTION
+}
+
 @Entity(
     tableName = "user_taste_facets",
     indices = [
@@ -56,7 +66,13 @@ data class UserTasteFacetEntity(
     @ColumnInfo(name = "last_reinforced_at_ms")
     val lastReinforcedAtMs: Long,
     @ColumnInfo(name = "expires_at_ms")
-    val expiresAtMs: Long? = null
+    val expiresAtMs: Long? = null,
+    @ColumnInfo(name = "has_behavioral_evidence", defaultValue = "1")
+    val hasBehavioralEvidence: Boolean = true,
+    @ColumnInfo(name = "independent_evidence_count", defaultValue = "1")
+    val independentEvidenceCount: Int = 1,
+    @ColumnInfo(name = "supporting_signal_types_csv", defaultValue = "")
+    val supportingSignalTypesCsv: String = ""
 )
 
 @Entity(
@@ -86,4 +102,62 @@ data class IntelligenceSignalEntity(
     val strength: Double = 1.0,
     @ColumnInfo(name = "created_at_ms")
     val createdAtMs: Long
+)
+
+@Entity(
+    tableName = "title_feedback",
+    indices = [
+        Index(value = ["canonical_id"]),
+        Index(value = ["composite_id"]),
+        Index(value = ["reaction"]),
+        Index(value = ["updated_at_ms"])
+    ]
+)
+data class TitleFeedbackEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "media_key")
+    val mediaKey: String,
+    @ColumnInfo(name = "composite_id")
+    val compositeId: String,
+    @ColumnInfo(name = "provider_id")
+    val providerId: String,
+    @ColumnInfo(name = "title_id")
+    val titleId: String,
+    @ColumnInfo(name = "canonical_id")
+    val canonicalId: String? = null,
+    @ColumnInfo(name = "kind")
+    val kind: String,
+    @ColumnInfo(name = "title")
+    val title: String,
+    @ColumnInfo(name = "reaction")
+    val reaction: String,
+    @ColumnInfo(name = "genres_csv", defaultValue = "")
+    val genresCsv: String = "",
+    @ColumnInfo(name = "updated_at_ms")
+    val updatedAtMs: Long
+)
+
+@Entity(
+    tableName = "suggestion_dismissals",
+    indices = [
+        Index(value = ["suggestion_type"]),
+        Index(value = ["link_id"]),
+        Index(value = ["link_identity_hash"]),
+        Index(value = ["suppress_until_ms"])
+    ]
+)
+data class SuggestionDismissalEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "dismissal_key")
+    val dismissalKey: String,
+    @ColumnInfo(name = "suggestion_type")
+    val suggestionType: String,
+    @ColumnInfo(name = "link_id")
+    val linkId: Long,
+    @ColumnInfo(name = "link_identity_hash")
+    val linkIdentityHash: String,
+    @ColumnInfo(name = "dismissed_at_ms")
+    val dismissedAtMs: Long,
+    @ColumnInfo(name = "suppress_until_ms")
+    val suppressUntilMs: Long? = null
 )

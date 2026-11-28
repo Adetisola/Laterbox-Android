@@ -22,6 +22,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -153,16 +154,13 @@ class UserUnderstandingAndSignalLoggerTest {
         assertFalse(articleSignal.isMediaCue)
         assertEquals(IntelligenceSurfaceScope.LIBRARY.name, articleSignal.surfaceScope)
 
-        // Pause locally -> zero new signals
-        prefsRepo.setPersonalizationEnabled(false)
+        // Always-on locally (no user pause), honors remote emergency kill switch when toggled off
         logger.logWatchlistChange(sciFiMovie, added = false)
-        assertEquals(5, db.intelligenceDao().countSignals())
+        assertEquals(6, db.intelligenceDao().countSignals())
 
-        // Re-enable locally, disable remotely -> zero new signals
-        prefsRepo.setPersonalizationEnabled(true)
         remoteIntelligenceEnabled = false
         logger.logNotificationDismissed(NotificationCategory.SMART_DIGEST)
-        assertEquals(5, db.intelligenceDao().countSignals())
+        assertEquals(6, db.intelligenceDao().countSignals())
     }
 
     @Test
@@ -254,28 +252,16 @@ class UserUnderstandingAndSignalLoggerTest {
     }
 
     @Test
-    fun resetModel_wipesOnlyIntelligenceTables_andLeavesLibraryIntact() = runTest {
-        val colId = db.collectionDao().insertCollection(CollectionEntity(name = "Private Vault"))
-        db.savedLinkDao().insertLink(
-            SavedLinkEntity(
-                originalUrl = "https://example.com/keep",
-                normalizedUrl = "https://example.com/keep",
-                title = "Keep Me",
-                domain = "example.com",
-                collectionId = colId
-            )
-        )
-        repo.setExplicitPreference("genre:drama", "Drama", IntelligenceSurfaceScope.MOVIES, liked = true)
-        logger.logSearch(IntelligenceSurfaceScope.LIBRARY, "kotlin")
-        assertTrue(db.intelligenceDao().countFacets() > 0)
-        assertTrue(db.intelligenceDao().countSignals() > 0)
-
-        repo.resetModel()
-
-        assertEquals(0, db.intelligenceDao().countFacets())
-        assertEquals(0, db.intelligenceDao().countSignals())
-        assertEquals(1, db.savedLinkDao().getInboxCount())
-        assertEquals(1, db.collectionDao().getCollections().first().size)
+    fun searchOnlyRepeats_neverPromoteToEnduringInterest_andCapConfidence() = runTest {
+        repeat(6) { idx ->
+            fakeNowMs += 60_000L
+            logger.logSearch(IntelligenceSurfaceScope.MOVIES, "thriller $idx")
+        }
+        val facet = db.intelligenceDao().getFacetByKey("genre:thriller")
+        assertNotNull(facet)
+        assertEquals(TasteFacetType.SHORT_TERM_INTENT.name, facet!!.facetType)
+        assertFalse(facet.hasBehavioralEvidence)
+        assertTrue(facet.confidence <= UserUnderstandingRepository.SEARCH_ONLY_CONFIDENCE_CAP + 0.001)
     }
 
     @Test
@@ -293,14 +279,15 @@ class UserUnderstandingAndSignalLoggerTest {
         // Default assistantPersonalContextEnabled == false -> empty summary
         assertEquals("", repo.buildPrivacySafeAssistantSummary(fakeNowMs))
 
-        // Enable assistantPersonalContextEnabled -> includes only includeInAssistantContext=true non-suppressed facets
+        // Enable assistantPersonalContextEnabled -> includes safe facets automatically
         prefsRepo.setAssistantPersonalContextEnabled(true)
         val summary = repo.buildPrivacySafeAssistantSummary(fakeNowMs)
         assertTrue(summary.contains("Sci-Fi"))
-        assertFalse(summary.contains("Technology")) // includeInAssistantContext defaults to false!
 
-        // Suppress Sci-Fi -> excluded
-        repo.toggleSuppressFacet("genre:sci_fi", true)
-        assertEquals("", repo.buildPrivacySafeAssistantSummary(fakeNowMs))
+        // Suppressed facet -> excluded
+        db.intelligenceDao().upsertFacets(
+            listOf(db.intelligenceDao().getFacetByKey("genre:sci_fi")!!.copy(isSuppressedByUser = true))
+        )
+        assertFalse(repo.buildPrivacySafeAssistantSummary(fakeNowMs).contains("Sci-Fi"))
     }
 }

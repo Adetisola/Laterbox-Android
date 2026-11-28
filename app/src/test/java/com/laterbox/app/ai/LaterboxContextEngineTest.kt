@@ -571,7 +571,6 @@ class LaterboxContextEngineTest {
             )
 
             // 1. Default opt-out: assistantPersonalContextEnabled=false -> taste profile NOT injected, raw collection hidden
-            prefsRepo.setPersonalizationEnabled(true)
             prefsRepo.setAssistantPersonalContextEnabled(false)
             val optOutCtx = v2Engine.buildContextForPrompt("Suggest something to watch tonight")
             assertFalse(optOutCtx.contextBlock.contains("On-Device Taste Profile:"))

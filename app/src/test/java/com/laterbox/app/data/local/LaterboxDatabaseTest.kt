@@ -2285,4 +2285,59 @@ class LaterboxDatabaseTest {
             context.deleteDatabase(dbName)
         }
     }
+
+    @Test
+    fun migrate_22_to_23_addsFeedbackAndDismissalTablesAndSanitizesSearchSignals() {
+        val instrumentation = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+        val helper = androidx.room.testing.MigrationTestHelper(
+            instrumentation,
+            LaterboxDatabase::class.java
+        )
+        val dbName = "migration_22_23_test.db"
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        context.deleteDatabase(dbName)
+
+        helper.createDatabase(dbName, 22).use { db ->
+            db.execSQL(
+                "INSERT INTO `user_taste_facets` (`facet_key`, `facet_type`, `surface_scope`, `display_label`, `score`, `confidence`, `provenance`, `evidence_summary`, `include_in_assistant_context`, `is_suppressed_by_user`, `first_observed_at_ms`, `last_reinforced_at_ms`, `expires_at_ms`) " +
+                    "VALUES ('topic:cinema_tv', 'SHORT_TERM_INTENT', 'ALL', 'Cinema & TV', 0.5, 0.5, 'Searched \"arrival\"', 'Query', 0, 0, 1000, 2000, NULL)"
+            )
+            db.execSQL(
+                "INSERT INTO `intelligence_signals` (`signal_type`, `surface_scope`, `target_key`, `topics_csv`, `is_media_cue`, `strength`, `created_at_ms`) " +
+                    "VALUES ('SEARCH_QUERY', 'LIBRARY', 'search:secret query', 'topic:cinema_tv', 0, 0.5, 2000)"
+            )
+        }
+
+        val migratedDb = helper.runMigrationsAndValidate(
+            dbName,
+            23,
+            true,
+            LaterboxDatabase.MIGRATION_22_23
+        )
+        try {
+            val tableNames = mutableSetOf<String>()
+            migratedDb.query("SELECT `name` FROM `sqlite_master` WHERE `type` = 'table'").use { c ->
+                while (c.moveToNext()) {
+                    tableNames += c.getString(0)
+                }
+            }
+            assertTrue(tableNames.contains("title_feedback"))
+            assertTrue(tableNames.contains("suggestion_dismissals"))
+
+            migratedDb.query("SELECT `surface_scope`, `has_behavioral_evidence`, `provenance` FROM `user_taste_facets` WHERE `facet_key` = 'topic:cinema_tv'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("LIBRARY", c.getString(0))
+                assertEquals(0, c.getInt(1))
+                assertFalse(c.getString(2).contains("arrival"))
+            }
+
+            migratedDb.query("SELECT `target_key` FROM `intelligence_signals` WHERE `signal_type` = 'SEARCH_QUERY'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertFalse(c.getString(0).contains("secret query"))
+            }
+        } finally {
+            migratedDb.close()
+            context.deleteDatabase(dbName)
+        }
+    }
 }

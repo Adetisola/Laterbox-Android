@@ -102,6 +102,7 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
             try {
                 container.userPreferencesRepository.recordFirstLaunchIfNeeded()
                 container.userPreferencesRepository.retireLegacyAnalyticsOptOutPreferences()
+                container.userPreferencesRepository.retireLegacyPersonalizationOptOutPreferences()
 
                 // Defer Room write/WorkManager/SmartReminder startup work until after initial paint
                 kotlinx.coroutines.delay(350L)
@@ -164,6 +165,7 @@ class LaterboxApplication : Application(), ImageLoaderFactory {
                 container.appStorageManager.runMaintenanceCleanup()
                 com.laterbox.app.storage.StorageMaintenanceWorker.enqueuePeriodic(this@LaterboxApplication)
                 runCatching { container.userUnderstandingRepository.bootstrapFromExistingLibraryIfNeeded() }
+                runCatching { container.userUnderstandingRepository.runDailyMaintenance() }
 
                 try {
                     val currentVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: "1.0.0"

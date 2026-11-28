@@ -117,6 +117,7 @@ import kotlin.math.roundToInt
 fun InboxScreen(
     uiState: InboxUiState,
     onSearchQueryChange: (String) -> Unit,
+    onSearchSubmit: (String) -> Unit = {},
     onClearSearch: () -> Unit,
     onFilterContentType: (ContentType?) -> Unit,
     onFilterDateRange: (DateRangeFilter) -> Unit,
@@ -435,7 +436,10 @@ fun InboxScreen(
                                             textStyle = typography.bodyPrimary.copy(color = colors.textPrimary),
                                             cursorBrush = SolidColor(colors.accentPrimary),
                                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                                            keyboardActions = KeyboardActions(onSearch = { keyboardController?.hide() }),
+                                            keyboardActions = KeyboardActions(onSearch = {
+                                                keyboardController?.hide()
+                                                onSearchSubmit(inboxSearchController.text)
+                                            }),
                                             modifier = Modifier.fillMaxWidth()
                                         )
                                     }

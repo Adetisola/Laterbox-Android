@@ -24,11 +24,13 @@ object InboxResurfacer {
     const val MIN_INBOX_LINKS = 4
     const val DAY_MS = 24L * 60L * 60L * 1000L
     const val MIN_AGE_MS = 2L * DAY_MS
+    const val MIN_RESURFACE_SCORE = 1.15
 
     fun selectSuggestions(
         inboxLinks: List<SavedLink>,
         facets: List<UserTasteFacetEntity> = emptyList(),
         dismissedLinkIds: Set<Long> = emptySet(),
+        dismissedLinkHashes: Set<String> = emptySet(),
         nowMs: Long = System.currentTimeMillis(),
         maxItems: Int = 3,
         minInboxLinks: Int = MIN_INBOX_LINKS
@@ -50,9 +52,11 @@ object InboxResurfacer {
             .associateBy { it.facetKey }
 
         val candidates = inboxLinks.filter { link ->
+            val linkHash = TopicExtractor.stableLinkIdentityHash(link.normalizedUrl)
             !link.isArchived &&
                 !link.isRead &&
                 link.id !in dismissedLinkIds &&
+                linkHash !in dismissedLinkHashes &&
                 (nowMs - link.createdAt) >= MIN_AGE_MS
         }
         if (candidates.isEmpty()) return emptyList()
@@ -70,6 +74,7 @@ object InboxResurfacer {
 
             var score = 0.0
             var topFacet: UserTasteFacetEntity? = null
+            var topFacetPoints = 0.0
             val matchedKeys = mutableListOf<String>()
 
             for (topic in linkTopics) {
@@ -77,14 +82,16 @@ object InboxResurfacer {
                 val typeMultiplier = when (facet.facetType) {
                     TasteFacetType.ACTIVE_GOAL.name -> 4.0
                     TasteFacetType.EXPLICIT_LIKE.name -> 3.6
-                    TasteFacetType.SHORT_TERM_INTENT.name -> 3.2
+                    TasteFacetType.SHORT_TERM_INTENT.name -> 3.0
                     else -> 2.4
                 }
-                val facetPoints = typeMultiplier * facet.score.coerceIn(0.15, 1.0)
+                val confidenceFactor = facet.confidence.coerceIn(0.25, 1.0)
+                val facetPoints = typeMultiplier * facet.score.coerceIn(0.15, 1.0) * confidenceFactor
                 score += facetPoints
                 matchedKeys.add(facet.facetKey)
-                if (topFacet == null || facetPoints > topFacet.score) {
+                if (topFacet == null || facetPoints > topFacetPoints) {
                     topFacet = facet
+                    topFacetPoints = facetPoints
                 }
             }
 
@@ -96,16 +103,20 @@ object InboxResurfacer {
             if (hasFutureReminder) score += 0.8
             if (link.collectionIds.isEmpty() && link.collectionId == null) score += 0.25
 
-            // Mild sweet-spot recency decay over 2..45 days so very stale links slowly cool down
+            // Mild sweet-spot recency decay over 2..45 days so very stale links cool down naturally
             val ageScore = when {
                 ageDays in 2..14 -> 1.4
                 ageDays in 15..30 -> 1.0
-                else -> 0.5
+                ageDays in 31..45 -> 0.55
+                else -> 0.20
             }
             score += ageScore
 
-            // Require at least a facet match, a user note/high-intent save, or age >= 3 days
-            if (matchedKeys.isEmpty() && !hasNote && ageDays < 3) {
+            // Require genuine relevance: either a facet match, a user note, future reminder, or active recent age
+            if (matchedKeys.isEmpty() && !hasNote && !hasFutureReminder && (ageDays < 3 || ageDays > 45)) {
+                return@mapNotNull null
+            }
+            if (score < MIN_RESURFACE_SCORE) {
                 return@mapNotNull null
             }
 
@@ -113,7 +124,7 @@ object InboxResurfacer {
                 topFacet != null && topFacet.facetType == TasteFacetType.ACTIVE_GOAL.name ->
                     "Matches your active ${topFacet.displayLabel} focus"
                 topFacet != null && topFacet.facetType == TasteFacetType.EXPLICIT_LIKE.name ->
-                    "Matches your pinned ${topFacet.displayLabel} interest"
+                    "Matches your ${topFacet.displayLabel} interest"
                 topFacet != null ->
                     "Matches your ${topFacet.displayLabel} interest • ${ageDays}d ago"
                 hasNote ->

@@ -210,7 +210,6 @@ data class UserPreferences(
     val lastTier3NotificationAt: Long = 0L,
     val tier3CategoryBackoffUntil: Set<String> = emptySet(),
     val tier3SwipeStreak: Set<String> = emptySet(),
-    val personalizationEnabled: Boolean = true,
     val assistantPersonalContextEnabled: Boolean = false,
     val personalizationBootstrapped: Boolean = false
 ) {
@@ -398,7 +397,6 @@ class UserPreferencesRepository(
         val LAST_TIER3_NOTIFICATION_AT = longPreferencesKey("last_tier3_notif_at")
         val TIER3_CATEGORY_BACKOFF_UNTIL = stringSetPreferencesKey("tier3_cat_backoff_until")
         val TIER3_SWIPE_STREAK = stringSetPreferencesKey("tier3_swipe_streak")
-        val PERSONALIZATION_ENABLED = booleanPreferencesKey("personalization_enabled")
         val ASSISTANT_PERSONAL_CONTEXT_ENABLED = booleanPreferencesKey("assistant_personal_context_enabled")
         val PERSONALIZATION_BOOTSTRAPPED = booleanPreferencesKey("personalization_bootstrapped")
     }
@@ -632,7 +630,6 @@ class UserPreferencesRepository(
             lastTier3NotificationAt = preferences[PreferencesKeys.LAST_TIER3_NOTIFICATION_AT] ?: 0L,
             tier3CategoryBackoffUntil = preferences[PreferencesKeys.TIER3_CATEGORY_BACKOFF_UNTIL] ?: emptySet(),
             tier3SwipeStreak = preferences[PreferencesKeys.TIER3_SWIPE_STREAK] ?: emptySet(),
-            personalizationEnabled = preferences[PreferencesKeys.PERSONALIZATION_ENABLED] ?: true,
             assistantPersonalContextEnabled = preferences[PreferencesKeys.ASSISTANT_PERSONAL_CONTEXT_ENABLED] ?: false,
             personalizationBootstrapped = preferences[PreferencesKeys.PERSONALIZATION_BOOTSTRAPPED] ?: false
         )
@@ -1334,12 +1331,6 @@ class UserPreferencesRepository(
         }
     }
 
-    suspend fun setPersonalizationEnabled(enabled: Boolean) {
-        dataStore.edit { preferences ->
-            preferences[PreferencesKeys.PERSONALIZATION_ENABLED] = enabled
-        }
-    }
-
     suspend fun setAssistantPersonalContextEnabled(enabled: Boolean) {
         dataStore.edit { preferences ->
             preferences[PreferencesKeys.ASSISTANT_PERSONAL_CONTEXT_ENABLED] = enabled
@@ -1349,6 +1340,15 @@ class UserPreferencesRepository(
     suspend fun setPersonalizationBootstrapped(bootstrapped: Boolean) {
         dataStore.edit { preferences ->
             preferences[PreferencesKeys.PERSONALIZATION_BOOTSTRAPPED] = bootstrapped
+        }
+    }
+
+    suspend fun retireLegacyPersonalizationOptOutPreferences() {
+        val legacyPersonalizationEnabledKey = booleanPreferencesKey("personalization_enabled")
+        dataStore.edit { preferences ->
+            if (preferences.contains(legacyPersonalizationEnabledKey)) {
+                preferences.remove(legacyPersonalizationEnabledKey)
+            }
         }
     }
 }

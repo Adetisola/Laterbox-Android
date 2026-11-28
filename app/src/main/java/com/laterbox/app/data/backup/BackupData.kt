@@ -39,7 +39,39 @@ data class BackupTasteFacet(
     val isSuppressedByUser: Boolean = false,
     val firstObservedAtMs: Long,
     val lastReinforcedAtMs: Long,
-    val expiresAtMs: Long? = null
+    val expiresAtMs: Long? = null,
+    val hasBehavioralEvidence: Boolean = true,
+    val independentEvidenceCount: Int = 1,
+    val supportingSignalTypesCsv: String = ""
+)
+
+data class BackupIntelligenceSignal(
+    val signalType: String,
+    val surfaceScope: String,
+    val targetKey: String,
+    val topicsCsv: String,
+    val isMediaCue: Boolean = false,
+    val strength: Double = 1.0,
+    val createdAtMs: Long
+)
+
+data class BackupTitleFeedback(
+    val mediaKey: String,
+    val compositeId: String,
+    val providerId: String,
+    val titleId: String,
+    val canonicalId: String? = null,
+    val kind: String,
+    val reaction: String,
+    val genresCsv: String = "",
+    val updatedAtMs: Long
+)
+
+data class BackupSuggestionDismissal(
+    val suggestionType: String,
+    val linkIdentityHash: String,
+    val dismissedAtMs: Long,
+    val suppressUntilMs: Long? = null
 )
 
 data class BackupMovieWatchlistItem(
@@ -61,7 +93,6 @@ data class BackupMovieWatchlistItem(
 )
 
 data class BackupPersonalizationPreferences(
-    val personalizationEnabled: Boolean = true,
     val assistantPersonalContextEnabled: Boolean = false
 )
 
@@ -72,11 +103,14 @@ data class LaterboxBackup(
     val collections: List<BackupCollection> = emptyList(),
     val links: List<BackupLink> = emptyList(),
     val userTasteFacets: List<BackupTasteFacet> = emptyList(),
+    val intelligenceSignals: List<BackupIntelligenceSignal> = emptyList(),
+    val titleFeedback: List<BackupTitleFeedback> = emptyList(),
+    val suggestionDismissals: List<BackupSuggestionDismissal> = emptyList(),
     val movieWatchlist: List<BackupMovieWatchlistItem> = emptyList(),
     val personalizationPreferences: BackupPersonalizationPreferences? = null
 ) {
     companion object {
-        const val CURRENT_BACKUP_VERSION = 2
+        const val CURRENT_BACKUP_VERSION = 3
     }
 }
 
@@ -85,5 +119,8 @@ data class BackupRestoreResult(
     val skippedDuplicatesCount: Int,
     val restoredCollectionsCount: Int,
     val restoredFacetsCount: Int = 0,
-    val restoredWatchlistCount: Int = 0
+    val restoredWatchlistCount: Int = 0,
+    val restoredSignalsCount: Int = 0,
+    val restoredDismissalsCount: Int = 0,
+    val restoredTitleFeedbackCount: Int = 0
 )

@@ -1035,6 +1035,7 @@ class SettingsViewModel(
             _storageErrorMessage.value = null
             try {
                 val res = manager.runMaintenanceCleanup()
+                runCatching { resolvedUnderstandingRepo?.runDailyMaintenance() }
                 _appStorageReport.value = res.report
                 val freedStr = appContext?.let {
                     android.text.format.Formatter.formatShortFileSize(it, res.bytesFreed)
@@ -1061,83 +1062,9 @@ class SettingsViewModel(
             ?: (appContext?.applicationContext as? com.laterbox.app.LaterboxApplication)
                 ?.container?.userUnderstandingRepository
 
-    val tasteFacets: StateFlow<List<com.laterbox.app.data.local.entity.UserTasteFacetEntity>> =
-        (resolvedUnderstandingRepo?.observeAllFacets() ?: emptyFlow())
-            .stateIn(
-                scope = viewModelScope,
-                started = SharingStarted.WhileSubscribed(5000),
-                initialValue = emptyList()
-            )
-
-    val intelligenceSignalCount: StateFlow<Int> =
-        (resolvedUnderstandingRepo?.observeSignalCount() ?: emptyFlow())
-            .stateIn(
-                scope = viewModelScope,
-                started = SharingStarted.WhileSubscribed(5000),
-                initialValue = 0
-            )
-
-    fun setPersonalizationEnabled(enabled: Boolean) {
-        viewModelScope.launch {
-            userPreferencesRepository.setPersonalizationEnabled(enabled)
-        }
-    }
-
     fun setAssistantPersonalContextEnabled(enabled: Boolean) {
         viewModelScope.launch {
             userPreferencesRepository.setAssistantPersonalContextEnabled(enabled)
-        }
-    }
-
-    fun setExplicitTastePreference(
-        facetKey: String,
-        displayLabel: String,
-        scope: com.laterbox.app.data.local.entity.IntelligenceSurfaceScope,
-        liked: Boolean
-    ) {
-        val repo = resolvedUnderstandingRepo ?: return
-        viewModelScope.launch {
-            repo.setExplicitPreference(
-                facetKey = facetKey,
-                displayLabel = displayLabel,
-                surfaceScope = scope,
-                liked = liked
-            )
-        }
-    }
-
-    fun toggleSuppressTasteFacet(facetKey: String, suppressed: Boolean) {
-        val repo = resolvedUnderstandingRepo ?: return
-        viewModelScope.launch {
-            repo.toggleSuppressFacet(facetKey, suppressed)
-        }
-    }
-
-    fun setFacetIncludeInAssistant(facetKey: String, include: Boolean) {
-        val repo = resolvedUnderstandingRepo ?: return
-        viewModelScope.launch {
-            repo.setFacetIncludeInAssistant(facetKey, include)
-        }
-    }
-
-    fun deleteTasteFacet(facetKey: String) {
-        val repo = resolvedUnderstandingRepo ?: return
-        viewModelScope.launch {
-            repo.deleteFacet(facetKey)
-        }
-    }
-
-    fun rebuildTasteModelFromLibrary() {
-        val repo = resolvedUnderstandingRepo ?: return
-        viewModelScope.launch {
-            repo.rebuildFromLibrary()
-        }
-    }
-
-    fun resetTasteModel() {
-        val repo = resolvedUnderstandingRepo ?: return
-        viewModelScope.launch {
-            repo.resetModel()
         }
     }
 }

@@ -2,14 +2,22 @@ package com.laterbox.app.data.backup
 
 import com.laterbox.app.data.local.LaterboxDatabase
 import com.laterbox.app.data.local.entity.CollectionEntity
+import com.laterbox.app.data.local.entity.IntelligenceSignalEntity
+import com.laterbox.app.data.local.entity.IntelligenceSurfaceScope
 import com.laterbox.app.data.local.entity.LinkCollectionCrossRef
 import com.laterbox.app.data.local.entity.SavedLinkEntity
+import com.laterbox.app.data.local.entity.SuggestionDismissalEntity
+import com.laterbox.app.data.local.entity.SuggestionDismissalType
 import com.laterbox.app.data.local.entity.TasteFacetType
+import com.laterbox.app.data.local.entity.TitleFeedbackEntity
+import com.laterbox.app.data.local.entity.TitleReaction
 import com.laterbox.app.data.local.entity.UserTasteFacetEntity
 import com.laterbox.app.data.preferences.UserPreferencesRepository
 import com.laterbox.app.domain.model.ContentType
 import com.laterbox.app.domain.model.MetadataStatus
+import com.laterbox.app.intelligence.IntelligenceSignalLogger
 import com.laterbox.app.intelligence.TopicExtractor
+import com.laterbox.app.intelligence.UserUnderstandingRepository
 import com.laterbox.app.movies.data.local.entity.MovieWatchlistEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -33,6 +41,7 @@ class BackupManager(
             val savedLinkDao = database.savedLinkDao()
             val intelligenceDao = database.intelligenceDao()
             val moviesDao = database.moviesDao()
+            val nowMs = nowMsProvider()
 
             val collections = collectionDao.getCollections().first().map {
                 BackupCollection(name = it.name, createdAt = it.createdAt)
@@ -62,24 +71,82 @@ class BackupManager(
                 )
             }
 
-            // Omit ephemeral intelligence_signals & movie_cache_entries; export only user taste facets & watchlist
-            val facets = intelligenceDao.getAllFacetsSnapshot().map { f ->
-                BackupTasteFacet(
-                    facetKey = f.facetKey,
-                    facetType = f.facetType,
-                    surfaceScope = f.surfaceScope,
-                    displayLabel = f.displayLabel,
-                    score = f.score,
-                    confidence = f.confidence,
-                    provenance = f.provenance,
-                    evidenceSummary = f.evidenceSummary,
-                    includeInAssistantContext = f.includeInAssistantContext,
-                    isSuppressedByUser = f.isSuppressedByUser,
-                    firstObservedAtMs = f.firstObservedAtMs,
-                    lastReinforcedAtMs = f.lastReinforcedAtMs,
-                    expiresAtMs = f.expiresAtMs
-                )
-            }
+            val facets = intelligenceDao.getAllFacetsSnapshot()
+                .filter {
+                    TopicExtractor.isSafeFacetLabel(it.displayLabel) &&
+                        (it.expiresAtMs == null || it.expiresAtMs > nowMs)
+                }
+                .map { f ->
+                    BackupTasteFacet(
+                        facetKey = f.facetKey,
+                        facetType = normalizeFacetType(f.facetType),
+                        surfaceScope = normalizeSurfaceScope(f.surfaceScope),
+                        displayLabel = f.displayLabel.take(48),
+                        score = f.score.coerceIn(0.0, 1.0),
+                        confidence = f.confidence.coerceIn(0.0, 1.0),
+                        provenance = sanitizeIntelligenceText(f.provenance, fallback = "On-device activity"),
+                        evidenceSummary = sanitizeIntelligenceText(f.evidenceSummary, fallback = f.displayLabel.take(48)),
+                        includeInAssistantContext = f.includeInAssistantContext,
+                        isSuppressedByUser = f.isSuppressedByUser,
+                        firstObservedAtMs = f.firstObservedAtMs.coerceAtLeast(0L),
+                        lastReinforcedAtMs = f.lastReinforcedAtMs.coerceAtLeast(0L),
+                        expiresAtMs = f.expiresAtMs?.takeIf { it > 0L },
+                        hasBehavioralEvidence = f.hasBehavioralEvidence,
+                        independentEvidenceCount = f.independentEvidenceCount.coerceAtLeast(1),
+                        supportingSignalTypesCsv = sanitizeSignalTypesCsv(f.supportingSignalTypesCsv)
+                    )
+                }
+
+            val signalCutoffMs = nowMs - UserUnderstandingRepository.SIGNAL_MAX_AGE_MS
+            val signals = intelligenceDao.getRecentSignalsSnapshot(UserUnderstandingRepository.SIGNAL_MAX_ROWS)
+                .asSequence()
+                .filter { it.createdAtMs >= signalCutoffMs && it.createdAtMs <= nowMs + MAX_FUTURE_SKEW_MS }
+                .take(UserUnderstandingRepository.SIGNAL_MAX_ROWS)
+                .map { s ->
+                    BackupIntelligenceSignal(
+                        signalType = s.signalType,
+                        surfaceScope = normalizeSurfaceScope(s.surfaceScope),
+                        targetKey = sanitizeSignalTargetKey(s.signalType, s.surfaceScope, s.targetKey, s.isMediaCue),
+                        topicsCsv = sanitizeTopicsCsv(s.topicsCsv),
+                        isMediaCue = s.isMediaCue,
+                        strength = s.strength.coerceIn(-1.0, 1.0),
+                        createdAtMs = s.createdAtMs
+                    )
+                }
+                .toList()
+
+            val titleFeedback = intelligenceDao.getAllTitleFeedbackSnapshot()
+                .mapNotNull { tf ->
+                    val reaction = runCatching { TitleReaction.valueOf(tf.reaction) }.getOrNull()
+                        ?: return@mapNotNull null
+                    BackupTitleFeedback(
+                        mediaKey = tf.mediaKey,
+                        compositeId = tf.compositeId,
+                        providerId = tf.providerId,
+                        titleId = tf.titleId,
+                        canonicalId = tf.canonicalId,
+                        kind = tf.kind,
+                        reaction = reaction.name,
+                        genresCsv = sanitizeGenresCsv(tf.genresCsv),
+                        updatedAtMs = tf.updatedAtMs
+                    )
+                }
+
+            val dismissals = intelligenceDao.getAllDismissalsSnapshot()
+                .asSequence()
+                .filter { it.suppressUntilMs == null || it.suppressUntilMs > nowMs }
+                .mapNotNull { d ->
+                    val type = runCatching { SuggestionDismissalType.valueOf(d.suggestionType) }.getOrNull()
+                        ?: return@mapNotNull null
+                    if (d.linkIdentityHash.isBlank()) return@mapNotNull null
+                    BackupSuggestionDismissal(
+                        suggestionType = type.name,
+                        linkIdentityHash = d.linkIdentityHash,
+                        dismissedAtMs = d.dismissedAtMs,
+                        suppressUntilMs = d.suppressUntilMs
+                    )
+                }
+                .toList()
 
             val watchlist = moviesDao.getWatchlistSnapshot().map { w ->
                 BackupMovieWatchlistItem(
@@ -104,17 +171,19 @@ class BackupManager(
             val personalizationPrefs = userPreferencesRepository?.let { repo ->
                 val prefs = repo.userPreferencesFlow.first()
                 BackupPersonalizationPreferences(
-                    personalizationEnabled = prefs.personalizationEnabled,
                     assistantPersonalContextEnabled = prefs.assistantPersonalContextEnabled
                 )
             }
 
             val backup = LaterboxBackup(
                 version = LaterboxBackup.CURRENT_BACKUP_VERSION,
-                exportedAt = nowMsProvider(),
+                exportedAt = nowMs,
                 collections = collections,
                 links = allLinks,
                 userTasteFacets = facets,
+                intelligenceSignals = signals,
+                titleFeedback = titleFeedback,
+                suggestionDismissals = dismissals,
                 movieWatchlist = watchlist,
                 personalizationPreferences = personalizationPrefs
             )
@@ -144,6 +213,9 @@ class BackupManager(
             var skippedDuplicatesCount = 0
             var restoredFacetsCount = 0
             var restoredWatchlistCount = 0
+            var restoredSignalsCount = 0
+            var restoredDismissalsCount = 0
+            var restoredTitleFeedbackCount = 0
 
             // 1. Resolve / Create Collections
             val existingCollections = collectionDao.getCollections().first()
@@ -151,7 +223,7 @@ class BackupManager(
 
             for (bCol in backup.collections) {
                 val key = bCol.name.trim().lowercase()
-                if (!collectionMap.containsKey(key)) {
+                if (key.isNotBlank() && !collectionMap.containsKey(key)) {
                     val id = collectionDao.insertCollection(CollectionEntity(name = bCol.name.trim()))
                     collectionMap[key] = id
                     restoredCollectionsCount++
@@ -159,15 +231,17 @@ class BackupManager(
             }
 
             // 2. Restore Links with duplicate detection, multi-collections, and alarm re-hydration
+            val linkIdByHash = mutableMapOf<String, Long>()
             for (bLink in backup.links) {
                 val targetNames = bLink.collectionNames.ifEmpty { listOfNotNull(bLink.collectionName) }
                 val targetColIds = targetNames.mapNotNull { name ->
                     collectionMap[name.trim().lowercase()]
                 }
+                val linkHash = TopicExtractor.stableLinkIdentityHash(bLink.normalizedUrl)
 
                 val existing = savedLinkDao.findLinkByNormalizedUrl(bLink.normalizedUrl)
                 if (existing != null) {
-                    // Duplicate found: update notes/reminder if missing locally
+                    linkIdByHash[linkHash] = existing.link.id
                     val needsNote = existing.link.personalNote.isNullOrBlank() && !bLink.personalNote.isNullOrBlank()
                     val needsReminder = existing.link.reminderAt == null && bLink.reminderAt != null
                     val effectiveReminderAt = if (needsReminder) bLink.reminderAt else existing.link.reminderAt
@@ -218,6 +292,9 @@ class BackupManager(
                         updatedAt = nowMs
                     )
                     val insertedId = savedLinkDao.insertLink(entity)
+                    if (insertedId > 0L) {
+                        linkIdByHash[linkHash] = insertedId
+                    }
                     scheduleReminderIfEligible(
                         linkId = insertedId,
                         reminderAt = entity.reminderAt,
@@ -236,24 +313,52 @@ class BackupManager(
                     restoredLinksCount++
                 }
             }
+            // Also index any already-present links so dismissals match existing library links even if backup had fewer links
+            val currentAllLinks = savedLinkDao.getInboxLinks().first() + savedLinkDao.getArchivedLinks().first()
+            for (item in currentAllLinks) {
+                linkIdByHash.putIfAbsent(TopicExtractor.stableLinkIdentityHash(item.link.normalizedUrl), item.link.id)
+            }
 
-            // 3. Merge User Taste Facets safely (explicit/user-corrected/suppressed take precedence, else newest timestamp)
+            // 3. Merge User Taste Facets safely with strict validation & sanitization
             for (bFacet in backup.userTasteFacets) {
                 if (bFacet.facetKey.isBlank() || !TopicExtractor.isSafeFacetLabel(bFacet.displayLabel)) continue
+                val validatedType = runCatching { TasteFacetType.valueOf(bFacet.facetType) }.getOrNull()
+                    ?: continue
+                val validatedScope = runCatching { IntelligenceSurfaceScope.valueOf(bFacet.surfaceScope) }.getOrNull()
+                    ?: continue
+                if (bFacet.score !in 0.0..1.0 || bFacet.confidence !in 0.0..1.0) continue
+                if (bFacet.firstObservedAtMs < 0L || bFacet.lastReinforcedAtMs <= 0L) continue
+                if (bFacet.lastReinforcedAtMs > nowMs + MAX_FUTURE_SKEW_MS) continue
+                if (bFacet.expiresAtMs != null && bFacet.expiresAtMs <= nowMs) continue
+
+                val fixedScope = if (bFacet.facetKey == "topic:cinema_tv" && validatedScope == IntelligenceSurfaceScope.ALL) {
+                    IntelligenceSurfaceScope.LIBRARY.name
+                } else {
+                    validatedScope.name
+                }
+                val effectiveBehavioral = if (validatedType == TasteFacetType.SHORT_TERM_INTENT && !bFacet.hasBehavioralEvidence) {
+                    false
+                } else {
+                    bFacet.hasBehavioralEvidence
+                }
+
                 val importedEntity = UserTasteFacetEntity(
                     facetKey = bFacet.facetKey,
-                    facetType = bFacet.facetType,
-                    surfaceScope = bFacet.surfaceScope,
-                    displayLabel = bFacet.displayLabel,
-                    score = bFacet.score,
-                    confidence = bFacet.confidence,
-                    provenance = bFacet.provenance,
-                    evidenceSummary = bFacet.evidenceSummary,
+                    facetType = validatedType.name,
+                    surfaceScope = fixedScope,
+                    displayLabel = bFacet.displayLabel.take(48),
+                    score = bFacet.score.coerceIn(0.0, 1.0),
+                    confidence = bFacet.confidence.coerceIn(0.0, 1.0),
+                    provenance = sanitizeIntelligenceText(bFacet.provenance, fallback = "Restored interest"),
+                    evidenceSummary = sanitizeIntelligenceText(bFacet.evidenceSummary, fallback = bFacet.displayLabel.take(48)),
                     includeInAssistantContext = bFacet.includeInAssistantContext,
                     isSuppressedByUser = bFacet.isSuppressedByUser,
                     firstObservedAtMs = bFacet.firstObservedAtMs,
                     lastReinforcedAtMs = bFacet.lastReinforcedAtMs,
-                    expiresAtMs = bFacet.expiresAtMs
+                    expiresAtMs = bFacet.expiresAtMs,
+                    hasBehavioralEvidence = effectiveBehavioral,
+                    independentEvidenceCount = bFacet.independentEvidenceCount.coerceAtLeast(1),
+                    supportingSignalTypesCsv = sanitizeSignalTypesCsv(bFacet.supportingSignalTypesCsv)
                 )
                 val existingFacet = intelligenceDao.getFacetByKey(bFacet.facetKey)
                 val shouldWrite = when {
@@ -268,7 +373,101 @@ class BackupManager(
                 }
             }
 
-            // 4. Merge Movies & TV Watchlist without duplicating canonical or composite IDs
+            // 4. Restore bounded, sanitized Intelligence Signals with deduplication
+            if (backup.intelligenceSignals.isNotEmpty()) {
+                val cutoffMs = nowMs - UserUnderstandingRepository.SIGNAL_MAX_AGE_MS
+                val existingSignatures = intelligenceDao.getRecentSignalsSnapshot(UserUnderstandingRepository.SIGNAL_MAX_ROWS)
+                    .mapTo(mutableSetOf()) { signalSignature(it.signalType, it.surfaceScope, it.targetKey, it.topicsCsv, it.createdAtMs) }
+
+                val toInsert = mutableListOf<IntelligenceSignalEntity>()
+                for (bSig in backup.intelligenceSignals) {
+                    if (bSig.signalType.isBlank()) continue
+                    if (bSig.createdAtMs < cutoffMs || bSig.createdAtMs > nowMs + MAX_FUTURE_SKEW_MS) continue
+                    val validatedScope = runCatching { IntelligenceSurfaceScope.valueOf(bSig.surfaceScope) }.getOrNull()
+                        ?: continue
+                    val safeTarget = sanitizeSignalTargetKey(bSig.signalType, validatedScope.name, bSig.targetKey, bSig.isMediaCue)
+                    val safeTopics = sanitizeTopicsCsv(bSig.topicsCsv)
+                    val sigKey = signalSignature(bSig.signalType, validatedScope.name, safeTarget, safeTopics, bSig.createdAtMs)
+                    if (sigKey in existingSignatures) continue
+                    existingSignatures.add(sigKey)
+                    toInsert.add(
+                        IntelligenceSignalEntity(
+                            signalType = bSig.signalType,
+                            surfaceScope = validatedScope.name,
+                            targetKey = safeTarget,
+                            topicsCsv = safeTopics,
+                            isMediaCue = bSig.isMediaCue,
+                            strength = bSig.strength.coerceIn(-1.0, 1.0),
+                            createdAtMs = bSig.createdAtMs
+                        )
+                    )
+                }
+                if (toInsert.isNotEmpty()) {
+                    intelligenceDao.insertSignals(toInsert)
+                    intelligenceDao.deleteSignalsOlderThan(cutoffMs)
+                    intelligenceDao.trimSignalsToMaxRows(UserUnderstandingRepository.SIGNAL_MAX_ROWS)
+                    restoredSignalsCount = toInsert.size
+                }
+            }
+
+            // 5. Restore Title-Level Like/Dislike Reactions (explicit user feedback)
+            for (bFeedback in backup.titleFeedback) {
+                if (bFeedback.mediaKey.isBlank() || bFeedback.compositeId.isBlank()) continue
+                val reaction = runCatching { TitleReaction.valueOf(bFeedback.reaction) }.getOrNull()
+                    ?: continue
+                if (bFeedback.updatedAtMs <= 0L || bFeedback.updatedAtMs > nowMs + MAX_FUTURE_SKEW_MS) continue
+                val existing = intelligenceDao.getTitleFeedback(bFeedback.mediaKey, bFeedback.compositeId)
+                if (existing == null || bFeedback.updatedAtMs > existing.updatedAtMs) {
+                    intelligenceDao.upsertTitleFeedback(
+                        TitleFeedbackEntity(
+                            mediaKey = bFeedback.mediaKey,
+                            compositeId = bFeedback.compositeId,
+                            providerId = bFeedback.providerId,
+                            titleId = bFeedback.titleId,
+                            canonicalId = bFeedback.canonicalId,
+                            kind = bFeedback.kind,
+                            title = existing?.title ?: bFeedback.mediaKey,
+                            reaction = reaction.name,
+                            genresCsv = sanitizeGenresCsv(bFeedback.genresCsv),
+                            updatedAtMs = bFeedback.updatedAtMs
+                        )
+                    )
+                    restoredTitleFeedbackCount++
+                }
+            }
+
+            // 6. Restore Persisted Suggestion Dismissals (so dismissed suggestions stay dismissed)
+            if (backup.suggestionDismissals.isNotEmpty()) {
+                val existingByKey = intelligenceDao.getAllDismissalsSnapshot().associateBy { it.dismissalKey }
+                val toUpsert = mutableListOf<SuggestionDismissalEntity>()
+                for (bDis in backup.suggestionDismissals) {
+                    val type = runCatching { SuggestionDismissalType.valueOf(bDis.suggestionType) }.getOrNull()
+                        ?: continue
+                    if (bDis.linkIdentityHash.isBlank() || bDis.dismissedAtMs <= 0L) continue
+                    if (bDis.suppressUntilMs != null && bDis.suppressUntilMs <= nowMs) continue
+                    val dismissalKey = "${type.name}:${bDis.linkIdentityHash}"
+                    val existing = existingByKey[dismissalKey]
+                    if (existing == null || bDis.dismissedAtMs > existing.dismissedAtMs) {
+                        val resolvedLinkId = linkIdByHash[bDis.linkIdentityHash] ?: existing?.linkId ?: 0L
+                        toUpsert.add(
+                            SuggestionDismissalEntity(
+                                dismissalKey = dismissalKey,
+                                suggestionType = type.name,
+                                linkId = resolvedLinkId,
+                                linkIdentityHash = bDis.linkIdentityHash,
+                                dismissedAtMs = bDis.dismissedAtMs,
+                                suppressUntilMs = bDis.suppressUntilMs
+                            )
+                        )
+                    }
+                }
+                if (toUpsert.isNotEmpty()) {
+                    intelligenceDao.upsertDismissals(toUpsert)
+                    restoredDismissalsCount = toUpsert.size
+                }
+            }
+
+            // 7. Merge Movies & TV Watchlist without duplicating canonical or composite IDs
             val existingWatchlist = moviesDao.getWatchlistSnapshot()
             val knownCompositeIds = existingWatchlist.mapTo(mutableSetOf()) { it.compositeId }
             val knownCanonicalIds = existingWatchlist.mapNotNullTo(mutableSetOf()) { it.canonicalId?.takeIf { c -> c.isNotBlank() } }
@@ -302,12 +501,9 @@ class BackupManager(
                 restoredWatchlistCount++
             }
 
-            // 5. Restore Personalization Preferences (v2)
+            // 8. Restore Assistant Taste Sharing Preference (EI itself is always-on)
             backup.personalizationPreferences?.let { pPrefs ->
-                userPreferencesRepository?.let { repo ->
-                    repo.setPersonalizationEnabled(pPrefs.personalizationEnabled)
-                    repo.setAssistantPersonalContextEnabled(pPrefs.assistantPersonalContextEnabled)
-                }
+                userPreferencesRepository?.setAssistantPersonalContextEnabled(pPrefs.assistantPersonalContextEnabled)
             }
 
             Result.success(
@@ -316,13 +512,91 @@ class BackupManager(
                     skippedDuplicatesCount = skippedDuplicatesCount,
                     restoredCollectionsCount = restoredCollectionsCount,
                     restoredFacetsCount = restoredFacetsCount,
-                    restoredWatchlistCount = restoredWatchlistCount
+                    restoredWatchlistCount = restoredWatchlistCount,
+                    restoredSignalsCount = restoredSignalsCount,
+                    restoredDismissalsCount = restoredDismissalsCount,
+                    restoredTitleFeedbackCount = restoredTitleFeedbackCount
                 )
             )
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
+
+    private fun signalSignature(
+        signalType: String,
+        surfaceScope: String,
+        targetKey: String,
+        topicsCsv: String,
+        createdAtMs: Long
+    ): String = "$signalType|$surfaceScope|$targetKey|$topicsCsv|$createdAtMs"
+
+    private fun normalizeFacetType(raw: String): String =
+        runCatching { TasteFacetType.valueOf(raw).name }.getOrDefault(TasteFacetType.ENDURING_INTEREST.name)
+
+    private fun normalizeSurfaceScope(raw: String): String =
+        runCatching { IntelligenceSurfaceScope.valueOf(raw).name }.getOrDefault(IntelligenceSurfaceScope.LIBRARY.name)
+
+    private fun sanitizeIntelligenceText(raw: String, fallback: String): String {
+        val cleaned = raw.trim()
+        if (cleaned.isBlank()) return fallback
+        if (TopicExtractor.containsSensitiveText(cleaned)) return fallback
+        if (cleaned.contains("http://", ignoreCase = true) || cleaned.contains("https://", ignoreCase = true)) {
+            return fallback
+        }
+        return cleaned.take(120)
+    }
+
+    private fun sanitizeSignalTargetKey(
+        signalType: String,
+        surfaceScope: String,
+        targetKey: String,
+        isMediaCue: Boolean
+    ): String {
+        val clean = targetKey.trim()
+        if (signalType == IntelligenceSignalLogger.SIGNAL_SEARCH || clean.startsWith("search:", ignoreCase = true)) {
+            return if (clean.startsWith("search:sanitized:", ignoreCase = true)) {
+                clean.take(80)
+            } else {
+                "search:sanitized:${surfaceScope.lowercase()}:legacy"
+            }
+        }
+        if (clean.contains("http://", ignoreCase = true) || clean.contains("https://", ignoreCase = true)) {
+            return if (isMediaCue) "media:cue" else "library:item"
+        }
+        if (clean.startsWith("link:")) {
+            return "link:item"
+        }
+        return clean.take(80).ifBlank { if (isMediaCue) "media:cue" else "library:item" }
+    }
+
+    private fun sanitizeTopicsCsv(topicsCsv: String): String = topicsCsv
+        .split(',')
+        .map { it.trim() }
+        .filter { token ->
+            token.isNotBlank() &&
+                (token.startsWith("topic:") || token.startsWith("genre:") || token.startsWith("kind:")) &&
+                TopicExtractor.isSafeFacetLabel(token.substringAfter(':').replace('_', ' '))
+        }
+        .distinct()
+        .take(12)
+        .joinToString(",")
+
+    private fun sanitizeGenresCsv(genresCsv: String): String = genresCsv
+        .split(',')
+        .map { it.trim() }
+        .filter { it.isNotBlank() && TopicExtractor.isSafeFacetLabel(it) }
+        .distinct()
+        .take(8)
+        .joinToString(",")
+
+    private fun sanitizeSignalTypesCsv(csv: String): String = csv
+        .split(',')
+        .map { it.trim().uppercase() }
+        .filter { it.isNotBlank() && it.all { ch -> ch.isLetterOrDigit() || ch == '_' } }
+        .distinct()
+        .take(12)
+        .joinToString(",")
 
     private fun isExplicitOrSuppressed(facet: UserTasteFacetEntity): Boolean {
         return facet.isSuppressedByUser ||
@@ -414,9 +688,53 @@ class BackupManager(
             fObj.put("firstObservedAtMs", facet.firstObservedAtMs)
             fObj.put("lastReinforcedAtMs", facet.lastReinforcedAtMs)
             fObj.put("expiresAtMs", facet.expiresAtMs ?: JSONObject.NULL)
+            fObj.put("hasBehavioralEvidence", facet.hasBehavioralEvidence)
+            fObj.put("independentEvidenceCount", facet.independentEvidenceCount)
+            fObj.put("supportingSignalTypesCsv", facet.supportingSignalTypesCsv)
             facetsArray.put(fObj)
         }
         root.put("userTasteFacets", facetsArray)
+
+        val signalsArray = JSONArray()
+        for (sig in backup.intelligenceSignals) {
+            val sObj = JSONObject()
+            sObj.put("signalType", sig.signalType)
+            sObj.put("surfaceScope", sig.surfaceScope)
+            sObj.put("targetKey", sig.targetKey)
+            sObj.put("topicsCsv", sig.topicsCsv)
+            sObj.put("isMediaCue", sig.isMediaCue)
+            sObj.put("strength", sig.strength)
+            sObj.put("createdAtMs", sig.createdAtMs)
+            signalsArray.put(sObj)
+        }
+        root.put("intelligenceSignals", signalsArray)
+
+        val feedbackArray = JSONArray()
+        for (tf in backup.titleFeedback) {
+            val tfObj = JSONObject()
+            tfObj.put("mediaKey", tf.mediaKey)
+            tfObj.put("compositeId", tf.compositeId)
+            tfObj.put("providerId", tf.providerId)
+            tfObj.put("titleId", tf.titleId)
+            tfObj.put("canonicalId", tf.canonicalId ?: JSONObject.NULL)
+            tfObj.put("kind", tf.kind)
+            tfObj.put("reaction", tf.reaction)
+            tfObj.put("genresCsv", tf.genresCsv)
+            tfObj.put("updatedAtMs", tf.updatedAtMs)
+            feedbackArray.put(tfObj)
+        }
+        root.put("titleFeedback", feedbackArray)
+
+        val dismissalsArray = JSONArray()
+        for (d in backup.suggestionDismissals) {
+            val dObj = JSONObject()
+            dObj.put("suggestionType", d.suggestionType)
+            dObj.put("linkIdentityHash", d.linkIdentityHash)
+            dObj.put("dismissedAtMs", d.dismissedAtMs)
+            dObj.put("suppressUntilMs", d.suppressUntilMs ?: JSONObject.NULL)
+            dismissalsArray.put(dObj)
+        }
+        root.put("suggestionDismissals", dismissalsArray)
 
         val watchlistArray = JSONArray()
         for (item in backup.movieWatchlist) {
@@ -442,7 +760,6 @@ class BackupManager(
 
         backup.personalizationPreferences?.let { pPrefs ->
             val pObj = JSONObject()
-            pObj.put("personalizationEnabled", pPrefs.personalizationEnabled)
             pObj.put("assistantPersonalContextEnabled", pPrefs.assistantPersonalContextEnabled)
             root.put("personalizationPreferences", pObj)
         }
@@ -534,10 +851,10 @@ class BackupManager(
                 }
                 facets.add(
                     BackupTasteFacet(
-                        facetKey = fObj.getString("facetKey"),
+                        facetKey = fObj.optString("facetKey", ""),
                         facetType = fObj.optString("facetType", TasteFacetType.ENDURING_INTEREST.name),
-                        surfaceScope = fObj.optString("surfaceScope", "ALL"),
-                        displayLabel = fObj.getString("displayLabel"),
+                        surfaceScope = fObj.optString("surfaceScope", IntelligenceSurfaceScope.LIBRARY.name),
+                        displayLabel = fObj.optString("displayLabel", ""),
                         score = fObj.optDouble("score", 0.5),
                         confidence = fObj.optDouble("confidence", 0.5),
                         provenance = fObj.optString("provenance", ""),
@@ -546,7 +863,71 @@ class BackupManager(
                         isSuppressedByUser = fObj.optBoolean("isSuppressedByUser", false),
                         firstObservedAtMs = fObj.optLong("firstObservedAtMs", 0L),
                         lastReinforcedAtMs = fObj.optLong("lastReinforcedAtMs", 0L),
-                        expiresAtMs = expiresAtMs
+                        expiresAtMs = expiresAtMs,
+                        hasBehavioralEvidence = fObj.optBoolean("hasBehavioralEvidence", true),
+                        independentEvidenceCount = fObj.optInt("independentEvidenceCount", 1),
+                        supportingSignalTypesCsv = fObj.optString("supportingSignalTypesCsv", "")
+                    )
+                )
+            }
+        }
+
+        val signals = mutableListOf<BackupIntelligenceSignal>()
+        val signalsArray = root.optJSONArray("intelligenceSignals")
+        if (signalsArray != null) {
+            for (i in 0 until signalsArray.length()) {
+                val sObj = signalsArray.optJSONObject(i) ?: continue
+                signals.add(
+                    BackupIntelligenceSignal(
+                        signalType = sObj.optString("signalType", ""),
+                        surfaceScope = sObj.optString("surfaceScope", IntelligenceSurfaceScope.LIBRARY.name),
+                        targetKey = sObj.optString("targetKey", ""),
+                        topicsCsv = sObj.optString("topicsCsv", ""),
+                        isMediaCue = sObj.optBoolean("isMediaCue", false),
+                        strength = sObj.optDouble("strength", 0.5),
+                        createdAtMs = sObj.optLong("createdAtMs", 0L)
+                    )
+                )
+            }
+        }
+
+        val titleFeedback = mutableListOf<BackupTitleFeedback>()
+        val feedbackArray = root.optJSONArray("titleFeedback")
+        if (feedbackArray != null) {
+            for (i in 0 until feedbackArray.length()) {
+                val tfObj = feedbackArray.optJSONObject(i) ?: continue
+                titleFeedback.add(
+                    BackupTitleFeedback(
+                        mediaKey = tfObj.optString("mediaKey", ""),
+                        compositeId = tfObj.optString("compositeId", ""),
+                        providerId = tfObj.optString("providerId", ""),
+                        titleId = tfObj.optString("titleId", ""),
+                        canonicalId = tfObj.optNullableString("canonicalId"),
+                        kind = tfObj.optString("kind", "movie"),
+                        reaction = tfObj.optString("reaction", ""),
+                        genresCsv = tfObj.optString("genresCsv", ""),
+                        updatedAtMs = tfObj.optLong("updatedAtMs", 0L)
+                    )
+                )
+            }
+        }
+
+        val dismissals = mutableListOf<BackupSuggestionDismissal>()
+        val dismissalsArray = root.optJSONArray("suggestionDismissals")
+        if (dismissalsArray != null) {
+            for (i in 0 until dismissalsArray.length()) {
+                val dObj = dismissalsArray.optJSONObject(i) ?: continue
+                val suppressUntil = if (dObj.has("suppressUntilMs") && !dObj.isNull("suppressUntilMs")) {
+                    dObj.optLong("suppressUntilMs", 0L).takeIf { it > 0L }
+                } else {
+                    null
+                }
+                dismissals.add(
+                    BackupSuggestionDismissal(
+                        suggestionType = dObj.optString("suggestionType", ""),
+                        linkIdentityHash = dObj.optString("linkIdentityHash", ""),
+                        dismissedAtMs = dObj.optLong("dismissedAtMs", 0L),
+                        suppressUntilMs = suppressUntil
                     )
                 )
             }
@@ -591,7 +972,6 @@ class BackupManager(
 
         val personalizationPrefs = root.optJSONObject("personalizationPreferences")?.let { pObj ->
             BackupPersonalizationPreferences(
-                personalizationEnabled = pObj.optBoolean("personalizationEnabled", true),
                 assistantPersonalContextEnabled = pObj.optBoolean("assistantPersonalContextEnabled", false)
             )
         }
@@ -603,6 +983,9 @@ class BackupManager(
             collections = collections,
             links = links,
             userTasteFacets = facets,
+            intelligenceSignals = signals,
+            titleFeedback = titleFeedback,
+            suggestionDismissals = dismissals,
             movieWatchlist = watchlist,
             personalizationPreferences = personalizationPrefs
         )
@@ -612,5 +995,9 @@ class BackupManager(
         if (isNull(key)) return null
         val str = optString(key)
         return str.ifEmpty { null }
+    }
+
+    companion object {
+        private const val MAX_FUTURE_SKEW_MS = 24L * 60L * 60L * 1000L
     }
 }

@@ -129,7 +129,6 @@ fun MoviesScreen(
     dismissedAnnouncementIds: Set<String> = emptySet(),
     onRemoteAction: (String) -> Unit = {},
     onDismissRemoteAnnouncement: (String) -> Unit = {},
-    onOpenPersonalizationPrivacy: () -> Unit = {},
     onRecordCardExposure: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -1051,28 +1050,12 @@ fun MoviesScreen(
                                                                 horizontalArrangement = Arrangement.SpaceBetween,
                                                                 verticalAlignment = Alignment.CenterVertically
                                                             ) {
-                                                                Column(modifier = Modifier.weight(1f)) {
-                                                                    Text(
-                                                                        text = "Picked For You",
-                                                                        style = typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
-                                                                        color = colors.textPrimary
-                                                                    )
-                                                                    Text(
-                                                                        text = "Personalized locally • Why this? explained below",
-                                                                        style = typography.metaText,
-                                                                        color = colors.textSecondary
-                                                                    )
-                                                                }
-                                                                androidx.compose.material3.TextButton(
-                                                                    onClick = onOpenPersonalizationPrivacy,
-                                                                    modifier = Modifier.testTag("movies_tune_tastes_button")
-                                                                ) {
-                                                                    Text(
-                                                                        text = "Tune tastes",
-                                                                        style = typography.uiMedium.copy(fontSize = 12.sp, fontWeight = FontWeight.SemiBold),
-                                                                        color = colors.accentPrimary
-                                                                    )
-                                                                }
+                                                                Text(
+                                                                    text = "Picked For You",
+                                                                    style = typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
+                                                                    color = colors.textPrimary,
+                                                                    modifier = Modifier.weight(1f)
+                                                                )
                                                             }
                                                             LazyRow(
                                                                 contentPadding = PaddingValues(horizontal = 16.dp),
@@ -1088,30 +1071,18 @@ fun MoviesScreen(
                                                                         onRecordCardExposure(item.stableMediaKey)
                                                                     }
                                                                     val isOffline = offlineLookup.hasTitle(item.providerId, item.id)
-                                                                    Column(
-                                                                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                                                                    MoviePosterCard(
+                                                                        item = item,
+                                                                        onClick = { onOpenDetail(item.providerId, item.id) },
+                                                                        isOfflineDownloaded = isOffline,
+                                                                        isInWatchlist = item.compositeId in watchlistIds,
+                                                                        onToggleWatchlist = onToggleWatchlist,
+                                                                        onAddToCollection = { collectionPickerTarget = it },
+                                                                        onMarkWatched = onMarkWatched,
+                                                                        onHideTitle = onHideTitle,
+                                                                        onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) },
                                                                         modifier = Modifier.width(126.dp)
-                                                                    ) {
-                                                                        MoviePosterCard(
-                                                                            item = item,
-                                                                            onClick = { onOpenDetail(item.providerId, item.id) },
-                                                                            isOfflineDownloaded = isOffline,
-                                                                            isInWatchlist = item.compositeId in watchlistIds,
-                                                                            onToggleWatchlist = onToggleWatchlist,
-                                                                            onAddToCollection = { collectionPickerTarget = it },
-                                                                            onMarkWatched = onMarkWatched,
-                                                                            onHideTitle = onHideTitle,
-                                                                            onShareTitle = { com.laterbox.app.media.share.LaterboxShareHelper.shareTitle(moviesContext, it) }
-                                                                        )
-                                                                        Text(
-                                                                            text = "Why this? ${rec.rationale}",
-                                                                            style = typography.caption.copy(fontSize = 10.sp),
-                                                                            color = colors.textSecondary,
-                                                                            maxLines = 2,
-                                                                            overflow = TextOverflow.Ellipsis,
-                                                                            modifier = Modifier.testTag("movies_for_you_rationale_${item.id}")
-                                                                        )
-                                                                    }
+                                                                    )
                                                                 }
                                                             }
                                                         }
@@ -1258,18 +1229,6 @@ fun MoviesScreen(
                                                                             leadingIcon = LaterboxIcons.Refresh,
                                                                             modifier = Modifier.testTag("movies_surprise_reroll")
                                                                         )
-                                                                        if (uiState.isPersonalizationActive) {
-                                                                            androidx.compose.material3.TextButton(
-                                                                                onClick = onOpenPersonalizationPrivacy,
-                                                                                modifier = Modifier.testTag("movies_surprise_tune_tastes")
-                                                                            ) {
-                                                                                Text(
-                                                                                    text = "Tune tastes",
-                                                                                    style = typography.uiMedium.copy(fontSize = 12.sp),
-                                                                                    color = colors.accentPrimary
-                                                                                )
-                                                                            }
-                                                                        }
                                                                     }
                                                                 }
                                                             }

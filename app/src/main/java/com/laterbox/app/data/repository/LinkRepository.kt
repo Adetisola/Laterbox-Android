@@ -251,8 +251,8 @@ class LinkRepository(
     suspend fun setReminder(linkId: Long, reminderAt: Long?) {
         savedLinkDao.updateReminder(linkId, reminderAt)
         val effectiveScheduler = reminderScheduler ?: appContext?.let { com.laterbox.app.reminders.ReminderScheduler(it) }
+        val entity = savedLinkDao.getEntityById(linkId)
         if (reminderAt != null) {
-            val entity = savedLinkDao.getEntityById(linkId)
             effectiveScheduler?.scheduleReminder(
                 linkId = linkId,
                 triggerAtMillis = reminderAt,
@@ -261,6 +261,12 @@ class LinkRepository(
             )
         } else {
             effectiveScheduler?.cancelReminder(linkId)
+        }
+        entity?.let {
+            val savedWithCols = runCatching { savedLinkDao.getLinkById(linkId).first() }.getOrNull()
+            savedWithCols?.toDomain()?.let { domainLink ->
+                intelligenceSignalLogger?.logLinkReminderChange(domainLink, added = reminderAt != null)
+            }
         }
     }
 

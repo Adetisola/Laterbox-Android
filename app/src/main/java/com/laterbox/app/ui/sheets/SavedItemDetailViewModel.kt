@@ -57,7 +57,8 @@ class SavedItemDetailViewModel(
     private val mediaRepository: MediaRepository,
     private val platformResolver: com.laterbox.app.media.domain.adapter.PlatformResolver,
     private val userPreferencesRepository: UserPreferencesRepository? = null,
-    private val remoteConfigManager: RemoteConfigManager? = null
+    private val remoteConfigManager: RemoteConfigManager? = null,
+    private val userUnderstandingRepository: com.laterbox.app.intelligence.UserUnderstandingRepository? = null
 ) : ViewModel() {
 
     private val _currentLink = MutableStateFlow<SavedLink?>(null)
@@ -65,7 +66,7 @@ class SavedItemDetailViewModel(
     private val _editedNote = MutableStateFlow("")
     private val _selectedCollectionIds = MutableStateFlow<Set<Long>>(emptySet())
     private val _isSaving = MutableStateFlow(false)
-    private val _dismissedSuggestionPairs = MutableStateFlow<Set<Pair<Long, Long>>>(emptySet())
+    private val _dismissedSuggestionLinkIds = MutableStateFlow<Set<Long>>(emptySet())
     private val _assets = _currentLink.flatMapLatest { link ->
         if (link == null) flowOf(emptyList()) else mediaRepository.getAssetsForLink(link.id)
     }
@@ -82,10 +83,7 @@ class SavedItemDetailViewModel(
         if (link == null) flowOf(false) else mediaRepository.isInspectingLink(link.id)
     }
 
-    private val localPersonalizationFlow = userPreferencesRepository?.userPreferences
-        ?.map { it.personalizationEnabled }
-        ?.distinctUntilChanged()
-        ?: flowOf(true)
+    private val activeDismissalsFlow = userUnderstandingRepository?.observeActiveDismissals() ?: flowOf(emptyList())
     private val remoteIntelEnabledFlow = remoteConfigManager?.state
         ?.map { it.activeConfig.isFeatureEnabled(RemoteCapabilities.KEY_EXPERIENCE_INTELLIGENCE, true) }
         ?.distinctUntilChanged()
@@ -93,13 +91,21 @@ class SavedItemDetailViewModel(
 
     private val suggestionContextFlow = combine(
         linkRepository.inboxLinks,
-        _dismissedSuggestionPairs,
-        localPersonalizationFlow,
+        _dismissedSuggestionLinkIds,
+        activeDismissalsFlow,
         remoteIntelEnabledFlow
-    ) { inboxLinks, dismissed, localEnabled, remoteEnabled ->
-        Triple(inboxLinks, dismissed, localEnabled && remoteEnabled)
+    ) { inboxLinks, dismissedIds, persistedDismissals, remoteEnabled ->
+        val nowMs = System.currentTimeMillis()
+        val persistedCollectionDismissals = persistedDismissals.filter {
+            it.suggestionType == com.laterbox.app.data.local.entity.SuggestionDismissalType.COLLECTION_SUGGESTION.name &&
+                (it.suppressUntilMs == null || it.suppressUntilMs > nowMs)
+        }
+        val mergedIds = dismissedIds + persistedCollectionDismissals.mapNotNull { it.linkId.takeIf { id -> id > 0L } }
+        val hashes = persistedCollectionDismissals.map { it.linkIdentityHash }.toSet()
+        listOf(inboxLinks, mergedIds, hashes, remoteEnabled)
     }
 
+    @Suppress("UNCHECKED_CAST")
     val uiState: StateFlow<SavedItemDetailUiState> = combine(
         combine(_currentLink, _editedTitle, _editedNote, _selectedCollectionIds, _isSaving) { link, title, note, colIds, saving ->
             SavedItemDetailUiState(
@@ -117,7 +123,10 @@ class SavedItemDetailViewModel(
             Triple(res, inspecting, sCtx)
         }
     ) { base, collections, assets, tasks, (res, inspecting, suggestionContext) ->
-        val (inboxLinks, dismissedPairs, intelEnabled) = suggestionContext
+        val inboxLinks = suggestionContext[0] as List<SavedLink>
+        val dismissedLinkIds = suggestionContext[1] as Set<Long>
+        val dismissedLinkHashes = suggestionContext[2] as Set<String>
+        val intelEnabled = suggestionContext[3] as Boolean
         val link = base.link
         val suggested = if (
             intelEnabled &&
@@ -128,7 +137,8 @@ class SavedItemDetailViewModel(
                 targetLink = link,
                 collections = collections,
                 allLinks = inboxLinks,
-                dismissedPairs = dismissedPairs
+                dismissedLinkIds = dismissedLinkIds,
+                dismissedLinkHashes = dismissedLinkHashes
             )
         } else {
             null
@@ -379,13 +389,20 @@ class SavedItemDetailViewModel(
     }
 
     fun onAcceptCollectionSuggestion(suggestion: LinkCollectionSuggestion) {
-        _dismissedSuggestionPairs.update { it + (suggestion.link.id to suggestion.collection.id) }
+        _dismissedSuggestionLinkIds.update { it + suggestion.link.id }
         if (!_selectedCollectionIds.value.contains(suggestion.collection.id)) {
             onToggleCollection(suggestion.collection.id)
         }
     }
 
     fun onDismissCollectionSuggestion(suggestion: LinkCollectionSuggestion) {
-        _dismissedSuggestionPairs.update { it + (suggestion.link.id to suggestion.collection.id) }
+        _dismissedSuggestionLinkIds.update { it + suggestion.link.id }
+        viewModelScope.launch {
+            userUnderstandingRepository?.recordSuggestionDismissal(
+                type = com.laterbox.app.data.local.entity.SuggestionDismissalType.COLLECTION_SUGGESTION,
+                linkId = suggestion.link.id,
+                normalizedUrl = suggestion.link.normalizedUrl
+            )
+        }
     }
 }

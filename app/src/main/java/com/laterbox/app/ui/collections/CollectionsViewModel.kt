@@ -33,52 +33,29 @@ class CollectionsViewModel(
     private val _collectionToRename = MutableStateFlow<Collection?>(null)
     private val _collectionToDelete = MutableStateFlow<Collection?>(null)
 
-    private val facetsFlow = userUnderstandingRepository?.observeAllFacets() ?: flowOf(emptyList())
-    private val localPersonalizationFlow = userPreferencesRepository?.userPreferences
-        ?.map { it.personalizationEnabled }
-        ?.distinctUntilChanged()
-        ?: flowOf(true)
-    private val remoteIntelEnabledFlow = remoteConfigManager?.state
-        ?.map { it.activeConfig.isFeatureEnabled(RemoteCapabilities.KEY_EXPERIENCE_INTELLIGENCE, true) }
-        ?.distinctUntilChanged()
-        ?: flowOf(true)
-
     val uiState: StateFlow<CollectionsUiState> = combine(
-        combine(
-            collectionRepository.collectionsWithCounts,
-            _searchQuery,
-            _showCreateDialog,
-            _collectionToRename,
-            _collectionToDelete
-        ) { collections, query, showCreate, toRename, toDelete ->
-            CollectionsUiState(
-                collections = collections,
-                isLoading = false,
-                searchQuery = query,
-                showCreateDialog = showCreate,
-                collectionToRename = toRename,
-                collectionToDelete = toDelete
-            )
-        },
-        combine(facetsFlow, localPersonalizationFlow, remoteIntelEnabledFlow) { facets, localEnabled, remoteEnabled ->
-            Triple(facets, localEnabled, remoteEnabled)
-        }
-    ) { baseState, (facets, localEnabled, remoteEnabled) ->
-        val query = baseState.searchQuery.trim()
-        val rankedCollections = if (query.isBlank()) {
-            baseState.collections
+        collectionRepository.collectionsWithCounts,
+        _searchQuery,
+        _showCreateDialog,
+        _collectionToRename,
+        _collectionToDelete
+    ) { collections, query, showCreate, toRename, toDelete ->
+        val cleanQuery = query.trim()
+        val filteredCollections = if (cleanQuery.isBlank()) {
+            collections
         } else {
-            val matched = baseState.collections.filter { entry ->
-                entry.collection.name.contains(query, ignoreCase = true)
+            collections.filter { entry ->
+                entry.collection.name.contains(cleanQuery, ignoreCase = true)
             }
-            SearchTieBreaker.rankCollections(
-                collections = matched,
-                query = query,
-                facets = facets,
-                applyTieBreaker = localEnabled && remoteEnabled
-            )
         }
-        baseState.copy(collections = rankedCollections)
+        CollectionsUiState(
+            collections = filteredCollections,
+            isLoading = false,
+            searchQuery = query,
+            showCreateDialog = showCreate,
+            collectionToRename = toRename,
+            collectionToDelete = toDelete
+        )
     }.distinctUntilChanged().stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),

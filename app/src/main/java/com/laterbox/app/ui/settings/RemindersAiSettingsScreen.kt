@@ -80,6 +80,7 @@ fun RemindersAiSettingsScreen(
     onBackClick: () -> Unit,
     modifier: Modifier = Modifier,
     onAssistantEnabledChange: (Boolean) -> Unit = {},
+    onAssistantPersonalContextEnabledChange: (Boolean) -> Unit = {},
     onResetAiDisclosureConsent: () -> Unit = {},
     onSmartNotificationsExtractionFailureChange: (Boolean) -> Unit = {},
     onSmartNotificationsDownloadFailureChange: (Boolean) -> Unit = {},
@@ -556,6 +557,37 @@ fun RemindersAiSettingsScreen(
                                 )
                             }
                         }
+                    }
+
+                    SettingsDivider()
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Share Taste Context with Assistant",
+                                style = typography.uiMedium,
+                                color = colors.textPrimary
+                            )
+                            Text(
+                                text = "Opt in to share a bounded summary of your local preferences when asking the remote Assistant for suggestions. Laterbox's on-device intelligence always stays active locally.",
+                                style = typography.bodySecondary.copy(fontSize = 12.sp),
+                                color = colors.textSecondary
+                            )
+                        }
+                        Switch(
+                            checked = preferences.assistantPersonalContextEnabled,
+                            onCheckedChange = onAssistantPersonalContextEnabledChange,
+                            enabled = preferences.assistantEnabled,
+                            modifier = Modifier.testTag("reminders_ai_share_taste_context_switch"),
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = colors.surfaceElevated,
+                                checkedTrackColor = colors.accentPrimary
+                            )
+                        )
                     }
                 }
             }

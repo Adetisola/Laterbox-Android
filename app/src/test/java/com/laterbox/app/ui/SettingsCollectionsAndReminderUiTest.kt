@@ -184,6 +184,7 @@ class SettingsCollectionsAndReminderUiTest {
 
         composeTestRule.onNodeWithText("Enter Google AI Studio access key (optional)").assertDoesNotExist()
         composeTestRule.onNodeWithText("Google AI Studio").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Share Taste Context with Assistant").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithText("Test AI Connection").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithText("Send Test Smart Reminder").performScrollTo().assertIsDisplayed()
     }

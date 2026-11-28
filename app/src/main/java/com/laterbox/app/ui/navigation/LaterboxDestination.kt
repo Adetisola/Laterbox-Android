@@ -19,7 +19,6 @@ sealed class LaterboxDestination(val route: String) {
     object SettingsMoviesTv : LaterboxDestination("settings/movies_tv")
     object MoviesViewingHistory : LaterboxDestination("movies/viewing_history")
     object SettingsDataStorage : LaterboxDestination("settings/data_storage")
-    object SettingsPersonalizationPrivacy : LaterboxDestination("settings/personalization_privacy")
     object NotificationHistory : LaterboxDestination("notification_history")
 
     object CollectionDetail : LaterboxDestination("collection/{collectionId}/{collectionName}") {

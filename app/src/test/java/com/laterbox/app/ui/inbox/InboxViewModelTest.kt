@@ -685,7 +685,6 @@ class InboxViewModelTest {
 
     @Test
     fun inboxViewModel_resurfacerPreservesChronologicalOrderAndLogsSignals() = runTest {
-        preferencesRepository.setPersonalizationEnabled(true)
         val nowMs = System.currentTimeMillis()
         val dayMs = 24L * 60L * 60L * 1000L
         val understandingRepo = UserUnderstandingRepository(
@@ -818,7 +817,6 @@ class InboxViewModelTest {
 
     @Test
     fun inboxViewModel_collectionSuggestionAcceptLogsSignal_dismissSuppresses_andKillSwitchGatesAllProactiveHelpers() = runTest {
-        preferencesRepository.setPersonalizationEnabled(true)
         val nowMs = System.currentTimeMillis()
         val dayMs = 24L * 60L * 60L * 1000L
         val understandingRepo = UserUnderstandingRepository(

@@ -73,10 +73,11 @@ object TopicExtractor {
             label = "Cinema & TV",
             keywords = setOf(
                 "movie", "movies", "film", "films", "cinema", "television", "tv series",
-                "screenplay", "director", "trailer", "box office", "anime", "documentary"
+                "screenplay", "director", "trailer", "box office", "anime", "documentary",
+                "actor", "actress"
             ),
             domains = setOf("imdb.com", "themoviedb.org", "letterboxd.com", "rottentomatoes.com", "tvmaze.com", "justwatch.com", "myanimelist.net", "anilist.co"),
-            defaultScope = IntelligenceSurfaceScope.ALL
+            defaultScope = IntelligenceSurfaceScope.LIBRARY
         ),
         TopicRule(
             key = "topic:music_audio",
@@ -279,12 +280,89 @@ object TopicExtractor {
                         facetKey = rule.key,
                         displayLabel = rule.label,
                         surfaceScope = rule.defaultScope,
-                        isMediaCue = rule.key == "topic:cinema_tv"
+                        isMediaCue = false
                     )
                 )
             }
         }
         return matched.distinctBy { it.facetKey }
+    }
+
+    /**
+     * Extracts Movies-scoped facets from an explicit Movies & TV search submission.
+     * Never emits LIBRARY-scoped facets.
+     */
+    fun extractMoviesSearchFacets(query: String): List<ExtractedFacetCandidate> {
+        val clean = query.trim()
+        if (clean.length < 2 || containsSensitiveText(clean)) return emptyList()
+        val lower = clean.lowercase(Locale.US)
+        val matched = mutableListOf<ExtractedFacetCandidate>()
+        for ((alias, canonical) in MEDIA_GENRE_ALIASES) {
+            val hit = if (' ' in alias || '-' in alias) {
+                lower.contains(alias)
+            } else {
+                Regex("\\b${Regex.escape(alias)}\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower)
+            }
+            if (hit) {
+                matched.add(
+                    ExtractedFacetCandidate(
+                        facetKey = genreFacetKey(canonical),
+                        displayLabel = canonical,
+                        surfaceScope = IntelligenceSurfaceScope.MOVIES,
+                        isMediaCue = true
+                    )
+                )
+            }
+        }
+        if (SERIES_CUE_REGEX.containsMatchIn(lower) || Regex("\\b(?:series|show|shows|kdrama|k-drama|anime)\\b").containsMatchIn(lower)) {
+            matched.add(
+                ExtractedFacetCandidate(
+                    facetKey = kindFacetKey(MediaKind.TV_SERIES),
+                    displayLabel = MediaKind.TV_SERIES.label,
+                    surfaceScope = IntelligenceSurfaceScope.MOVIES,
+                    isMediaCue = true
+                )
+            )
+        } else if (MOVIE_CUE_REGEX.containsMatchIn(lower)) {
+            matched.add(
+                ExtractedFacetCandidate(
+                    facetKey = kindFacetKey(MediaKind.MOVIE),
+                    displayLabel = MediaKind.MOVIE.label,
+                    surfaceScope = IntelligenceSurfaceScope.MOVIES,
+                    isMediaCue = true
+                )
+            )
+        }
+        return matched.distinctBy { it.facetKey }
+    }
+
+    /**
+     * Produces a privacy-safe targetKey for submitted searches containing zero plaintext query text.
+     */
+    fun safeSearchTargetKey(
+        surfaceScope: IntelligenceSurfaceScope,
+        query: String,
+        extractedFacets: List<ExtractedFacetCandidate>
+    ): String {
+        val digest = sha256Hex(query.trim().lowercase(Locale.US)).take(12)
+        val facetTag = extractedFacets
+            .map { it.facetKey.substringAfter(':') }
+            .distinct()
+            .take(2)
+            .joinToString("+")
+            .ifBlank { "general" }
+        return "search:sanitized:${surfaceScope.name.lowercase(Locale.US)}:$facetTag:$digest"
+    }
+
+    fun stableLinkIdentityHash(normalizedUrl: String): String {
+        val canonical = normalizedUrl.trim().lowercase(Locale.US)
+        return sha256Hex(canonical).take(24)
+    }
+
+    private fun sha256Hex(input: String): String {
+        val bytes = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(input.toByteArray(Charsets.UTF_8))
+        return bytes.joinToString("") { "%02x".format(it) }
     }
 
     /**

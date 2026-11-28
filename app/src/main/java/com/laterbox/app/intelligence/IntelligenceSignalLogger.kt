@@ -4,34 +4,170 @@ import com.laterbox.app.data.local.dao.IntelligenceDao
 import com.laterbox.app.data.local.entity.IntelligenceSignalEntity
 import com.laterbox.app.data.local.entity.IntelligenceSurfaceScope
 import com.laterbox.app.data.local.entity.TasteFacetType
+import com.laterbox.app.data.local.entity.TitleReaction
 import com.laterbox.app.data.preferences.UserPreferencesRepository
 import com.laterbox.app.domain.model.ContentType
 import com.laterbox.app.domain.model.SavedLink
 import com.laterbox.app.movies.domain.model.MovieTitleSummary
 import com.laterbox.app.reminders.NotificationCategory
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 
 /**
- * Bounded, privacy-safe on-device signal logger for the Experience Intelligence Layer.
+ * Always-on, privacy-safe on-device signal logger for the Experience Intelligence Layer.
  *
- * Respects both the local `personalizationEnabled` toggle and remote kill-switch.
- * Enforces strict media-only Inbox -> Movies cross-signal isolation and sensitive-topic filtering.
+ * Enforces strict media-only Inbox -> Movies cross-signal isolation, sensitive-topic filtering,
+ * sanitized provenance/target keys (zero plaintext search queries or collection names),
+ * and distinct behavioral signal semantics.
  */
 class IntelligenceSignalLogger(
     private val intelligenceDao: IntelligenceDao,
     private val userUnderstandingRepository: UserUnderstandingRepository,
-    private val userPreferencesRepository: UserPreferencesRepository,
+    @Suppress("UNUSED_PARAMETER") private val userPreferencesRepository: UserPreferencesRepository,
     private val isIntelligenceEnabled: () -> Boolean = { true },
     private val nowMs: () -> Long = { System.currentTimeMillis() }
 ) {
 
-    private suspend fun isActive(): Boolean {
-        if (!isIntelligenceEnabled()) return false
-        return runCatching {
-            userPreferencesRepository.userPreferencesFlow.first().personalizationEnabled
-        }.getOrDefault(false)
+    private fun isActive(): Boolean = isIntelligenceEnabled()
+
+    suspend fun logTitleFeedback(item: MovieTitleSummary, reaction: TitleReaction?) {
+        if (!isActive()) return
+        runCatching {
+            withContext(Dispatchers.IO) {
+                val ts = nowMs()
+                userUnderstandingRepository.setTitleReaction(item, reaction, ts)
+                if (reaction == null) return@withContext
+
+                val facets = TopicExtractor.extractMediaFacets(item)
+                val signalType = if (reaction == TitleReaction.LIKE) SIGNAL_TITLE_LIKE else SIGNAL_TITLE_DISLIKE
+                val strength = if (reaction == TitleReaction.LIKE) 1.0 else -1.0
+                intelligenceDao.insertSignal(
+                    IntelligenceSignalEntity(
+                        signalType = signalType,
+                        surfaceScope = IntelligenceSurfaceScope.MOVIES.name,
+                        targetKey = item.stableMediaKey,
+                        topicsCsv = facets.joinToString(",") { it.facetKey },
+                        isMediaCue = true,
+                        strength = strength,
+                        createdAtMs = ts
+                    )
+                )
+                if (reaction == TitleReaction.LIKE) {
+                    for (facet in facets) {
+                        val delta = if (facet.facetKey.startsWith("genre:")) 0.26 else 0.10
+                        userUnderstandingRepository.reinforceFacet(
+                            candidate = facet,
+                            delta = delta,
+                            provenance = "Liked a ${facet.displayLabel} title",
+                            evidenceSummary = "Explicit title like (${facet.displayLabel})",
+                            facetType = TasteFacetType.ENDURING_INTEREST,
+                            timestampMs = ts,
+                            signalType = SIGNAL_TITLE_LIKE,
+                            signalQuality = 0.42,
+                            isBehavioralEvidence = true
+                        )
+                    }
+                } else {
+                    // Cautious negative implication: suppress the specific title via title_feedback,
+                    // apply only a gentle attribute nudge so one dislike never bans an entire genre.
+                    for (facet in facets.filter { it.facetKey.startsWith("genre:") }) {
+                        userUnderstandingRepository.penalizeFacet(facet.facetKey, 0.04, ts)
+                    }
+                }
+            }
+        }
+    }
+
+    suspend fun logDetailOpened(item: MovieTitleSummary) {
+        if (!isActive()) return
+        runCatching {
+            withContext(Dispatchers.IO) {
+                val ts = nowMs()
+                val facets = TopicExtractor.extractMediaFacets(item)
+                intelligenceDao.insertSignal(
+                    IntelligenceSignalEntity(
+                        signalType = SIGNAL_DETAIL_OPEN,
+                        surfaceScope = IntelligenceSurfaceScope.MOVIES.name,
+                        targetKey = item.stableMediaKey,
+                        topicsCsv = facets.joinToString(",") { it.facetKey },
+                        isMediaCue = true,
+                        strength = 0.20,
+                        createdAtMs = ts
+                    )
+                )
+                for (facet in facets) {
+                    val delta = if (facet.facetKey.startsWith("genre:")) 0.03 else 0.015
+                    userUnderstandingRepository.reinforceFacet(
+                        candidate = facet,
+                        delta = delta,
+                        provenance = "Explored ${facet.displayLabel} details",
+                        evidenceSummary = "Exploratory detail view (${facet.displayLabel})",
+                        facetType = TasteFacetType.SHORT_TERM_INTENT,
+                        timestampMs = ts,
+                        signalType = SIGNAL_DETAIL_OPEN,
+                        signalQuality = 0.05,
+                        isBehavioralEvidence = true
+                    )
+                }
+            }
+        }
+    }
+
+    suspend fun logPlaybackStarted(item: MovieTitleSummary) {
+        if (!isActive()) return
+        runCatching {
+            withContext(Dispatchers.IO) {
+                val ts = nowMs()
+                val facets = TopicExtractor.extractMediaFacets(item)
+                intelligenceDao.insertSignal(
+                    IntelligenceSignalEntity(
+                        signalType = SIGNAL_PLAYBACK_START,
+                        surfaceScope = IntelligenceSurfaceScope.MOVIES.name,
+                        targetKey = item.stableMediaKey,
+                        topicsCsv = facets.joinToString(",") { it.facetKey },
+                        isMediaCue = true,
+                        strength = 0.35,
+                        createdAtMs = ts
+                    )
+                )
+                for (facet in facets) {
+                    val delta = if (facet.facetKey.startsWith("genre:")) 0.05 else 0.02
+                    userUnderstandingRepository.reinforceFacet(
+                        candidate = facet,
+                        delta = delta,
+                        provenance = "Started watching ${facet.displayLabel}",
+                        evidenceSummary = "Playback started (${facet.displayLabel})",
+                        facetType = TasteFacetType.SHORT_TERM_INTENT,
+                        timestampMs = ts,
+                        signalType = SIGNAL_PLAYBACK_START,
+                        signalQuality = 0.08,
+                        isBehavioralEvidence = true
+                    )
+                }
+            }
+        }
+    }
+
+    suspend fun logEarlyPlaybackExit(item: MovieTitleSummary) {
+        if (!isActive()) return
+        runCatching {
+            withContext(Dispatchers.IO) {
+                val ts = nowMs()
+                val facets = TopicExtractor.extractMediaFacets(item)
+                intelligenceDao.insertSignal(
+                    IntelligenceSignalEntity(
+                        signalType = SIGNAL_EARLY_PLAYBACK_EXIT,
+                        surfaceScope = IntelligenceSurfaceScope.MOVIES.name,
+                        targetKey = item.stableMediaKey,
+                        topicsCsv = facets.joinToString(",") { it.facetKey },
+                        isMediaCue = true,
+                        strength = -0.10,
+                        createdAtMs = ts
+                    )
+                )
+                // Contextual signal only; never interpret early playback exit as a broad genre dislike.
+            }
+        }
     }
 
     suspend fun logWatchlistChange(item: MovieTitleSummary, added: Boolean) {
@@ -48,24 +184,176 @@ class IntelligenceSignalLogger(
                         targetKey = item.stableMediaKey,
                         topicsCsv = topicsCsv,
                         isMediaCue = true,
-                        strength = if (added) 0.75 else -0.25,
+                        strength = if (added) 0.70 else 0.0,
+                        createdAtMs = ts
+                    )
+                )
+                if (added) {
+                    for (facet in facets) {
+                        val delta = if (facet.facetKey.startsWith("genre:")) 0.15 else 0.07
+                        userUnderstandingRepository.reinforceFacet(
+                            candidate = facet,
+                            delta = delta,
+                            provenance = "Added to watchlist",
+                            evidenceSummary = "Future viewing intent (${facet.displayLabel})",
+                            facetType = TasteFacetType.ENDURING_INTEREST,
+                            timestampMs = ts,
+                            signalType = SIGNAL_WATCHLIST_ADD,
+                            signalQuality = 0.24,
+                            isBehavioralEvidence = true
+                        )
+                    }
+                }
+                // Watchlist removal is NOT a dislike; never penalize genres.
+            }
+        }
+    }
+
+    suspend fun logReminderChange(item: MovieTitleSummary, added: Boolean) {
+        if (!isActive()) return
+        runCatching {
+            withContext(Dispatchers.IO) {
+                val ts = nowMs()
+                val facets = TopicExtractor.extractMediaFacets(item)
+                intelligenceDao.insertSignal(
+                    IntelligenceSignalEntity(
+                        signalType = if (added) SIGNAL_REMINDER_SET else SIGNAL_REMINDER_REMOVE,
+                        surfaceScope = IntelligenceSurfaceScope.MOVIES.name,
+                        targetKey = item.stableMediaKey,
+                        topicsCsv = facets.joinToString(",") { it.facetKey },
+                        isMediaCue = true,
+                        strength = if (added) 0.72 else 0.0,
+                        createdAtMs = ts
+                    )
+                )
+                if (added) {
+                    for (facet in facets) {
+                        val delta = if (facet.facetKey.startsWith("genre:")) 0.14 else 0.06
+                        userUnderstandingRepository.reinforceFacet(
+                            candidate = facet,
+                            delta = delta,
+                            provenance = "Set viewing reminder",
+                            evidenceSummary = "Explicit future intent (${facet.displayLabel})",
+                            facetType = TasteFacetType.ENDURING_INTEREST,
+                            timestampMs = ts,
+                            signalType = SIGNAL_REMINDER_SET,
+                            signalQuality = 0.22,
+                            isBehavioralEvidence = true
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    suspend fun logLinkReminderChange(link: SavedLink, added: Boolean) {
+        if (!isActive()) return
+        runCatching {
+            withContext(Dispatchers.IO) {
+                val ts = nowMs()
+                val topics = TopicExtractor.extractLibraryTopics(
+                    url = link.originalUrl,
+                    domain = link.domain,
+                    title = link.title,
+                    description = link.description
+                )
+                intelligenceDao.insertSignal(
+                    IntelligenceSignalEntity(
+                        signalType = if (added) SIGNAL_REMINDER_SET else SIGNAL_REMINDER_REMOVE,
+                        surfaceScope = IntelligenceSurfaceScope.LIBRARY.name,
+                        targetKey = "link:${link.id}",
+                        topicsCsv = topics.joinToString(",") { it.facetKey },
+                        isMediaCue = false,
+                        strength = if (added) 0.65 else 0.0,
+                        createdAtMs = ts
+                    )
+                )
+                if (added) {
+                    for (topic in topics) {
+                        userUnderstandingRepository.reinforceFacet(
+                            candidate = topic,
+                            delta = 0.12,
+                            provenance = "Set link reminder",
+                            evidenceSummary = "Explicit future reading intent (${topic.displayLabel})",
+                            facetType = TasteFacetType.ENDURING_INTEREST,
+                            timestampMs = ts,
+                            signalType = SIGNAL_REMINDER_SET,
+                            signalQuality = 0.20,
+                            isBehavioralEvidence = true
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    suspend fun logMovieDownload(item: MovieTitleSummary, removed: Boolean = false) {
+        if (!isActive()) return
+        runCatching {
+            withContext(Dispatchers.IO) {
+                val ts = nowMs()
+                val facets = TopicExtractor.extractMediaFacets(item)
+                intelligenceDao.insertSignal(
+                    IntelligenceSignalEntity(
+                        signalType = if (removed) SIGNAL_MOVIE_DOWNLOAD_REMOVE else SIGNAL_MOVIE_DOWNLOAD,
+                        surfaceScope = IntelligenceSurfaceScope.MOVIES.name,
+                        targetKey = item.stableMediaKey,
+                        topicsCsv = facets.joinToString(",") { it.facetKey },
+                        isMediaCue = true,
+                        strength = if (removed) 0.0 else 0.62,
+                        createdAtMs = ts
+                    )
+                )
+                if (!removed) {
+                    for (facet in facets) {
+                        val delta = if (facet.facetKey.startsWith("genre:")) 0.11 else 0.05
+                        userUnderstandingRepository.reinforceFacet(
+                            candidate = facet,
+                            delta = delta,
+                            provenance = "Downloaded for offline viewing",
+                            evidenceSummary = "Download interest (${facet.displayLabel})",
+                            facetType = TasteFacetType.ENDURING_INTEREST,
+                            timestampMs = ts,
+                            signalType = SIGNAL_MOVIE_DOWNLOAD,
+                            signalQuality = 0.16,
+                            isBehavioralEvidence = true
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    suspend fun logTitleShared(item: MovieTitleSummary) {
+        if (!isActive()) return
+        runCatching {
+            withContext(Dispatchers.IO) {
+                val ts = nowMs()
+                val facets = TopicExtractor.extractMediaFacets(item)
+                intelligenceDao.insertSignal(
+                    IntelligenceSignalEntity(
+                        signalType = SIGNAL_TITLE_SHARE,
+                        surfaceScope = IntelligenceSurfaceScope.MOVIES.name,
+                        targetKey = item.stableMediaKey,
+                        topicsCsv = facets.joinToString(",") { it.facetKey },
+                        isMediaCue = true,
+                        strength = 0.45,
                         createdAtMs = ts
                     )
                 )
                 for (facet in facets) {
-                    if (added) {
-                        val delta = if (facet.facetKey.startsWith("genre:")) 0.18 else 0.08
-                        userUnderstandingRepository.reinforceFacet(
-                            candidate = facet,
-                            delta = delta,
-                            provenance = "Added \"${item.title.take(40)}\" to watchlist",
-                            evidenceSummary = "Watchlist interest in ${facet.displayLabel}",
-                            facetType = TasteFacetType.ENDURING_INTEREST,
-                            timestampMs = ts
-                        )
-                    } else {
-                        userUnderstandingRepository.penalizeFacet(facet.facetKey, 0.06, ts)
-                    }
+                    val delta = if (facet.facetKey.startsWith("genre:")) 0.07 else 0.03
+                    userUnderstandingRepository.reinforceFacet(
+                        candidate = facet,
+                        delta = delta,
+                        provenance = "Shared ${facet.displayLabel} title",
+                        evidenceSummary = "Shared title (${facet.displayLabel})",
+                        facetType = TasteFacetType.SHORT_TERM_INTENT,
+                        timestampMs = ts,
+                        signalType = SIGNAL_TITLE_SHARE,
+                        signalQuality = 0.10,
+                        isBehavioralEvidence = true
+                    )
                 }
             }
         }
@@ -75,18 +363,36 @@ class IntelligenceSignalLogger(
         item: MovieTitleSummary,
         positionMs: Long,
         durationMs: Long,
-        isCompleted: Boolean
+        isCompleted: Boolean,
+        isRewatch: Boolean = false,
+        isManual: Boolean = false
     ) {
         if (!isActive()) return
         val fraction = if (durationMs > 0L) positionMs.toDouble() / durationMs.toDouble() else 0.0
-        if (!isCompleted && fraction < 0.15) return
+        if (!isCompleted && !isRewatch && !isManual && fraction < 0.15) return
         runCatching {
             withContext(Dispatchers.IO) {
                 val ts = nowMs()
                 val facets = TopicExtractor.extractMediaFacets(item)
                 val topicsCsv = facets.joinToString(",") { it.facetKey }
-                val signalType = if (isCompleted) SIGNAL_WATCH_COMPLETED else SIGNAL_WATCH_PROGRESS
-                val strength = if (isCompleted) 1.0 else 0.45
+                val signalType = when {
+                    isRewatch -> SIGNAL_REWATCH
+                    isManual -> SIGNAL_MANUAL_WATCHED
+                    isCompleted -> SIGNAL_WATCH_COMPLETED
+                    else -> SIGNAL_WATCH_PROGRESS
+                }
+                val strength = when (signalType) {
+                    SIGNAL_REWATCH -> 1.0
+                    SIGNAL_WATCH_COMPLETED -> 0.95
+                    SIGNAL_MANUAL_WATCHED -> 0.80
+                    else -> 0.50
+                }
+                val quality = when (signalType) {
+                    SIGNAL_REWATCH -> 0.42
+                    SIGNAL_WATCH_COMPLETED -> 0.36
+                    SIGNAL_MANUAL_WATCHED -> 0.28
+                    else -> 0.14
+                }
                 intelligenceDao.insertSignal(
                     IntelligenceSignalEntity(
                         signalType = signalType,
@@ -100,24 +406,55 @@ class IntelligenceSignalLogger(
                 )
                 for (facet in facets) {
                     val delta = when {
-                        isCompleted && facet.facetKey.startsWith("genre:") -> 0.24
-                        isCompleted -> 0.10
-                        facet.facetKey.startsWith("genre:") -> 0.10
+                        signalType == SIGNAL_REWATCH && facet.facetKey.startsWith("genre:") -> 0.26
+                        signalType == SIGNAL_REWATCH -> 0.11
+                        signalType == SIGNAL_WATCH_COMPLETED && facet.facetKey.startsWith("genre:") -> 0.22
+                        signalType == SIGNAL_WATCH_COMPLETED -> 0.09
+                        signalType == SIGNAL_MANUAL_WATCHED && facet.facetKey.startsWith("genre:") -> 0.16
+                        signalType == SIGNAL_MANUAL_WATCHED -> 0.07
+                        facet.facetKey.startsWith("genre:") -> 0.09
                         else -> 0.04
+                    }
+                    val provenanceLabel = when (signalType) {
+                        SIGNAL_REWATCH -> "Rewatched ${facet.displayLabel}"
+                        SIGNAL_MANUAL_WATCHED -> "Marked ${facet.displayLabel} watched"
+                        SIGNAL_WATCH_COMPLETED -> "Completed watching ${facet.displayLabel}"
+                        else -> "Watching ${facet.displayLabel}"
                     }
                     userUnderstandingRepository.reinforceFacet(
                         candidate = facet,
                         delta = delta,
-                        provenance = if (isCompleted) {
-                            "Watched \"${item.title.take(40)}\""
-                        } else {
-                            "Watching \"${item.title.take(40)}\""
-                        },
+                        provenance = provenanceLabel,
                         evidenceSummary = "Viewing history in ${facet.displayLabel}",
                         facetType = TasteFacetType.ENDURING_INTEREST,
-                        timestampMs = ts
+                        timestampMs = ts,
+                        signalType = signalType,
+                        signalQuality = quality,
+                        isBehavioralEvidence = true
                     )
                 }
+            }
+        }
+    }
+
+    suspend fun logContinueWatchingRemoved(item: MovieTitleSummary) {
+        if (!isActive()) return
+        runCatching {
+            withContext(Dispatchers.IO) {
+                val ts = nowMs()
+                val facets = TopicExtractor.extractMediaFacets(item)
+                intelligenceDao.insertSignal(
+                    IntelligenceSignalEntity(
+                        signalType = SIGNAL_CONTINUE_WATCHING_REMOVE,
+                        surfaceScope = IntelligenceSurfaceScope.MOVIES.name,
+                        targetKey = item.stableMediaKey,
+                        topicsCsv = facets.joinToString(",") { it.facetKey },
+                        isMediaCue = true,
+                        strength = 0.0,
+                        createdAtMs = ts
+                    )
+                )
+                // Removing from Continue Watching is NOT a genre dislike.
             }
         }
     }
@@ -135,18 +472,38 @@ class IntelligenceSignalLogger(
                         targetKey = item.stableMediaKey,
                         topicsCsv = facets.joinToString(",") { it.facetKey },
                         isMediaCue = true,
-                        strength = -0.5,
+                        strength = -0.35,
                         createdAtMs = ts
                     )
                 )
-                for (facet in facets.filter { it.facetKey.startsWith("genre:") }) {
-                    userUnderstandingRepository.penalizeFacet(facet.facetKey, 0.15, ts)
-                }
+                // Hiding one title suppresses that title; do NOT penalize every associated genre.
             }
         }
     }
 
-    suspend fun logMediaAddedToCollection(item: MovieTitleSummary, collectionName: String? = null) {
+    suspend fun logSeriesMuted(item: MovieTitleSummary, muted: Boolean) {
+        if (!isActive()) return
+        runCatching {
+            withContext(Dispatchers.IO) {
+                val ts = nowMs()
+                val facets = TopicExtractor.extractMediaFacets(item)
+                intelligenceDao.insertSignal(
+                    IntelligenceSignalEntity(
+                        signalType = if (muted) SIGNAL_SERIES_MUTE else SIGNAL_SERIES_UNMUTE,
+                        surfaceScope = IntelligenceSurfaceScope.MOVIES.name,
+                        targetKey = item.stableMediaKey,
+                        topicsCsv = facets.joinToString(",") { it.facetKey },
+                        isMediaCue = true,
+                        strength = if (muted) -0.15 else 0.10,
+                        createdAtMs = ts
+                    )
+                )
+                // Muting series alerts respects title-level mute semantics; never treat as broad genre dislike.
+            }
+        }
+    }
+
+    suspend fun logMediaAddedToCollection(item: MovieTitleSummary, @Suppress("UNUSED_PARAMETER") collectionName: String? = null) {
         if (!isActive()) return
         runCatching {
             withContext(Dispatchers.IO) {
@@ -159,22 +516,22 @@ class IntelligenceSignalLogger(
                         targetKey = item.stableMediaKey,
                         topicsCsv = facets.joinToString(",") { it.facetKey },
                         isMediaCue = true,
-                        strength = 0.85,
+                        strength = 0.80,
                         createdAtMs = ts
                     )
                 )
-                val reasonSuffix = collectionName?.takeIf {
-                    it.isNotBlank() && TopicExtractor.isSafeFacetLabel(it)
-                }?.let { " in \"${it.take(30)}\"" }.orEmpty()
                 for (facet in facets) {
-                    val delta = if (facet.facetKey.startsWith("genre:")) 0.20 else 0.08
+                    val delta = if (facet.facetKey.startsWith("genre:")) 0.17 else 0.07
                     userUnderstandingRepository.reinforceFacet(
                         candidate = facet,
                         delta = delta,
-                        provenance = "Collected \"${item.title.take(36)}\"$reasonSuffix",
-                        evidenceSummary = "Added to collection (${facet.displayLabel})",
+                        provenance = "Saved to collection",
+                        evidenceSummary = "Collection interest (${facet.displayLabel})",
                         facetType = TasteFacetType.ENDURING_INTEREST,
-                        timestampMs = ts
+                        timestampMs = ts,
+                        signalType = SIGNAL_COLLECTION_ADD,
+                        signalQuality = 0.25,
+                        isBehavioralEvidence = true
                     )
                 }
             }
@@ -259,9 +616,9 @@ class IntelligenceSignalLogger(
                         candidate = facet,
                         delta = if (isMovieCrossSignal) 0.16 else 0.14,
                         provenance = if (isMovieCrossSignal) {
-                            mediaCue.cueReason ?: "From saved media link"
+                            "Explicit media link cue"
                         } else {
-                            "Saved ${domain.take(36)} link"
+                            "Saved ${facet.displayLabel} link"
                         },
                         evidenceSummary = if (isMovieCrossSignal) {
                             "Explicit media link cue for ${facet.displayLabel}"
@@ -269,7 +626,10 @@ class IntelligenceSignalLogger(
                             "Saved reading interest in ${facet.displayLabel}"
                         },
                         facetType = TasteFacetType.ENDURING_INTEREST,
-                        timestampMs = ts
+                        timestampMs = ts,
+                        signalType = SIGNAL_LINK_SAVE,
+                        signalQuality = 0.20,
+                        isBehavioralEvidence = true
                     )
                 }
             }
@@ -312,10 +672,13 @@ class IntelligenceSignalLogger(
                     userUnderstandingRepository.reinforceFacet(
                         candidate = topic,
                         delta = 0.18,
-                        provenance = "Read \"${link.title.take(36)}\"",
+                        provenance = "Read ${topic.displayLabel} link",
                         evidenceSummary = "Read saved ${topic.displayLabel} item",
                         facetType = TasteFacetType.ENDURING_INTEREST,
-                        timestampMs = ts
+                        timestampMs = ts,
+                        signalType = SIGNAL_LINK_READ,
+                        signalQuality = 0.25,
+                        isBehavioralEvidence = true
                     )
                 }
             }
@@ -382,13 +745,21 @@ class IntelligenceSignalLogger(
                         provenance = "Organized into collection",
                         evidenceSummary = "Collection organization (${facet.displayLabel})",
                         facetType = TasteFacetType.ENDURING_INTEREST,
-                        timestampMs = ts
+                        timestampMs = ts,
+                        signalType = SIGNAL_COLLECTION_ADD,
+                        signalQuality = 0.22,
+                        isBehavioralEvidence = true
                     )
                 }
             }
         }
     }
 
+    /**
+     * Records an explicitly submitted search. Must NEVER be called on typing/debounced keystrokes.
+     * Stores only sanitized derived facets and a hashed target key (never plaintext query text).
+     * Repeated searches alone never promote SHORT_TERM_INTENT to ENDURING_INTEREST.
+     */
     suspend fun logSearch(surfaceScope: IntelligenceSurfaceScope, query: String) {
         if (!isActive()) return
         val clean = query.trim()
@@ -397,39 +768,38 @@ class IntelligenceSignalLogger(
         runCatching {
             withContext(Dispatchers.IO) {
                 val ts = nowMs()
-                val topics = TopicExtractor.extractLibraryTopics(query = clean)
-                val genreFacet = if (surfaceScope == IntelligenceSurfaceScope.MOVIES) {
-                    val lower = clean.lowercase(Locale.USCompat.US)
-                    MEDIA_SEARCH_GENRES.firstOrNull { lower.contains(it.lowercase()) }?.let { g ->
-                        ExtractedFacetCandidate(
-                            facetKey = TopicExtractor.genreFacetKey(g),
-                            displayLabel = g,
-                            surfaceScope = IntelligenceSurfaceScope.MOVIES,
-                            isMediaCue = true
-                        )
-                    }
-                } else null
+                val combined = when (surfaceScope) {
+                    IntelligenceSurfaceScope.MOVIES ->
+                        TopicExtractor.extractMoviesSearchFacets(clean)
+                    IntelligenceSurfaceScope.LIBRARY, IntelligenceSurfaceScope.ALL ->
+                        TopicExtractor.extractLibraryTopics(query = clean)
+                            .map { it.copy(surfaceScope = IntelligenceSurfaceScope.LIBRARY, isMediaCue = false) }
+                }.distinctBy { it.facetKey }
 
-                val combined = (topics + listOfNotNull(genreFacet)).distinctBy { it.facetKey }
+                val safeTarget = TopicExtractor.safeSearchTargetKey(surfaceScope, clean, combined)
+                val isMediaSearch = surfaceScope == IntelligenceSurfaceScope.MOVIES && combined.isNotEmpty()
                 intelligenceDao.insertSignal(
                     IntelligenceSignalEntity(
                         signalType = SIGNAL_SEARCH,
                         surfaceScope = surfaceScope.name,
-                        targetKey = "search:${clean.lowercase().take(40)}",
+                        targetKey = safeTarget,
                         topicsCsv = combined.joinToString(",") { it.facetKey },
-                        isMediaCue = surfaceScope == IntelligenceSurfaceScope.MOVIES,
-                        strength = 0.45,
+                        isMediaCue = isMediaSearch,
+                        strength = 0.40,
                         createdAtMs = ts
                     )
                 )
                 for (facet in combined) {
                     userUnderstandingRepository.reinforceFacet(
                         candidate = facet,
-                        delta = 0.12,
+                        delta = 0.11,
                         provenance = "Recent search",
-                        evidenceSummary = "Searched for ${facet.displayLabel}",
+                        evidenceSummary = "Submitted search for ${facet.displayLabel}",
                         facetType = TasteFacetType.SHORT_TERM_INTENT,
-                        timestampMs = ts
+                        timestampMs = ts,
+                        signalType = SIGNAL_SEARCH,
+                        signalQuality = 0.08,
+                        isBehavioralEvidence = false
                     )
                 }
             }
@@ -466,10 +836,11 @@ class IntelligenceSignalLogger(
                         targetKey = targetKey ?: "notif:${category.name}",
                         topicsCsv = "",
                         isMediaCue = category.name.startsWith("MOVIES_"),
-                        strength = -0.40,
+                        strength = -0.15,
                         createdAtMs = nowMs()
                     )
                 )
+                // Notification dismissal must NEVER become a taste dislike.
             }
         }
     }
@@ -492,24 +863,26 @@ class IntelligenceSignalLogger(
                         targetKey = "link:${link.id}",
                         topicsCsv = topics.joinToString(",") { it.facetKey },
                         isMediaCue = false,
-                        strength = if (opened) 0.65 else -0.35,
+                        strength = if (opened) 0.65 else -0.15,
                         createdAtMs = ts
                     )
                 )
-                for (topic in topics) {
-                    if (opened) {
+                if (opened) {
+                    for (topic in topics) {
                         userUnderstandingRepository.reinforceFacet(
                             candidate = topic,
                             delta = 0.10,
-                            provenance = "Opened resurfaced \"${link.title.take(36)}\"",
+                            provenance = "Re-engaged with ${topic.displayLabel} link",
                             evidenceSummary = "Re-engaged with resurfaced ${topic.displayLabel} link",
                             facetType = TasteFacetType.ENDURING_INTEREST,
-                            timestampMs = ts
+                            timestampMs = ts,
+                            signalType = SIGNAL_RESURFACE_OPENED,
+                            signalQuality = 0.14,
+                            isBehavioralEvidence = true
                         )
-                    } else {
-                        userUnderstandingRepository.penalizeFacet(topic.facetKey, 0.05, ts)
                     }
                 }
+                // Dismissing a Pick Back Up suggestion must NOT become a topic dislike.
             }
         }
     }
@@ -522,18 +895,27 @@ class IntelligenceSignalLogger(
         else -> IntelligenceSurfaceScope.LIBRARY
     }
 
-    private object Locale {
-        object USCompat {
-            val US: java.util.Locale = java.util.Locale.US
-        }
-    }
-
     companion object {
-        const val SIGNAL_WATCHLIST_ADD = "WATCHLIST_ADD"
-        const val SIGNAL_WATCHLIST_REMOVE = "WATCHLIST_REMOVE"
+        const val SIGNAL_TITLE_LIKE = "TITLE_LIKE"
+        const val SIGNAL_TITLE_DISLIKE = "TITLE_DISLIKE"
+        const val SIGNAL_DETAIL_OPEN = "DETAIL_OPEN"
+        const val SIGNAL_PLAYBACK_START = "PLAYBACK_START"
+        const val SIGNAL_EARLY_PLAYBACK_EXIT = "EARLY_PLAYBACK_EXIT"
         const val SIGNAL_WATCH_PROGRESS = "WATCH_PROGRESS"
         const val SIGNAL_WATCH_COMPLETED = "WATCH_COMPLETED"
+        const val SIGNAL_REWATCH = "REWATCH"
+        const val SIGNAL_MANUAL_WATCHED = "MANUAL_WATCHED"
+        const val SIGNAL_WATCHLIST_ADD = "WATCHLIST_ADD"
+        const val SIGNAL_WATCHLIST_REMOVE = "WATCHLIST_REMOVE"
+        const val SIGNAL_REMINDER_SET = "REMINDER_SET"
+        const val SIGNAL_REMINDER_REMOVE = "REMINDER_REMOVE"
+        const val SIGNAL_MOVIE_DOWNLOAD = "MOVIE_DOWNLOAD"
+        const val SIGNAL_MOVIE_DOWNLOAD_REMOVE = "MOVIE_DOWNLOAD_REMOVE"
+        const val SIGNAL_TITLE_SHARE = "TITLE_SHARE"
+        const val SIGNAL_CONTINUE_WATCHING_REMOVE = "CONTINUE_WATCHING_REMOVE"
         const val SIGNAL_MOVIE_HIDE = "MOVIE_HIDE"
+        const val SIGNAL_SERIES_MUTE = "SERIES_MUTE"
+        const val SIGNAL_SERIES_UNMUTE = "SERIES_UNMUTE"
         const val SIGNAL_LINK_SAVE = "LINK_SAVE"
         const val SIGNAL_LINK_READ = "LINK_READ"
         const val SIGNAL_COLLECTION_ADD = "COLLECTION_ADD"
@@ -542,11 +924,5 @@ class IntelligenceSignalLogger(
         const val SIGNAL_NOTIFICATION_DISMISSED = "NOTIFICATION_DISMISSED"
         const val SIGNAL_RESURFACE_OPENED = "RESURFACE_OPENED"
         const val SIGNAL_RESURFACE_DISMISSED = "RESURFACE_DISMISSED"
-
-        private val MEDIA_SEARCH_GENRES = listOf(
-            "Sci-Fi", "Action", "Adventure", "Animation", "Anime", "Comedy",
-            "Crime", "Documentary", "Drama", "Fantasy", "Horror", "Mystery",
-            "Romance", "Thriller"
-        )
     }
 }

@@ -170,11 +170,12 @@ object SearchTieBreaker {
                 (it.expiresAtMs == null || it.expiresAtMs > nowMs)
         }
         .associate { facet ->
+            val conf = facet.confidence.coerceIn(0.25, 1.0)
             val weight = when (facet.facetType) {
                 TasteFacetType.EXPLICIT_DISLIKE.name -> -5.0
                 TasteFacetType.EXPLICIT_LIKE.name -> 2.0 * facet.score
-                TasteFacetType.ACTIVE_GOAL.name -> 1.8 * facet.score
-                else -> facet.score
+                TasteFacetType.ACTIVE_GOAL.name -> 1.8 * facet.score * conf
+                else -> facet.score * conf
             }
             facet.facetKey to weight
         }
@@ -188,10 +189,11 @@ object SearchTieBreaker {
                 (it.expiresAtMs == null || it.expiresAtMs > nowMs)
         }
         .associate { facet ->
+            val conf = facet.confidence.coerceIn(0.25, 1.0)
             val weight = when (facet.facetType) {
                 TasteFacetType.EXPLICIT_DISLIKE.name -> -5.0
                 TasteFacetType.EXPLICIT_LIKE.name -> 2.0 * facet.score
-                else -> facet.score
+                else -> facet.score * conf
             }
             facet.facetKey to weight
         }

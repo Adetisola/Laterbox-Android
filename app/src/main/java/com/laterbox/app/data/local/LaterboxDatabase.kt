@@ -20,6 +20,8 @@ import com.laterbox.app.data.local.entity.CollectionEntity
 import com.laterbox.app.data.local.entity.IntelligenceSignalEntity
 import com.laterbox.app.data.local.entity.NotificationHistoryEntity
 import com.laterbox.app.data.local.entity.SavedLinkEntity
+import com.laterbox.app.data.local.entity.SuggestionDismissalEntity
+import com.laterbox.app.data.local.entity.TitleFeedbackEntity
 import com.laterbox.app.data.local.entity.UserTasteFacetEntity
 import com.laterbox.app.media.data.db.dao.DownloadPlaybackProgressDao
 import com.laterbox.app.media.data.db.dao.DownloadedAssetDao
@@ -68,9 +70,11 @@ import com.laterbox.app.movies.data.local.entity.MovieWatchlistEntity
         HiddenTitleEntity::class,
         DownloadPlaybackProgressEntity::class,
         UserTasteFacetEntity::class,
-        IntelligenceSignalEntity::class
+        IntelligenceSignalEntity::class,
+        TitleFeedbackEntity::class,
+        SuggestionDismissalEntity::class
     ],
-    version = 22,
+    version = 23,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -1078,6 +1082,84 @@ abstract class LaterboxDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_22_23 = object : Migration(22, 23) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `user_taste_facets` ADD COLUMN `has_behavioral_evidence` INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE `user_taste_facets` ADD COLUMN `independent_evidence_count` INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE `user_taste_facets` ADD COLUMN `supporting_signal_types_csv` TEXT NOT NULL DEFAULT ''")
+                db.execSQL(
+                    """
+                    UPDATE `user_taste_facets`
+                    SET `has_behavioral_evidence` = 0
+                    WHERE `facet_type` = 'SHORT_TERM_INTENT'
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    UPDATE `user_taste_facets`
+                    SET `surface_scope` = 'LIBRARY'
+                    WHERE `facet_key` = 'topic:cinema_tv' AND `surface_scope` = 'ALL'
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    UPDATE `user_taste_facets`
+                    SET `provenance` = 'Recent search'
+                    WHERE `provenance` LIKE 'Searched "%'
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    UPDATE `intelligence_signals`
+                    SET `target_key` = 'search:sanitized:legacy'
+                    WHERE `signal_type` = 'SEARCH_QUERY'
+                      AND `target_key` LIKE 'search:%'
+                      AND `target_key` NOT LIKE 'search:sanitized:%'
+                    """.trimIndent()
+                )
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `title_feedback` (
+                        `media_key` TEXT NOT NULL,
+                        `composite_id` TEXT NOT NULL,
+                        `provider_id` TEXT NOT NULL,
+                        `title_id` TEXT NOT NULL,
+                        `canonical_id` TEXT,
+                        `kind` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `reaction` TEXT NOT NULL,
+                        `genres_csv` TEXT NOT NULL DEFAULT '',
+                        `updated_at_ms` INTEGER NOT NULL,
+                        PRIMARY KEY(`media_key`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_title_feedback_canonical_id` ON `title_feedback` (`canonical_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_title_feedback_composite_id` ON `title_feedback` (`composite_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_title_feedback_reaction` ON `title_feedback` (`reaction`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_title_feedback_updated_at_ms` ON `title_feedback` (`updated_at_ms`)")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `suggestion_dismissals` (
+                        `dismissal_key` TEXT NOT NULL,
+                        `suggestion_type` TEXT NOT NULL,
+                        `link_id` INTEGER NOT NULL,
+                        `link_identity_hash` TEXT NOT NULL,
+                        `dismissed_at_ms` INTEGER NOT NULL,
+                        `suppress_until_ms` INTEGER,
+                        PRIMARY KEY(`dismissal_key`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_suggestion_dismissals_suggestion_type` ON `suggestion_dismissals` (`suggestion_type`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_suggestion_dismissals_link_id` ON `suggestion_dismissals` (`link_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_suggestion_dismissals_link_identity_hash` ON `suggestion_dismissals` (`link_identity_hash`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_suggestion_dismissals_suppress_until_ms` ON `suggestion_dismissals` (`suppress_until_ms`)")
+            }
+        }
+
         @Volatile
         private var INSTANCE: LaterboxDatabase? = null
 
@@ -1109,7 +1191,8 @@ abstract class LaterboxDatabase : RoomDatabase() {
                         MIGRATION_18_19,
                         MIGRATION_19_20,
                         MIGRATION_20_21,
-                        MIGRATION_21_22
+                        MIGRATION_21_22,
+                        MIGRATION_22_23
                     )
                     .build()
                     .also { INSTANCE = it }
