@@ -592,7 +592,7 @@ class AssistantActionPermissionsTest {
         val server = okhttp3.mockwebserver.MockWebServer()
         val sseReply1 = """
             event: response_start
-            data: {"manifestRevision":"2026.12.01-v3","manifestSynced":true}
+            data: {"manifestRevision":"2026.11.27-v3","manifestSynced":true}
 
             event: approval_required
             data: {"action":{"type":"TOGGLE_MOVIE_WATCHLIST","providerId":"tvmaze","titleId":"66","add":true,"title":"Severance"},"category":"LIBRARY_MANAGEMENT"}

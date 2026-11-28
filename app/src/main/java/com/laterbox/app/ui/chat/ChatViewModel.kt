@@ -976,7 +976,7 @@ class ChatViewModel(
                         if (action.add) "\"${summary.title}\" is already in your Movies & TV watchlist."
                         else "\"${summary.title}\" is already removed from your Movies & TV watchlist."
                     } else {
-                        val nowIn = repo.toggleWatchlist(summary)
+                        val nowIn = repo.toggleWatchlistWithSignalPolicy(summary, recordSignal = false)
                         if (nowIn) "Added \"${summary.title}\" to your Movies & TV watchlist."
                         else "Removed \"${summary.title}\" from your Movies & TV watchlist."
                     }
@@ -1007,7 +1007,7 @@ class ChatViewModel(
                         "I couldn't resolve the target collection. Nothing was changed."
                     } else {
                         val targetColName = existingById?.name ?: existingByName?.name ?: trimmedName ?: "collection"
-                        repo.addMediaToCollection(summary, targetColId)
+                        repo.addMediaToCollectionWithSignalPolicy(summary, targetColId, recordSignal = false)
                         "Added \"${summary.title}\" to collection \"$targetColName\"."
                     }
                 }
@@ -1027,11 +1027,12 @@ class ChatViewModel(
                         val episodeLabel = if (action.seasonNumber != null && action.episodeNumber != null) {
                             "S${action.seasonNumber}E${action.episodeNumber}"
                         } else null
-                        repo.markWatched(
+                        repo.markWatchedWithSignalPolicy(
                             item = summary,
                             seasonNumber = action.seasonNumber,
                             episodeNumber = action.episodeNumber,
-                            episodeLabel = episodeLabel
+                            episodeLabel = episodeLabel,
+                            recordSignal = false
                         )
                         "Marked \"${summary.title}\"$epSuffix as watched in your viewing history."
                     }
@@ -1053,10 +1054,11 @@ class ChatViewModel(
                     actionSucceeded = false
                     "I couldn't find \"${action.title}\". Nothing was changed."
                 } else {
-                    repo.scheduleViewingReminder(
+                    repo.scheduleViewingReminderWithSignalPolicy(
                         item = summary,
                         triggerAtMillis = action.triggerAtMillis,
-                        note = action.note
+                        note = action.note,
+                        recordSignal = false
                     )
                     reminderScheduler?.scheduleMovieViewingReminder(
                         mediaKey = summary.stableMediaKey,
@@ -1079,7 +1081,7 @@ class ChatViewModel(
                     actionSucceeded = false
                     "I couldn't find \"${action.title}\". Nothing was changed."
                 } else {
-                    repo.setSeriesRemindersMuted(summary.providerId, summary.id, action.muted)
+                    repo.setSeriesRemindersMutedWithSignalPolicy(summary.providerId, summary.id, action.muted, recordSignal = false)
                     if (action.muted) "Muted proactive Smart Reminders for \"${summary.title}\"."
                     else "Unmuted proactive Smart Reminders for \"${summary.title}\"."
                 }

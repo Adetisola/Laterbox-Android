@@ -3148,18 +3148,28 @@ class MoviesRepositoryImpl(
     override suspend fun markWatchedWithSignalPolicy(
         item: MovieTitleSummary,
         durationMs: Long,
+        seasonNumber: Int?,
+        episodeNumber: Int?,
+        episodeLabel: String?,
         isRewatch: Boolean,
         recordSignal: Boolean
-    ) = withContext(ioDispatcher) {
+    ): Unit = withContext(ioDispatcher) {
         if (recordSignal) {
-            markWatched(item, durationMs = durationMs, isRewatch = isRewatch)
+            markWatched(
+                item = item,
+                durationMs = durationMs,
+                seasonNumber = seasonNumber,
+                episodeNumber = episodeNumber,
+                episodeLabel = episodeLabel,
+                isRewatch = isRewatch
+            )
             return@withContext
         }
         val resolved = if (item.canonicalId != null) item else mediaResolver.resolveOrRegister(item)
         cacheSummaries(listOf(resolved))
-        val key = buildHistoryKey(resolved.providerId, resolved.id, null, null)
+        val key = buildHistoryKey(resolved.providerId, resolved.id, seasonNumber, episodeNumber)
         val existing = moviesDao.getWatchHistoryByKey(key)
-            ?: resolved.canonicalId?.let { moviesDao.getWatchHistoryByCanonical(it, 0, 0) }
+            ?: resolved.canonicalId?.let { moviesDao.getWatchHistoryByCanonical(it, seasonNumber ?: 0, episodeNumber ?: 0) }
         val now = nowMs()
         val effectiveDuration = when {
             durationMs > 0L -> durationMs
@@ -3177,9 +3187,9 @@ class MoviesRepositoryImpl(
                 titleId = resolved.id,
                 kind = resolved.kind.wireValue,
                 title = resolved.title,
-                episodeLabel = existing?.episodeLabel,
-                seasonNumber = existing?.seasonNumber,
-                episodeNumber = existing?.episodeNumber,
+                episodeLabel = episodeLabel ?: existing?.episodeLabel,
+                seasonNumber = seasonNumber ?: existing?.seasonNumber,
+                episodeNumber = episodeNumber ?: existing?.episodeNumber,
                 posterUrl = resolved.posterUrl ?: existing?.posterUrl,
                 backdropUrl = resolved.backdropUrl ?: existing?.backdropUrl,
                 positionMs = effectiveDuration,

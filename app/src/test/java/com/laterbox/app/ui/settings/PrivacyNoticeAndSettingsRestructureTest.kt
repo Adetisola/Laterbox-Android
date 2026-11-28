@@ -14,6 +14,7 @@ class PrivacyNoticeAndSettingsRestructureTest {
         assertEquals("settings/data_storage", LaterboxDestination.SettingsDataStorage.route)
         assertFalse(LaterboxKnowledgeBase.ALLOWED_ACTION_SPEC.contains("settings/about_privacy"))
         assertFalse(LaterboxKnowledgeBase.ALLOWED_ACTION_SPEC.contains("settings/app_storage"))
+        assertFalse(LaterboxKnowledgeBase.ALLOWED_ACTION_SPEC.contains("settings/personalization_privacy"))
         assertTrue(LaterboxKnowledgeBase.ALLOWED_ACTION_SPEC.contains("settings/data_storage"))
     }
 }

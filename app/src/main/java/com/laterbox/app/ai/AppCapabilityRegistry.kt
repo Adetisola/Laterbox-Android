@@ -105,7 +105,7 @@ data class CapabilitySnapshot(
     val clientVersionCode: Int? = null,
     val clientVersionName: String? = null,
     val manifestVersion: Int = 3,
-    val manifestRevision: String = "2026.12.01-v3",
+    val manifestRevision: String = "2026.11.27-v3",
     val onlineServicesPaused: Boolean = false,
     val moviesTvEnabled: Boolean = true,
     val providerMovieboxEnabled: Boolean = true,
@@ -515,7 +515,7 @@ object AppCapabilityRegistry {
             section = LaterboxSection.MOVIES_TV,
             summary = "Discovery, Personal Library, Offline Playback, and unified full-screen Media Player.",
             capabilities = listOf(
-                "Browse curated rails, Surprise Me picks, Because You Watched & More Like This recommendations, Runtime-aware picks, and expandable filters (Kind, Genre, Language, Country, Year, Runtime, Sort).",
+                "Browse curated rails, Picked For You, Surprise Me picks, content-aware Because You Watched & More Like This recommendations, Like/Dislike title feedback powered by always-on local Experience Intelligence, and expandable filters (Kind, Genre, Language, Country, Year, Runtime, Sort).",
                 "Unified title identities across Laterbox's catalogue and guides so watchlist and history do not duplicate.",
                 "Watch History split separately for Movies, Episodes, and Trailers; Continue Watching management (Resume, Restart from beginning, Remove from Continue Watching, Hide title); Rewatch tracking; Episode watched/unwatched toggles & next unwatched episode; Recently Viewed; Custom Collections.",
                 "Full-screen ExoPlayer with vertical brightness/volume swipe gestures, horizontal swipe-to-seek with adjustable sensitivity, double-tap seek, up to 200% LoudnessEnhancer volume boost, subtitle styling, per-series audio/subtitle preferences, next-episode autoplay, and verified intro/recap skip buttons when timestamps are provided by metadata.",
@@ -686,10 +686,8 @@ object RemoteCapabilities {
         "watchlist",
         "recently_viewed",
         "because_you_watched",
-        "quick_picks",
         "recently_added",
         "top_rated",
-        "newest",
         "discovery_sections",
     )
 

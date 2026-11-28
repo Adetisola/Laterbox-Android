@@ -331,9 +331,19 @@ interface MoviesRepository {
     suspend fun markWatchedWithSignalPolicy(
         item: MovieTitleSummary,
         durationMs: Long = 0L,
+        seasonNumber: Int? = null,
+        episodeNumber: Int? = null,
+        episodeLabel: String? = null,
         isRewatch: Boolean = false,
         recordSignal: Boolean
-    ) = markWatched(item, durationMs = durationMs, isRewatch = isRewatch)
+    ) = markWatched(
+        item = item,
+        durationMs = durationMs,
+        seasonNumber = seasonNumber,
+        episodeNumber = episodeNumber,
+        episodeLabel = episodeLabel,
+        isRewatch = isRewatch
+    )
 
     suspend fun scheduleViewingReminderWithSignalPolicy(
         item: MovieTitleSummary,

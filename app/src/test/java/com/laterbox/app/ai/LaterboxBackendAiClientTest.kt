@@ -235,7 +235,7 @@ class LaterboxBackendAiClientTest {
     fun streamChat_parsesApprovalRequiredSseEvent() = runBlocking {
         val sseBody = """
             event: response_start
-            data: {"manifestRevision":"2026.12.01-v3","manifestSynced":true}
+            data: {"manifestRevision":"2026.11.27-v3","manifestSynced":true}
 
             event: approval_required
             data: {"action":{"type":"DELETE_DOWNLOAD","taskId":"task-9","title":"Old Clip"},"category":"LIBRARY_MANAGEMENT"}

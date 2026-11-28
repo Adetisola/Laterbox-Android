@@ -10,9 +10,9 @@ class AppCapabilityRegistryTest {
     @Test
     fun `manifest hash matches backend canonical SHA-256`() {
         assertEquals(3, AppCapabilityRegistry.MANIFEST_VERSION)
-        assertEquals("2026.12.01-v3", AppCapabilityRegistry.MANIFEST_REVISION)
+        assertEquals("2026.11.27-v3", AppCapabilityRegistry.MANIFEST_REVISION)
         assertEquals(
-            "f68aed601186bd4d2fe0fc62e3899162352eec381905b57bdeb4b7d321f92f6e",
+            "d50bbef9a31c3815ab9e2d3085ffbc8b17fcf9a309ea44881a27ff0612a5fd96",
             AppCapabilityRegistry.MANIFEST_HASH
         )
         assertEquals(13, AppCapabilityRegistry.productManifestItems.size)
@@ -153,7 +153,7 @@ class AppCapabilityRegistryTest {
         val json = AppCapabilityRegistry.toRuntimeSnapshotJson(snapshot)
         assertEquals(AppCapabilityRegistry.MANIFEST_HASH, json.getString("manifestHash"))
         assertEquals(3, json.getInt("manifestVersion"))
-        assertEquals("2026.12.01-v3", json.getString("manifestRevision"))
+        assertEquals("2026.11.27-v3", json.getString("manifestRevision"))
         assertTrue(json.getBoolean("onlineServicesPaused"))
         assertEquals(84, json.getInt("clientVersionCode"))
         assertEquals(5, json.getInt("moviesWatchlistCount"))

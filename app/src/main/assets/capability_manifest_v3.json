@@ -1,7 +1,7 @@
 {
   "manifestVersion": 3,
-  "manifestRevision": "2026.12.01-v3",
-  "manifestHash": "f68aed601186bd4d2fe0fc62e3899162352eec381905b57bdeb4b7d321f92f6e",
+  "manifestRevision": "2026.11.27-v3",
+  "manifestHash": "d50bbef9a31c3815ab9e2d3085ffbc8b17fcf9a309ea44881a27ff0612a5fd96",
   "items": [
     {
       "id": "inbox.save_organize",
@@ -236,7 +236,7 @@
       "id": "movies.recommendations",
       "section": "Movies & TV",
       "title": "Personalized Recommendations & Surprise Me",
-      "description": "Shows Because You Watched, More Like This, and Surprise Me suggestions.",
+      "description": "Shows Picked For You, content-aware Because You Watched & More Like This, Surprise Me, and Like/Dislike feedback powered by always-on local Experience Intelligence.",
       "defaultStatus": "SUPPORTED",
       "minVersionCode": 1,
       "remoteFeatureKey": "movies_recommendations_enabled",
@@ -248,20 +248,20 @@
       ],
       "preconditions": [
         "Remote feature movies_recommendations_enabled is active",
-        "At least one watch history or watchlist entry improves personalization"
+        "On-device Experience Intelligence learns continuously from likes, dislikes, watch completions, collections, reminders, and searches"
       ],
       "requiresBackend": true,
       "aiCopyRequiresBackend": false,
       "reversible": true,
       "requiresConfirmation": false,
       "sideEffects": [
-        "Computes discovery rails locally from watchlist and watch history"
+        "Computes discovery rails locally in Room from behavioral signals, feedback, and content understanding"
       ],
       "failureRecoveryPaths": [
         {
           "condition": "recommendations_disabled",
-          "explanation": "Personalized recommendations are disabled in settings or Remote Configuration.",
-          "recoveryDestination": "settings/movies_tv"
+          "explanation": "Personalized recommendations are currently disabled in Remote Configuration.",
+          "recoveryDestination": "movies"
         }
       ]
     },

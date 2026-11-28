@@ -151,7 +151,7 @@ class ChatViewModelActionQueueTest {
         prefs.setAssistantAiDisclosureAccepted(true)
         val sseReply = """
             event: response_start
-            data: {"manifestRevision":"2026.12.01-v3","manifestSynced":true}
+            data: {"manifestRevision":"2026.11.27-v3","manifestSynced":true}
 
             event: approval_required
             data: {"action":{"type":"TOGGLE_MOVIE_WATCHLIST","providerId":"tvmaze","titleId":"66","add":true,"title":"Severance"},"category":"LIBRARY_MANAGEMENT"}
@@ -221,7 +221,7 @@ class ChatViewModelActionQueueTest {
         prefs.setAssistantAiDisclosureAccepted(true)
         val sseReply = """
             event: response_start
-            data: {"manifestRevision":"2026.12.01-v3","manifestSynced":true}
+            data: {"manifestRevision":"2026.11.27-v3","manifestSynced":true}
 
             event: approval_required
             data: {"action":{"type":"TOGGLE_MOVIE_WATCHLIST","providerId":"tvmaze","titleId":"66","add":true,"title":"Severance"},"category":"LIBRARY_MANAGEMENT"}
@@ -287,7 +287,7 @@ class ChatViewModelActionQueueTest {
         prefs.setAssistantAiDisclosureAccepted(true)
         val sseReply = """
             event: response_start
-            data: {"manifestRevision":"2026.12.01-v3","manifestSynced":true}
+            data: {"manifestRevision":"2026.11.27-v3","manifestSynced":true}
 
             event: response_complete
             data: {"fullText":"Here are your saved Kotlin links.","displayText":"Here are your saved Kotlin links.","actions":[]}
@@ -337,7 +337,7 @@ class ChatViewModelActionQueueTest {
 
         val sseReply = """
             event: response_start
-            data: {"manifestRevision":"2026.12.01-v3","manifestSynced":true}
+            data: {"manifestRevision":"2026.11.27-v3","manifestSynced":true}
 
             event: approval_required
             data: {"action":{"type":"TOGGLE_MOVIE_WATCHLIST","providerId":"tvmaze","titleId":"66","add":true,"title":"Severance"},"category":"LIBRARY_MANAGEMENT"}
@@ -404,7 +404,7 @@ class ChatViewModelActionQueueTest {
 
         val sseReply = """
             event: response_start
-            data: {"manifestRevision":"2026.12.01-v3","manifestSynced":true}
+            data: {"manifestRevision":"2026.11.27-v3","manifestSynced":true}
 
             event: approval_required
             data: {"action":{"type":"TOGGLE_MOVIE_WATCHLIST","providerId":"tvmaze","titleId":"66","add":true,"title":"Severance"},"category":"LIBRARY_MANAGEMENT"}
@@ -472,6 +472,46 @@ class ChatViewModelActionQueueTest {
         }
     }
 
+    @Test
+    fun assistantActions_passRecordSignalFalse_toPreserveEiIsolation() = runTest(mainDispatcher) {
+        prefs.setAssistantAiDisclosureAccepted(true)
+        val server = MockWebServer()
+        val sseWatchlist = """
+            event: response_start
+            data: {"manifestRevision":"2026.11.27-v3","manifestSynced":true}
+
+            event: approval_required
+            data: {"action":{"type":"TOGGLE_MOVIE_WATCHLIST","providerId":"tvmaze","titleId":"66","add":true,"title":"Severance"},"category":"LIBRARY_MANAGEMENT"}
+
+            event: response_complete
+            data: {"fullText":"Queued watchlist change.","displayText":"Queued watchlist change.","actions":[]}
+
+        """.trimIndent()
+        server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "text/event-stream").setBody(sseWatchlist))
+        server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json").setBody("""{"ok":true}"""))
+        server.start()
+        try {
+            val baseUrl = server.url("/").toString().trimEnd('/')
+            val vm = buildViewModel(
+                LaterboxBackendAiClient(baseUrlProvider = { baseUrl }, appCheckTokenProvider = { "tok" })
+            )
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.uiState.collect {} }
+
+            vm.sendMessage("Add Severance to my watchlist")
+            awaitCondition(this) {
+                !vm.uiState.value.isStreaming &&
+                    vm.uiState.value.pendingMutatingAction is ChatAction.ToggleMovieWatchlist
+            }
+            vm.confirmMutatingAction()
+            awaitCondition(this) {
+                moviesRepo.signalPolicyCalls.any { it.first == "watchlist" }
+            }
+            assertEquals(listOf("watchlist" to false), moviesRepo.signalPolicyCalls)
+        } finally {
+            server.shutdown()
+        }
+    }
+
     private class NoopMediaRepository : MediaRepository {
         override fun getAssetsForLink(linkId: Long): Flow<List<MediaAsset>> = flowOf(emptyList())
         override fun getAllAssets(): Flow<List<MediaAsset>> = flowOf(emptyList())
@@ -508,6 +548,7 @@ class ChatViewModelActionQueueTest {
         private val seeded = linkedMapOf<String, MovieTitleSummary>()
         private val watchlistState = MutableStateFlow<List<MovieTitleSummary>>(emptyList())
         val markedWatched = mutableListOf<String>()
+        val signalPolicyCalls = mutableListOf<Pair<String, Boolean>>()
         var onGetDetails: (suspend (String, String) -> Unit)? = null
         var onToggleWatchlist: (suspend (MovieTitleSummary) -> Unit)? = null
 
@@ -551,6 +592,10 @@ class ChatViewModelActionQueueTest {
                 watchlistState.value = current
                 true
             }
+        }
+        override suspend fun toggleWatchlistWithSignalPolicy(item: MovieTitleSummary, recordSignal: Boolean): Boolean {
+            signalPolicyCalls.add("watchlist" to recordSignal)
+            return toggleWatchlist(item)
         }
         override fun observeContinueWatching(limit: Int): Flow<List<WatchHistoryItem>> = flowOf(emptyList())
         override suspend fun saveWatchProgress(
